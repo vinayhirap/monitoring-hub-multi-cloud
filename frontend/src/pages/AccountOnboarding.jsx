@@ -32,6 +32,12 @@ const ALL_REGIONS = [
 
 const ENVIRONMENTS = ["Production", "Staging", "Development", "QA"];
 
+const PROVIDER_TABS = [
+  { id: "aws",   label: "AWS" },
+  { id: "azure", label: "Azure" },
+  { id: "gcp",   label: "GCP" },
+];
+
 const INITIAL_FORM = {
   account_name:   "",
   account_id:     "",
@@ -59,6 +65,19 @@ function Field({ id, label, required, error, children }) {
   );
 }
 
+function ComingSoon({ provider }) {
+  const label = provider === "azure" ? "Azure" : "GCP";
+  return (
+    <div className="ob-section" style={{ textAlign: "center", padding: "48px 24px" }}>
+      <div className="ob-section-title">{label.toUpperCase()} — COMING SOON</div>
+      <p className="ob-metrics-hint" style={{ marginTop: 12 }}>
+        {label} account onboarding isn't available yet. AWS accounts can be
+        onboarded today from the AWS tab.
+      </p>
+    </div>
+  );
+}
+
 async function refreshQueue(setQueue) {
   try {
     const r = await fetch(`${BASE}/api/admin/accounts`);
@@ -77,6 +96,7 @@ async function refreshQueue(setQueue) {
 }
 
 export default function AccountOnboarding() {
+  const [provider, setProvider] = useState("aws");
   const [form,    setForm]    = useState(INITIAL_FORM);
   const [errors,  setErrors]  = useState({});
   const [queue,   setQueue]   = useState([]);
@@ -197,6 +217,23 @@ export default function AccountOnboarding() {
   return (
     <div className="onboard-page">
       <div className="onboard-main">
+        <div className="ob-provider-tabs">
+          {PROVIDER_TABS.map(t => (
+            <button
+              type="button"
+              key={t.id}
+              className={`ob-provider-tab ${provider === t.id ? "ob-provider-tab-active" : ""}`}
+              onClick={() => setProvider(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {provider !== "aws" && <ComingSoon provider={provider} />}
+
+        {provider === "aws" && (
+        <>
         <div className="onboard-hero">
           <h1>Onboard <span className="hl">AWS Account</span></h1>
           <p>Register a new AWS account for centralized CloudWatch monitoring</p>
@@ -401,6 +438,8 @@ export default function AccountOnboarding() {
             </button>
           </div>
         </form>
+        </>
+        )}
       </div>
 
       {/* Sidebar queue */}

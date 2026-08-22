@@ -266,3 +266,26 @@
   color: var(--text-muted);
   font-size: 13px;
 }
+
+
+/* provider tabs — cloud selector shell */
+.ob-provider-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid rgba(99,130,190,0.15);
+}
+.ob-provider-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: rgba(99,130,190,0.65);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+.ob-provider-tab-active {
+  color: #e2e8f0;
+  border-bottom-color: #2bb3ac;
+}
