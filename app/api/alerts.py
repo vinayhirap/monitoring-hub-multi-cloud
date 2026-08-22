@@ -146,6 +146,8 @@ def get_console_url(alert_id: int):
     cursor.execute("""
         SELECT
             a.resource_id                          AS resource,
+            r.resource_type                        AS resource_type,
+            r.name                                  AS resource_name,
             COALESCE(a.region, acc.default_region) AS region,
             acc.account_id                         AS aws_account_id,
             acc.role_arn,
@@ -164,7 +166,10 @@ def get_console_url(alert_id: int):
     if not row.get("role_arn"):
         raise HTTPException(status_code=400, detail="No AWS role configured for this account")
 
-    destination = resource_console_destination(row["resource"], row["region"])
+    destination = resource_console_destination(
+        row.get("resource_type"), row["resource"], row["region"],
+        resource_name=row.get("resource_name"),
+    )
 
     try:
         url = build_federated_console_url(row["role_arn"], row["external_id"], destination)

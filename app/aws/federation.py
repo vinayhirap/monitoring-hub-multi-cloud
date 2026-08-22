@@ -33,12 +33,83 @@ ISSUER = "monitoring-hub"
 SESSION_DURATION_SECONDS = 3600  # must be <= the assumed role's max session duration
 
 
-def resource_console_destination(resource: str, region: str) -> str:
+def service_console_list_url(service: str, region: str) -> str:
+    """
+    List-view console URL for a whole service (e.g. all EC2 instances) —
+    used when no specific resource is selected yet.
+    """
+    region = region or "us-east-1"
+    service = (service or "").lower()
+    base = f"https://{region}.console.aws.amazon.com"
+    return {
+        "ec2":    f"{base}/ec2/home?region={region}#Instances:",
+        "ebs":    f"{base}/ec2/home?region={region}#Volumes:",
+        "rds":    f"{base}/rds/home?region={region}#databases:",
+        "lambda": f"{base}/lambda/home?region={region}#/functions",
+        "s3":     "https://s3.console.aws.amazon.com/s3/buckets",
+        "elb":    f"{base}/ec2/home?region={region}#LoadBalancers:",
+        "ecs":    f"{base}/ecs/home?region={region}",
+    }.get(service, f"{base}/console/home?region={region}")
+
+
+def resource_console_destination(service: str, resource_id: str, region: str,
+                                  resource_name: str | None = None,
+                                  ecs_service_name: str | None = None) -> str:
     """
     Resource-type-specific AWS Console deep link.
 
-    Mirrors the mapping in frontend/src/pages/Alerts.jsx (awsConsoleUrl) —
-    keep both in sync if a new resource type is added.
+    `service` should be one of the resources.resource_type values
+    (ec2/ebs/rds/lambda/s3/elb/ecs — case-insensitive). This is the
+    single source of truth for console-link construction — the same
+    mapping frontend/src/pages/ServiceDetail.jsx used to keep as its own
+    separate copy (see multi-cloud-architecture-assessment.md section
+    2.3); that copy is being retired in favor of calling through here.
+
+    `resource_name` is used where the console needs a display name
+    rather than an ARN/ID (e.g. ELB search-by-name). `ecs_service_name`
+    enables the deeper cluster > service link for ECS when known;
+    without it, ECS falls back to the cluster-level view.
+
+    If `service` is missing/unrecognized (an older caller that hasn't
+    been updated yet), falls back to the original ID-prefix-guessing
+    behavior so nothing regresses for callers not yet passing `service`.
+    """
+    region = region or "us-east-1"
+    if not resource_id:
+        return service_console_list_url(service, region)
+
+    svc = (service or "").lower()
+    base = f"https://{region}.console.aws.amazon.com"
+
+    if svc == "ec2":
+        return f"{base}/ec2/home?region={region}#Instances:instanceId={resource_id}"
+    if svc == "ebs":
+        return f"{base}/ec2/home?region={region}#Volumes:volumeId={resource_id}"
+    if svc == "rds":
+        return f"{base}/rds/home?region={region}#database:id={resource_id}"
+    if svc == "lambda":
+        return f"{base}/lambda/home?region={region}#/functions/{resource_id}"
+    if svc == "s3":
+        return f"https://s3.console.aws.amazon.com/s3/buckets/{resource_id}"
+    if svc == "elb":
+        search_term = resource_name or resource_id
+        return f"{base}/ec2/home?region={region}#LoadBalancers:search={search_term}"
+    if svc == "ecs":
+        cluster = resource_name or resource_id
+        if ecs_service_name:
+            return (f"{base}/ecs/home?region={region}"
+                    f"#/clusters/{cluster}/services/{ecs_service_name}")
+        return f"{base}/ecs/home?region={region}#/clusters/{cluster}"
+
+    return _legacy_prefix_guess_destination(resource_id, region)
+
+
+def _legacy_prefix_guess_destination(resource: str, region: str) -> str:
+    """
+    Original ID-shape-guessing dispatch, kept as a fallback for any
+    caller that doesn't pass an explicit `service`. Covers only
+    EC2/EBS/Lambda/RDS — identical to this file's behavior before this
+    patch, no S3/ELB/ECS support on this path.
     """
     region = region or "us-east-1"
     if not resource:

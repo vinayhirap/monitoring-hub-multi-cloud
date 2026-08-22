@@ -1,5 +1,5 @@
 # app/api/admin/accounts.py
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Query
 from app.db import get_connection
 import datetime
 import json
@@ -192,6 +192,50 @@ def delete_account(account_id: int):
     return {"status": "removed", "id": account_id, "account_name": account["account_name"]}
 
 
+@router.get("/{account_id}/console-url")
+def get_account_console_url(
+    account_id: int,
+    service: str = Query(None),
+    resource_id: str = Query(None),
+    region: str = Query(None),
+    resource_name: str = Query(None),
+    ecs_service_name: str = Query(None),
+):
+    """
+    Generic account-scoped console deep link — the single backend source
+    ServiceDetail/AccountDetail call instead of building console URLs
+    client-side (same pattern the Alerts page already used). Dispatches
+    through the provider layer so this also works for Azure/GCP once
+    those providers implement get_console_url.
+    """
+    conn   = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM aws_accounts WHERE id = %s AND status = 'active'", (account_id,))
+    account = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found or inactive")
+    if not account.get("role_arn"):
+        raise HTTPException(status_code=400, detail="No AWS role configured for this account")
+
+    region = region or account.get("default_region")
+
+    try:
+        from app.providers.registry import get_provider
+        provider = get_provider(account.get("provider") or "aws")
+        url = provider.get_console_url(
+            account, resource_id, region,
+            service=service, resource_name=resource_name,
+            ecs_service_name=ecs_service_name,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not generate console link: {e}")
+
+    return {"url": url, "account_id": account["account_id"]}
+
+
 @router.post("/test-role")
 def test_role(payload: dict = Body(...)):
     role_arn = (payload.get("role_arn") or "").strip()
@@ -223,8 +267,13 @@ def discover_account(account_id: int):
         raise HTTPException(status_code=404, detail="Account not found or inactive")
 
     try:
-        from app.collector.discovery_ec2 import discover_aurogov_ec2
-        discover_aurogov_ec2()
+        # Was: app.collector.discovery_ec2.discover_aurogov_ec2 — that
+        # function does not exist anywhere in the codebase; this endpoint
+        # threw ImportError -> 500 on every click. Fixed to go through
+        # the real, live discovery path (the same one the scheduler calls
+        # every 15 minutes), routed via the provider layer.
+        from app.providers.registry import get_provider
+        get_provider("aws").discover_resources()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Discovery failed: {str(e)}")
 
