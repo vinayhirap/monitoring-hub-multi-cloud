@@ -5,6 +5,20 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import { getLiveEC2, getLiveEC2Metrics } from "../api/api";
 import "./AccountDetail.css";
 
+async function openAccountConsole(accountId, service, resourceId) {
+  try {
+    const params = new URLSearchParams({ service });
+    if (resourceId) params.set("resource_id", resourceId);
+    const res = await fetch(`/api/admin/accounts/${accountId}/console-url?${params}`);
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    window.open(data.url, "_blank", "noopener,noreferrer");
+  } catch (e) {
+    console.error("Console link failed:", e);
+    alert("Could not open AWS console link.");
+  }
+}
+
 const STATE_COLOR = {
   running: "green",
   stopped: "muted",
@@ -105,15 +119,10 @@ export default function AccountDetail() {
         </div>
         <div className="detail-header-right">
           <button className="btn-back" onClick={() => navigate("/overview")}>← Back to Account</button>
-          {/* FIX 7 — account-level AWS Console deep-link using dynamic region */}
-          <a
-            href={`https://${account.region ?? "ap-south-2"}.console.aws.amazon.com/ec2/home?region=${account.region ?? "ap-south-2"}#Instances:`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn-aws"
-          >
+          {/* Console link now backend-generated — federated, correct account */}
+          <button className="btn-aws" onClick={() => openAccountConsole(id, "ec2")}>
             ☁ AWS Console ↗
-          </a>
+          </button>
         </div>
       </div>
 
@@ -287,15 +296,10 @@ export default function AccountDetail() {
               )}
             </div>
 
-            {/* FIX 7 — instance-level deep-link with dynamic region + sort param */}
-            <a
-              href={`https://${selected.region}.console.aws.amazon.com/ec2/home?region=${selected.region}#Instances:instanceId=${selected.instance_id};sort=desc:launchTime`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn-open-aws"
-            >
+            {/* Console link now backend-generated — federated, correct account */}
+            <button className="btn-open-aws" onClick={() => openAccountConsole(id, "ec2", selected.instance_id)}>
               ☁ Open in AWS ↗
-            </a>
+            </button>
           </div>
         )}
       </div>

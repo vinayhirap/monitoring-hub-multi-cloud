@@ -308,14 +308,14 @@ fetchAccount(id).then(setAccount).catch(err => {
         </div>
         <div className="detail-header-right">
           <button className="btn-back" onClick={() => navigate(`/accounts/${id}/services`)}><ArrowLeftIcon size={13} /> Back</button>
-          <a href={awsConsoleLink(service, region)} target="_blank" rel="noopener noreferrer" className="btn-aws">
+          <button className="btn-aws" onClick={() => openAccountConsole(id, service, { region })}>
             <CloudIcon size={13} /> AWS Console <ExternalLinkIcon size={12} />
-          </a>
+          </button>
         </div>
       </div>
 
       {notImpl ? (
-        <NotImplState service={service} meta={meta} region={region} />
+        <NotImplState service={service} meta={meta} region={region} accountId={id} />
       ) : (
         <div className="detail-layout">
           <div className={`instance-panel ${selected ? "with-detail" : ""}`}>
@@ -370,6 +370,7 @@ fetchAccount(id).then(setAccount).catch(err => {
               allRows={rows}
               onClose={() => { selectedRef.current = null; setSelected(null); setMetrics(null); }}
               onSelectRelated={(row) => selectRow(row)}
+              accountId={id}
             />
           )}
         </div>
@@ -378,7 +379,7 @@ fetchAccount(id).then(setAccount).catch(err => {
   );
 }
 
-function NotImplState({ service, meta, region }) {
+function NotImplState({ service, meta, region, accountId }) {
   return (
     <div style={{ textAlign: "center", padding: "64px 32px", background: "rgba(13,22,39,0.5)", border: "1px solid rgba(99,130,190,0.1)", borderRadius: 12, marginTop: 8 }}>
       <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}><ServiceIcon icon={meta.icon} size={48} /></div>
@@ -386,9 +387,9 @@ function NotImplState({ service, meta, region }) {
       <div style={{ fontSize: 12, color: "rgba(99,130,190,0.65)", lineHeight: 1.7, marginBottom: 20 }}>
         Backend endpoint not available yet for {service}.
       </div>
-      <a href={awsConsoleLink(service, region)} target="_blank" rel="noopener noreferrer" className="btn-aws">
+      <button className="btn-aws" onClick={() => openAccountConsole(accountId, service, { region })}>
         <CloudIcon size={13} /> View in AWS Console <ExternalLinkIcon size={12} />
-      </a>
+      </button>
     </div>
   );
 }
@@ -742,7 +743,7 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
   return null;
 }
 
-function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange, onTimeRangeChange, allRows, onClose, onSelectRelated }) {
+function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange, onTimeRangeChange, allRows, onClose, onSelectRelated, accountId }) {
   const name = row.name || row.service_name || row.identifier || row.function_name || row.bucket_name || row.instance_id || "Resource";
 
   const noMetricsMsg = {
@@ -970,9 +971,12 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
         )}
       </div>
 
-      <a href={awsDeepLink(service, row, region)} target="_blank" rel="noopener noreferrer" className="btn-open-aws">
+      <button
+        className="btn-open-aws"
+        onClick={() => openAccountConsole(accountId, service, { region, ...consoleParamsFor(service, row) })}
+      >
         <CloudIcon size={13} /> Open in AWS <ExternalLinkIcon size={12} />
-      </a>
+      </button>
 
       <style>{`
         .id-section-title-row {
@@ -1024,31 +1028,35 @@ function StatusCheckBadge({ value }) {
   return <span className="sc-fail"><XCircleIcon size={11} /> FAILED ({value})</span>;
 }
 
-function awsConsoleLink(service, region) {
-  const base = `https://${region}.console.aws.amazon.com`;
-  const map = {
-    EC2:    `${base}/ec2/home?region=${region}#Instances:`,
-    EBS:    `${base}/ec2/home?region=${region}#Volumes:`,
-    RDS:    `${base}/rds/home?region=${region}#databases:`,
-    Lambda: `${base}/lambda/home?region=${region}#/functions`,
-    S3:     `https://s3.console.aws.amazon.com/s3/buckets`,
-    ELB:    `${base}/ec2/home?region=${region}#LoadBalancers:`,
-    ECS:    `${base}/ecs/home?region=${region}`,
-  };
-  return map[service] || base;
+async function openAccountConsole(accountId, service, params = {}) {
+  try {
+    const qs = new URLSearchParams({ service: service.toLowerCase(), ...params });
+    const res = await fetch(`/api/admin/accounts/${accountId}/console-url?${qs}`);
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    window.open(data.url, "_blank", "noopener,noreferrer");
+  } catch (e) {
+    console.error("Console link failed:", e);
+    alert("Could not open AWS console link.");
+  }
 }
 
-function awsDeepLink(service, row, region) {
-  const base = `https://${region}.console.aws.amazon.com`;
+// Resource-id/name params for the backend console-url dispatcher, one
+// row shape per service — mirrors the old awsDeepLink() switch.
+function consoleParamsFor(service, row) {
   switch (service) {
-    case "EC2":    return `${base}/ec2/home?region=${region}#Instances:instanceId=${row.instance_id}`;
-    case "EBS":    return `${base}/ec2/home?region=${region}#Volumes:volumeId=${row.volume_id}`;
-    case "RDS":    return `${base}/rds/home?region=${region}#database:id=${row.db_instance_id}`;
-    case "Lambda": return `${base}/lambda/home?region=${region}#/functions/${row.function_name}`;
-    case "S3":     return `https://s3.console.aws.amazon.com/s3/buckets/${row.bucket_name || row.name}`;
-    case "ELB":    return `${base}/ec2/home?region=${region}#LoadBalancers:search=${row.name}`;
-    case "ECS":    return `${base}/ecs/home?region=${region}#/clusters/${row.cluster_name}/services/${row.service_name}`;
-    default:       return base;
+    case "EC2":    return { resource_id: row.instance_id };
+    case "EBS":    return { resource_id: row.volume_id };
+    case "RDS":    return { resource_id: row.db_instance_id };
+    case "Lambda": return { resource_id: row.function_name };
+    case "S3":     return { resource_id: row.bucket_name || row.name };
+    case "ELB":    return { resource_id: row.name, resource_name: row.name };
+    case "ECS":    return {
+      resource_id: row.cluster_name,
+      resource_name: row.cluster_name,
+      ecs_service_name: row.service_name,
+    };
+    default:       return {};
   }
 }
 
