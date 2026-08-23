@@ -24,13 +24,25 @@ import urllib.parse
 
 import requests
 
-from app.aws.sts import assume_role
+from app.aws.sts import assume_role, get_own_account_id, get_self_federation_session
 
 logger = logging.getLogger(__name__)
 
 FEDERATION_ENDPOINT = "https://signin.aws.amazon.com/federation"
 ISSUER = "monitoring-hub"
 SESSION_DURATION_SECONDS = 3600  # must be <= the assumed role's max session duration
+
+
+class NoConsoleCredentialsError(ValueError):
+    """
+    Raised when we have no way to obtain console credentials for the
+    target account: no role_arn is configured AND the target account is
+    not the server's own account. Callers should surface this as a 400
+    (config problem), distinct from other exceptions in this module
+    which mean the credential path was found but the AWS call itself
+    failed (500/502).
+    """
+    pass
 
 
 def service_console_list_url(service: str, region: str) -> str:
@@ -131,15 +143,41 @@ def _legacy_prefix_guess_destination(resource: str, region: str) -> str:
     return f"https://{region}.console.aws.amazon.com/console/home?region={region}"
 
 
-def build_federated_console_url(role_arn: str, external_id: str | None,
-                                 destination: str) -> str:
+def build_federated_console_url(role_arn: str | None, external_id: str | None,
+                                 destination: str,
+                                 target_account_id: str | None = None) -> str:
     """
-    Assumes `role_arn` (the alert's own AWS account), exchanges the temporary
-    credentials for a sign-in token, and returns a login URL that drops the
-    user directly onto `destination` inside the CORRECT account — no
-    dependence on whatever account the browser is currently signed into.
+    Exchanges credentials for a sign-in token and returns a login URL that
+    drops the user directly onto `destination` inside the CORRECT account —
+    no dependence on whatever account the browser is currently signed into.
+
+    Credential path is chosen automatically:
+      - role_arn set                                   -> AssumeRole (cross-account)
+      - role_arn empty, target_account_id == own account -> GetFederationToken
+                                                             (self-federation,
+                                                             zero config)
+      - role_arn empty, target_account_id != own account -> NoConsoleCredentialsError
     """
-    session = assume_role(role_arn, external_id)
+    role_arn = (role_arn or "").strip()
+
+    if role_arn:
+        session = assume_role(role_arn, external_id)
+    else:
+        own_account_id = get_own_account_id()
+        if target_account_id and own_account_id and str(target_account_id) == str(own_account_id):
+            logger.info(
+                "Console link for account %s uses self-federation (server's own account, no role_arn needed)",
+                target_account_id,
+            )
+            session = get_self_federation_session()
+        else:
+            raise NoConsoleCredentialsError(
+                "No AWS role configured for this account, and it is not "
+                "the server's own AWS account, so no automatic credential "
+                "path is available. Set an IAM Role ARN for this account "
+                "in Settings to enable console access."
+            )
+
     creds = session.get_credentials().get_frozen_credentials()
 
     session_json = json.dumps({

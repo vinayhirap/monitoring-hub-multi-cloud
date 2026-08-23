@@ -45,7 +45,8 @@ class AWSProvider(CloudProvider):
             resource_name=resource_name, ecs_service_name=ecs_service_name,
         )
         return build_federated_console_url(
-            account.get("role_arn"), account.get("external_id"), destination
+            account.get("role_arn"), account.get("external_id"), destination,
+            target_account_id=account.get("account_id"),
         )
 
     def discover_resources(self) -> None:

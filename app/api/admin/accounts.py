@@ -373,19 +373,20 @@ def get_account_console_url(
 
     if not account:
         raise HTTPException(status_code=404, detail="Account not found or inactive")
-    if (account.get("provider") or "aws") == "aws" and not account.get("role_arn"):
-        raise HTTPException(status_code=400, detail="No AWS role configured for this account")
 
     region = region or account.get("default_region")
 
     try:
         from app.providers.registry import get_provider
+        from app.aws.federation import NoConsoleCredentialsError
         provider = get_provider(account.get("provider") or "aws")
         url = provider.get_console_url(
             account, resource_id, region,
             service=service, resource_name=resource_name,
             ecs_service_name=ecs_service_name,
         )
+    except NoConsoleCredentialsError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not generate console link: {e}")
 

@@ -5,7 +5,11 @@ import time
 import logging
 from fastapi import APIRouter, HTTPException
 from app.db import get_connection
-from app.aws.federation import build_federated_console_url, resource_console_destination
+from app.aws.federation import (
+    build_federated_console_url,
+    resource_console_destination,
+    NoConsoleCredentialsError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,8 +167,6 @@ def get_console_url(alert_id: int):
 
     if not row:
         raise HTTPException(status_code=404, detail="Alert not found")
-    if not row.get("role_arn"):
-        raise HTTPException(status_code=400, detail="No AWS role configured for this account")
 
     destination = resource_console_destination(
         row.get("resource_type"), row["resource"], row["region"],
@@ -172,7 +174,12 @@ def get_console_url(alert_id: int):
     )
 
     try:
-        url = build_federated_console_url(row["role_arn"], row["external_id"], destination)
+        url = build_federated_console_url(
+            row.get("role_arn"), row.get("external_id"), destination,
+            target_account_id=row.get("aws_account_id"),
+        )
+    except NoConsoleCredentialsError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.exception("Failed to build federated console URL for alert %s", alert_id)
         raise HTTPException(status_code=502, detail="Could not generate AWS console link")
