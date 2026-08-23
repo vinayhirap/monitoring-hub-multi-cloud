@@ -13,13 +13,29 @@ import AccountOnboarding from "./pages/AccountOnboarding";
 import ServiceList       from "./pages/ServiceList";
 import ServiceDetail     from "./pages/ServiceDetail";
 
+function SessionCheckingScreen() {
+  // Shown only for the brief moment while AuthContext asks the backend
+  // "am I logged in" on first load — avoids flashing the login page
+  // (or, worse, a protected page) before that answer comes back.
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "center",
+      height: "100vh", color: "#888", fontSize: "0.95rem",
+    }}>
+      Checking session…
+    </div>
+  );
+}
+
 function RequireAuth({ children }) {
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, loading } = useAuth();
+  if (loading) return <SessionCheckingScreen />;
   return isLoggedIn ? children : <Navigate to="/login" replace />;
 }
 
 function AppRoutes() {
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, loading } = useAuth();
+  if (loading) return <SessionCheckingScreen />;
   return (
     <Routes>
       <Route path="/login" element={isLoggedIn ? <Navigate to="/overview" replace /> : <Login />} />

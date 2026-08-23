@@ -121,10 +121,9 @@ export default function Settings() {
   async function handleDownloadYaceConfig(tier) {
     if (!accountId) return;
     try {
-      const token = localStorage.getItem("token");
-      const res = await fetch(downloadYaceConfig(accountId, tier), {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
+      // No manual auth header needed — the global fetch patch
+      // (src/api/httpDefaults.js) already attaches the session cookie.
+      const res = await fetch(downloadYaceConfig(accountId, tier));
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `HTTP ${res.status}`);
@@ -450,6 +449,7 @@ export default function Settings() {
               selectedIds={metricSelected}
               onChange={onMetricSelectionChange}
               onDiscover={handleDiscoverNamespace}
+              provider={accounts.find(a => a.id === accountId)?.provider || "aws"}
             />
           </div>
         )}
