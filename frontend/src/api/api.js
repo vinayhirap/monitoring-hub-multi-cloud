@@ -28,6 +28,8 @@ export const getAccounts      = ()   => apiFetch("/api/admin/accounts");
 export const addAccount       = (data) => apiFetch("/api/admin/accounts", { method:"POST", body: JSON.stringify(data) });
 export const discoverAccount  = (id)   => apiFetch(`/api/admin/accounts/${id}/discover`, { method:"POST" });
 export const testRole         = (data) => apiFetch("/api/admin/accounts/test-role", { method:"POST", body: JSON.stringify(data) });
+export const testAzureCredentials = (data) => apiFetch("/api/admin/accounts/test-azure-credentials", { method:"POST", body: JSON.stringify(data) });
+export const testGcpCredentials   = (data) => apiFetch("/api/admin/accounts/test-gcp-credentials",   { method:"POST", body: JSON.stringify(data) });
 
 // ── Alerts ────────────────────────────────────────────────────
 export const getAlerts = () => apiFetch("/api/alerts/open");

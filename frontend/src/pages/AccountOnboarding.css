@@ -289,3 +289,27 @@
   color: #e2e8f0;
   border-bottom-color: #2bb3ac;
 }
+
+/* test connection */
+.ob-test-conn {
+  display: flex; align-items: center; gap: 12px; margin-top: 12px;
+}
+.ob-test-btn { padding: 8px 16px; }
+.ob-test-ok {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 600; color: #22c55e;
+}
+.ob-test-fail {
+  font-size: 11px; font-weight: 600; color: #ff6b8a;
+}
+
+/* GCP service-account JSON key textarea */
+.ob-json-key {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+[data-theme="light"] .ob-test-ok   { color: #16a34a; }
+[data-theme="light"] .ob-test-fail { color: #dc2626; }

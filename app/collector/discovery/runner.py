@@ -20,7 +20,7 @@ def _get_active_accounts():
         SELECT id, account_name, account_id, role_arn,
                external_id, default_region
         FROM aws_accounts
-        WHERE status = 'active'
+        WHERE status = 'active' AND provider = 'aws'
     """)
     rows = cursor.fetchall()
     cursor.close()

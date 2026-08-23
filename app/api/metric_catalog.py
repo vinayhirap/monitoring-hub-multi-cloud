@@ -51,10 +51,11 @@ def _write_audit(actor, action, detail):
 def get_catalog(
     category: str = Query(None, description="core | extended | directory"),
     service:  str = Query(None, description="service key, e.g. ec2"),
+    provider: str = Query("aws", description="aws | azure | gcp"),
     search:   str = Query(None, description="matches metric name, service, or description"),
 ):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
-    clauses, params = [], []
+    clauses, params = ["provider = %s"], [provider]
     if category:
         clauses.append("category = %s"); params.append(category)
     if service:
@@ -99,43 +100,43 @@ def get_catalog(
 
 
 @router.get("/api/metric-catalog/services")
-def get_services():
+def get_services(provider: str = Query("aws", description="aws | azure | gcp")):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT service, display_service, namespace, category, COUNT(*) AS metric_count
         FROM metric_catalog
-        WHERE metric_name != '' OR metric_name IS NULL
+        WHERE provider = %s AND (metric_name != '' OR metric_name IS NULL)
         GROUP BY service, display_service, namespace, category
         ORDER BY category = 'core' DESC, category = 'extended' DESC, display_service
-    """)
+    """, (provider,))
     rows = cur.fetchall(); cur.close(); conn.close()
     return [_ser(r) for r in rows]
 
 
 @router.get("/api/metric-catalog/default-template")
-def get_default_template():
+def get_default_template(provider: str = Query("aws", description="aws | azure | gcp")):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT id, service, display_service, metric_name
         FROM metric_catalog
-        WHERE is_default = 1
+        WHERE is_default = 1 AND provider = %s
         ORDER BY display_service, metric_name
-    """)
+    """, (provider,))
     rows = cur.fetchall(); cur.close(); conn.close()
     return [_ser(r) for r in rows]
 
 
 # ── Per-account selection ────────────────────────────────────────
 
-def _default_metric_ids(cur) -> list:
-    cur.execute("SELECT id FROM metric_catalog WHERE is_default = 1")
+def _default_metric_ids(cur, provider: str = "aws") -> list:
+    cur.execute("SELECT id FROM metric_catalog WHERE is_default = 1 AND provider = %s", (provider,))
     return [r[0] for r in cur.fetchall()]
 
 
-def seed_account_defaults(account_id: int):
+def seed_account_defaults(account_id: int, provider: str = "aws"):
     """Called by admin/accounts.py right after a new account is onboarded."""
     conn = get_connection(); cur = conn.cursor()
-    ids = _default_metric_ids(cur)
+    ids = _default_metric_ids(cur, provider)
     for mid in ids:
         cur.execute("""
             INSERT IGNORE INTO account_metric_selections

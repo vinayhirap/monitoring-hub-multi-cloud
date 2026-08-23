@@ -47,9 +47,11 @@ def list_accounts():
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
-        SELECT id, account_name, account_id, role_arn,
+        SELECT id, account_name, account_id, role_arn, provider,
                external_id, default_region, status, created_at,
-               last_synced_at, last_discovered_at, description
+               last_synced_at, last_discovered_at, description,
+               tenant_id, subscription_id, client_id,
+               project_id, service_account_email
         FROM aws_accounts
         WHERE status = 'active'
         ORDER BY created_at DESC
@@ -57,6 +59,9 @@ def list_accounts():
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
+    # Never leak secrets: these columns only ever hold identifiers, never
+    # the client secret / SA key JSON (those live encrypted in
+    # provider_credentials and are only decrypted server-side on demand).
     return [_serialize(r) for r in rows]
 
 
@@ -73,8 +78,7 @@ def get_account(account_id: int):
     return _serialize(row)
 
 
-@router.post("")
-def add_account(payload: dict = Body(...)):
+def _add_aws_account(payload: dict) -> tuple[int, str, str]:
     account_name = (payload.get("account_name") or "").strip()
     account_id   = (payload.get("account_id")   or "").strip()
     region       = (payload.get("default_region") or "").strip()
@@ -95,19 +99,14 @@ def add_account(payload: dict = Body(...)):
     if role_arn.lower() in ["n/a", "none", "na", ""]:
         role_arn = ""
 
-    # Optional: list of metric_catalog IDs the user picked in the onboarding
-    # wizard's "Metrics to Monitor" step. If omitted, the recommended default
-    # template is applied automatically.
-    selected_metric_ids = payload.get("selected_metric_ids")
-
     conn   = get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute("""
             INSERT INTO aws_accounts
-              (account_name, account_id, role_arn, external_id,
+              (account_name, account_id, provider, role_arn, external_id,
                default_region, status, description, owner_team, environment)
-            VALUES (%s, %s, %s, %s, %s, 'active', %s, %s, %s)
+            VALUES (%s, %s, 'aws', %s, %s, %s, 'active', %s, %s, %s)
             ON DUPLICATE KEY UPDATE
               account_name   = VALUES(account_name),
               default_region = VALUES(default_region),
@@ -117,7 +116,6 @@ def add_account(payload: dict = Body(...)):
               environment    = VALUES(environment)
         """, (account_name, account_id, role_arn, external_id, region, description, owner_team, environment))
         conn.commit()
-
         if cursor.lastrowid:
             new_id = cursor.lastrowid
         else:
@@ -128,20 +126,178 @@ def add_account(payload: dict = Body(...)):
     finally:
         cursor.close()
         conn.close()
+    return new_id, account_name, "aws"
 
+
+def _add_azure_account(payload: dict) -> tuple[int, str, str]:
+    from app.providers.registry import get_provider
+    from app.credentials import save_credential, new_credential_ref
+
+    account_name    = (payload.get("account_name") or "").strip()
+    tenant_id       = (payload.get("tenant_id") or "").strip()
+    subscription_id = (payload.get("subscription_id") or "").strip()
+    client_id       = (payload.get("client_id") or "").strip()
+    client_secret   = (payload.get("client_secret") or "").strip()
+    region          = (payload.get("default_region") or "").strip()
+    owner_team      = (payload.get("owner_team") or "").strip()
+    environment     = (payload.get("environment") or "PROD").strip().upper()
+    description     = (payload.get("description") or "").strip()
+
+    missing = [f for f, v in [("account_name", account_name), ("tenant_id", tenant_id),
+                               ("subscription_id", subscription_id), ("client_id", client_id),
+                               ("client_secret", client_secret), ("default_region", region)]
+               if not v]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing required field(s): {', '.join(missing)}")
+
+    # Validate against real Azure ARM before writing anything.
+    provider = get_provider("azure")
+    try:
+        provider.validate_credentials({
+            "tenant_id": tenant_id, "client_id": client_id,
+            "subscription_id": subscription_id, "client_secret": client_secret,
+        })
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Azure credential validation failed: {e}")
+
+    conn   = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO aws_accounts
+              (account_name, account_id, provider, tenant_id, subscription_id, client_id,
+               default_region, status, description, owner_team, environment)
+            VALUES (%s, %s, 'azure', %s, %s, %s, %s, 'active', %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              account_name   = VALUES(account_name),
+              default_region = VALUES(default_region),
+              status         = 'active',
+              description    = VALUES(description),
+              owner_team     = VALUES(owner_team),
+              environment    = VALUES(environment)
+        """, (account_name, subscription_id, tenant_id, subscription_id, client_id,
+              region, description, owner_team, environment))
+        conn.commit()
+        if cursor.lastrowid:
+            new_id = cursor.lastrowid
+        else:
+            cursor.execute("SELECT id FROM aws_accounts WHERE account_id = %s AND provider = 'azure'",
+                            (subscription_id,))
+            new_id = cursor.fetchone()[0]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+    ref = new_credential_ref()
+    save_credential(new_id, "azure", client_secret, ref)
+    conn = get_connection(); cursor = conn.cursor()
+    cursor.execute("UPDATE aws_accounts SET credential_ref = %s WHERE id = %s", (ref, new_id))
+    conn.commit(); cursor.close(); conn.close()
+
+    return new_id, account_name, "azure"
+
+
+def _add_gcp_account(payload: dict) -> tuple[int, str, str]:
+    from app.providers.registry import get_provider
+    from app.credentials import save_credential, new_credential_ref
+    import json as _json
+
+    account_name          = (payload.get("account_name") or "").strip()
+    project_id            = (payload.get("project_id") or "").strip()
+    service_account_key   = (payload.get("service_account_key") or "").strip()
+    region                = (payload.get("default_region") or "").strip()
+    owner_team            = (payload.get("owner_team") or "").strip()
+    environment           = (payload.get("environment") or "PROD").strip().upper()
+    description           = (payload.get("description") or "").strip()
+
+    missing = [f for f, v in [("account_name", account_name), ("project_id", project_id),
+                               ("service_account_key", service_account_key), ("default_region", region)]
+               if not v]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing required field(s): {', '.join(missing)}")
+
+    try:
+        key_obj = _json.loads(service_account_key)
+        service_account_email = key_obj.get("client_email", "")
+    except _json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="service_account_key must be valid JSON (the SA key file contents)")
+
+    # Validate against real GCP Resource Manager before writing anything.
+    provider = get_provider("gcp")
+    try:
+        provider.validate_credentials({"project_id": project_id, "service_account_key": service_account_key})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"GCP credential validation failed: {e}")
+
+    conn   = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO aws_accounts
+              (account_name, account_id, provider, project_id, service_account_email,
+               default_region, status, description, owner_team, environment)
+            VALUES (%s, %s, 'gcp', %s, %s, %s, 'active', %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              account_name   = VALUES(account_name),
+              default_region = VALUES(default_region),
+              status         = 'active',
+              description    = VALUES(description),
+              owner_team     = VALUES(owner_team),
+              environment    = VALUES(environment)
+        """, (account_name, project_id, project_id, service_account_email,
+              region, description, owner_team, environment))
+        conn.commit()
+        if cursor.lastrowid:
+            new_id = cursor.lastrowid
+        else:
+            cursor.execute("SELECT id FROM aws_accounts WHERE account_id = %s AND provider = 'gcp'",
+                            (project_id,))
+            new_id = cursor.fetchone()[0]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+    ref = new_credential_ref()
+    save_credential(new_id, "gcp", service_account_key, ref)
+    conn = get_connection(); cursor = conn.cursor()
+    cursor.execute("UPDATE aws_accounts SET credential_ref = %s WHERE id = %s", (ref, new_id))
+    conn.commit(); cursor.close(); conn.close()
+
+    return new_id, account_name, "gcp"
+
+
+@router.post("")
+def add_account(payload: dict = Body(...)):
+    provider_name = (payload.get("provider") or "aws").strip().lower()
+
+    if provider_name == "azure":
+        new_id, account_name, provider_name = _add_azure_account(payload)
+    elif provider_name == "gcp":
+        new_id, account_name, provider_name = _add_gcp_account(payload)
+    else:
+        new_id, account_name, provider_name = _add_aws_account(payload)
+
+    # Optional: list of metric_catalog IDs the user picked in the onboarding
+    # wizard's "Metrics to Monitor" step. If omitted, the recommended default
+    # template (scoped to this provider) is applied automatically.
+    selected_metric_ids = payload.get("selected_metric_ids")
     try:
         from app.api.metric_catalog import seed_account_defaults
         if selected_metric_ids:
             from app.api.metric_catalog import set_account_metrics
             set_account_metrics(new_id, {"enabled_metric_ids": selected_metric_ids})
         else:
-            seed_account_defaults(new_id)
+            seed_account_defaults(new_id, provider=provider_name)
     except Exception as e:
         print(f"Metric template seed error: {e}")
 
     _bust_accounts_cache()
-    _write_audit("admin", "Account onboarded", f"{account_name} ({account_id}) region={region}")
-    return {"status": "added", "id": new_id, "account_name": account_name}
+    _write_audit("admin", "Account onboarded", f"{account_name} ({provider_name}) id={new_id}")
+    return {"status": "added", "id": new_id, "account_name": account_name, "provider": provider_name}
 
 
 @router.delete("/{account_id}")
@@ -217,7 +373,7 @@ def get_account_console_url(
 
     if not account:
         raise HTTPException(status_code=404, detail="Account not found or inactive")
-    if not account.get("role_arn"):
+    if (account.get("provider") or "aws") == "aws" and not account.get("role_arn"):
         raise HTTPException(status_code=400, detail="No AWS role configured for this account")
 
     region = region or account.get("default_region")
@@ -254,6 +410,52 @@ def test_role(payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail=f"Role assumption failed: {str(e)}")
 
 
+@router.post("/test-azure-credentials")
+def test_azure_credentials(payload: dict = Body(...)):
+    """Onboarding-wizard 'Test Connection' for Azure — validates a Service
+    Principal against real Azure Resource Manager before the account is saved."""
+    from app.providers.registry import get_provider
+
+    tenant_id       = (payload.get("tenant_id") or "").strip()
+    subscription_id = (payload.get("subscription_id") or "").strip()
+    client_id       = (payload.get("client_id") or "").strip()
+    client_secret   = (payload.get("client_secret") or "").strip()
+
+    if not all([tenant_id, subscription_id, client_id, client_secret]):
+        raise HTTPException(status_code=400, detail="tenant_id, subscription_id, client_id and client_secret are required")
+
+    try:
+        result = get_provider("azure").validate_credentials({
+            "tenant_id": tenant_id, "client_id": client_id,
+            "subscription_id": subscription_id, "client_secret": client_secret,
+        })
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Azure credential validation failed: {e}")
+
+
+@router.post("/test-gcp-credentials")
+def test_gcp_credentials(payload: dict = Body(...)):
+    """Onboarding-wizard 'Test Connection' for GCP — validates a Service
+    Account key against the real Cloud Resource Manager API before the
+    account is saved."""
+    from app.providers.registry import get_provider
+
+    project_id           = (payload.get("project_id") or "").strip()
+    service_account_key  = (payload.get("service_account_key") or "").strip()
+
+    if not project_id or not service_account_key:
+        raise HTTPException(status_code=400, detail="project_id and service_account_key are required")
+
+    try:
+        result = get_provider("gcp").validate_credentials({
+            "project_id": project_id, "service_account_key": service_account_key,
+        })
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"GCP credential validation failed: {e}")
+
+
 @router.post("/{account_id}/discover")
 def discover_account(account_id: int):
     conn   = get_connection()
@@ -271,9 +473,12 @@ def discover_account(account_id: int):
         # function does not exist anywhere in the codebase; this endpoint
         # threw ImportError -> 500 on every click. Fixed to go through
         # the real, live discovery path (the same one the scheduler calls
-        # every 15 minutes), routed via the provider layer.
+        # every 15 minutes), routed via the provider layer. Each provider's
+        # discover_resources() runs for ALL of that provider's active
+        # accounts (matches the AWS scheduler's existing contract), so this
+        # single call also refreshes this account.
         from app.providers.registry import get_provider
-        get_provider("aws").discover_resources()
+        get_provider(account.get("provider") or "aws").discover_resources()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Discovery failed: {str(e)}")
 

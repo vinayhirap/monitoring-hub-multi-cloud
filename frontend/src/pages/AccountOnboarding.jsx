@@ -1,14 +1,13 @@
 ﻿// monitoring-hub/frontend/src/pages/AccountOnboarding.jsx
 import { useState, useEffect, useRef } from "react";
 import MetricSelector from "../components/MetricSelector";
-import { getMetricCatalog } from "../api/api";
+import { getMetricCatalog, testAzureCredentials, testGcpCredentials } from "../api/api";
 import "./AccountOnboarding.css";
 
 const BASE = "";
 
-const ALL_REGIONS = [
+const AWS_REGIONS = [
   { id: "ap-south-1",     label: "ap-south-1 (Mumbai)" },
-  { id: "",     label: " (Hyderabad)" },
   { id: "ap-southeast-1", label: "ap-southeast-1 (Singapore)" },
   { id: "ap-southeast-2", label: "ap-southeast-2 (Sydney)" },
   { id: "ap-northeast-1", label: "ap-northeast-1 (Tokyo)" },
@@ -30,6 +29,39 @@ const ALL_REGIONS = [
   { id: "sa-east-1",      label: "sa-east-1 (São Paulo)" },
 ];
 
+const AZURE_LOCATIONS = [
+  { id: "centralindia",     label: "Central India (Pune)" },
+  { id: "southindia",       label: "South India (Chennai)" },
+  { id: "westindia",        label: "West India (Mumbai)" },
+  { id: "eastasia",         label: "East Asia (Hong Kong)" },
+  { id: "southeastasia",    label: "Southeast Asia (Singapore)" },
+  { id: "japaneast",        label: "Japan East (Tokyo)" },
+  { id: "australiaeast",    label: "Australia East (Sydney)" },
+  { id: "eastus",           label: "East US (Virginia)" },
+  { id: "eastus2",          label: "East US 2 (Virginia)" },
+  { id: "westus2",          label: "West US 2 (Washington)" },
+  { id: "centralus",        label: "Central US (Iowa)" },
+  { id: "northeurope",      label: "North Europe (Ireland)" },
+  { id: "westeurope",       label: "West Europe (Netherlands)" },
+  { id: "uksouth",          label: "UK South (London)" },
+  { id: "uaenorth",         label: "UAE North (Dubai)" },
+];
+
+const GCP_REGIONS = [
+  { id: "asia-south1",       label: "asia-south1 (Mumbai)" },
+  { id: "asia-south2",       label: "asia-south2 (Delhi)" },
+  { id: "asia-southeast1",   label: "asia-southeast1 (Singapore)" },
+  { id: "asia-east1",        label: "asia-east1 (Taiwan)" },
+  { id: "asia-northeast1",   label: "asia-northeast1 (Tokyo)" },
+  { id: "australia-southeast1", label: "australia-southeast1 (Sydney)" },
+  { id: "us-central1",       label: "us-central1 (Iowa)" },
+  { id: "us-east1",          label: "us-east1 (S. Carolina)" },
+  { id: "us-west1",          label: "us-west1 (Oregon)" },
+  { id: "europe-west1",      label: "europe-west1 (Belgium)" },
+  { id: "europe-west2",      label: "europe-west2 (London)" },
+  { id: "europe-central2",   label: "europe-central2 (Warsaw)" },
+];
+
 const ENVIRONMENTS = ["Production", "Staging", "Development", "QA"];
 
 const PROVIDER_TABS = [
@@ -38,19 +70,32 @@ const PROVIDER_TABS = [
   { id: "gcp",   label: "GCP" },
 ];
 
+const PROVIDER_REGIONS = { aws: AWS_REGIONS, azure: AZURE_LOCATIONS, gcp: GCP_REGIONS };
+const PROVIDER_REGION_LABEL = { aws: "Primary Region", azure: "Location", gcp: "Region" };
+
 const INITIAL_FORM = {
+  // shared
   account_name:   "",
-  account_id:     "",
   primary_region: "",
   environment:    "Production",
   owner_team:     "",
   alias:          "",
   description:    "",
+  // aws
+  account_id:     "",
   iam_role_arn:   "",
   external_id:    "",
   access_key:     "",
   secret_key:     "",
   auth_method:    "iam_role",
+  // azure
+  tenant_id:       "",
+  subscription_id: "",
+  client_id:       "",
+  client_secret:   "",
+  // gcp
+  project_id:            "",
+  service_account_key:   "",
 };
 
 function Field({ id, label, required, error, children }) {
@@ -65,15 +110,21 @@ function Field({ id, label, required, error, children }) {
   );
 }
 
-function ComingSoon({ provider }) {
-  const label = provider === "azure" ? "Azure" : "GCP";
+function TestConnectionButton({ onTest, status, resultText }) {
   return (
-    <div className="ob-section" style={{ textAlign: "center", padding: "48px 24px" }}>
-      <div className="ob-section-title">{label.toUpperCase()} — COMING SOON</div>
-      <p className="ob-metrics-hint" style={{ marginTop: 12 }}>
-        {label} account onboarding isn't available yet. AWS accounts can be
-        onboarded today from the AWS tab.
-      </p>
+    <div className="ob-test-conn">
+      <button type="button" className="ob-btn-ghost ob-test-btn" onClick={onTest} disabled={status === "loading"}>
+        {status === "loading" ? (<><span className="ob-spinner" /> Testing…</>) : "Test Connection"}
+      </button>
+      {status === "success" && (
+        <span className="ob-test-ok">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+          {resultText || "Verified"}
+        </span>
+      )}
+      {status === "error" && <span className="ob-test-fail">{resultText || "Validation failed"}</span>}
     </div>
   );
 }
@@ -83,7 +134,6 @@ async function refreshQueue(setQueue) {
     const r = await fetch(`${BASE}/api/admin/accounts`);
     if (!r.ok) throw new Error();
     const all = await r.json();
-    // Only show truly pending/processing — not active ones
     const pending = Array.isArray(all)
       ? all.filter(a => a.status && a.status !== "active" && a.status !== "healthy")
       : [];
@@ -104,6 +154,9 @@ export default function AccountOnboarding() {
   const [success, setSuccess] = useState(null);
   const [apiErr,  setApiErr]  = useState(null);
 
+  const [testStatus, setTestStatus] = useState(null); // null | loading | success | error
+  const [testMsg,    setTestMsg]    = useState("");
+
   const [catalog,        setCatalog]        = useState([]);
   const [selectedIds,    setSelectedIds]    = useState(new Set());
   const [catalogLoading, setCatalogLoading] = useState(true);
@@ -111,22 +164,22 @@ export default function AccountOnboarding() {
 
   useEffect(() => {
     refreshQueue(setQueue);
-    // Poll queue every 15s to catch backend-side updates
     const t = setInterval(() => refreshQueue(setQueue), 15000);
     return () => clearInterval(t);
   }, []);
 
+  // Re-fetch the metric catalog whenever the provider tab changes — each
+  // cloud has its own curated services/metrics (see app/providers/*/metric_catalog_data.py).
   useEffect(() => {
-    getMetricCatalog()
+    setCatalogLoading(true);
+    defaultsAppliedRef.current = false;
+    setSelectedIds(new Set());
+    getMetricCatalog({ provider })
       .then(data => setCatalog(Array.isArray(data) ? data : []))
       .catch(() => setCatalog([]))
       .finally(() => setCatalogLoading(false));
-  }, []);
+  }, [provider]);
 
-  // Applies recommended defaults once the catalog actually arrives — kept as
-  // its own effect (rather than inline in the fetch above) so it reliably
-  // fires whenever `catalog` changes, and only the first time so it never
-  // clobbers a selection the user has already started editing.
   useEffect(() => {
     if (catalog.length > 0 && !defaultsAppliedRef.current) {
       const defaults = new Set();
@@ -136,20 +189,70 @@ export default function AccountOnboarding() {
     }
   }, [catalog]);
 
+  function setProviderTab(p) {
+    setProvider(p);
+    setErrors({});
+    setApiErr(null);
+    setTestStatus(null);
+    setTestMsg("");
+  }
+
   function validate() {
     const e = {};
-    if (!form.account_name.trim())   e.account_name   = "Required";
-    if (!form.account_id.trim())     e.account_id     = "Required";
-    if (!/^\d{12}$/.test(form.account_id.trim())) e.account_id = "Must be 12 digits";
-    if (!form.primary_region)        e.primary_region = "Select a region";
-    if (!form.owner_team.trim())     e.owner_team     = "Required";
-    if (form.auth_method === "iam_role" && !form.iam_role_arn.trim())
-      e.iam_role_arn = "IAM Role ARN is required";
-    if (form.auth_method === "access_keys") {
-      if (!form.access_key.trim()) e.access_key = "Required";
-      if (!form.secret_key.trim()) e.secret_key = "Required";
+    if (!form.account_name.trim()) e.account_name = "Required";
+    if (!form.primary_region)      e.primary_region = "Select a region";
+    if (!form.owner_team.trim())   e.owner_team = "Required";
+
+    if (provider === "aws") {
+      if (!form.account_id.trim()) e.account_id = "Required";
+      else if (!/^\d{12}$/.test(form.account_id.trim())) e.account_id = "Must be 12 digits";
+      if (form.auth_method === "iam_role" && !form.iam_role_arn.trim())
+        e.iam_role_arn = "IAM Role ARN is required";
+      if (form.auth_method === "access_keys") {
+        if (!form.access_key.trim()) e.access_key = "Required";
+        if (!form.secret_key.trim()) e.secret_key = "Required";
+      }
+    } else if (provider === "azure") {
+      if (!form.tenant_id.trim())       e.tenant_id = "Required";
+      if (!form.subscription_id.trim()) e.subscription_id = "Required";
+      if (!form.client_id.trim())       e.client_id = "Required";
+      if (!form.client_secret.trim())   e.client_secret = "Required";
+    } else if (provider === "gcp") {
+      if (!form.project_id.trim())          e.project_id = "Required";
+      if (!form.service_account_key.trim()) e.service_account_key = "Required";
+      else {
+        try { JSON.parse(form.service_account_key); }
+        catch { e.service_account_key = "Must be valid JSON (paste the SA key file contents)"; }
+      }
     }
     return e;
+  }
+
+  async function handleTestConnection() {
+    setTestStatus("loading");
+    setTestMsg("");
+    try {
+      if (provider === "azure") {
+        const r = await testAzureCredentials({
+          tenant_id: form.tenant_id.trim(),
+          subscription_id: form.subscription_id.trim(),
+          client_id: form.client_id.trim(),
+          client_secret: form.client_secret.trim(),
+        });
+        setTestStatus("success");
+        setTestMsg(`Verified — ${r.resource_groups_visible} resource group(s) visible`);
+      } else if (provider === "gcp") {
+        const r = await testGcpCredentials({
+          project_id: form.project_id.trim(),
+          service_account_key: form.service_account_key.trim(),
+        });
+        setTestStatus("success");
+        setTestMsg(`Verified — project "${r.project_display_name || form.project_id}"`);
+      }
+    } catch (err) {
+      setTestStatus("error");
+      setTestMsg(err.message || "Validation failed");
+    }
   }
 
   async function handleSubmit(e) {
@@ -160,26 +263,45 @@ export default function AccountOnboarding() {
     setApiErr(null);
 
     const accountName = form.account_name.trim();
-
-    // Optimistically add to queue immediately
-    // Remove from queue immediately on success — it's now active
     setQueue(prev => prev.filter(q => q.account_name !== accountName));
 
-    try {
-      const body = {
-        account_name:   accountName,
-        account_id:     form.account_id.trim(),
-        default_region: form.primary_region,
-        environment:    form.environment,
-        owner_team:     form.owner_team.trim(),
-        alias:          form.alias.trim(),
-        description:    form.description.trim(),
-        iam_role_arn:   form.auth_method === "iam_role"    ? form.iam_role_arn.trim() : "",
-        external_id:    form.auth_method === "iam_role"    ? form.external_id.trim()  : "",
-        access_key:     form.auth_method === "access_keys" ? form.access_key.trim()   : "",
-        secret_key:     form.auth_method === "access_keys" ? form.secret_key.trim()   : "",
-        selected_metric_ids: Array.from(selectedIds),
+    let body = {
+      provider,
+      account_name:   accountName,
+      default_region: form.primary_region,
+      environment:    form.environment,
+      owner_team:     form.owner_team.trim(),
+      alias:          form.alias.trim(),
+      description:    form.description.trim(),
+      selected_metric_ids: Array.from(selectedIds),
+    };
+
+    if (provider === "aws") {
+      body = {
+        ...body,
+        account_id:   form.account_id.trim(),
+        iam_role_arn: form.auth_method === "iam_role"    ? form.iam_role_arn.trim() : "",
+        external_id:  form.auth_method === "iam_role"    ? form.external_id.trim()  : "",
+        access_key:   form.auth_method === "access_keys" ? form.access_key.trim()   : "",
+        secret_key:   form.auth_method === "access_keys" ? form.secret_key.trim()   : "",
       };
+    } else if (provider === "azure") {
+      body = {
+        ...body,
+        tenant_id:       form.tenant_id.trim(),
+        subscription_id: form.subscription_id.trim(),
+        client_id:       form.client_id.trim(),
+        client_secret:   form.client_secret.trim(),
+      };
+    } else if (provider === "gcp") {
+      body = {
+        ...body,
+        project_id:           form.project_id.trim(),
+        service_account_key:  form.service_account_key.trim(),
+      };
+    }
+
+    try {
       const res = await fetch(`${BASE}/api/admin/accounts`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
@@ -192,12 +314,12 @@ export default function AccountOnboarding() {
       setSuccess(accountName);
       setForm(INITIAL_FORM);
       setErrors({});
-      // Update queue with real status from server
+      setTestStatus(null);
+      setTestMsg("");
       setTimeout(() => refreshQueue(setQueue), 1000);
       setTimeout(() => refreshQueue(setQueue), 4000);
     } catch (err) {
       setApiErr(err.message);
-      // Remove the optimistic entry on failure
       setQueue(prev => prev.filter(q => !(q.account_name === accountName && q.status === "pending")));
     } finally {
       setSaving(false);
@@ -209,10 +331,16 @@ export default function AccountOnboarding() {
     setErrors({});
     setApiErr(null);
     setSuccess(null);
+    setTestStatus(null);
+    setTestMsg("");
     const defaults = new Set();
     catalog.forEach(g => g.metrics.forEach(m => { if (m.is_default) defaults.add(m.id); }));
     setSelectedIds(defaults);
   }
+
+  const regionOptions = PROVIDER_REGIONS[provider];
+  const regionLabel = PROVIDER_REGION_LABEL[provider];
+  const heroLabel = provider === "aws" ? "AWS" : provider === "azure" ? "Azure" : "GCP";
 
   return (
     <div className="onboard-page">
@@ -223,20 +351,20 @@ export default function AccountOnboarding() {
               type="button"
               key={t.id}
               className={`ob-provider-tab ${provider === t.id ? "ob-provider-tab-active" : ""}`}
-              onClick={() => setProvider(t.id)}
+              onClick={() => setProviderTab(t.id)}
             >
               {t.label}
             </button>
           ))}
         </div>
 
-        {provider !== "aws" && <ComingSoon provider={provider} />}
-
-        {provider === "aws" && (
-        <>
         <div className="onboard-hero">
-          <h1>Onboard <span className="hl">AWS Account</span></h1>
-          <p>Register a new AWS account for centralized CloudWatch monitoring</p>
+          <h1>Onboard <span className="hl">{heroLabel} Account</span></h1>
+          <p>
+            {provider === "aws"   && "Register a new AWS account for centralized CloudWatch monitoring"}
+            {provider === "azure" && "Register a new Azure subscription via a Service Principal for centralized Azure Monitor metrics"}
+            {provider === "gcp"   && "Register a new GCP project via a Service Account for centralized Cloud Monitoring metrics"}
+          </p>
         </div>
 
         {success && (
@@ -274,25 +402,48 @@ export default function AccountOnboarding() {
                   onChange={e => setForm(f => ({ ...f, account_name: e.target.value }))}
                 />
               </Field>
-              <Field id="account_id" label="AWS Account ID" required error={errors.account_id}>
-                <input
-                  id="account_id"
-                  value={form.account_id}
-                  placeholder="123456789012"
-                  maxLength={12}
-                  onChange={e => setForm(f => ({ ...f, account_id: e.target.value.replace(/\D/g, "") }))}
-                />
-              </Field>
+
+              {provider === "aws" && (
+                <Field id="account_id" label="AWS Account ID" required error={errors.account_id}>
+                  <input
+                    id="account_id"
+                    value={form.account_id}
+                    placeholder="123456789012"
+                    maxLength={12}
+                    onChange={e => setForm(f => ({ ...f, account_id: e.target.value.replace(/\D/g, "") }))}
+                  />
+                </Field>
+              )}
+              {provider === "azure" && (
+                <Field id="subscription_id" label="Subscription ID" required error={errors.subscription_id}>
+                  <input
+                    id="subscription_id"
+                    value={form.subscription_id}
+                    placeholder="00000000-0000-0000-0000-000000000000"
+                    onChange={e => setForm(f => ({ ...f, subscription_id: e.target.value.trim() }))}
+                  />
+                </Field>
+              )}
+              {provider === "gcp" && (
+                <Field id="project_id" label="GCP Project ID" required error={errors.project_id}>
+                  <input
+                    id="project_id"
+                    value={form.project_id}
+                    placeholder="my-project-123456"
+                    onChange={e => setForm(f => ({ ...f, project_id: e.target.value.trim() }))}
+                  />
+                </Field>
+              )}
             </div>
             <div className="ob-grid-2">
-              <Field id="primary_region" label="Primary Region" required error={errors.primary_region}>
+              <Field id="primary_region" label={regionLabel} required error={errors.primary_region}>
                 <select
                   id="primary_region"
                   value={form.primary_region}
                   onChange={e => setForm(f => ({ ...f, primary_region: e.target.value }))}
                 >
-                  <option value="">Select region…</option>
-                  {ALL_REGIONS.map(r => (
+                  <option value="">Select…</option>
+                  {regionOptions.map(r => (
                     <option key={r.id} value={r.id}>{r.label}</option>
                   ))}
                 </select>
@@ -341,70 +492,140 @@ export default function AccountOnboarding() {
             </Field>
           </div>
 
-          {/* IAM Credentials */}
-          <div className="ob-section">
-            <div className="ob-section-title">IAM CREDENTIALS (CLOUDWATCH READONLY)</div>
-            <div className="ob-cred-notice">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <rect x="3" y="11" width="18" height="11" rx="2"/>
-                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-              </svg>
-              Credentials stored encrypted at rest. IAM Role ARN preferred over Access Keys.
-            </div>
-            <div className="ob-auth-toggle">
-              {["iam_role", "access_keys"].map(m => (
-                <button
-                  type="button"
-                  key={m}
-                  className={`ob-auth-btn ${form.auth_method === m ? "ob-auth-active" : ""}`}
-                  onClick={() => setForm(f => ({ ...f, auth_method: m }))}
-                >
-                  {m === "iam_role" ? "IAM Role ARN" : "Access Keys"}
-                </button>
-              ))}
-            </div>
+          {/* Credentials — provider specific */}
+          {provider === "aws" && (
+            <div className="ob-section">
+              <div className="ob-section-title">IAM CREDENTIALS (CLOUDWATCH READONLY)</div>
+              <div className="ob-cred-notice">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="11" width="18" height="11" rx="2"/>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+                Credentials stored encrypted at rest. IAM Role ARN preferred over Access Keys.
+              </div>
+              <div className="ob-auth-toggle">
+                {["iam_role", "access_keys"].map(m => (
+                  <button
+                    type="button"
+                    key={m}
+                    className={`ob-auth-btn ${form.auth_method === m ? "ob-auth-active" : ""}`}
+                    onClick={() => setForm(f => ({ ...f, auth_method: m }))}
+                  >
+                    {m === "iam_role" ? "IAM Role ARN" : "Access Keys"}
+                  </button>
+                ))}
+              </div>
 
-            {form.auth_method === "iam_role" ? (
+              {form.auth_method === "iam_role" ? (
+                <div className="ob-grid-2">
+                  <Field id="iam_role_arn" label="IAM Role ARN" required error={errors.iam_role_arn}>
+                    <input
+                      id="iam_role_arn"
+                      value={form.iam_role_arn}
+                      placeholder="arn:aws:iam::123…:role/CloudOps"
+                      onChange={e => setForm(f => ({ ...f, iam_role_arn: e.target.value }))}
+                    />
+                  </Field>
+                  <Field id="external_id" label="External ID">
+                    <input
+                      id="external_id"
+                      value={form.external_id}
+                      placeholder="Optional STS ExternalId"
+                      onChange={e => setForm(f => ({ ...f, external_id: e.target.value }))}
+                    />
+                  </Field>
+                </div>
+              ) : (
+                <div className="ob-grid-2">
+                  <Field id="access_key" label="Access Key ID" required error={errors.access_key}>
+                    <input
+                      id="access_key"
+                      value={form.access_key}
+                      placeholder="AKIAIOSFODNN7EXAMPLE"
+                      onChange={e => setForm(f => ({ ...f, access_key: e.target.value }))}
+                    />
+                  </Field>
+                  <Field id="secret_key" label="Secret Access Key" required error={errors.secret_key}>
+                    <input
+                      id="secret_key"
+                      type="password"
+                      value={form.secret_key}
+                      placeholder="••••••••••••••••"
+                      onChange={e => setForm(f => ({ ...f, secret_key: e.target.value }))}
+                    />
+                  </Field>
+                </div>
+              )}
+            </div>
+          )}
+
+          {provider === "azure" && (
+            <div className="ob-section">
+              <div className="ob-section-title">SERVICE PRINCIPAL (READER ROLE)</div>
+              <div className="ob-cred-notice">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="11" width="18" height="11" rx="2"/>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+                Client secret is encrypted at rest and never returned by any API response. Grant this
+                Service Principal the built-in "Reader" role on the subscription.
+              </div>
               <div className="ob-grid-2">
-                <Field id="iam_role_arn" label="IAM Role ARN" required error={errors.iam_role_arn}>
+                <Field id="tenant_id" label="Tenant (Directory) ID" required error={errors.tenant_id}>
                   <input
-                    id="iam_role_arn"
-                    value={form.iam_role_arn}
-                    placeholder="arn:aws:iam::123…:role/CloudOps"
-                    onChange={e => setForm(f => ({ ...f, iam_role_arn: e.target.value }))}
+                    id="tenant_id"
+                    value={form.tenant_id}
+                    placeholder="00000000-0000-0000-0000-000000000000"
+                    onChange={e => setForm(f => ({ ...f, tenant_id: e.target.value.trim() }))}
                   />
                 </Field>
-                <Field id="external_id" label="External ID">
+                <Field id="client_id" label="Application (Client) ID" required error={errors.client_id}>
                   <input
-                    id="external_id"
-                    value={form.external_id}
-                    placeholder="Optional STS ExternalId"
-                    onChange={e => setForm(f => ({ ...f, external_id: e.target.value }))}
+                    id="client_id"
+                    value={form.client_id}
+                    placeholder="00000000-0000-0000-0000-000000000000"
+                    onChange={e => setForm(f => ({ ...f, client_id: e.target.value.trim() }))}
                   />
                 </Field>
               </div>
-            ) : (
-              <div className="ob-grid-2">
-                <Field id="access_key" label="Access Key ID" required error={errors.access_key}>
-                  <input
-                    id="access_key"
-                    value={form.access_key}
-                    placeholder="AKIAIOSFODNN7EXAMPLE"
-                    onChange={e => setForm(f => ({ ...f, access_key: e.target.value }))}
-                  />
-                </Field>
-                <Field id="secret_key" label="Secret Access Key" required error={errors.secret_key}>
-                  <input
-                    id="secret_key"
-                    type="password"
-                    value={form.secret_key}
-                    placeholder="••••••••••••••••"
-                    onChange={e => setForm(f => ({ ...f, secret_key: e.target.value }))}
-                  />
-                </Field>
+              <Field id="client_secret" label="Client Secret" required error={errors.client_secret}>
+                <input
+                  id="client_secret"
+                  type="password"
+                  value={form.client_secret}
+                  placeholder="••••••••••••••••"
+                  onChange={e => setForm(f => ({ ...f, client_secret: e.target.value }))}
+                />
+              </Field>
+              <TestConnectionButton onTest={handleTestConnection} status={testStatus} resultText={testMsg} />
+            </div>
+          )}
+
+          {provider === "gcp" && (
+            <div className="ob-section">
+              <div className="ob-section-title">SERVICE ACCOUNT (VIEWER ROLE)</div>
+              <div className="ob-cred-notice">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="11" width="18" height="11" rx="2"/>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+                Paste the full contents of a Service Account JSON key with "Viewer" (or equivalent
+                read-only) IAM role on the project. The key is encrypted at rest and never returned
+                by any API response.
               </div>
-            )}
-          </div>
+              <Field id="service_account_key" label="Service Account Key (JSON)" required error={errors.service_account_key}>
+                <textarea
+                  id="service_account_key"
+                  className="ob-json-key"
+                  value={form.service_account_key}
+                  rows={8}
+                  placeholder={`{\n  "type": "service_account",\n  "project_id": "…",\n  "private_key": "…",\n  "client_email": "…"\n  …\n}`}
+                  onChange={e => setForm(f => ({ ...f, service_account_key: e.target.value }))}
+                />
+              </Field>
+              <TestConnectionButton onTest={handleTestConnection} status={testStatus} resultText={testMsg} />
+            </div>
+          )}
 
           {/* Metrics to Monitor */}
           <div className="ob-section">
@@ -438,8 +659,6 @@ export default function AccountOnboarding() {
             </button>
           </div>
         </form>
-        </>
-        )}
       </div>
 
       {/* Sidebar queue */}

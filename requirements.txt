@@ -28,3 +28,19 @@ bcrypt
 passlib[bcrypt]
 requests==2.32.3
 python-dotenv==1.0.1
+
+# Azure provider (Service Principal auth + real ARM discovery)
+azure-identity>=1.19,<2
+azure-mgmt-resource>=23,<27
+azure-mgmt-compute>=33,<38
+azure-mgmt-storage>=21,<23
+azure-mgmt-sql>=4,<5
+
+# GCP provider (Service Account auth + real discovery)
+google-cloud-compute>=1.19,<2
+google-cloud-storage>=2.18,<3
+google-cloud-resource-manager>=1.12,<2
+google-api-python-client>=2.140,<3
+
+# Credential encryption-at-rest (Azure client secret / GCP SA key JSON)
+cryptography>=42,<44
