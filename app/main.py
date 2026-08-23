@@ -3,10 +3,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import logging
+import os
 import threading
 
 from app.api.alerts         import router as alerts_router
@@ -17,6 +18,7 @@ from app.api.settings       import router as settings_router
 from app.api.live_data      import router as live_data_router
 from app.api.audit_logs     import router as audit_logs_router
 from app.api.metric_catalog import router as metric_catalog_router
+from app.auth.deps          import get_current_user
 
 from app.ws.manager import ws_manager
 from app.ws.pusher  import redis_listener, stop_listener
@@ -79,9 +81,17 @@ async def lifespan(app):
 
 app = FastAPI(title="CloudOps API", version="0.3.0", lifespan=lifespan)
 
+_cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # Explicit origins are required here (not "*") because credentialed
+    # (cookie-based) requests need the browser to see its own exact
+    # origin echoed back in the response — wildcard + credentials is
+    # rejected by browsers outright and would silently break session
+    # cookies. Configure via CORS_ALLOWED_ORIGINS in .env.
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -110,11 +120,18 @@ async def ws_status():
     return {"connections": ws_manager.connection_count()}
 
 
-app.include_router(alerts_router,        prefix="/api")
-app.include_router(admin_accounts_router)
+# auth_router stays public (it contains /login itself; /me and
+# /change-password enforce auth per-route internally). admin_users_router
+# enforces admin-only per-route internally (app/api/admin/users.py).
+# Every other router below requires a valid session at minimum — more
+# specific role/scope checks are a later authorization phase.
+_auth_dep = [Depends(get_current_user)]
+
+app.include_router(alerts_router,         prefix="/api", dependencies=_auth_dep)
+app.include_router(admin_accounts_router, dependencies=_auth_dep)
 app.include_router(auth_router)
 app.include_router(admin_users_router)
-app.include_router(live_data_router)
-app.include_router(audit_logs_router)
-app.include_router(settings_router)
-app.include_router(metric_catalog_router)
+app.include_router(live_data_router,      dependencies=_auth_dep)
+app.include_router(audit_logs_router,     dependencies=_auth_dep)
+app.include_router(settings_router,       dependencies=_auth_dep)
+app.include_router(metric_catalog_router, dependencies=_auth_dep)

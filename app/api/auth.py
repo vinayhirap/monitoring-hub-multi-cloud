@@ -1,6 +1,10 @@
 # app/api/auth.py
-from fastapi import APIRouter, HTTPException, Body
+import os
+
+from fastapi import APIRouter, HTTPException, Body, Response, Depends
 from app.db import get_connection
+from app.auth.security import create_access_token
+from app.auth.deps import get_current_user, COOKIE_NAME
 import bcrypt
 import logging
 import secrets
@@ -11,6 +15,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
 RESET_TOKEN_TTL_MINUTES = 30
+
+# COOKIE_SECURE must be "true" once the app is served over HTTPS (see the
+# Security Checklist in the deployment guide). Defaults to False because
+# production currently serves plain HTTP on port 80 — a Secure cookie
+# would silently never be sent by the browser over HTTP, breaking login.
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").strip().lower() == "true"
+COOKIE_MAX_AGE_SECONDS = 12 * 60 * 60  # 12 hours, matches token expiry
 
 
 def _verify_password(plain: str, stored: str) -> bool:
@@ -41,7 +52,7 @@ def _write_audit(actor: str, action: str, payload: dict):
 
 
 @router.post("/login")
-def login(payload: dict = Body(...)):
+def login(response: Response, payload: dict = Body(...)):
     username = (payload.get("username") or "").strip()
     password = (payload.get("password") or "").strip()
 
@@ -63,6 +74,17 @@ def login(payload: dict = Body(...)):
     if not _verify_password(password, user["pw"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    token = create_access_token(user["id"], user["username"], user["role"])
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite="lax",
+        max_age=COOKIE_MAX_AGE_SECONDS,
+        path="/",
+    )
+
     return {
         "id":       user["id"],
         "username": user["username"],
@@ -70,15 +92,31 @@ def login(payload: dict = Body(...)):
     }
 
 
+@router.post("/logout")
+def logout(response: Response):
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return {"status": "ok"}
+
+
+@router.get("/me")
+def me(current_user: dict = Depends(get_current_user)):
+    return current_user
+
+
 @router.post("/change-password")
-def change_password(payload: dict = Body(...)):
-    """Self-service change password — requires the current password."""
-    username     = (payload.get("username") or "").strip()
+def change_password(payload: dict = Body(...), current_user: dict = Depends(get_current_user)):
+    """
+    Self-service change password — requires the current password AND a
+    valid session. Always acts on the SESSION's identity, never a
+    client-supplied username, so a logged-in user can never target
+    another account's password by passing a different username field.
+    """
+    username     = current_user["username"]
     current_pw   = (payload.get("current_password") or "").strip()
     new_pw       = (payload.get("new_password") or "").strip()
 
-    if not username or not current_pw or not new_pw:
-        raise HTTPException(status_code=400, detail="username, current_password and new_password are required")
+    if not current_pw or not new_pw:
+        raise HTTPException(status_code=400, detail="current_password and new_password are required")
     if len(new_pw) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
 

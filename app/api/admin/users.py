@@ -1,6 +1,7 @@
 # app/api/admin/users.py
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Depends
 from app.db import get_connection
+from app.auth.deps import require_role
 import datetime
 import json
 import hashlib
@@ -43,18 +44,19 @@ def _write_audit(actor: str, action: str, detail: str, role: str = "ADMIN"):
         print(f"Audit log write error: {e}")
 
 
-def _require_admin(user_id: int, conn):
-    """Raise 403 if user_id is not an admin."""
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT role FROM users WHERE id = %s", (user_id,))
-    row = cursor.fetchone()
-    cursor.close()
-    if not row or row["role"].lower() != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+# Every endpoint below requires an authenticated admin. Identity comes
+# from the verified session (app.auth.deps), never from a
+# client-supplied field — the previous design trusted a client-supplied
+# actor_id in the request body, and create_user() had no check at all.
+#
+# NOTE: per the scope-based RBAC plan, Editors should eventually manage
+# Viewers within their own assigned scope. That needs the access-scope
+# model first (a later phase) — this router is admin-only for now,
+# which is a strict tightening vs. before, not a regression.
 
 
 @router.get("")
-def list_users():
+def list_users(current_user: dict = Depends(require_role("admin"))):
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT id, username, role, created_at FROM users ORDER BY created_at ASC")
@@ -65,11 +67,10 @@ def list_users():
 
 
 @router.post("")
-def create_user(payload: dict = Body(...)):
-    username   = (payload.get("username") or "").strip()
-    password   = (payload.get("password") or "").strip()
-    role       = (payload.get("role") or "viewer").strip().lower()
-    actor_name = payload.get("actor", "admin")
+def create_user(payload: dict = Body(...), current_user: dict = Depends(require_role("admin"))):
+    username = (payload.get("username") or "").strip()
+    password = (payload.get("password") or "").strip()
+    role     = (payload.get("role") or "viewer").strip().lower()
 
     if not username:
         raise HTTPException(status_code=400, detail="username required")
@@ -101,36 +102,22 @@ def create_user(payload: dict = Body(...)):
         cursor.close()
         conn.close()
 
-    _write_audit(actor=actor_name, action="User created", detail=f"{username} added as {role.upper()}")
+    _write_audit(actor=current_user["username"], action="User created", detail=f"{username} added as {role.upper()}")
     return {"status": "created", "id": new_id, "username": username, "role": role}
 
 
 @router.patch("/{user_id}/role")
-def update_role(user_id: int, payload: dict = Body(...)):
-    new_role    = (payload.get("role") or "").strip().lower()
-    actor_id    = payload.get("actor_id")   # DB id of the user making the request
-    actor_name  = payload.get("actor", "admin")
+def update_role(user_id: int, payload: dict = Body(...), current_user: dict = Depends(require_role("admin"))):
+    new_role = (payload.get("role") or "").strip().lower()
 
     if new_role not in ["admin", "editor", "viewer"]:
         raise HTTPException(status_code=400, detail="role must be admin, editor, or viewer")
 
+    if current_user["id"] == user_id:
+        raise HTTPException(status_code=403, detail="Cannot change your own role")
+
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-
-    # Guard 1 — actor must be admin
-    if actor_id:
-        cursor.execute("SELECT role FROM users WHERE id = %s", (actor_id,))
-        actor_row = cursor.fetchone()
-        if not actor_row or actor_row["role"].lower() != "admin":
-            cursor.close()
-            conn.close()
-            raise HTTPException(status_code=403, detail="Admin access required")
-
-    # Guard 2 — cannot change own role
-    if actor_id and int(actor_id) == user_id:
-        cursor.close()
-        conn.close()
-        raise HTTPException(status_code=403, detail="Cannot change your own role")
 
     cursor.execute("SELECT username FROM users WHERE id = %s", (user_id,))
     user = cursor.fetchone()
@@ -144,27 +131,16 @@ def update_role(user_id: int, payload: dict = Body(...)):
     cursor.close()
     conn.close()
 
-    _write_audit(actor=actor_name, action="Role changed", detail=f"{user['username']} → {new_role.upper()}")
+    _write_audit(actor=current_user["username"], action="Role changed", detail=f"{user['username']} → {new_role.upper()}")
     return {"status": "updated", "id": user_id, "role": new_role}
 
 
 @router.patch("/{user_id}/accounts")
-def update_account_access(user_id: int, payload: dict = Body(...)):
+def update_account_access(user_id: int, payload: dict = Body(...), current_user: dict = Depends(require_role("admin"))):
     account_ids = payload.get("account_ids", [])
-    actor_id    = payload.get("actor_id")
-    actor_name  = payload.get("actor", "admin")
 
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-
-    # Guard — actor must be admin
-    if actor_id:
-        cursor.execute("SELECT role FROM users WHERE id = %s", (actor_id,))
-        actor_row = cursor.fetchone()
-        if not actor_row or actor_row["role"].lower() != "admin":
-            cursor.close()
-            conn.close()
-            raise HTTPException(status_code=403, detail="Admin access required")
 
     cursor.execute("SELECT username FROM users WHERE id = %s", (user_id,))
     user = cursor.fetchone()
@@ -201,32 +177,17 @@ def update_account_access(user_id: int, payload: dict = Body(...)):
         cursor.close()
         conn.close()
 
-    _write_audit(actor=actor_name, action="Account access updated", detail=f"{user['username']} access: {account_ids}")
+    _write_audit(actor=current_user["username"], action="Account access updated", detail=f"{user['username']} access: {account_ids}")
     return {"status": "updated", "user_id": user_id, "account_ids": account_ids}
 
 
 @router.delete("/{user_id}")
-def delete_user(user_id: int, payload: dict = Body(default={})):
-    actor_id   = payload.get("actor_id")
-    actor_name = payload.get("actor", "admin")
+def delete_user(user_id: int, current_user: dict = Depends(require_role("admin"))):
+    if current_user["id"] == user_id:
+        raise HTTPException(status_code=403, detail="Cannot delete your own account")
 
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-
-    # Guard — actor must be admin
-    if actor_id:
-        cursor.execute("SELECT role FROM users WHERE id = %s", (actor_id,))
-        actor_row = cursor.fetchone()
-        if not actor_row or actor_row["role"].lower() != "admin":
-            cursor.close()
-            conn.close()
-            raise HTTPException(status_code=403, detail="Admin access required")
-
-    # Guard — cannot delete self
-    if actor_id and int(actor_id) == user_id:
-        cursor.close()
-        conn.close()
-        raise HTTPException(status_code=403, detail="Cannot delete your own account")
 
     cursor.execute("SELECT username FROM users WHERE id = %s", (user_id,))
     user = cursor.fetchone()
@@ -240,5 +201,5 @@ def delete_user(user_id: int, payload: dict = Body(default={})):
     cursor.close()
     conn.close()
 
-    _write_audit(actor=actor_name, action="User deleted", detail=f"{user['username']} removed")
+    _write_audit(actor=current_user["username"], action="User deleted", detail=f"{user['username']} removed")
     return {"status": "deleted", "id": user_id, "username": user["username"]}
