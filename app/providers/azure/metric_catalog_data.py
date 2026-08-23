@@ -40,7 +40,7 @@ CURATED = {
         ("connection_failed",       "Count",   "Total",   True,  "Failed connections"),
         ("deadlock",                "Count",   "Total",   False, "Deadlocks"),
     ]),
-    "app_service": ("Azure App Service", "Microsoft.Web/sites", "extended", [
+    "app_service": ("Azure App Service", "Microsoft.Web/sites", "core", [
         ("CpuTime",             "Seconds", "Total",   False, "CPU time consumed"),
         ("Http5xx",             "Count",   "Total",   True,  "Server errors"),
         ("Requests",            "Count",   "Total",   True,  "Total requests"),

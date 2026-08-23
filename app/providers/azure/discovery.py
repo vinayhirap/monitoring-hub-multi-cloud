@@ -16,6 +16,7 @@ from azure.identity import ClientSecretCredential
 from azure.mgmt.compute import ComputeManagementClient
 from azure.mgmt.storage import StorageManagementClient
 from azure.mgmt.sql import SqlManagementClient
+from azure.mgmt.web import WebSiteManagementClient
 
 from app.db import get_connection
 
@@ -83,6 +84,17 @@ def _discover_sql_databases(sql_client, account_id, cursor) -> int:
     return count
 
 
+def _discover_app_services(web_client, account_id, cursor) -> int:
+    count = 0
+    for site in web_client.web_apps.list():
+        _upsert_resource(
+            cursor, account_id, "app_service", site.id, site.name,
+            dict(site.tags or {}), site.location, "compute",
+        )
+        count += 1
+    return count
+
+
 def discover_account_resources(account: dict, secret: str) -> dict:
     """Run discovery for a single Azure account. Returns a per-type count."""
     cred = _credential(account, secret)
@@ -91,14 +103,16 @@ def discover_account_resources(account: dict, secret: str) -> dict:
     compute_client = ComputeManagementClient(cred, sub_id)
     storage_client = StorageManagementClient(cred, sub_id)
     sql_client = SqlManagementClient(cred, sub_id)
+    web_client = WebSiteManagementClient(cred, sub_id)
 
     conn = get_connection()
     cursor = conn.cursor()
-    counts = {"vm": 0, "storage_account": 0, "sql_database": 0}
+    counts = {"vm": 0, "storage_account": 0, "sql_database": 0, "app_service": 0}
     try:
         counts["vm"] = _discover_vms(compute_client, account["id"], cursor)
         counts["storage_account"] = _discover_storage_accounts(storage_client, account["id"], cursor)
         counts["sql_database"] = _discover_sql_databases(sql_client, account["id"], cursor)
+        counts["app_service"] = _discover_app_services(web_client, account["id"], cursor)
         conn.commit()
     except Exception:
         conn.rollback()

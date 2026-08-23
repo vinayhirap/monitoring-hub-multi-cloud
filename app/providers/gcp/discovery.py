@@ -14,6 +14,7 @@ import logging
 from google.oauth2 import service_account as gcp_service_account
 from google.cloud import compute_v1
 from google.cloud import storage as gcs
+from google.cloud import run_v2
 from googleapiclient.discovery import build as gapi_build
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,37 @@ def _discover_cloudsql_instances(creds, project_id, account_id, cursor) -> int:
     return count
 
 
+# Cloud Run is regional with no "list across all regions" call, so we probe
+# the same set of regions offered in the onboarding UI's GCP region picker.
+# A region with no Cloud Run services (or where the API isn't enabled)
+# raises here — caught and skipped per-region rather than failing the
+# whole discovery run.
+CLOUD_RUN_REGIONS = [
+    "asia-south1", "asia-south2", "asia-southeast1", "asia-east1", "asia-northeast1",
+    "australia-southeast1", "us-central1", "us-east1", "us-west1",
+    "europe-west1", "europe-west2", "europe-central2",
+]
+
+
+def _discover_cloud_run(creds, project_id, account_id, cursor) -> int:
+    client = run_v2.ServicesClient(credentials=creds)
+    count = 0
+    for region in CLOUD_RUN_REGIONS:
+        parent = f"projects/{project_id}/locations/{region}"
+        try:
+            for svc in client.list_services(parent=parent):
+                name = svc.name.split("/")[-1]
+                resource_id = svc.name  # projects/{p}/locations/{r}/services/{name}
+                _upsert_resource(
+                    cursor, account_id, "cloud_run_service", resource_id, name,
+                    dict(svc.labels or {}), region, "compute",
+                )
+                count += 1
+        except Exception as e:
+            logger.debug(f"Cloud Run discovery skipped for {project_id}/{region}: {e}")
+    return count
+
+
 def discover_account_resources(account: dict, sa_key_json: str) -> dict:
     """Run discovery for a single GCP account. Returns a per-type count."""
     creds = _credentials(sa_key_json)
@@ -98,11 +130,12 @@ def discover_account_resources(account: dict, sa_key_json: str) -> dict:
     from app.db import get_connection
     conn = get_connection()
     cursor = conn.cursor()
-    counts = {"compute_instance": 0, "gcs_bucket": 0, "cloudsql_instance": 0}
+    counts = {"compute_instance": 0, "gcs_bucket": 0, "cloudsql_instance": 0, "cloud_run_service": 0}
     try:
         counts["compute_instance"] = _discover_compute_instances(creds, project_id, account["id"], cursor)
         counts["gcs_bucket"] = _discover_gcs_buckets(creds, project_id, account["id"], cursor)
         counts["cloudsql_instance"] = _discover_cloudsql_instances(creds, project_id, account["id"], cursor)
+        counts["cloud_run_service"] = _discover_cloud_run(creds, project_id, account["id"], cursor)
         conn.commit()
     except Exception:
         conn.rollback()

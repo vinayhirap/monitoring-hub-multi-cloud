@@ -218,7 +218,7 @@ fetchAccount(id).then(setAccount).catch(err => {
     }
   }
 
-  // Deep-link support: if we arrived via Alerts' "📊 Metrics" link
+  // Deep-link support: if we arrived via Alerts' "Metrics" link
   // (?resource=vol-xxx), auto-select that row as soon as it's loaded
   // instead of leaving the user to search for it manually.
   useEffect(() => {

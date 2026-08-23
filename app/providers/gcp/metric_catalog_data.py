@@ -29,10 +29,17 @@ CURATED = {
         ("network/connections",       "Count",   "Average", True,  "Active connections"),
         ("mysql/replication/seconds_behind_master", "Seconds", "Average", False, "Replica lag"),
     ]),
+    "cloud_run_service": ("Cloud Run", "run.googleapis.com/container", "core", [
+        ("cpu/utilizations",           "Percent", "Average", True,  "% CPU used (per container instance)"),
+        ("memory/utilizations",        "Percent", "Average", True,  "% memory used (per container instance)"),
+        ("request_count",              "Count",   "Total",   True,  "Total requests served"),
+        ("request_latencies",          "MilliSeconds", "Average", True, "Request latency"),
+        ("instance_count",             "Count",   "Average", True,  "Active container instances"),
+        ("billable_instance_time",     "Seconds", "Total",   False, "Billable instance-time"),
+    ]),
 }
 
 DIRECTORY = [
-    ("Cloud Run",             "run.googleapis.com"),
     ("Cloud Functions",       "cloudfunctions.googleapis.com"),
     ("Google Kubernetes Engine", "kubernetes.io"),
     ("Cloud Load Balancing",  "loadbalancing.googleapis.com"),
