@@ -642,6 +642,7 @@ export default function AccountOnboarding() {
                 selectedIds={selectedIds}
                 onChange={setSelectedIds}
                 compact
+                provider={provider}
               />
             )}
           </div>

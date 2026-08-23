@@ -2,11 +2,17 @@
 import { useState, useMemo } from "react";
 import "./MetricSelector.css";
 
-const SECTION_META = {
-  core:      { label: "Core",      hint: "Already collected by this app today" },
-  extended:  { label: "Extended",  hint: "Curated, common AWS services" },
-  directory: { label: "Directory", hint: "100+ AWS namespaces — discover live metric names per account" },
-};
+import { CloudServiceIcon } from "./cloud-icons";
+
+const PROVIDER_LABEL = { aws: "AWS", gcp: "GCP", azure: "Azure" };
+function sectionMeta(provider) {
+  const label = PROVIDER_LABEL[provider] || "cloud";
+  return {
+    core:      { label: "Core",      hint: "Already collected by this app today" },
+    extended:  { label: "Extended",  hint: `Curated, common ${label} services` },
+    directory: { label: "Directory", hint: `More ${label} services — discover live metric names per account` },
+  };
+}
 const CATEGORY_TABS = ["all", "core", "extended", "directory"];
 const CATEGORY_TAB_LABEL = { all: "All", core: "Core", extended: "Extended", directory: "Directory" };
 
@@ -28,12 +34,13 @@ function initials(name) {
  *                            refresh `catalog` afterwards with real ids.
  *   compact       — slightly shorter max-height, used inline in onboarding
  */
-export default function MetricSelector({ catalog, selectedIds, onChange, onDiscover, compact = false }) {
+export default function MetricSelector({ catalog, selectedIds, onChange, onDiscover, compact = false, provider = "aws" }) {
   const [search, setSearch]           = useState("");
   const [tab, setTab]                 = useState("all");
   const [expandedSvc, setExpandedSvc] = useState(() => new Set());
   const [collapsedSection, setCollapsedSection] = useState(() => new Set(["directory"]));
   const [discovering, setDiscovering] = useState(null);
+  const SECTION_META = useMemo(() => sectionMeta(provider), [provider]);
 
   const q = search.trim().toLowerCase();
 
@@ -202,7 +209,9 @@ export default function MetricSelector({ catalog, selectedIds, onChange, onDisco
                           onClick={() => toggleExpandSvc(group.service)}
                           disabled={group.metrics.length === 0 && !isDirectoryEmpty}
                         >
-                          <span className={`ms-avatar ms-avatar-${group.category}`}>{initials(group.display_service)}</span>
+                          <span className={`ms-avatar ms-avatar-${group.category}`}>
+                            <CloudServiceIcon provider={provider} service={group.service} size={18} />
+                          </span>
                           <span className="ms-card-titles">
                             <span className="ms-card-name">{group.display_service}</span>
                             <span className="ms-card-namespace">{group.namespace}</span>

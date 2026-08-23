@@ -1,34 +1,72 @@
 // monitoring-hub/frontend/src/pages/ServiceList.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getAlerts } from "../api/api";
+import { getAlerts, getAccountMetrics } from "../api/api";
+import { CloudServiceIcon, AzureBrandLogo, officialPerService } from "../components/cloud-icons";
 
-const SERVICES = [
-  { id:"ec2",    label:"EC2",    icon:"🖥️", desc:"Compute instances",     color:"#2bb3ac" },
-  { id:"ebs",    label:"EBS",    icon:"💾",       desc:"Block storage volumes",  color:"#38bdf8" },
-  { id:"rds",    label:"RDS",    icon:"🗄️", desc:"Managed databases",      color:"#7c6ee0" },
-  { id:"s3",     label:"S3",     icon:"🪣",       desc:"Object storage buckets", color:"#fbbf24" },
-  { id:"ecs",    label:"ECS",    icon:"📦",       desc:"Container services",     color:"#34d399" },
-  { id:"elb",    label:"ELB",    icon:"⚖️",     desc:"Load balancers",         color:"#f472b6" },
-  { id:"lambda", label:"Lambda", icon:"λ",           desc:"Serverless functions",   color:"#22c55e" },
-];
-
-const SVC_RESOURCE_PATTERNS = {
-  ec2:    (r) => r?.startsWith("i-"),
-  ebs:    (r) => r?.startsWith("vol-"),
-  rds:    (r) => r?.includes("rds") || r?.includes("db-") || r?.startsWith("db"),
-  lambda: (r) => r?.includes("lambda") || r?.startsWith("arn:aws:lambda"),
-  elb:    (r) => r?.includes("alb") || r?.includes("elb") || r?.includes("loadbalancer"),
-  s3:     (r) => r?.includes("s3"),
-  ecs:    (r) => r?.includes("ecs"),
+// Short blurbs for the services we know about. Anything not listed here
+// (e.g. a directory-tier service the account onboarded via live discovery)
+// falls back to its category ("core service" / "extended service") rather
+// than a made-up description.
+const DESC_OVERRIDES = {
+  ec2: "Compute instances", ebs: "Block storage volumes", rds: "Managed databases",
+  s3: "Object storage buckets", ecs: "Container services", elb: "Load balancers", lambda: "Serverless functions",
+  compute_instance: "Virtual machines", gcs_bucket: "Object storage buckets", cloudsql_instance: "Managed databases",
+  cloud_run_service: "Serverless containers", gke_cluster: "Kubernetes clusters", gke_node: "Kubernetes nodes",
+  cloudfunctions_function: "Serverless functions", pubsub_topic: "Pub/Sub topics", pubsub_subscription: "Pub/Sub subscriptions",
+  cloud_lb: "Load balancers", redis_instance: "Managed Redis", bigquery_project: "Data warehouse",
+  spanner_instance: "Globally distributed SQL", firestore_database: "Document database", nat_gateway: "Outbound NAT",
+  gce_persistent_disk: "Block storage volumes",
+  vm: "Virtual machines", vmss: "VM scale sets", storage_account: "Blob/file storage", sql_database: "Managed databases",
+  app_service: "Web apps", aks_cluster: "Kubernetes clusters", function_app: "Serverless functions",
+  cosmosdb_account: "Multi-model database", redis_cache: "Managed Redis", service_bus_namespace: "Message queues",
+  eventhub_namespace: "Event streaming", load_balancer: "Load balancers", application_gateway: "Layer-7 gateway",
+  key_vault: "Secrets & keys", container_instance: "Serverless containers", cdn_profile: "CDN / Front Door",
+  vpn_gateway: "VPN gateways", data_factory: "Data pipelines", managed_disk: "Block storage volumes",
 };
+
+const PALETTE = ["#2bb3ac", "#38bdf8", "#7c6ee0", "#fbbf24", "#34d399", "#f472b6", "#22c55e", "#f59e0b", "#a78bfa", "#e879f9"];
+
+// Real-shape resource-id/ARN patterns per provider, used to attribute
+// active alerts to the right service tile — NOT hardcoded to AWS only.
+function alertMatcher(provider, service) {
+  if (provider === "aws") {
+    return {
+      ec2: r => r?.startsWith("i-"), ebs: r => r?.startsWith("vol-"),
+      rds: r => r?.includes("rds") || r?.includes("db-") || r?.startsWith("db"),
+      lambda: r => r?.includes("lambda") || r?.startsWith("arn:aws:lambda"),
+      elb: r => r?.includes("alb") || r?.includes("elb") || r?.includes("loadbalancer"),
+      s3: r => r?.includes("s3"), ecs: r => r?.includes("ecs"),
+    }[service];
+  }
+  if (provider === "gcp") {
+    return {
+      compute_instance: r => r?.includes("/zones/") && r?.includes("/instances/"),
+      gcs_bucket: r => r?.includes("/buckets/"),
+      cloudsql_instance: r => r?.includes("/instances/") && !r?.includes("/zones/"),
+      cloud_run_service: r => r?.includes("/services/"),
+    }[service];
+  }
+  if (provider === "azure") {
+    return {
+      vm: r => r?.includes("Microsoft.Compute/virtualMachines"),
+      storage_account: r => r?.includes("Microsoft.Storage/storageAccounts"),
+      sql_database: r => r?.includes("Microsoft.Sql/servers"),
+      app_service: r => r?.includes("Microsoft.Web/sites"),
+      aks_cluster: r => r?.includes("Microsoft.ContainerService"),
+    }[service];
+  }
+  return null;
+}
 
 export default function ServiceList() {
   const { id }    = useParams();
   const navigate  = useNavigate();
   const [account, setAccount] = useState(null);
+  const [groups,  setGroups]  = useState([]);
   const [alerts,  setAlerts]  = useState([]);
   const [isNOC,   setIsNOC]   = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     document.body.classList.toggle("noc-mode", isNOC);
@@ -36,19 +74,44 @@ export default function ServiceList() {
   }, [isNOC]);
 
   useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
     fetch(`/api/admin/accounts/${id}`)
       .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d) setAccount(d); })
+      .then(d => { if (d && !cancelled) setAccount(d); })
       .catch(console.error);
-    getAlerts()
-      .then(a => setAlerts(Array.isArray(a) ? a : []))
-      .catch(() => {});
+    getAlerts().then(a => { if (!cancelled) setAlerts(Array.isArray(a) ? a : []); }).catch(() => {});
+    getAccountMetrics(id)
+      .then(g => { if (!cancelled) setGroups(Array.isArray(g) ? g : []); })
+      .catch(console.error)
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [id]);
+
+  const provider = account?.provider || "aws";
+
+  // Dynamic, aligned with the metric selector: a service tile only shows up
+  // here if it has at least one metric enabled for THIS account — the same
+  // selection made during onboarding or later edited in Settings -> Metrics.
+  // This replaces the old fixed 7-tile AWS-only array, which showed the
+  // same services regardless of what was actually selected (or the
+  // account's provider).
+  const activeServices = useMemo(() => {
+    return groups
+      .filter(g => (g.metrics || []).some(m => m.enabled))
+      .map((g, i) => ({
+        id: g.service,
+        label: g.display_service || g.service,
+        desc: DESC_OVERRIDES[g.service] || (g.category === "core" ? "Core service" : "Extended service"),
+        color: PALETTE[i % PALETTE.length],
+        enabledCount: g.metrics.filter(m => m.enabled).length,
+      }));
+  }, [groups]);
 
   const activeAlerts = alerts.filter(a => (a.status || "").toLowerCase() === "active");
 
   function alertsForService(svcId) {
-    const match = SVC_RESOURCE_PATTERNS[svcId];
+    const match = alertMatcher(provider, svcId);
     if (!match) return [];
     return activeAlerts.filter(a => match(a.resource));
   }
@@ -65,12 +128,13 @@ export default function ServiceList() {
 
       <div style={{ marginBottom:32, display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
         <div>
-          <h1 style={{ fontSize:24, fontWeight:700, marginBottom:5, letterSpacing:"-0.01em" }}>
+          <h1 style={{ fontSize:24, fontWeight:700, marginBottom:5, letterSpacing:"-0.01em", display:"flex", alignItems:"center", gap:10 }}>
+            {provider === "azure" && <AzureBrandLogo size={22} />}
             {account?.account_name ?? "Account"}
             <span style={{ color:"var(--accent)", marginLeft:8 }}>/ Services</span>
           </h1>
           <p style={{ color:"var(--text-muted)", fontSize:12 }}>
-            {account?.account_id} · {account?.default_region} · Select a service to inspect resources
+            {account?.account_id} · {account?.default_region} · {activeServices.length} service{activeServices.length === 1 ? "" : "s"} selected for monitoring
           </p>
         </div>
         <button
@@ -87,29 +151,31 @@ export default function ServiceList() {
         </button>
       </div>
 
-      <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:16 }}>
-          {SERVICES.slice(0, 4).map(svc => (
-            <ServiceCard key={svc.id} svc={svc}
+      {loading ? (
+        <div style={{ color:"var(--text-muted)", fontSize:13, padding:"40px 0", textAlign:"center" }}>Loading services…</div>
+      ) : activeServices.length === 0 ? (
+        <div style={{
+          border:"1px dashed var(--border)", borderRadius:"var(--radius-lg)", padding:"40px 24px",
+          textAlign:"center", color:"var(--text-muted)", fontSize:13,
+        }}>
+          No services are enabled for this account yet. Go to <b style={{color:"var(--text-secondary)"}}>Settings → Metrics</b> to select
+          which services and metrics to monitor — this page always mirrors that selection.
+        </div>
+      ) : (
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(220px, 1fr))", gap:16 }}>
+          {activeServices.map(svc => (
+            <ServiceCard key={svc.id} svc={svc} provider={provider}
               alertCount={alertsForService(svc.id).length}
               hasCritical={alertsForService(svc.id).some(a => a.severity?.toUpperCase() === "CRITICAL")}
               onClick={() => navigate(`/accounts/${id}/${svc.id}`)} />
           ))}
         </div>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:16, maxWidth:"75%", margin:"0 auto", width:"100%" }}>
-          {SERVICES.slice(4).map(svc => (
-            <ServiceCard key={svc.id} svc={svc}
-              alertCount={alertsForService(svc.id).length}
-              hasCritical={alertsForService(svc.id).some(a => a.severity?.toUpperCase() === "CRITICAL")}
-              onClick={() => navigate(`/accounts/${id}/${svc.id}`)} />
-          ))}
-        </div>
-      </div>
+      )}
     </div>
   );
 }
 
-function ServiceCard({ svc, onClick, alertCount, hasCritical }) {
+function ServiceCard({ svc, provider, onClick, alertCount, hasCritical }) {
   const [hovered, setHovered] = useState(false);
   const alertColor = hasCritical ? "#ef4444" : "#f59e0b";
   return (
@@ -139,14 +205,19 @@ function ServiceCard({ svc, onClick, alertCount, hasCritical }) {
         background:`linear-gradient(90deg,${svc.color}00,${svc.color},${svc.color}00)`,
         opacity: hovered ? 1 : 0.35, transition:"opacity .18s" }}/>
       <div style={{
-        fontSize:36, width:64, height:64, borderRadius:"50%",
+        width:64, height:64, borderRadius:"50%",
         background: svc.color+"15", border:`1px solid ${svc.color}25`,
         display:"flex", alignItems:"center", justifyContent:"center",
         margin:"0 auto 14px", transition:"background .18s",
         ...(hovered ? { background:svc.color+"25", borderColor:svc.color+"50" } : {}),
-      }}>{svc.icon}</div>
+      }}>
+        <CloudServiceIcon provider={provider} service={svc.id} size={32} />
+      </div>
       <div style={{ fontWeight:700, fontSize:15, color:"var(--text-primary)", marginBottom:6 }}>{svc.label}</div>
-      <div style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5, marginBottom:14 }}>{svc.desc}</div>
+      <div style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5, marginBottom:6 }}>{svc.desc}</div>
+      <div style={{ fontSize:10, color:"var(--text-muted)", opacity:.7, marginBottom:10, fontFamily:"var(--font-mono)" }}>
+        {svc.enabledCount} metric{svc.enabledCount === 1 ? "" : "s"} enabled
+      </div>
       <div style={{
         display:"inline-flex", alignItems:"center", gap:5,
         fontSize:10, fontFamily:"var(--font-mono)", fontWeight:700,

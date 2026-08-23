@@ -150,11 +150,18 @@ def seed_account_defaults(account_id: int, provider: str = "aws"):
 @router.get("/api/account-metrics/{account_id}")
 def get_account_metrics(account_id: int):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id FROM aws_accounts WHERE id = %s", (account_id,))
-    if not cur.fetchone():
+    cur.execute("SELECT id, provider FROM aws_accounts WHERE id = %s", (account_id,))
+    account = cur.fetchone()
+    if not account:
         cur.close(); conn.close()
         raise HTTPException(status_code=404, detail="Account not found")
+    provider = account.get("provider") or "aws"
 
+    # IMPORTANT: scoped to this account's own provider. Without the
+    # mc.provider filter, editing an Azure/GCP account's metric selection
+    # in Settings -> Metrics rendered AWS+Azure+GCP catalog rows all mixed
+    # together (metric_catalog has no per-account provider boundary on its
+    # own) -- the exact "services listed that shouldn't be there" symptom.
     cur.execute("""
         SELECT mc.id, mc.service, mc.namespace, mc.display_service, mc.metric_name,
                mc.statistic, mc.unit, mc.category, mc.description, mc.is_default,
@@ -163,10 +170,10 @@ def get_account_metrics(account_id: int):
         FROM metric_catalog mc
         LEFT JOIN account_metric_selections ams
                ON ams.metric_id = mc.id AND ams.aws_account_id = %s
-        WHERE mc.metric_name != '' OR mc.metric_name IS NULL
+        WHERE mc.provider = %s AND (mc.metric_name != '' OR mc.metric_name IS NULL)
         ORDER BY mc.category = 'core' DESC, mc.category = 'extended' DESC,
                  mc.display_service, mc.metric_name
-    """, (account_id,))
+    """, (account_id, provider))
     rows = cur.fetchall(); cur.close(); conn.close()
 
     grouped = {}
@@ -303,16 +310,21 @@ def set_account_metrics(account_id: int, payload: dict = Body(...)):
 @router.post("/api/account-metrics/{account_id}/apply-default")
 def apply_default_template(account_id: int):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id FROM aws_accounts WHERE id = %s", (account_id,))
-    if not cur.fetchone():
+    cur.execute("SELECT id, provider FROM aws_accounts WHERE id = %s", (account_id,))
+    account = cur.fetchone()
+    if not account:
         cur.close(); conn.close()
         raise HTTPException(status_code=404, detail="Account not found")
+    provider = account.get("provider") or "aws"
     cur.close(); conn.close()
 
-    count = seed_account_defaults(account_id)
+    # Bug fix: this used to call seed_account_defaults(account_id) with no
+    # provider, which silently seeded AWS's default template onto Azure/GCP
+    # accounts. Always reset to THIS account's own provider's defaults.
+    count = seed_account_defaults(account_id, provider=provider)
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id FROM metric_catalog WHERE is_default = 1")
+    cur.execute("SELECT id FROM metric_catalog WHERE is_default = 1 AND provider = %s", (provider,))
     default_ids = {r["id"] for r in cur.fetchall()}
     cur.execute(
         "SELECT metric_id FROM account_metric_selections WHERE aws_account_id = %s AND enabled = 1",
@@ -322,57 +334,179 @@ def apply_default_template(account_id: int):
     cur.close()
 
     # Disable anything currently enabled that isn't part of the default set
+    # for THIS provider. Scoped by mc.provider so a selection that also
+    # includes rows from another provider (shouldn't happen post-fix above,
+    # but is defensive against already-corrupted rows from the bug) is left
+    # alone rather than silently toggled by this account's provider rules.
     cur = conn.cursor()
     cur.execute("""
         UPDATE account_metric_selections ams
         JOIN metric_catalog mc ON mc.id = ams.metric_id
         SET ams.enabled = (mc.is_default = 1)
-        WHERE ams.aws_account_id = %s
-    """, (account_id,))
+        WHERE ams.aws_account_id = %s AND mc.provider = %s
+    """, (account_id, provider))
 
     # Keep Settings -> Metric Thresholds aligned with the new default selection.
     _sync_thresholds_for_selection(cur, account_id, default_ids, currently_enabled - default_ids)
 
     conn.commit(); cur.close(); conn.close()
 
-    _write_audit("admin", "Applied default metric template", f"account={account_id}")
-    return {"status": "applied", "default_metric_count": count}
+    _write_audit("admin", "Applied default metric template", f"account={account_id} provider={provider}")
+    return {"status": "applied", "default_metric_count": count, "provider": provider}
+
+
+def _discover_aws_metrics(acc: dict, namespace: str, region: str) -> set:
+    """Live CloudWatch ListMetrics call — original AWS-only implementation."""
+    import boto3
+    resolved_region = region or acc.get("default_region")
+    if acc.get("role_arn"):
+        from app.aws.sts import assume_role
+        session = assume_role(acc["role_arn"], acc.get("external_id"))
+        cw = session.client("cloudwatch", region_name=resolved_region)
+    else:
+        cw = boto3.client("cloudwatch", region_name=resolved_region)
+
+    seen = {}
+    paginator = cw.get_paginator("list_metrics")
+    for page in paginator.paginate(Namespace=namespace):
+        for m in page.get("Metrics", []):
+            seen[m["MetricName"]] = True
+            if len(seen) >= 200:  # sane cap per discovery call
+                break
+        if len(seen) >= 200:
+            break
+    return set(seen.keys())
+
+
+def _discover_gcp_metrics(acc: dict, namespace: str) -> set:
+    """
+    Live Cloud Monitoring ListMetricDescriptors call, filtered to this
+    metric-prefix (namespace). Requires the account's stored GCP service
+    account key (same credential used for resource discovery/validation).
+    """
+    from google.cloud import monitoring_v3
+    from google.oauth2 import service_account as gcp_service_account
+    from app.credentials import load_credential
+
+    project_id = (acc.get("project_id") or "").strip()
+    sa_key_json = load_credential(acc["id"])
+    if not project_id or not sa_key_json:
+        raise HTTPException(
+            status_code=400,
+            detail="This GCP account has no project_id / service account key on file — re-check Settings -> Credentials.",
+        )
+
+    import json as _json
+    info = _json.loads(sa_key_json)
+    creds = gcp_service_account.Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/monitoring.read"]
+    )
+    client = monitoring_v3.MetricServiceClient(credentials=creds)
+    seen = set()
+    request = {
+        "name": f"projects/{project_id}",
+        "filter": f'metric.type = starts_with("{namespace}")',
+    }
+    for descriptor in client.list_metric_descriptors(request=request):
+        # metric.type is the full "prefix/suffix" string — store just the
+        # suffix after this namespace's prefix, matching CURATED's shape.
+        suffix = descriptor.type[len(namespace):].lstrip("/")
+        if suffix:
+            seen.add(suffix)
+        if len(seen) >= 200:
+            break
+    return seen
+
+
+def _discover_azure_metrics(acc: dict, namespace: str) -> set:
+    """
+    Live Azure Monitor metric-definitions call. Unlike AWS/GCP, Azure's
+    metric-definitions API is scoped to one concrete resource, not a
+    namespace/prefix — so this queries the definitions for the most
+    recently discovered resource of the matching type on this account.
+    Requires `discover_resources()` (Settings -> resource sync) to have
+    already found at least one resource of this type.
+    """
+    from azure.identity import ClientSecretCredential
+    from azure.mgmt.monitor import MonitorManagementClient
+    from app.credentials import load_credential
+    from app.db import get_connection as _gc
+
+    conn = _gc(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT service FROM metric_catalog WHERE namespace = %s AND provider = 'azure' LIMIT 1", (namespace,))
+    row = cur.fetchone()
+    service_key = row["service"] if row else namespace.split("/")[-1].lower()
+
+    cur.execute("""
+        SELECT resource_id FROM resources
+        WHERE aws_account_id = %s AND resource_type = %s
+        ORDER BY id DESC LIMIT 1
+    """, (acc["id"], service_key))
+    resource = cur.fetchone()
+    cur.close(); conn.close()
+
+    if not resource:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No discovered '{service_key}' resources yet for this account — Azure Monitor's metric "
+                f"catalog is per-resource, not per-namespace. Run resource discovery first, then retry."
+            ),
+        )
+
+    tenant_id = (acc.get("tenant_id") or "").strip()
+    client_id = (acc.get("client_id") or "").strip()
+    subscription_id = (acc.get("subscription_id") or "").strip()
+    secret = load_credential(acc["id"])
+    if not (tenant_id and client_id and subscription_id and secret):
+        raise HTTPException(status_code=400, detail="This Azure account is missing Service Principal credentials.")
+
+    cred = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=secret)
+    monitor_client = MonitorManagementClient(cred, subscription_id)
+
+    seen = set()
+    for md in monitor_client.metric_definitions.list(resource_uri=resource["resource_id"]):
+        name = md.name.value if md.name else None
+        if name:
+            seen.add(name)
+        if len(seen) >= 200:
+            break
+    return seen
 
 
 @router.post("/api/account-metrics/{account_id}/discover")
 def discover_namespace_metrics(account_id: int, namespace: str = Query(...), region: str = Query(None)):
     """
-    Live CloudWatch ListMetrics call for a 'directory' namespace — used when
-    a user expands a service that doesn't have a hand-curated metric list.
+    Live metric discovery for a 'directory' namespace — used when a user
+    expands a service that doesn't have a hand-curated metric list.
+    Dispatches to the account's own provider (AWS/GCP/Azure each have a
+    fundamentally different discovery API — see the three helpers above).
     Discovered metric names are cached into metric_catalog as category
     'directory' rows (still metric_name-populated) so future loads are instant.
     """
     conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT default_region, role_arn, external_id FROM aws_accounts WHERE id = %s", (account_id,))
+    cur.execute("""
+        SELECT id, provider, default_region, role_arn, external_id,
+               tenant_id, client_id, subscription_id, project_id
+        FROM aws_accounts WHERE id = %s
+    """, (account_id,))
     acc = cur.fetchone(); cur.close(); conn.close()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    resolved_region = region or acc.get("default_region")
+    provider = acc.get("provider") or "aws"
 
     try:
-        import boto3
-        if acc.get("role_arn"):
-            from app.aws.sts import assume_role
-            session = assume_role(acc["role_arn"], acc.get("external_id"))
-            cw = session.client("cloudwatch", region_name=resolved_region)
+        if provider == "aws":
+            seen = _discover_aws_metrics(acc, namespace, region)
+        elif provider == "gcp":
+            seen = _discover_gcp_metrics(acc, namespace)
+        elif provider == "azure":
+            seen = _discover_azure_metrics(acc, namespace)
         else:
-            cw = boto3.client("cloudwatch", region_name=resolved_region)
-
-        seen = {}
-        paginator = cw.get_paginator("list_metrics")
-        for page in paginator.paginate(Namespace=namespace):
-            for m in page.get("Metrics", []):
-                seen[m["MetricName"]] = True
-                if len(seen) >= 200:  # sane cap per discovery call
-                    break
-            if len(seen) >= 200:
-                break
+            raise HTTPException(status_code=400, detail=f"Unknown provider '{provider}'")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Discovery failed: {str(e)}")
 
@@ -381,7 +515,10 @@ def discover_namespace_metrics(account_id: int, namespace: str = Query(...), reg
 
     conn = get_connection(); cur = conn.cursor()
     display_service = None
-    cur.execute("SELECT display_service, service FROM metric_catalog WHERE namespace = %s LIMIT 1", (namespace,))
+    cur.execute(
+        "SELECT display_service, service FROM metric_catalog WHERE namespace = %s AND provider = %s LIMIT 1",
+        (namespace, provider),
+    )
     row = cur.fetchone()
     display_service, service_key = (row if row else (namespace, namespace.split("/")[-1].lower()))
 
@@ -389,14 +526,15 @@ def discover_namespace_metrics(account_id: int, namespace: str = Query(...), reg
         cur.execute("""
             INSERT INTO metric_catalog
                 (service, namespace, display_service, metric_name,
-                 statistic, unit, default_interval, category, description, is_default, enabled)
-            VALUES (%s,%s,%s,%s,'Average',NULL,900,'directory','Discovered via ListMetrics',0,1)
+                 statistic, unit, default_interval, category, description, is_default, enabled, provider)
+            VALUES (%s,%s,%s,%s,'Average',NULL,900,'directory','Discovered live',0,1,%s)
             ON DUPLICATE KEY UPDATE metric_name = VALUES(metric_name)
-        """, (service_key, namespace, display_service, metric_name))
+        """, (service_key, namespace, display_service, metric_name, provider))
     conn.commit(); cur.close(); conn.close()
 
-    _write_audit("admin", "Discovered namespace metrics", f"account={account_id} namespace={namespace} count={len(seen)}")
-    return {"namespace": namespace, "discovered": len(seen), "metrics": sorted(seen.keys())}
+    _write_audit("admin", "Discovered namespace metrics",
+                 f"account={account_id} provider={provider} namespace={namespace} count={len(seen)}")
+    return {"namespace": namespace, "discovered": len(seen), "metrics": sorted(seen)}
 
 
 # ── YACE config generation ───────────────────────────────────────
