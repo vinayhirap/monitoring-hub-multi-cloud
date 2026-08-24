@@ -1,7 +1,7 @@
 // monitoring-hub/frontend/src/pages/ServiceList.jsx
 import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getAlerts, getAccountMetrics, getLiveAccounts } from "../api/api";
+import { getAlerts, getAccountMetrics, getResourceCounts } from "../api/api";
 import { CloudServiceIcon, AzureBrandLogo, officialPerService } from "../components/cloud-icons";
 
 // Short blurbs for the services we know about. Anything not listed here
@@ -105,12 +105,11 @@ export default function ServiceList() {
   useEffect(() => {
     let cancelled = false;
     setCountsLoading(true);
-    getLiveAccounts()
-      .then(list => {
-        if (cancelled) return;
-        const mine = (Array.isArray(list) ? list : []).find(a => String(a.id) === String(id));
-        setLiveCounts(mine || {});
-      })
+    // Scoped to THIS account only — avoids waiting on every other
+    // active account (including undeployed ones) the way
+    // /api/live/accounts does.
+    getResourceCounts(id)
+      .then(counts => { if (!cancelled) setLiveCounts(counts || {}); })
       .catch(() => { if (!cancelled) setLiveCounts({}); })
       .finally(() => { if (!cancelled) setCountsLoading(false); });
     return () => { cancelled = true; };

@@ -198,6 +198,32 @@ def live_accounts():
     return result
 
 
+@router.get("/resource-counts/{account_db_id}")
+def live_resource_counts(account_db_id: int):
+    """
+    Lightweight per-account resource counts for the Services page
+    (ServiceList.jsx tile visibility) — deliberately scoped to ONE
+    account instead of GET /api/live/accounts, which fans out to
+    every active account (including ones with no real deployment,
+    e.g. accounts without a working role/YACE setup) and makes the
+    caller wait for the slowest one. Reuses the same 60s in-process
+    cache in collector_direct.py, so this costs nothing extra beyond
+    what get_account_summary() already does for the Overview page.
+    """
+    acc     = _get_db_account(account_db_id)
+    region  = acc.get("default_region")
+    summary = get_account_summary(region)
+    return {
+        "ec2_total":    summary.get("ec2_total",    0),
+        "ebs_total":    summary.get("ebs_total",    0),
+        "rds_total":    summary.get("rds_total",    0),
+        "lambda_total": summary.get("lambda_total", 0),
+        "s3_total":     summary.get("s3_total",     0),
+        "elb_total":    summary.get("elb_total",    0),
+        "ecs_total":    summary.get("ecs_total",    0),
+    }
+
+
 @router.get("/ec2/{account_db_id}")
 def live_ec2(account_db_id: int):
     acc    = _get_db_account(account_db_id)
