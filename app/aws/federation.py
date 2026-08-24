@@ -25,6 +25,7 @@ import urllib.parse
 import requests
 
 from app.aws.sts import assume_role, get_own_account_id, get_self_federation_session
+from app.aws.sts import _sanitize_session_name
 
 logger = logging.getLogger(__name__)
 
@@ -143,9 +144,121 @@ def _legacy_prefix_guess_destination(resource: str, region: str) -> str:
     return f"https://{region}.console.aws.amazon.com/console/home?region={region}"
 
 
+def _service_read_actions(service: str) -> list[str]:
+    """
+    Minimal read-only IAM actions needed to view/monitor ONE AWS
+    service in the console, used to build a session policy that
+    narrows a federated session down to just this service — instead
+    of the previous blanket ReadOnlyAccess, which grants read access
+    to every AWS service regardless of which alert/resource the
+    person actually clicked into.
+    """
+    common = [
+        "cloudwatch:GetMetricData", "cloudwatch:GetMetricStatistics",
+        "cloudwatch:ListMetrics", "cloudwatch:DescribeAlarms",
+        "tag:GetResources", "tag:GetTagKeys", "tag:GetTagValues",
+        "sts:GetCallerIdentity",
+    ]
+    per_service = {
+        "ec2":    ["ec2:Describe*", "ec2:GetConsoleOutput", "ec2:GetConsoleScreenshot"],
+        "ebs":    ["ec2:Describe*"],
+        "rds":    ["rds:Describe*", "rds:ListTagsForResource"],
+        "lambda": ["lambda:Get*", "lambda:List*"],
+        "s3":     ["s3:GetBucket*", "s3:ListBucket", "s3:GetObject", "s3:ListAllMyBuckets"],
+        "elb":    ["elasticloadbalancing:Describe*"],
+        "ecs":    ["ecs:Describe*", "ecs:List*"],
+    }
+    extra = per_service.get((service or "").lower())
+    if not extra:
+        return []
+    return common + extra
+
+
+def _service_resource_arns(service: str, resource_id: str | None, region: str | None,
+                            account_id: str | None, resource_name: str | None = None,
+                            ecs_service_name: str | None = None) -> list[str] | None:
+    """
+    Best-effort ARN(s) for the SPECIFIC resource being viewed, so the
+    session policy's Resource element can be scoped to just that
+    resource wherever AWS IAM actually supports resource-level
+    permissions for the relevant read actions. Returns None (caller
+    falls back to "*") for services where the Describe/List calls
+    involved are account/region-wide by design in AWS IAM — e.g.
+    ec2:DescribeInstances has no resource-level permission support —
+    which is a hard AWS limitation, not a gap in this function.
+    """
+    if not resource_id or not account_id:
+        return None
+    svc = (service or "").lower()
+    region = region or "us-east-1"
+    if svc == "s3":
+        bucket = resource_id
+        return [f"arn:aws:s3:::{bucket}", f"arn:aws:s3:::{bucket}/*"]
+    if svc == "lambda":
+        return [f"arn:aws:lambda:{region}:{account_id}:function:{resource_id}"]
+    if svc == "rds":
+        return [f"arn:aws:rds:{region}:{account_id}:db:{resource_id}"]
+    if svc == "ecs":
+        cluster = resource_name or resource_id
+        arns = [f"arn:aws:ecs:{region}:{account_id}:cluster/{cluster}"]
+        if ecs_service_name:
+            arns.append(f"arn:aws:ecs:{region}:{account_id}:service/{cluster}/{ecs_service_name}")
+        return arns
+    return None
+
+
+def build_scoped_session_policy(service: str | None, resource_id: str | None = None,
+                                 region: str | None = None,
+                                 target_account_id: str | None = None,
+                                 resource_name: str | None = None,
+                                 ecs_service_name: str | None = None) -> str | None:
+    """
+    Builds an IAM session-policy JSON string that narrows a federated
+    console session to read-only access for ONE service — and, where
+    AWS IAM supports it, ONE specific resource — instead of the
+    previous blanket ReadOnlyAccess across every AWS service. Returns
+    None if `service` isn't recognized, so callers fall back to
+    whichever base policy they already had.
+
+    This is a real IAM session policy: AWS enforces the
+    INTERSECTION of this policy and the underlying role/user's own
+    permissions, so it can only ever narrow access further — never
+    grant anything the base identity didn't already have.
+    """
+    if not service:
+        return None
+    actions = _service_read_actions(service)
+    if not actions:
+        return None
+    arns = _service_resource_arns(service, resource_id, region, target_account_id,
+                                   resource_name, ecs_service_name)
+    policy = {
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect":   "Allow",
+            "Action":   sorted(set(actions)),
+            "Resource": arns if arns else "*",
+        }],
+    }
+    body = json.dumps(policy)
+    # STS session-policy documents are capped at 2048 chars — fall
+    # back to no extra scoping (base policy still applies) rather
+    # than send something AWS would reject outright.
+    if len(body) > 2000:
+        logger.warning("Scoped session policy for %s too large (%d chars) — skipping extra scoping", service, len(body))
+        return None
+    return body
+
+
 def build_federated_console_url(role_arn: str | None, external_id: str | None,
                                  destination: str,
-                                 target_account_id: str | None = None) -> str:
+                                 target_account_id: str | None = None,
+                                 requested_by: str | None = None,
+                                 service: str | None = None,
+                                 resource_id: str | None = None,
+                                 region: str | None = None,
+                                 resource_name: str | None = None,
+                                 ecs_service_name: str | None = None) -> str:
     """
     Exchanges credentials for a sign-in token and returns a login URL that
     drops the user directly onto `destination` inside the CORRECT account —
@@ -157,19 +270,35 @@ def build_federated_console_url(role_arn: str | None, external_id: str | None,
                                                              (self-federation,
                                                              zero config)
       - role_arn empty, target_account_id != own account -> NoConsoleCredentialsError
+
+    `requested_by` (the monitoring-hub username of whoever clicked
+    "Console") and `service`/`resource_id`/`region`/etc. (the
+    resource actually being viewed) are used to attribute the
+    resulting AWS session to that specific person and narrow it to
+    that specific resource, instead of every click in the app
+    sharing one generic, blanket-ReadOnlyAccess identity. See
+    _sanitize_session_name and build_scoped_session_policy.
     """
     role_arn = (role_arn or "").strip()
 
+    session_name   = _sanitize_session_name(requested_by)
+    session_policy = build_scoped_session_policy(
+        service, resource_id, region, target_account_id,
+        resource_name, ecs_service_name,
+    )
+
     if role_arn:
-        session = assume_role(role_arn, external_id)
+        session = assume_role(role_arn, external_id,
+                               session_name=session_name, policy=session_policy)
     else:
         own_account_id = get_own_account_id()
         if target_account_id and own_account_id and str(target_account_id) == str(own_account_id):
             logger.info(
-                "Console link for account %s uses self-federation (server's own account, no role_arn needed)",
-                target_account_id,
+                "Console link for account %s uses self-federation (server's own account, no role_arn needed), "
+                "requested_by=%s service=%s",
+                target_account_id, requested_by, service,
             )
-            session = get_self_federation_session()
+            session = get_self_federation_session(session_name=session_name, policy=session_policy)
         else:
             raise NoConsoleCredentialsError(
                 "No AWS role configured for this account, and it is not "

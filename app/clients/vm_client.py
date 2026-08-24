@@ -1,5 +1,6 @@
 # app/clients/vm_client.py
 import os
+import json
 import datetime
 import logging
 import requests
@@ -75,3 +76,56 @@ def vm_query_range(promql: str, start: int, end: int, step: str = "60s") -> list
     except Exception as e:
         logger.warning(f"VM query_range failed [{promql}]: {e}")
         return []
+
+
+def vm_write_batch(series: list[dict]) -> bool:
+    """
+    Push datapoints into VictoriaMetrics. Used by the Azure/GCP metric
+    collectors (app/providers/{azure,gcp}/metrics_collector.py) -- there is
+    no YACE-equivalent Prometheus exporter for those clouds, so unlike AWS
+    (where YACE scrapes CloudWatch and pushes to VM on its own), something
+    has to actively write this data in.
+
+    Uses VM's /api/v1/import JSON-lines endpoint (see
+    https://docs.victoriametrics.com/#how-to-import-data-in-json-line-format)
+    rather than remote_write/protobuf, since it's a plain HTTP+JSON POST with
+    no extra client dependency.
+
+    series: [
+      {
+        "metric": "azure_vm_percentage_cpu",   # becomes __name__
+        "labels": {"account_id": "5", "resource_id": "...", "region": "..."},
+        "value": 42.1,
+        "timestamp": 1735000000,   # unix seconds; omit for "now"
+      },
+      ...
+    ]
+    Returns True if the whole batch was accepted.
+    """
+    if not series:
+        return True
+
+    lines = []
+    now_ms = int(datetime.datetime.utcnow().timestamp() * 1000)
+    for point in series:
+        metric = {"__name__": point["metric"], **point.get("labels", {})}
+        ts_ms = int(point["timestamp"] * 1000) if point.get("timestamp") else now_ms
+        lines.append(json.dumps({
+            "metric": metric,
+            "values": [point["value"]],
+            "timestamps": [ts_ms],
+        }))
+
+    payload = "\n".join(lines)
+    try:
+        r = requests.post(
+            f"{VM_URL}/api/v1/import",
+            data=payload.encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error(f"VM write_batch failed ({len(series)} datapoints): {e}")
+        return False

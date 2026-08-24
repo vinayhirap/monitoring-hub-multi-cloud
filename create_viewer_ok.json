@@ -1,0 +1,1 @@
+{"username":"test_viewer_ok","password":"pass123","role":"viewer","scopes":[{"cloud":"aws","account_ref_id":5,"regions":["ap-south-1"]}]}

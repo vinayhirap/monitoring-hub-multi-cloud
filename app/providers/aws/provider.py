@@ -34,7 +34,8 @@ class AWSProvider(CloudProvider):
     def get_console_url(self, account: dict, resource_id: str, region: str,
                          service: str | None = None,
                          resource_name: str | None = None,
-                         ecs_service_name: str | None = None) -> str:
+                         ecs_service_name: str | None = None,
+                         requested_by: str | None = None) -> str:
         from app.aws.federation import (
             build_federated_console_url,
             resource_console_destination,
@@ -47,6 +48,9 @@ class AWSProvider(CloudProvider):
         return build_federated_console_url(
             account.get("role_arn"), account.get("external_id"), destination,
             target_account_id=account.get("account_id"),
+            requested_by=requested_by,
+            service=service, resource_id=resource_id, region=region,
+            resource_name=resource_name, ecs_service_name=ecs_service_name,
         )
 
     def discover_resources(self) -> None:

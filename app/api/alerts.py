@@ -3,8 +3,9 @@ from typing import Optional
 import datetime
 import time
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from app.db import get_connection
+from app.auth.deps import get_current_user
 from app.aws.federation import (
     build_federated_console_url,
     resource_console_destination,
@@ -139,7 +140,7 @@ def open_alerts():
 
 # ── AWS CONSOLE DEEP-LINK (account-correct) ────────────────────
 @router.get("/{alert_id}/console-url")
-def get_console_url(alert_id: int):
+def get_console_url(alert_id: int, user: dict = Depends(get_current_user)):
     """
     Returns a federated sign-in URL that opens THIS alert's resource in
     THIS alert's AWS account — regardless of which account the operator's
@@ -177,6 +178,9 @@ def get_console_url(alert_id: int):
         url = build_federated_console_url(
             row.get("role_arn"), row.get("external_id"), destination,
             target_account_id=row.get("aws_account_id"),
+            requested_by=user["username"],
+            service=row.get("resource_type"), resource_id=row["resource"],
+            region=row["region"], resource_name=row.get("resource_name"),
         )
     except NoConsoleCredentialsError as e:
         raise HTTPException(status_code=400, detail=str(e))

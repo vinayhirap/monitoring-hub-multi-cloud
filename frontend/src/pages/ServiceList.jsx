@@ -1,7 +1,7 @@
 // monitoring-hub/frontend/src/pages/ServiceList.jsx
 import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getAlerts, getAccountMetrics } from "../api/api";
+import { getAlerts, getAccountMetrics, getLiveAccounts } from "../api/api";
 import { CloudServiceIcon, AzureBrandLogo, officialPerService } from "../components/cloud-icons";
 
 // Short blurbs for the services we know about. Anything not listed here
@@ -26,6 +26,20 @@ const DESC_OVERRIDES = {
 };
 
 const PALETTE = ["#2bb3ac", "#38bdf8", "#7c6ee0", "#fbbf24", "#34d399", "#f472b6", "#22c55e", "#f59e0b", "#a78bfa", "#e879f9"];
+
+// Maps a service key to the live resource-count field returned by
+// GET /api/live/accounts (already computed cheaply — VictoriaMetrics-
+// first with free Describe-API fallback, no extra AWS calls beyond
+// what that endpoint already does for the Overview page). Only
+// services listed here have both a live count AND a working
+// ServiceDetail page today — anything else (AWS "extended"/directory
+// services, or GCP/Azure services once those clouds are actually
+// deployed) is intentionally left out, so its tile stays hidden
+// instead of linking to a page that doesn't exist yet.
+const RESOURCE_COUNT_FIELD = {
+  ec2: "ec2_total", ebs: "ebs_total", rds: "rds_total",
+  lambda: "lambda_total", s3: "s3_total", elb: "elb_total", ecs: "ecs_total",
+};
 
 // Real-shape resource-id/ARN patterns per provider, used to attribute
 // active alerts to the right service tile — NOT hardcoded to AWS only.
@@ -66,6 +80,12 @@ export default function ServiceList() {
   const [groups,  setGroups]  = useState([]);
   const [alerts,  setAlerts]  = useState([]);
   const [loading, setLoading] = useState(true);
+  // Live per-service resource counts for THIS account, from the same
+  // endpoint the Overview page already uses. null while unresolved —
+  // used to hold tiles back until we can actually confirm resources
+  // exist, instead of showing them the moment a metric is enabled.
+  const [liveCounts,   setLiveCounts]   = useState(null);
+  const [countsLoading, setCountsLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,6 +102,20 @@ export default function ServiceList() {
     return () => { cancelled = true; };
   }, [id]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setCountsLoading(true);
+    getLiveAccounts()
+      .then(list => {
+        if (cancelled) return;
+        const mine = (Array.isArray(list) ? list : []).find(a => String(a.id) === String(id));
+        setLiveCounts(mine || {});
+      })
+      .catch(() => { if (!cancelled) setLiveCounts({}); })
+      .finally(() => { if (!cancelled) setCountsLoading(false); });
+    return () => { cancelled = true; };
+  }, [id]);
+
   const provider = account?.provider || "aws";
 
   // Dynamic, aligned with the metric selector: a service tile only shows up
@@ -91,16 +125,28 @@ export default function ServiceList() {
   // same services regardless of what was actually selected (or the
   // account's provider).
   const activeServices = useMemo(() => {
+    if (!liveCounts) return [];
     return groups
       .filter(g => (g.metrics || []).some(m => m.enabled))
-      .map((g, i) => ({
-        id: g.service,
-        label: g.display_service || g.service,
-        desc: DESC_OVERRIDES[g.service] || (g.category === "core" ? "Core service" : "Extended service"),
-        color: PALETTE[i % PALETTE.length],
-        enabledCount: g.metrics.filter(m => m.enabled).length,
-      }));
-  }, [groups]);
+      .map((g, i) => {
+        const countField = RESOURCE_COUNT_FIELD[g.service];
+        const resourceCount = countField ? (liveCounts[countField] ?? 0) : null;
+        return {
+          id: g.service,
+          label: g.display_service || g.service,
+          desc: DESC_OVERRIDES[g.service] || (g.category === "core" ? "Core service" : "Extended service"),
+          color: PALETTE[i % PALETTE.length],
+          enabledCount: g.metrics.filter(m => m.enabled).length,
+          resourceCount,
+        };
+      })
+      // Only show a tile once we can dynamically confirm at least one
+      // real resource of that type exists. resourceCount === null means
+      // we have no live count (and no detail page) for this service yet
+      // — hide it rather than link somewhere broken; resourceCount === 0
+      // means the metric is enabled but nothing has been created yet.
+      .filter(svc => (svc.resourceCount ?? 0) > 0);
+  }, [groups, liveCounts]);
 
   const activeAlerts = alerts.filter(a => (a.status || "").toLowerCase() === "active");
 
@@ -133,15 +179,15 @@ export default function ServiceList() {
         </div>
       </div>
 
-      {loading ? (
+      {(loading || countsLoading) ? (
         <div style={{ color:"var(--text-muted)", fontSize:13, padding:"40px 0", textAlign:"center" }}>Loading services…</div>
       ) : activeServices.length === 0 ? (
         <div style={{
           border:"1px dashed var(--border)", borderRadius:"var(--radius-lg)", padding:"40px 24px",
           textAlign:"center", color:"var(--text-muted)", fontSize:13,
         }}>
-          No services are enabled for this account yet. Go to <b style={{color:"var(--text-secondary)"}}>Settings → Metrics</b> to select
-          which services and metrics to monitor — this page always mirrors that selection.
+          No services with live resources yet. A tile appears here once a service both has monitoring enabled in
+          <b style={{color:"var(--text-secondary)"}}> Settings → Metrics</b> and has at least one real resource discovered in this account.
         </div>
       ) : (
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(220px, 1fr))", gap:16 }}>
@@ -198,6 +244,9 @@ function ServiceCard({ svc, provider, onClick, alertCount, hasCritical }) {
       <div style={{ fontWeight:700, fontSize:15, color:"var(--text-primary)", marginBottom:6 }}>{svc.label}</div>
       <div style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5, marginBottom:6 }}>{svc.desc}</div>
       <div style={{ fontSize:10, color:"var(--text-muted)", opacity:.7, marginBottom:10, fontFamily:"var(--font-mono)" }}>
+        {svc.resourceCount != null && (
+          <>{svc.resourceCount} resource{svc.resourceCount === 1 ? "" : "s"} · </>
+        )}
         {svc.enabledCount} metric{svc.enabledCount === 1 ? "" : "s"} enabled
       </div>
       <div style={{
