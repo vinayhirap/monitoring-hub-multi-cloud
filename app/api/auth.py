@@ -100,7 +100,8 @@ def logout(response: Response):
 
 @router.get("/me")
 def me(current_user: dict = Depends(get_current_user)):
-    return current_user
+    from app.auth import authorization as authz
+    return {**current_user, "scope": authz.serialize_scope(current_user)}
 
 
 @router.post("/change-password")

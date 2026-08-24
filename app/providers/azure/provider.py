@@ -42,7 +42,12 @@ class AzureProvider(CloudProvider):
     def get_console_url(self, account: dict, resource_id: str, region: str,
                          service: str | None = None,
                          resource_name: str | None = None,
-                         ecs_service_name: str | None = None) -> str:
+                         ecs_service_name: str | None = None,
+                         requested_by: str | None = None) -> str:
+        # requested_by unused: this provider deep-links straight into
+        # its own cloud portal, which already uses the operator's own
+        # signed-in browser session — no shared/impersonated identity
+        # to attribute here the way AWS federation needs.
         # Azure resource IDs are already full ARM paths
         # (/subscriptions/.../resourceGroups/.../providers/...), so the
         # portal deep link is a direct construction — no federation step

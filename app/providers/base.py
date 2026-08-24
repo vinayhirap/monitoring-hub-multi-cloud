@@ -36,7 +36,8 @@ class CloudProvider(ABC):
     def get_console_url(self, account: dict, resource_id: str, region: str,
                          service: str | None = None,
                          resource_name: str | None = None,
-                         ecs_service_name: str | None = None) -> str:
+                         ecs_service_name: str | None = None,
+                         requested_by: str | None = None) -> str:
         """
         Return a deep link into this provider's web console for the given
         resource, scoped to the correct account/subscription/project.
@@ -48,6 +49,14 @@ class CloudProvider(ABC):
         need for a fully-specific deep link (AWS ELB search-by-name and
         ECS cluster>service, respectively) — providers that don't need
         them can ignore the arguments.
+
+        `requested_by` is the monitoring-hub username of whoever asked
+        for this link. Providers that mint their own AWS-style
+        federated/impersonated session (currently just AWS) use it to
+        attribute that session to the actual person instead of a
+        shared generic identity; providers that deep-link straight into
+        the target cloud's own portal (Azure, GCP) can ignore it, since
+        those portals already use the operator's own signed-in session.
         """
         raise NotImplementedError
 
