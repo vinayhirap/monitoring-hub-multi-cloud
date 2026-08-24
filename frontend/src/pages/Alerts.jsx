@@ -124,7 +124,6 @@ export default function Alerts() {
   const [error,   setError]   = useState(null);
   const [tab,     setTab]     = useState("active");
   const [search,  setSearch]  = useState("");
-  const [isNOC,   setIsNOC]   = useState(false);
   const [acting,  setActing]  = useState(null);
   const [soundOn, setSoundOn] = useState(true);
   const [openingConsole, setOpeningConsole] = useState(null);
@@ -168,12 +167,6 @@ export default function Alerts() {
     const t = setInterval(loadAlerts, 10000);
     return () => clearInterval(t);
   }, [loadAlerts]);
-
-  // NOC fullscreen mode
-  useEffect(() => {
-    document.body.classList.toggle("noc-mode", isNOC);
-    return () => document.body.classList.remove("noc-mode");
-  }, [isNOC]);
 
   // WebSocket push — beep only for brand-new alerts
   useEffect(() => {
@@ -312,14 +305,6 @@ export default function Alerts() {
             {soundOn ? "🔔" : "🔕"}
           </button>
           <button className="btn-refresh" onClick={loadAlerts}>↻ Refresh</button>
-          <button
-            className={`btn-refresh${isNOC ? " noc-active-btn" : ""}`}
-            onClick={() => setIsNOC(v => !v)}
-            title="Toggle NOC fullscreen"
-            style={{ fontWeight: 600 }}
-          >
-            {isNOC ? "⊠ Exit NOC" : "⊞ NOC Mode"}
-          </button>
           <div className="live-pill"><span className="live-dot" />LIVE</div>
         </div>
       </div>

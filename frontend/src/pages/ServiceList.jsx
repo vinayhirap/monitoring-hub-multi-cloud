@@ -65,13 +65,7 @@ export default function ServiceList() {
   const [account, setAccount] = useState(null);
   const [groups,  setGroups]  = useState([]);
   const [alerts,  setAlerts]  = useState([]);
-  const [isNOC,   setIsNOC]   = useState(false);
   const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    document.body.classList.toggle("noc-mode", isNOC);
-    return () => document.body.classList.remove("noc-mode");
-  }, [isNOC]);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,18 +131,6 @@ export default function ServiceList() {
             {account?.account_id} · {account?.default_region} · {activeServices.length} service{activeServices.length === 1 ? "" : "s"} selected for monitoring
           </p>
         </div>
-        <button
-          style={{
-            background: isNOC ? "rgba(43,179,172,0.12)" : "var(--bg-card)",
-            border: `1px solid ${isNOC ? "var(--accent)" : "var(--border)"}`,
-            color: isNOC ? "var(--accent)" : "var(--text-muted)",
-            borderRadius: 6, padding: "7px 14px", fontSize: 13,
-            fontWeight: isNOC ? 700 : 500, cursor: "pointer",
-          }}
-          onClick={() => setIsNOC(v => !v)}
-        >
-          {isNOC ? "⊞ Exit NOC" : "⊞ NOC Mode"}
-        </button>
       </div>
 
       {loading ? (

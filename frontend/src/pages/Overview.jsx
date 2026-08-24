@@ -54,7 +54,6 @@ export default function Overview() {
   const [loading,     setLoading]     = useState(true);
   const [filter,      setFilter]      = useState("All");
   const [lastSync,    setLastSync]    = useState(null);
-  const [isNOC,       setIsNOC]       = useState(false);
   const [expandedIds, setExpandedIds] = useState(new Set());
 
   const deletedIds = useRef(new Set());
@@ -86,11 +85,6 @@ export default function Overview() {
     if (!alertMsg || alertMsg.type !== "new_alert") return;
     setAlerts(prev => [alertMsg, ...prev].slice(0, 100));
   }, [alertMsg]);
-
-  useEffect(() => {
-    document.body.classList.toggle("noc-mode", isNOC);
-    return () => document.body.classList.remove("noc-mode");
-  }, [isNOC]);
 
   async function handleDelete(e, acc) {
     e.stopPropagation();
@@ -136,14 +130,14 @@ export default function Overview() {
   });
 
   return (
-    <div className={`overview ${isNOC ? "noc-fullscreen" : ""}`}>
+    <div className="overview">
       <div className="ov-header">
         <div>
           <h1 style={{ fontSize: "var(--fs-page-title)", fontWeight: 700, letterSpacing: "-0.01em" }}>
             Infrastructure <span className="hl">Overview</span>
           </h1>
           <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 4 }}>
-            Live AWS infrastructure monitoring across all accounts · NOC View
+            Live AWS infrastructure monitoring across all accounts
           </p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -153,12 +147,6 @@ export default function Overview() {
             </span>
           )}
           <button className="btn-refresh" onClick={loadAll} title="Refresh now">↻ Refresh</button>
-          <button
-            className={`ov-noc-btn ${isNOC ? "noc-active" : ""}`}
-            onClick={() => setIsNOC(v => !v)}
-          >
-            {isNOC ? "⊠ Exit NOC" : "⊞ NOC Mode"}
-          </button>
         </div>
       </div>
 

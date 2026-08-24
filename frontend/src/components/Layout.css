@@ -38,7 +38,7 @@ body {
 
 /* ── sidebar ── */
 .sidebar {
-  width: 200px;
+  width: 220px;
   flex-shrink: 0;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
@@ -46,7 +46,29 @@ body {
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 60;
+  transform: translateX(-100%);
+  transition: transform 0.22s ease;
+  box-shadow: 0 12px 32px rgba(2,8,20,0.5);
 }
+/* Sidebar is closed (off-canvas) by default; the topbar toggle button
+   opens it as a slide-in drawer, at every screen size. */
+.layout.nav-open .sidebar { transform: translateX(0); }
+
+/* Persistent brand/logo in the topbar — stays visible whether the
+   collapsible sidebar is open or closed. */
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 14px;
+  margin-right: 4px;
+  border-right: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.topbar-brand .sidebar-brand-name { font-size: 13px; }
 
 .sidebar-brand {
   display: flex;
@@ -581,9 +603,10 @@ body {
   border-color: rgba(99,130,190,0.4);
 }
 
-/* ── mobile nav toggle (hidden on desktop) ── */
+/* ── sidebar toggle — visible at every breakpoint, sidebar is
+   closed by default (see .layout.nav-open .sidebar above) ── */
 .btn-nav-toggle {
-  display: none;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 30px;
@@ -596,67 +619,29 @@ body {
 }
 .btn-nav-toggle:hover { background: var(--bg-hover); }
 
-.sidebar-scrim {
-  display: none;
+.sidebar-scrim { display: none; }
+.layout.nav-open .sidebar-scrim {
+  display: block;
+  position: fixed;
+  inset: 0;
+  background: rgba(2,6,16,0.55);
+  z-index: 50;
 }
 
-/* ── responsive layout shell ──────────────────────────────────
-   ≥1280px : full 200px sidebar (default above)
-   900–1279px : icon-only rail, labels hidden, tooltip via title attr
-   <900px  : sidebar becomes an off-canvas drawer, toggled by the
-             hamburger button in the topbar
-*/
-@media (max-width: 1279px) {
-  .sidebar { width: 64px; }
-  .sidebar-brand-sub,
-  .sidebar-brand-name,
-  .nav-label,
-  .lup-label,
-  .lup-time { display: none; }
-  .sidebar-brand { justify-content: center; padding: 18px 8px; }
-  .nav-item { justify-content: center; padding: 10px; }
-  .nav-badge { position: absolute; top: 2px; right: 2px; }
-}
-
+/* ── responsive topbar decluttering ── */
 @media (max-width: 899px) {
-  .btn-nav-toggle { display: inline-flex; }
-
-  .sidebar {
-    position: fixed;
-    inset: 0 auto 0 0;
-    z-index: 60;
-    width: 220px;
-    transform: translateX(-100%);
-    transition: transform 0.22s ease;
-    box-shadow: var(--shadow-lg, 0 12px 32px rgba(2,8,20,0.5));
-  }
-  .sidebar-brand-sub,
-  .sidebar-brand-name,
-  .nav-label,
-  .lup-label,
-  .lup-time { display: block; }
-  .sidebar-brand { justify-content: flex-start; padding: 20px 16px 18px; }
-  .nav-item { justify-content: flex-start; padding: 9px 10px; }
-
-  .layout.nav-open .sidebar { transform: translateX(0); }
-  .layout.nav-open .sidebar-scrim {
-    display: block;
-    position: fixed;
-    inset: 0;
-    background: rgba(2,6,16,0.55);
-    z-index: 50;
-  }
-
   .topbar { padding: 0 14px; gap: 10px; }
   .topbar-clock .topbar-tz,
   .topbar-clock { display: none; }
   .topbar-username { display: none; }
+  .topbar-brand .sidebar-brand-sub { display: none; }
 }
 
 @media (max-width: 520px) {
   .btn-logout span { display: none; }
   .btn-logout { padding: 7px; gap: 0; }
   .topbar-role-badge { display: none; }
+  .topbar-brand .sidebar-brand-text { display: none; }
 }
 
 /* ── Light theme overrides ───────────────────────────────────── */
@@ -975,10 +960,3 @@ body {
 [data-theme="light"] .field-label         { color: #3d5070; }
 [data-theme="light"] .ob-input            { background: #f5f8fd; border-color: rgba(99,130,190,0.25); color: #0f1c35; }
 [data-theme="light"] .ob-input::placeholder { color: #a0b0c8; }
-/* NOC mode button active state */
-.noc-active-btn {
-  background: rgba(43,179,172,0.12) !important;
-  border-color: var(--accent) !important;
-  color: var(--accent) !important;
-  font-weight: 700 !important;
-}

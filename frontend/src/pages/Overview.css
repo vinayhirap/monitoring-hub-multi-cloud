@@ -1,22 +1,10 @@
 /* monitoring-hub/frontend/src/pages/Overview.css */
 .overview { max-width: 100%; }
-.overview.noc-fullscreen { padding: 16px; }
 
 .ov-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; }
 .hl { color:var(--accent); }
 .ov-refresh { background:var(--bg-card); border:1px solid var(--border-md); color:var(--text-secondary); padding:7px 14px; border-radius:var(--radius); font-size:13px; cursor:pointer; transition:all .15s; }
 .ov-refresh:hover { border-color:var(--accent); color:var(--accent); }
-
-.ov-noc-btn { background:var(--bg-card); border:1px solid var(--border-md); color:var(--text-secondary); padding:7px 14px; border-radius:var(--radius); font-size:13px; cursor:pointer; transition:all .15s; }
-.ov-noc-btn:hover { border-color:var(--accent); color:var(--accent); }
-.ov-noc-btn.noc-active { background:rgba(43,179,172,0.12); border-color:var(--accent); color:var(--accent); font-weight:700; }
-
-body.noc-mode .sidebar,
-body.noc-mode nav,
-body.noc-mode aside { display:none !important; }
-body.noc-mode .main-content,
-body.noc-mode .page-wrapper,
-body.noc-mode .content-area { margin-left:0 !important; width:100% !important; }
 
 .ov-summary {
   display: grid;
@@ -218,9 +206,7 @@ body.noc-mode .content-area { margin-left:0 !important; width:100% !important; }
 
 [data-theme="light"] .alert-strip        { background: rgba(192,57,43,0.05); border-color: rgba(192,57,43,0.2); }
 
-[data-theme="light"] .ov-noc-btn,
 [data-theme="light"] .ov-refresh         { background: #ffffff; border-color: rgba(99,130,190,0.2); color: #4a6080; }
-[data-theme="light"] .ov-noc-btn:hover,
 [data-theme="light"] .ov-refresh:hover   { border-color: rgba(0,119,204,0.35); color: #2bb3ac; }
 
 /* Region rows — light mode */

@@ -157,10 +157,3 @@
 
 .mono  { font-family: 'JetBrains Mono', monospace; }
 .small { font-size: 11px; }
-/* NOC mode button active state */
-.noc-active-btn {
-  background: rgba(43,179,172,0.12) !important;
-  border-color: var(--accent) !important;
-  color: var(--accent) !important;
-  font-weight: 700 !important;
-}

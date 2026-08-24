@@ -23,6 +23,40 @@ import AmazonSimpleStorageServiceBucket from "@aws-icons/react/resource/amazon-s
 import AmazonElasticContainerServiceService from "@aws-icons/react/resource/amazon-elastic-container-service-service";
 import ElasticLoadBalancingApplicationLoadBalancer from "@aws-icons/react/resource/elastic-load-balancing-application-load-balancer";
 import AwsLambdaLambdaFunction from "@aws-icons/react/resource/aws-lambda-lambda-function";
+import ElasticLoadBalancingNetworkLoadBalancer from "@aws-icons/react/resource/elastic-load-balancing-network-load-balancer";
+import AmazonApiGateway from "@aws-icons/react/architecture-service/amazon-api-gateway";
+import AmazonDynamoDb from "@aws-icons/react/architecture-service/amazon-dynamo-db";
+import AmazonSimpleQueueService from "@aws-icons/react/architecture-service/amazon-simple-queue-service";
+import AmazonSimpleNotificationService from "@aws-icons/react/architecture-service/amazon-simple-notification-service";
+import AmazonCloudFront from "@aws-icons/react/architecture-service/amazon-cloud-front";
+import AmazonElastiCache from "@aws-icons/react/architecture-service/amazon-elasti-cache";
+import AmazonOpenSearchService from "@aws-icons/react/architecture-service/amazon-open-search-service";
+import AmazonElasticKubernetesService from "@aws-icons/react/architecture-service/amazon-elastic-kubernetes-service";
+import AmazonElasticFileSystemFileSystem from "@aws-icons/react/resource/amazon-elastic-file-system-file-system";
+import AmazonDocumentDb from "@aws-icons/react/architecture-service/amazon-document-db";
+import AmazonNeptune from "@aws-icons/react/architecture-service/amazon-neptune";
+import AmazonManagedStreamingForApacheKafka from "@aws-icons/react/architecture-service/amazon-managed-streaming-for-apache-kafka";
+import AmazonKinesisDataStreams from "@aws-icons/react/architecture-service/amazon-kinesis-data-streams";
+import AmazonDataFirehose from "@aws-icons/react/architecture-service/amazon-data-firehose";
+import AmazonEc2AutoScaling from "@aws-icons/react/architecture-service/amazon-ec2-auto-scaling";
+import AmazonVpcNatGateway from "@aws-icons/react/resource/amazon-vpc-nat-gateway";
+import AwsTransitGateway from "@aws-icons/react/architecture-service/aws-transit-gateway";
+import AmazonRoute53 from "@aws-icons/react/architecture-service/amazon-route-53";
+import AwsWaf from "@aws-icons/react/architecture-service/aws-waf";
+import AmazonRedshift from "@aws-icons/react/architecture-service/amazon-redshift";
+import AmazonMemoryDb from "@aws-icons/react/architecture-service/amazon-memory-db";
+import AmazonDynamoDbAmazonDynamoDbAccelerator from "@aws-icons/react/resource/amazon-dynamo-db-amazon-dynamo-db-accelerator";
+import AwsStepFunctions from "@aws-icons/react/architecture-service/aws-step-functions";
+import AmazonEventBridge from "@aws-icons/react/architecture-service/amazon-event-bridge";
+import AwsKeyManagementService from "@aws-icons/react/architecture-service/aws-key-management-service";
+import AwsCertificateManager from "@aws-icons/react/architecture-service/aws-certificate-manager";
+import AwsBackup from "@aws-icons/react/architecture-service/aws-backup";
+import AmazonCognito from "@aws-icons/react/architecture-service/amazon-cognito";
+import AmazonCloudWatchLogs from "@aws-icons/react/resource/amazon-cloud-watch-logs";
+import AwsSiteToSiteVpn from "@aws-icons/react/architecture-service/aws-site-to-site-vpn";
+import AwsGlobalAccelerator from "@aws-icons/react/architecture-service/aws-global-accelerator";
+import AwsDatabaseMigrationService from "@aws-icons/react/architecture-service/aws-database-migration-service";
+import AwsDirectConnect from "@aws-icons/react/architecture-service/aws-direct-connect";
 
 import {
   ServerRegular,
@@ -85,13 +119,51 @@ export const officialPerService = { aws: true, gcp: true, azure: false };
 
 // ── AWS: real @aws-icons/react components ──────────────────────
 const AWS_ICON = {
+  // Core
   ec2:    AmazonEc2Instance,
   ebs:    AmazonElasticBlockStoreVolume,
   rds:    AmazonAuroraAmazonRdsInstance,
+  alb:    ElasticLoadBalancingApplicationLoadBalancer,
+  elb:    ElasticLoadBalancingApplicationLoadBalancer, // legacy alias
+  lambda: AwsLambdaLambdaFunction,
   s3:     AmazonSimpleStorageServiceBucket,
   ecs:    AmazonElasticContainerServiceService,
-  elb:    ElasticLoadBalancingApplicationLoadBalancer,
-  lambda: AwsLambdaLambdaFunction,
+
+  // Extended — matches the service keys in app/aws/metric_catalog_data.py
+  nlb:                 ElasticLoadBalancingNetworkLoadBalancer,
+  apigateway:          AmazonApiGateway,
+  dynamodb:            AmazonDynamoDb,
+  sqs:                 AmazonSimpleQueueService,
+  sns:                 AmazonSimpleNotificationService,
+  cloudfront:          AmazonCloudFront,
+  elasticache:         AmazonElastiCache,
+  opensearch:          AmazonOpenSearchService,
+  eks:                 AmazonElasticKubernetesService,
+  efs:                 AmazonElasticFileSystemFileSystem,
+  documentdb:          AmazonDocumentDb,
+  neptune:             AmazonNeptune,
+  msk:                 AmazonManagedStreamingForApacheKafka,
+  kinesis:             AmazonKinesisDataStreams,
+  firehose:            AmazonDataFirehose,
+  autoscaling:         AmazonEc2AutoScaling,
+  natgateway:          AmazonVpcNatGateway,
+  transitgateway:      AwsTransitGateway,
+  route53:             AmazonRoute53,
+  wafv2:               AwsWaf,
+  redshift:            AmazonRedshift,
+  memorydb:            AmazonMemoryDb,
+  dax:                 AmazonDynamoDbAmazonDynamoDbAccelerator,
+  states:              AwsStepFunctions,
+  events:              AmazonEventBridge,
+  kms:                 AwsKeyManagementService,
+  certificatemanager:  AwsCertificateManager,
+  backup:              AwsBackup,
+  cognito:             AmazonCognito,
+  logs:                AmazonCloudWatchLogs,
+  vpn:                 AwsSiteToSiteVpn,
+  globalaccelerator:   AwsGlobalAccelerator,
+  dms:                 AwsDatabaseMigrationService,
+  directconnect:       AwsDirectConnect,
 };
 
 export function AwsServiceIcon({ service, size = 32, color, style, ...rest }) {
