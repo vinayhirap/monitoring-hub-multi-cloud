@@ -60,11 +60,22 @@ def _run_describe_poll_loop():
         time.sleep(interval)
 
 
+def _run_multicloud_collector():
+    """Azure/GCP metric collection — see app/collector/multicloud_scheduler.py for why
+    this is a separate loop from the AWS tiered scheduler rather than folded into it."""
+    try:
+        from app.collector.multicloud_scheduler import run_loop
+        run_loop()
+    except Exception as e:
+        logger.error(f"Multi-cloud collector crashed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app):
     # ── Startup ───────────────────────────────────────────────
     threading.Thread(target=_run_collector, daemon=True, name="collector").start()
     threading.Thread(target=_run_describe_poll_loop, daemon=True, name="describe-poll").start()
+    threading.Thread(target=_run_multicloud_collector, daemon=True, name="multicloud-collector").start()
     redis_task = asyncio.create_task(_safe_redis_listener())
     logger.info("Startup complete — collector running, Redis listener started")
     yield

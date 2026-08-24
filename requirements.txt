@@ -38,6 +38,7 @@ azure-mgmt-storage>=21,<23
 azure-mgmt-sql>=4,<5
 azure-mgmt-web>=7,<8
 azure-mgmt-monitor>=6,<7
+azure-monitor-query>=1.2,<2
 
 # GCP provider (Service Account auth + real discovery)
 google-cloud-compute>=1.19,<2

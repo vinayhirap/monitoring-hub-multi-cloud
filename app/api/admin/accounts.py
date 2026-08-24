@@ -1,6 +1,7 @@
 # app/api/admin/accounts.py
-from fastapi import APIRouter, HTTPException, Body, Query
+from fastapi import APIRouter, HTTPException, Body, Query, Depends
 from app.db import get_connection
+from app.auth.deps import get_current_user
 import datetime
 import json
 
@@ -356,6 +357,7 @@ def get_account_console_url(
     region: str = Query(None),
     resource_name: str = Query(None),
     ecs_service_name: str = Query(None),
+    user: dict = Depends(get_current_user),
 ):
     """
     Generic account-scoped console deep link — the single backend source
@@ -384,6 +386,7 @@ def get_account_console_url(
             account, resource_id, region,
             service=service, resource_name=resource_name,
             ecs_service_name=ecs_service_name,
+            requested_by=user["username"],
         )
     except NoConsoleCredentialsError as e:
         raise HTTPException(status_code=400, detail=str(e))

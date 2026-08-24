@@ -43,7 +43,12 @@ class GCPProvider(CloudProvider):
     def get_console_url(self, account: dict, resource_id: str, region: str,
                          service: str | None = None,
                          resource_name: str | None = None,
-                         ecs_service_name: str | None = None) -> str:
+                         ecs_service_name: str | None = None,
+                         requested_by: str | None = None) -> str:
+        # requested_by unused: this provider deep-links straight into
+        # its own cloud portal, which already uses the operator's own
+        # signed-in browser session — no shared/impersonated identity
+        # to attribute here the way AWS federation needs.
         project_id = account.get("project_id") or ""
         service = (service or "").lower()
         name = resource_name or (resource_id or "").split("/")[-1]
