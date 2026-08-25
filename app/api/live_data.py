@@ -285,12 +285,14 @@ def live_ecs(account_db_id: int):
 # Used by the Services page to decide whether a tile should be shown
 # at all — dynamically, based on whether the account actually HAS any
 # resources of that type right now, instead of only whether a metric
-# is selected for it. Covers every service with a live collector,
-# core (ec2/ebs/rds/lambda/s3/alb/ecs) and extended
-# (nlb/acm/backup/dms/directconnect/states) alike; the frontend
-# treats a still-missing key (a service with no collector at all)
-# as "unknown" and keeps that tile visible rather than hiding it on
-# a guess, but every service listed here gets a real 0/N.
+# is selected for it. All 41 curated services (core + extended) have
+# a collector here. The frontend now treats anything OTHER than a
+# confirmed positive count — a missing key, a null from a failed/
+# unauthorized collector, or a real zero — as "hide this tile". That
+# means a collector that throws (e.g. AccessDenied on one service's
+# IAM permissions) will make its tile disappear even if the service
+# secretly has resources; check the "resource-counts: <svc> failed"
+# warning below if a tile you expect to see is missing.
 _RESOURCE_COLLECTORS = {
     "ec2":            collect_ec2_instances,
     "ebs":            collect_ebs_volumes,
