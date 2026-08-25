@@ -138,17 +138,21 @@ export default function ServiceList() {
   // Dynamic, aligned with the metric selector: a service tile only shows up
   // here if it has at least one metric enabled for THIS account — the same
   // selection made during onboarding or later edited in Settings -> Metrics
-  // — AND (for AWS accounts, once resourceCounts has loaded) a confirmed,
-  // positive resource count. No confirmed count => hidden. Non-AWS accounts
-  // have no resource-count data source at all, so they always show (nothing
-  // to check them against).
+  // — AND (for AWS accounts) BOTH a confirmed positive resource count AND a
+  // real internal detail page (CORE_AWS_SERVICES) it can open into. AWS
+  // services with no detail page only ever had a "VIEW IN CONSOLE" tile
+  // that sends you off to the AWS Console — that's been dropped entirely,
+  // on purpose: this page now only shows tiles you can click straight into
+  // with real data behind them, never a console-link placeholder. Non-AWS
+  // accounts have no resource-count data source yet, so they always show.
   const activeServices = useMemo(() => {
     const isAws = provider === "aws";
     return groups
       .filter(g => (g.metrics || []).some(m => m.enabled))
       .filter(g => {
-        if (!isAws) return true;          // no resource-count data for GCP/Azure
-        if (!resourceCounts) return true; // still loading — avoid a flash of nothing
+        if (!isAws) return true;                    // no resource-count data for GCP/Azure
+        if (!CORE_AWS_SERVICES.has(g.service)) return false; // no console-link tiles, ever
+        if (!resourceCounts) return true;            // still loading — avoid a flash of nothing
         const count = resourceCounts[g.service];
         return typeof count === "number" && count > 0;
       })
