@@ -129,22 +129,22 @@ export default function ServiceList() {
   // Dynamic, aligned with the metric selector: a service tile only shows up
   // here if it has at least one metric enabled for THIS account — the same
   // selection made during onboarding or later edited in Settings -> Metrics.
-  // On top of that, a CORE service tile is hidden if we have a real,
-  // confirmed-zero resource count for it. Extended services (no live
-  // collector exists for them yet) and non-AWS accounts always stay
-  // visible — clicking an extended tile opens the AWS Console directly
-  // (see openInConsole above) rather than a broken internal link.
+  // On top of that, ANY service (core or extended) is hidden if we have a
+  // real, confirmed-zero resource count for it — see GET
+  // /api/live/resource-counts/{id}, which now covers both tiers. A service
+  // still missing a collector (key absent from that response) or a
+  // non-AWS account (resourceCounts never populated) fails OPEN and stays
+  // visible, since "unknown" is not the same as "confirmed none".
   const activeServices = useMemo(() => {
     return groups
       .filter(g => (g.metrics || []).some(m => m.enabled))
       .filter(g => {
         if (!resourceCounts) return true;
-        if (!CORE_AWS_SERVICES.has(g.service)) return true;
         const count = resourceCounts[g.service];
         return count === undefined || count === null || count > 0;
       })
       .map((g, i) => {
-        const resourceCount = CORE_AWS_SERVICES.has(g.service) && resourceCounts
+        const resourceCount = resourceCounts
           ? (resourceCounts[g.service] ?? null)
           : null;
         return {
