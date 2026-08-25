@@ -10,7 +10,7 @@ import { CloudServiceIcon, AzureBrandLogo, officialPerService } from "../compone
 // than a made-up description.
 const DESC_OVERRIDES = {
   ec2: "Compute instances", ebs: "Block storage volumes", rds: "Managed databases",
-  s3: "Object storage buckets", ecs: "Container services", elb: "Load balancers", lambda: "Serverless functions",
+  s3: "Object storage buckets", ecs: "Container services", elb: "Load balancers", alb: "Load balancers", lambda: "Serverless functions",
   compute_instance: "Virtual machines", gcs_bucket: "Object storage buckets", cloudsql_instance: "Managed databases",
   cloud_run_service: "Serverless containers", gke_cluster: "Kubernetes clusters", gke_node: "Kubernetes nodes",
   cloudfunctions_function: "Serverless functions", pubsub_topic: "Pub/Sub topics", pubsub_subscription: "Pub/Sub subscriptions",
@@ -32,7 +32,7 @@ const PALETTE = ["#2bb3ac", "#38bdf8", "#7c6ee0", "#fbbf24", "#34d399", "#f472b6
 // App.jsx). A tile for any other ("extended") service opens the AWS
 // Console directly instead of navigating internally, since there's no
 // detail page for it yet — see openInConsole() below.
-const CORE_AWS_SERVICES = new Set(["ec2", "ebs", "rds", "lambda", "s3", "elb", "ecs"]);
+const CORE_AWS_SERVICES = new Set(["ec2", "ebs", "rds", "lambda", "s3", "elb", "alb", "ecs"]);
 
 // Real-shape resource-id/ARN patterns per provider, used to attribute
 // active alerts to the right service tile — NOT hardcoded to AWS only.
@@ -43,6 +43,7 @@ function alertMatcher(provider, service) {
       rds: r => r?.includes("rds") || r?.includes("db-") || r?.startsWith("db"),
       lambda: r => r?.includes("lambda") || r?.startsWith("arn:aws:lambda"),
       elb: r => r?.includes("alb") || r?.includes("elb") || r?.includes("loadbalancer"),
+      alb: r => r?.includes("alb") || r?.includes("elb") || r?.includes("loadbalancer"),
       s3: r => r?.includes("s3"), ecs: r => r?.includes("ecs"),
     }[service];
   }
@@ -254,10 +255,11 @@ function ServiceCard({ svc, provider, onClick, alertCount, hasCritical, routable
         opacity: hovered ? 1 : 0.35, transition:"opacity .18s" }}/>
       <div style={{
         width:64, height:64, borderRadius:"50%",
-        background: svc.color+"15", border:`1px solid ${svc.color}25`,
+        background: hovered ? svc.color+"25" : svc.color+"15",
+        borderWidth:1, borderStyle:"solid",
+        borderColor: hovered ? svc.color+"50" : svc.color+"25",
         display:"flex", alignItems:"center", justifyContent:"center",
-        margin:"0 auto 14px", transition:"background .18s",
-        ...(hovered ? { background:svc.color+"25", borderColor:svc.color+"50" } : {}),
+        margin:"0 auto 14px", transition:"background .18s, border-color .18s",
       }}>
         <CloudServiceIcon provider={provider} service={svc.id} size={32} />
       </div>

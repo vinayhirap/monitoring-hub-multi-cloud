@@ -40,6 +40,8 @@ from app.aws.collector_direct import (
     collect_kms_keys,
     collect_cloudwatch_log_groups,
     collect_vpn_connections,
+    collect_cognito_user_pools,
+    collect_global_accelerator_accelerators,
     get_account_summary,
     get_ec2_metric_series,
     get_s3_metric_series,
@@ -330,6 +332,8 @@ _RESOURCE_COLLECTORS = {
     "kms":            collect_kms_keys,
     "logs":           collect_cloudwatch_log_groups,
     "vpn":            collect_vpn_connections,
+    "cognito":        collect_cognito_user_pools,
+    "globalaccelerator": collect_global_accelerator_accelerators,
 }
 
 
