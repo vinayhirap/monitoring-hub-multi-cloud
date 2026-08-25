@@ -879,6 +879,36 @@ def _vpn_raw(region) -> list:
         logger.error(f"Site-to-Site VPN [{region}]: {e}"); return []
 
 
+def collect_cognito_user_pools(region=None) -> list:
+    return _cached(f"cognito_{region}", lambda: _cognito_raw(region))
+
+def _cognito_raw(region) -> list:
+    try:
+        idp = get_session(region).client("cognito-idp")
+        out = []
+        for page in idp.get_paginator("list_user_pools").paginate(PaginationConfig={"PageSize": 60}):
+            out.extend(page.get("UserPools", []))
+        return out
+    except Exception as e:
+        logger.error(f"Cognito [{region}]: {e}"); return []
+
+
+def collect_global_accelerator_accelerators(region=None) -> list:
+    # Global service — Global Accelerator's control-plane API is only
+    # available in us-west-2 regardless of the account's default region.
+    return _cached("globalaccelerator", _global_accelerator_raw)
+
+def _global_accelerator_raw() -> list:
+    try:
+        ga = boto3.client("globalaccelerator", region_name="us-west-2")
+        out = []
+        for page in ga.get_paginator("list_accelerators").paginate():
+            out.extend(page.get("Accelerators", []))
+        return out
+    except Exception as e:
+        logger.error(f"Global Accelerator: {e}"); return []
+
+
 # ── ECS (unchanged — not in YACE config) ─────────────────────────────────
 
 def collect_ecs_clusters(region=None) -> list:

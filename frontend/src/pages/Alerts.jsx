@@ -83,7 +83,7 @@ function hasConsoleTarget(resource) {
 // auto-selects the matching row instead of making the user search).
 const ROUTE_SEGMENT_BY_SERVICE = {
   ec2: "ec2", ebs: "ebs", rds: "rds", lambda: "lambda",
-  s3: "s3", elb: "elb", ecs: "ecs",
+  s3: "s3", elb: "elb", alb: "alb", ecs: "ecs",
 };
 
 function detailRoute(resource, accountId, service) {
