@@ -17,7 +17,7 @@ const BASE = "";
 // (matching resources.resource_type / metric_catalog.service, e.g. "ec2",
 // "vm", "compute_instance") — normalize to the internal keys this file
 // has always used.
-const KNOWN_SERVICE_KEYS = { ec2: "EC2", ebs: "EBS", rds: "RDS", s3: "S3", ecs: "ECS", elb: "ELB", lambda: "Lambda" };
+const KNOWN_SERVICE_KEYS = { ec2: "EC2", ebs: "EBS", rds: "RDS", s3: "S3", ecs: "ECS", elb: "ELB", alb: "ELB", lambda: "Lambda" };
 
 function normalizeService(rawParam) {
   return KNOWN_SERVICE_KEYS[(rawParam || "").toLowerCase()] || null;
