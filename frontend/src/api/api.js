@@ -64,6 +64,10 @@ export const saveAccountMetrics       = (accountId, enabledIds) =>
   apiFetch(`/api/account-metrics/${accountId}`, { method: "PUT", body: JSON.stringify({ enabled_metric_ids: enabledIds }) });
 export const applyDefaultTemplate     = (accountId) =>
   apiFetch(`/api/account-metrics/${accountId}/apply-default`, { method: "POST" });
+
+// ── Federated AWS Console deep link (same endpoint the Alerts page uses) ──
+export const getConsoleUrl = (accountId, service) =>
+  apiFetch(`/api/admin/accounts/${accountId}/console-url?service=${encodeURIComponent(service)}`);
 export const discoverNamespaceMetrics = (accountId, namespace, region) =>
   apiFetch(`/api/account-metrics/${accountId}/discover?namespace=${encodeURIComponent(namespace)}${region ? `&region=${region}` : ""}`, { method: "POST" });
 export const downloadYaceConfig = (accountId, tier) =>

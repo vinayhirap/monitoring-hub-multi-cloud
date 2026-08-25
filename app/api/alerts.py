@@ -11,6 +11,7 @@ from app.aws.federation import (
     resource_console_destination,
     NoConsoleCredentialsError,
 )
+from app.ws.publisher import publish_alert_resolved
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,13 @@ router = APIRouter(prefix="/alerts", tags=["Alerts"])
 # Simple in-process cache — alerts list doesn't change sub-second
 _alerts_cache: dict = {"data": None, "ts": 0}
 _CACHE_TTL = 15  # seconds — short enough for near-realtime, avoids hammering DB
+
+# An active alert whose last_seen_at hasn't been touched in this long has
+# stopped getting fresh metric data -- surfaced to the UI as "stale / no
+# data" so it's not mistaken for a live, just-reconfirmed breach. It is
+# NOT auto-resolved (see 008_revert_falsely_resolved_alerts.sql) -- this
+# is display-only, the operator decides whether to resolve it.
+_STALE_AFTER_MINUTES = 20
 
 
 def _invalidate_cache():
@@ -41,6 +49,11 @@ def _fetch_alerts_from_db():
             a.value,
             CONVERT_TZ(a.triggered_at, @@session.time_zone, '+00:00') AS triggered_at,
             CONVERT_TZ(a.resolved_at,  @@session.time_zone, '+00:00') AS resolved_at,
+            CONVERT_TZ(a.last_seen_at, @@session.time_zone, '+00:00') AS last_seen_at,
+            (a.status = 'active'
+             AND a.last_seen_at IS NOT NULL
+             AND a.last_seen_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {stale} MINUTE)
+            ) AS stale,
             a.acked,
             a.muted_until,
             a.environment,
@@ -54,17 +67,18 @@ def _fetch_alerts_from_db():
                                AND acc.status = 'active'
         ORDER BY a.triggered_at DESC
         LIMIT 200
-    """)
+    """.format(stale=_STALE_AFTER_MINUTES))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
 
     for r in rows:
-        for field in ("triggered_at", "resolved_at"):
+        for field in ("triggered_at", "resolved_at", "last_seen_at"):
             if r.get(field) and isinstance(r[field], datetime.datetime):
                 r[field] = r[field].strftime("%Y-%m-%dT%H:%M:%SZ")
             elif r.get(field) and isinstance(r[field], str) and not r[field].endswith("Z"):
                 r[field] = r[field].rstrip("+00:00").rstrip(" UTC") + "Z"
+        r["stale"] = bool(r.get("stale"))
 
     return rows
 
@@ -107,6 +121,11 @@ def open_alerts():
             a.value,
             CONVERT_TZ(a.triggered_at, @@session.time_zone, '+00:00') AS triggered_at,
             CONVERT_TZ(a.resolved_at,  @@session.time_zone, '+00:00') AS resolved_at,
+            CONVERT_TZ(a.last_seen_at, @@session.time_zone, '+00:00') AS last_seen_at,
+            (a.status = 'active'
+             AND a.last_seen_at IS NOT NULL
+             AND a.last_seen_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {stale} MINUTE)
+            ) AS stale,
             a.acked,
             a.environment,
             r.resource_type                        AS service,
@@ -123,17 +142,18 @@ def open_alerts():
             FIELD(a.severity, 'CRITICAL', 'WARNING', 'INFO'),
             a.triggered_at DESC
         LIMIT 100
-    """)
+    """.format(stale=_STALE_AFTER_MINUTES))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
 
     for r in rows:
-        for field in ("triggered_at", "resolved_at"):
+        for field in ("triggered_at", "resolved_at", "last_seen_at"):
             if r.get(field) and isinstance(r[field], datetime.datetime):
                 r[field] = r[field].strftime("%Y-%m-%dT%H:%M:%SZ")
             elif r.get(field) and isinstance(r[field], str) and not r[field].endswith("Z"):
                 r[field] = r[field].rstrip("+00:00").rstrip(" UTC") + "Z"
+        r["stale"] = bool(r.get("stale"))
 
     return rows
 
@@ -215,17 +235,33 @@ def ack_alert(alert_id: int):
 @router.patch("/{alert_id}/resolve")
 def resolve_alert(alert_id: int):
     conn   = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(dictionary=True)
     cursor.execute(
-        "UPDATE alerts SET resolved_at = UTC_TIMESTAMP(), status = 'resolved' WHERE id = %s",
+        "UPDATE alerts SET resolved_at = UTC_TIMESTAMP(), last_seen_at = UTC_TIMESTAMP(), "
+        "status = 'resolved' WHERE id = %s",
         (alert_id,)
     )
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Alert not found")
     conn.commit()
+
+    cursor.execute("""
+        SELECT acc.id AS account_id
+        FROM alerts a
+        JOIN resources r      ON r.resource_id = a.resource_id
+        JOIN aws_accounts acc ON acc.id = r.aws_account_id
+        WHERE a.id = %s
+    """, (alert_id,))
+    row = cursor.fetchone()
     cursor.close()
     conn.close()
     _invalidate_cache()
+
+    try:
+        publish_alert_resolved(alert_id=alert_id, account_id=row["account_id"] if row else None)
+    except Exception as e:
+        logger.warning(f"Resolve publish failed: {e}")
+
     return {"status": "resolved", "alert_id": alert_id}
 
 
