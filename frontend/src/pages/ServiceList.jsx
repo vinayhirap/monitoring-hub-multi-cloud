@@ -1,7 +1,7 @@
 // monitoring-hub/frontend/src/pages/ServiceList.jsx
 import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getAlerts, getAccountMetrics, getResourceCounts } from "../api/api";
+import { getAlerts, getAccountMetrics, getResourceCounts, getConsoleUrl } from "../api/api";
 import { CloudServiceIcon, AzureBrandLogo, officialPerService } from "../components/cloud-icons";
 
 // Short blurbs for the services we know about. Anything not listed here
@@ -27,19 +27,12 @@ const DESC_OVERRIDES = {
 
 const PALETTE = ["#2bb3ac", "#38bdf8", "#7c6ee0", "#fbbf24", "#34d399", "#f472b6", "#22c55e", "#f59e0b", "#a78bfa", "#e879f9"];
 
-// Maps a service key to the live resource-count field returned by
-// GET /api/live/accounts (already computed cheaply — VictoriaMetrics-
-// first with free Describe-API fallback, no extra AWS calls beyond
-// what that endpoint already does for the Overview page). Only
-// services listed here have both a live count AND a working
-// ServiceDetail page today — anything else (AWS "extended"/directory
-// services, or GCP/Azure services once those clouds are actually
-// deployed) is intentionally left out, so its tile stays hidden
-// instead of linking to a page that doesn't exist yet.
-const RESOURCE_COUNT_FIELD = {
-  ec2: "ec2_total", ebs: "ebs_total", rds: "rds_total",
-  lambda: "lambda_total", s3: "s3_total", elb: "elb_total", ecs: "ecs_total",
-};
+// Services with a real backend resource-list + detail page (see
+// app/api/live_data.py + the /accounts/:id/<service> routes in
+// App.jsx). A tile for any other ("extended") service opens the AWS
+// Console directly instead of navigating internally, since there's no
+// detail page for it yet — see openInConsole() below.
+const CORE_AWS_SERVICES = new Set(["ec2", "ebs", "rds", "lambda", "s3", "elb", "ecs"]);
 
 // Real-shape resource-id/ARN patterns per provider, used to attribute
 // active alerts to the right service tile — NOT hardcoded to AWS only.
@@ -80,12 +73,13 @@ export default function ServiceList() {
   const [groups,  setGroups]  = useState([]);
   const [alerts,  setAlerts]  = useState([]);
   const [loading, setLoading] = useState(true);
-  // Live per-service resource counts for THIS account, from the same
-  // endpoint the Overview page already uses. null while unresolved —
-  // used to hold tiles back until we can actually confirm resources
-  // exist, instead of showing them the moment a metric is enabled.
-  const [liveCounts,   setLiveCounts]   = useState(null);
-  const [countsLoading, setCountsLoading] = useState(true);
+  // Real per-service resource counts from AWS (core services only —
+  // see GET /api/live/resource-counts/{id}). null = not loaded yet;
+  // core tiles fail OPEN (stay visible) until we actually know a
+  // count is a confirmed zero — a slow/failed fetch never hides a
+  // tile that may well have real resources.
+  const [resourceCounts, setResourceCounts] = useState(null);
+  const [consoleLoading, setConsoleLoading] = useState(null); // svc.id currently opening
 
   useEffect(() => {
     let cancelled = false;
@@ -102,34 +96,57 @@ export default function ServiceList() {
     return () => { cancelled = true; };
   }, [id]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setCountsLoading(true);
-    // Scoped to THIS account only — avoids waiting on every other
-    // active account (including undeployed ones) the way
-    // /api/live/accounts does.
-    getResourceCounts(id)
-      .then(counts => { if (!cancelled) setLiveCounts(counts || {}); })
-      .catch(() => { if (!cancelled) setLiveCounts({}); })
-      .finally(() => { if (!cancelled) setCountsLoading(false); });
-    return () => { cancelled = true; };
-  }, [id]);
-
   const provider = account?.provider || "aws";
+
+  // Fetch real resource counts once we know this is an AWS account —
+  // the collectors behind this endpoint are AWS-only. This runs
+  // independently of the main load above so a slow AWS call never
+  // blocks the page from rendering.
+  useEffect(() => {
+    if (!account || (account.provider || "aws") !== "aws") return;
+    let cancelled = false;
+    getResourceCounts(id).then(c => { if (!cancelled) setResourceCounts(c); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [account, id]);
+
+  function openInConsole(serviceId) {
+    if (provider !== "aws") return;
+    setConsoleLoading(serviceId);
+    getConsoleUrl(id, serviceId)
+      .then(r => { if (r?.url) window.open(r.url, "_blank", "noopener,noreferrer"); })
+      .catch(err => {
+        console.error(err);
+        window.alert(
+          "Couldn't open the AWS Console for this service. Check that an IAM " +
+          "role is configured for this account in Settings."
+        );
+      })
+      .finally(() => setConsoleLoading(null));
+  }
+
+  const hasAnyMetricsEnabled = groups.some(g => (g.metrics || []).some(m => m.enabled));
 
   // Dynamic, aligned with the metric selector: a service tile only shows up
   // here if it has at least one metric enabled for THIS account — the same
   // selection made during onboarding or later edited in Settings -> Metrics.
-  // This replaces the old fixed 7-tile AWS-only array, which showed the
-  // same services regardless of what was actually selected (or the
-  // account's provider).
+  // On top of that, a CORE service tile is hidden if we have a real,
+  // confirmed-zero resource count for it. Extended services (no live
+  // collector exists for them yet) and non-AWS accounts always stay
+  // visible — clicking an extended tile opens the AWS Console directly
+  // (see openInConsole above) rather than a broken internal link.
   const activeServices = useMemo(() => {
-    if (!liveCounts) return [];
     return groups
       .filter(g => (g.metrics || []).some(m => m.enabled))
+      .filter(g => {
+        if (!resourceCounts) return true;
+        if (!CORE_AWS_SERVICES.has(g.service)) return true;
+        const count = resourceCounts[g.service];
+        return count === undefined || count === null || count > 0;
+      })
       .map((g, i) => {
-        const countField = RESOURCE_COUNT_FIELD[g.service];
-        const resourceCount = countField ? (liveCounts[countField] ?? 0) : null;
+        const resourceCount = CORE_AWS_SERVICES.has(g.service) && resourceCounts
+          ? (resourceCounts[g.service] ?? null)
+          : null;
         return {
           id: g.service,
           label: g.display_service || g.service,
@@ -138,14 +155,8 @@ export default function ServiceList() {
           enabledCount: g.metrics.filter(m => m.enabled).length,
           resourceCount,
         };
-      })
-      // Only show a tile once we can dynamically confirm at least one
-      // real resource of that type exists. resourceCount === null means
-      // we have no live count (and no detail page) for this service yet
-      // — hide it rather than link somewhere broken; resourceCount === 0
-      // means the metric is enabled but nothing has been created yet.
-      .filter(svc => (svc.resourceCount ?? 0) > 0);
-  }, [groups, liveCounts]);
+      });
+  }, [groups, resourceCounts]);
 
   const activeAlerts = alerts.filter(a => (a.status || "").toLowerCase() === "active");
 
@@ -178,31 +189,41 @@ export default function ServiceList() {
         </div>
       </div>
 
-      {(loading || countsLoading) ? (
+      {loading ? (
         <div style={{ color:"var(--text-muted)", fontSize:13, padding:"40px 0", textAlign:"center" }}>Loading services…</div>
       ) : activeServices.length === 0 ? (
         <div style={{
           border:"1px dashed var(--border)", borderRadius:"var(--radius-lg)", padding:"40px 24px",
           textAlign:"center", color:"var(--text-muted)", fontSize:13,
         }}>
-          No services with live resources yet. A tile appears here once a service both has monitoring enabled in
-          <b style={{color:"var(--text-secondary)"}}> Settings → Metrics</b> and has at least one real resource discovered in this account.
+          {hasAnyMetricsEnabled ? (
+            <>Metrics are enabled for this account, but no matching resources were found in AWS
+            right now — this list updates automatically once resources appear.</>
+          ) : (
+            <>No services are enabled for this account yet. Go to <b style={{color:"var(--text-secondary)"}}>Settings → Metrics</b> to select
+            which services and metrics to monitor — this page always mirrors that selection.</>
+          )}
         </div>
       ) : (
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(220px, 1fr))", gap:16 }}>
-          {activeServices.map(svc => (
-            <ServiceCard key={svc.id} svc={svc} provider={provider}
-              alertCount={alertsForService(svc.id).length}
-              hasCritical={alertsForService(svc.id).some(a => a.severity?.toUpperCase() === "CRITICAL")}
-              onClick={() => navigate(`/accounts/${id}/${svc.id}`)} />
-          ))}
+          {activeServices.map(svc => {
+            const routable = CORE_AWS_SERVICES.has(svc.id);
+            return (
+              <ServiceCard key={svc.id} svc={svc} provider={provider}
+                alertCount={alertsForService(svc.id).length}
+                hasCritical={alertsForService(svc.id).some(a => a.severity?.toUpperCase() === "CRITICAL")}
+                routable={routable}
+                isConsoleLoading={consoleLoading === svc.id}
+                onClick={() => routable ? navigate(`/accounts/${id}/${svc.id}`) : openInConsole(svc.id)} />
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-function ServiceCard({ svc, provider, onClick, alertCount, hasCritical }) {
+function ServiceCard({ svc, provider, onClick, alertCount, hasCritical, routable = true, isConsoleLoading = false }) {
   const [hovered, setHovered] = useState(false);
   const alertColor = hasCritical ? "#ef4444" : "#f59e0b";
   return (
@@ -255,7 +276,9 @@ function ServiceCard({ svc, provider, onClick, alertCount, hasCritical }) {
         background:svc.color+"12", border:`1px solid ${svc.color}30`,
         borderRadius:20, padding:"4px 12px",
         opacity: hovered ? 1 : 0.6, transition:"all .18s",
-      }}>OPEN →</div>
+      }}>
+        {routable ? "OPEN →" : (isConsoleLoading ? "OPENING…" : "VIEW IN CONSOLE ↗")}
+      </div>
     </div>
   );
 }
