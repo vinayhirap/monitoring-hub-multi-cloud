@@ -273,6 +273,43 @@ def live_ecs(account_db_id: int):
     return _serialize(collect_ecs_clusters(region))
 
 
+# ── Real-time per-service resource counts ─────────────────────
+# Used by the Services page to decide whether a tile should be shown
+# at all — dynamically, based on whether the account actually HAS any
+# resources of that type right now, instead of only whether a metric
+# is selected for it. Only covers the 7 services with a live collector
+# (same ones the /ec2, /ebs, /rds, /lambda, /s3, /elb, /ecs endpoints
+# above use) — there's no resource-level collector yet for the
+# extended (metric-catalog-only) services, so those aren't included
+# here; the frontend treats a missing key as "unknown" and keeps that
+# tile visible rather than hiding it on a guess.
+_CORE_RESOURCE_COLLECTORS = {
+    "ec2":    collect_ec2_instances,
+    "ebs":    collect_ebs_volumes,
+    "rds":    collect_rds_instances,
+    "lambda": collect_lambda_functions,
+    "s3":     collect_s3_buckets,
+    "elb":    collect_elb,
+    "ecs":    collect_ecs_clusters,
+}
+
+
+@router.get("/resource-counts/{account_db_id}")
+def live_resource_counts(account_db_id: int):
+    acc    = _get_db_account(account_db_id)
+    region = acc.get("default_region")
+    counts = {}
+    for svc, collector in _CORE_RESOURCE_COLLECTORS.items():
+        try:
+            counts[svc] = len(collector(region))
+        except Exception as e:
+            # Unknown, not zero — a transient AWS/permissions error
+            # shouldn't hide a tile that may well have real resources.
+            logger.warning(f"resource-counts: {svc} failed for account {account_db_id}: {e}")
+            counts[svc] = None
+    return counts
+
+
 # ── CloudWatch metric series endpoints ───────────────────────
 
 @router.get("/metrics/ec2/{instance_id}")

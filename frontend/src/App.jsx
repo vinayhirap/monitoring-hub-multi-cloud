@@ -48,13 +48,7 @@ function AppRoutes() {
         <Route path="compliance"                element={<Compliance />} />
         <Route path="settings"                  element={<Settings />} />
         <Route path="accounts/:id/services"     element={<ServiceList />} />
-        <Route path="accounts/:id/ec2"          element={<ServiceDetail service="EC2"    />} />
-        <Route path="accounts/:id/ebs"          element={<ServiceDetail service="EBS"    />} />
-        <Route path="accounts/:id/rds"          element={<ServiceDetail service="RDS"    />} />
-        <Route path="accounts/:id/s3"           element={<ServiceDetail service="S3"     />} />
-        <Route path="accounts/:id/ecs"          element={<ServiceDetail service="ECS"    />} />
-        <Route path="accounts/:id/elb"          element={<ServiceDetail service="ELB"    />} />
-        <Route path="accounts/:id/lambda"       element={<ServiceDetail service="Lambda" />} />
+        <Route path="accounts/:id/:service"     element={<ServiceDetail />} />
         <Route path="accounts/:id"              element={<AccountDetail />} />
       </Route>
       <Route path="*" element={<Navigate to="/overview" replace />} />

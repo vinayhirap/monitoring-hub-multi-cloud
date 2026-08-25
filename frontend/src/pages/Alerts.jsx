@@ -202,7 +202,14 @@ export default function Alerts() {
         prev.map(a => a.id === lastMessage.id ? { ...a, status: "acknowledged" } : a)
       );
     }
-  }, [lastMessage, soundOn]);
+
+    // Backend auto-resolved a batch (account removed / orphaned resource
+    // cleanup) — just reload rather than trying to patch rows we may not
+    // even have IDs for.
+    if (lastMessage.type === "bulk_alerts_changed") {
+      loadAlerts();
+    }
+  }, [lastMessage, soundOn, loadAlerts]);
 
   async function handleAck(id) {
     if (!canAct) return;
@@ -262,7 +269,12 @@ export default function Alerts() {
 
   const filtered = alerts.filter(a => {
     const s = (a.status || "").toLowerCase();
-    if (tab === "active"       && s !== "active")       return false;
+    // "Active" means confirmed live — a resource still sending fresh data
+    // that's breaching right now. Stale ones (no fresh data in 20+ min)
+    // move to their own tab so they don't clutter the feed you actually
+    // watch, without silently resolving/hiding them.
+    if (tab === "active"       && (s !== "active" || a.stale)) return false;
+    if (tab === "stale"        && (s !== "active" || !a.stale)) return false;
     if (tab === "critical"     && (a.severity || "").toUpperCase() !== "CRITICAL") return false;
     if (tab === "acknowledged" && s !== "acknowledged") return false;
     if (tab === "resolved"     && s !== "resolved")     return false;
@@ -279,7 +291,8 @@ export default function Alerts() {
 
   const counts = {
     all:          alerts.length,
-    active:       alerts.filter(a => (a.status || "").toLowerCase() === "active").length,
+    active:       alerts.filter(a => (a.status || "").toLowerCase() === "active" && !a.stale).length,
+    stale:        alerts.filter(a => (a.status || "").toLowerCase() === "active" && a.stale).length,
     critical:     alerts.filter(a => (a.severity || "").toUpperCase() === "CRITICAL").length,
     acknowledged: alerts.filter(a => (a.status || "").toLowerCase() === "acknowledged").length,
     resolved:     alerts.filter(a => (a.status || "").toLowerCase() === "resolved").length,
@@ -313,6 +326,7 @@ export default function Alerts() {
         {[
           ["all",          "All"],
           ["active",       "Active"],
+          ["stale",        "Stale"],
           ["critical",     "Critical"],
           ["acknowledged", "Acknowledged"],
           ["resolved",     "Resolved"],
@@ -416,6 +430,15 @@ export default function Alerts() {
 
                       <td className="mono small">
                         {a.triggered_at ? shortDateTime(a.triggered_at) : "—"}
+                        {a.stale && (
+                          <div
+                            className="alert-stale-flag"
+                            title="No fresh metric data for this resource in a while — the resource may have been decommissioned, or the collector/VictoriaMetrics pipeline may be down for it. This alert has NOT been auto-resolved; verify before dismissing."
+                            style={{ color: "#c98a2b", fontSize: 11, marginTop: 2 }}
+                          >
+                            ⚠ stale — no data {timeSince(a.last_seen_at)}
+                          </div>
+                        )}
                       </td>
 
                       <td>
@@ -541,6 +564,20 @@ const METRIC_LABELS = {
 
 function metricLabel(name) {
   return METRIC_LABELS[(name || "").toLowerCase()] || name;
+}
+
+function timeSince(iso) {
+  if (!iso) return "";
+  try {
+    const ms = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(ms / 60000);
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h`;
+    return `${Math.floor(hrs / 24)}d`;
+  } catch {
+    return "";
+  }
 }
 
 function shortDateTime(iso) {

@@ -55,3 +55,22 @@ def publish_alert(alert_id: int, severity: str, metric: str,
         "threshold": round(threshold, 2),
         "account_id": account_id,
     })
+
+
+def publish_alert_resolved(alert_id: int | None, account_id: int | None, bulk: bool = False):
+    """
+    Pushed whenever an alert leaves 'active' status outside of a direct
+    user click (auto-resolved by evaluate_alerts' sustained-recovery
+    check or by _auto_resolve_stale_alerts). The Alerts page already
+    polls every 10s, so this just makes it feel instant / lets other
+    open tabs update without waiting for the poll.
+
+    bulk=True (id/account omitted) is used for the stale-alert sweep,
+    which can touch several alerts in one pass — the frontend just
+    reloads its list rather than patching individual rows.
+    """
+    publish("alerts", {
+        "type": "alert_resolved" if not bulk else "bulk_alerts_changed",
+        "id": alert_id,
+        "account_id": account_id,
+    })
