@@ -74,11 +74,19 @@ export default function ServiceList() {
   const [groups,  setGroups]  = useState([]);
   const [alerts,  setAlerts]  = useState([]);
   const [loading, setLoading] = useState(true);
-  // Real per-service resource counts from AWS (core services only —
-  // see GET /api/live/resource-counts/{id}). null = not loaded yet;
-  // core tiles fail OPEN (stay visible) until we actually know a
-  // count is a confirmed zero — a slow/failed fetch never hides a
-  // tile that may well have real resources.
+  // Real per-service resource counts from AWS — see GET
+  // /api/live/resource-counts/{id}. null = not loaded yet (used only to
+  // avoid a flash of every tile before the first fetch resolves). Once
+  // loaded, a tile shows ONLY if we have a confirmed count > 0 for it.
+  // A missing/failed count (undefined, or a collector that threw — e.g.
+  // an AccessDenied on that one service) is treated the same as zero and
+  // hidden. This is a deliberate choice: it trades "never hide a tile
+  // that might have real resources" for "never show a tile that doesn't
+  // have any" — so a flaky/under-permissioned collector for one service
+  // will make that tile disappear rather than stay visible. If a tile
+  // you expect to see goes missing, check the backend logs for a
+  // "resource-counts: <svc> failed" warning — that's usually an IAM
+  // permissions gap on that specific service, not a real zero.
   const [resourceCounts, setResourceCounts] = useState(null);
   const [consoleLoading, setConsoleLoading] = useState(null); // svc.id currently opening
 
@@ -106,7 +114,7 @@ export default function ServiceList() {
   useEffect(() => {
     if (!account || (account.provider || "aws") !== "aws") return;
     let cancelled = false;
-    getResourceCounts(id).then(c => { if (!cancelled) setResourceCounts(c); }).catch(() => {});
+    getResourceCounts(id).then(c => { if (!cancelled) setResourceCounts(c ?? {}); }).catch(() => {});
     return () => { cancelled = true; };
   }, [account, id]);
 
@@ -129,20 +137,20 @@ export default function ServiceList() {
 
   // Dynamic, aligned with the metric selector: a service tile only shows up
   // here if it has at least one metric enabled for THIS account — the same
-  // selection made during onboarding or later edited in Settings -> Metrics.
-  // On top of that, ANY service (core or extended) is hidden if we have a
-  // real, confirmed-zero resource count for it — see GET
-  // /api/live/resource-counts/{id}, which now covers both tiers. A service
-  // still missing a collector (key absent from that response) or a
-  // non-AWS account (resourceCounts never populated) fails OPEN and stays
-  // visible, since "unknown" is not the same as "confirmed none".
+  // selection made during onboarding or later edited in Settings -> Metrics
+  // — AND (for AWS accounts, once resourceCounts has loaded) a confirmed,
+  // positive resource count. No confirmed count => hidden. Non-AWS accounts
+  // have no resource-count data source at all, so they always show (nothing
+  // to check them against).
   const activeServices = useMemo(() => {
+    const isAws = provider === "aws";
     return groups
       .filter(g => (g.metrics || []).some(m => m.enabled))
       .filter(g => {
-        if (!resourceCounts) return true;
+        if (!isAws) return true;          // no resource-count data for GCP/Azure
+        if (!resourceCounts) return true; // still loading — avoid a flash of nothing
         const count = resourceCounts[g.service];
-        return count === undefined || count === null || count > 0;
+        return typeof count === "number" && count > 0;
       })
       .map((g, i) => {
         const resourceCount = resourceCounts
@@ -157,7 +165,7 @@ export default function ServiceList() {
           resourceCount,
         };
       });
-  }, [groups, resourceCounts]);
+  }, [groups, resourceCounts, provider]);
 
   const activeAlerts = alerts.filter(a => (a.status || "").toLowerCase() === "active");
 
