@@ -8,6 +8,38 @@ from app.aws.collector_direct import (
     collect_s3_buckets,
     collect_elb,
     collect_ecs_clusters,
+    collect_nlb,
+    collect_acm_certificates,
+    collect_backup_resources,
+    collect_dms_instances,
+    collect_direct_connections,
+    collect_state_machines,
+    collect_apigateway,
+    collect_dynamodb_tables,
+    collect_sqs_queues,
+    collect_sns_topics,
+    collect_cloudfront_distributions,
+    collect_elasticache_clusters,
+    collect_opensearch_domains,
+    collect_eks_clusters,
+    collect_efs_filesystems,
+    collect_documentdb_clusters,
+    collect_neptune_clusters,
+    collect_msk_clusters,
+    collect_kinesis_streams,
+    collect_firehose_streams,
+    collect_autoscaling_groups,
+    collect_nat_gateways,
+    collect_transit_gateways,
+    collect_route53_zones,
+    collect_waf_web_acls,
+    collect_redshift_clusters,
+    collect_memorydb_clusters,
+    collect_dax_clusters,
+    collect_eventbridge_rules,
+    collect_kms_keys,
+    collect_cloudwatch_log_groups,
+    collect_vpn_connections,
     get_account_summary,
     get_ec2_metric_series,
     get_s3_metric_series,
@@ -198,32 +230,6 @@ def live_accounts():
     return result
 
 
-@router.get("/resource-counts/{account_db_id}")
-def live_resource_counts(account_db_id: int):
-    """
-    Lightweight per-account resource counts for the Services page
-    (ServiceList.jsx tile visibility) — deliberately scoped to ONE
-    account instead of GET /api/live/accounts, which fans out to
-    every active account (including ones with no real deployment,
-    e.g. accounts without a working role/YACE setup) and makes the
-    caller wait for the slowest one. Reuses the same 60s in-process
-    cache in collector_direct.py, so this costs nothing extra beyond
-    what get_account_summary() already does for the Overview page.
-    """
-    acc     = _get_db_account(account_db_id)
-    region  = acc.get("default_region")
-    summary = get_account_summary(region)
-    return {
-        "ec2_total":    summary.get("ec2_total",    0),
-        "ebs_total":    summary.get("ebs_total",    0),
-        "rds_total":    summary.get("rds_total",    0),
-        "lambda_total": summary.get("lambda_total", 0),
-        "s3_total":     summary.get("s3_total",     0),
-        "elb_total":    summary.get("elb_total",    0),
-        "ecs_total":    summary.get("ecs_total",    0),
-    }
-
-
 @router.get("/ec2/{account_db_id}")
 def live_ec2(account_db_id: int):
     acc    = _get_db_account(account_db_id)
@@ -277,20 +283,53 @@ def live_ecs(account_db_id: int):
 # Used by the Services page to decide whether a tile should be shown
 # at all — dynamically, based on whether the account actually HAS any
 # resources of that type right now, instead of only whether a metric
-# is selected for it. Only covers the 7 services with a live collector
-# (same ones the /ec2, /ebs, /rds, /lambda, /s3, /elb, /ecs endpoints
-# above use) — there's no resource-level collector yet for the
-# extended (metric-catalog-only) services, so those aren't included
-# here; the frontend treats a missing key as "unknown" and keeps that
-# tile visible rather than hiding it on a guess.
-_CORE_RESOURCE_COLLECTORS = {
-    "ec2":    collect_ec2_instances,
-    "ebs":    collect_ebs_volumes,
-    "rds":    collect_rds_instances,
-    "lambda": collect_lambda_functions,
-    "s3":     collect_s3_buckets,
-    "elb":    collect_elb,
-    "ecs":    collect_ecs_clusters,
+# is selected for it. Covers every service with a live collector,
+# core (ec2/ebs/rds/lambda/s3/alb/ecs) and extended
+# (nlb/acm/backup/dms/directconnect/states) alike; the frontend
+# treats a still-missing key (a service with no collector at all)
+# as "unknown" and keeps that tile visible rather than hiding it on
+# a guess, but every service listed here gets a real 0/N.
+_RESOURCE_COLLECTORS = {
+    "ec2":            collect_ec2_instances,
+    "ebs":            collect_ebs_volumes,
+    "rds":            collect_rds_instances,
+    "lambda":         collect_lambda_functions,
+    "s3":             collect_s3_buckets,
+    "elb":            collect_elb,
+    "alb":            collect_elb,
+    "nlb":            collect_nlb,
+    "ecs":            collect_ecs_clusters,
+    "certificatemanager": collect_acm_certificates,
+    "backup":         collect_backup_resources,
+    "dms":            collect_dms_instances,
+    "directconnect":  collect_direct_connections,
+    "states":         collect_state_machines,
+    "apigateway":     collect_apigateway,
+    "dynamodb":       collect_dynamodb_tables,
+    "sqs":            collect_sqs_queues,
+    "sns":            collect_sns_topics,
+    "cloudfront":     collect_cloudfront_distributions,
+    "elasticache":    collect_elasticache_clusters,
+    "opensearch":     collect_opensearch_domains,
+    "eks":            collect_eks_clusters,
+    "efs":            collect_efs_filesystems,
+    "documentdb":     collect_documentdb_clusters,
+    "neptune":        collect_neptune_clusters,
+    "msk":            collect_msk_clusters,
+    "kinesis":        collect_kinesis_streams,
+    "firehose":       collect_firehose_streams,
+    "autoscaling":    collect_autoscaling_groups,
+    "natgateway":     collect_nat_gateways,
+    "transitgateway": collect_transit_gateways,
+    "route53":        collect_route53_zones,
+    "wafv2":          collect_waf_web_acls,
+    "redshift":       collect_redshift_clusters,
+    "memorydb":       collect_memorydb_clusters,
+    "dax":            collect_dax_clusters,
+    "events":         collect_eventbridge_rules,
+    "kms":            collect_kms_keys,
+    "logs":           collect_cloudwatch_log_groups,
+    "vpn":            collect_vpn_connections,
 }
 
 
@@ -299,14 +338,21 @@ def live_resource_counts(account_db_id: int):
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region")
     counts = {}
-    for svc, collector in _CORE_RESOURCE_COLLECTORS.items():
+
+    def _one(svc, collector):
         try:
-            counts[svc] = len(collector(region))
+            return svc, len(collector(region))
         except Exception as e:
             # Unknown, not zero — a transient AWS/permissions error
             # shouldn't hide a tile that may well have real resources.
             logger.warning(f"resource-counts: {svc} failed for account {account_db_id}: {e}")
-            counts[svc] = None
+            return svc, None
+
+    with ThreadPoolExecutor(max_workers=len(_RESOURCE_COLLECTORS)) as ex:
+        futures = [ex.submit(_one, svc, collector) for svc, collector in _RESOURCE_COLLECTORS.items()]
+        for f in as_completed(futures):
+            svc, count = f.result()
+            counts[svc] = count
     return counts
 
 
