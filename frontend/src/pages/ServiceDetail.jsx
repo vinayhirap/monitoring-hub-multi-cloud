@@ -10,7 +10,18 @@ import {
 } from "../components/icons";
 
 const BASE = "";
-const OPTIONAL_SERVICES = new Set([]);
+
+// The 7 AWS resource types this page can actually fetch live data for
+// today (app/api/live_data.py only has AWS endpoints — no GCP/Azure
+// resource-list endpoints exist yet). URL params arrive lowercase
+// (matching resources.resource_type / metric_catalog.service, e.g. "ec2",
+// "vm", "compute_instance") — normalize to the internal keys this file
+// has always used.
+const KNOWN_SERVICE_KEYS = { ec2: "EC2", ebs: "EBS", rds: "RDS", s3: "S3", ecs: "ECS", elb: "ELB", lambda: "Lambda" };
+
+function normalizeService(rawParam) {
+  return KNOWN_SERVICE_KEYS[(rawParam || "").toLowerCase()] || null;
+}
 
 const SERVICE_META = {
   EC2:    { icon: ServerIcon,   color: "#2bb3ac", label: "EC2 Instances" },
@@ -117,11 +128,14 @@ function findRowByResource(rows, service, resource) {
   }) || null;
 }
 
-export default function ServiceDetail({ service }) {
-  const { id }   = useParams();
+export default function ServiceDetail() {
+  const { id, service: rawService } = useParams();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const meta     = SERVICE_META[service] || SERVICE_META.EC2;
+  const service  = normalizeService(rawService);       // "EC2" etc, or null if unsupported
+  const meta     = service ? (SERVICE_META[service] || SERVICE_META.EC2) : {
+    icon: CloudIcon, color: "#6382be", label: (rawService || "Service"),
+  };
 
   const [account,    setAccount]    = useState(null);
   const [rows,       setRows]       = useState([]);
@@ -153,12 +167,25 @@ fetchAccount(id).then(setAccount).catch(err => {
 
   const loadRows = useCallback(async () => {
     if (notImplRef.current) return;
+    if (!service) {
+      // Unsupported/unmapped service (GCP/Azure, or an AWS directory-tier
+      // service without a live-data endpoint yet) -- don't even attempt a
+      // fetch, go straight to the same graceful NotImplState AWS services
+      // without endpoints already use.
+      notImplRef.current = true;
+      setNotImpl(true);
+      setRows([]);
+      setLoading(false);
+      return;
+    }
     setError(null);
     try {
       const data = await fetchService(id, service);
       setRows(Array.isArray(data) ? data : []);
     } catch (e) {
-      if (e.status === 404 && OPTIONAL_SERVICES.has(service)) {
+      if (e.status === 404) {
+        // Any unmapped/unimplemented service 404s the same way -- treat
+        // it as "not configured yet" rather than a hard error.
         notImplRef.current = true;
         setNotImpl(true);
         setRows([]);
@@ -284,7 +311,7 @@ fetchAccount(id).then(setAccount).catch(err => {
           {account?.account_name ?? `Account ${id}`}
         </span>
         <span className="bc-sep">›</span>
-        <span className="bc-current">{service}</span>
+        <span className="bc-current">{meta.label}</span>
       </div>
 
       <div className="detail-header">
@@ -308,14 +335,14 @@ fetchAccount(id).then(setAccount).catch(err => {
         </div>
         <div className="detail-header-right">
           <button className="btn-back" onClick={() => navigate(`/accounts/${id}/services`)}><ArrowLeftIcon size={13} /> Back</button>
-          <button className="btn-aws" onClick={() => openAccountConsole(id, service, { region })}>
-            <CloudIcon size={13} /> AWS Console <ExternalLinkIcon size={12} />
+          <button className="btn-aws" onClick={() => openAccountConsole(id, rawService, { region })}>
+            <CloudIcon size={13} /> Open Console <ExternalLinkIcon size={12} />
           </button>
         </div>
       </div>
 
       {notImpl ? (
-        <NotImplState service={service} meta={meta} region={region} accountId={id} />
+        <NotImplState service={meta.label} rawService={rawService} meta={meta} region={region} accountId={id} />
       ) : (
         <div className="detail-layout">
           <div className={`instance-panel ${selected ? "with-detail" : ""}`}>
@@ -379,16 +406,17 @@ fetchAccount(id).then(setAccount).catch(err => {
   );
 }
 
-function NotImplState({ service, meta, region, accountId }) {
+function NotImplState({ service, rawService, meta, region, accountId }) {
   return (
     <div style={{ textAlign: "center", padding: "64px 32px", background: "rgba(13,22,39,0.5)", border: "1px solid rgba(99,130,190,0.1)", borderRadius: 12, marginTop: 8 }}>
       <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}><ServiceIcon icon={meta.icon} size={48} /></div>
-      <div style={{ fontSize: 16, fontWeight: 700, color: "#e2e8f0", marginBottom: 8 }}>{meta.label} not configured</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: "#e2e8f0", marginBottom: 8 }}>{service} not configured</div>
       <div style={{ fontSize: 12, color: "rgba(99,130,190,0.65)", lineHeight: 1.7, marginBottom: 20 }}>
-        Backend endpoint not available yet for {service}.
+        This app doesn't have a resource list view for {service.toLowerCase?.() || service} yet.
+        You can still open it directly in the cloud console.
       </div>
-      <button className="btn-aws" onClick={() => openAccountConsole(accountId, service, { region })}>
-        <CloudIcon size={13} /> View in AWS Console <ExternalLinkIcon size={12} />
+      <button className="btn-aws" onClick={() => openAccountConsole(accountId, rawService, { region })}>
+        <CloudIcon size={13} /> Open in Console <ExternalLinkIcon size={12} />
       </button>
     </div>
   );

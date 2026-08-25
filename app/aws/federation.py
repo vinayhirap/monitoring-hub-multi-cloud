@@ -18,6 +18,7 @@ regardless of any existing browser session.
 
 Docs: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_enable-console-custom-url.html
 """
+import datetime
 import json
 import logging
 import urllib.parse
@@ -250,6 +251,36 @@ def build_scoped_session_policy(service: str | None, resource_id: str | None = N
     return body
 
 
+def _write_console_open_audit(requested_by, target_account_id, service, resource_id):
+    """
+    Records who opened a console link and for what, in the app's OWN
+    audit log (visible under Audit Logs in the UI). This is the only
+    attribution the app can meaningfully provide now that it no
+    longer impersonates anyone for console access — AWS-side
+    attribution is whatever identity the person is personally signed
+    in as, which the app has no visibility into or control over.
+    """
+    try:
+        from app.db import get_connection
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO audit_logs (actor, action, payload) VALUES (%s,%s,%s)",
+            (
+                requested_by or "unknown",
+                "Opened AWS console link",
+                json.dumps({
+                    "account_id": target_account_id,
+                    "service": service,
+                    "resource_id": resource_id,
+                    "at": datetime.datetime.utcnow().isoformat(),
+                }),
+            ),
+        )
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        logger.warning("Console-open audit write failed: %s", e)
+
+
 def build_federated_console_url(role_arn: str | None, external_id: str | None,
                                  destination: str,
                                  target_account_id: str | None = None,
@@ -260,52 +291,24 @@ def build_federated_console_url(role_arn: str | None, external_id: str | None,
                                  resource_name: str | None = None,
                                  ecs_service_name: str | None = None) -> str:
     """
-    Exchanges credentials for a sign-in token and returns a login URL that
-    drops the user directly onto `destination` inside the CORRECT account —
-    no dependence on whatever account the browser is currently signed into.
+    Returns the plain AWS Console URL for `destination` directly — no
+    AWS session is minted for this — see apply_console_direct_link_fix.py.
+    Whichever AWS identity is already signed into the browser (or gets
+    prompted to sign in, if none) governs what's actually visible.
+    That's a deliberate change from the previous federated-session
+    approach: access is now genuinely the viewer's own AWS credentials
+    and entitlements, not an app-controlled impersonated identity, and
+    there is no token embedded that can silently re-authenticate
+    someone after they sign out of the AWS console.
 
-    Credential path is chosen automatically:
-      - role_arn set                                   -> AssumeRole (cross-account)
-      - role_arn empty, target_account_id == own account -> GetFederationToken
-                                                             (self-federation,
-                                                             zero config)
-      - role_arn empty, target_account_id != own account -> NoConsoleCredentialsError
-
-    `requested_by` (the monitoring-hub username of whoever clicked
-    "Console") and `service`/`resource_id`/`region`/etc. (the
-    resource actually being viewed) are used to attribute the
-    resulting AWS session to that specific person and narrow it to
-    that specific resource, instead of every click in the app
-    sharing one generic, blanket-ReadOnlyAccess identity. See
-    _sanitize_session_name and build_scoped_session_policy.
+    `role_arn`/`external_id` are accepted for backward compatibility
+    with callers but are no longer used to mint credentials here.
+    `requested_by`/`service`/`resource_id`/`target_account_id` are used
+    only to record the click in the app's own audit log, since the app
+    is no longer in a position to attribute anything on the AWS side.
     """
-    role_arn = (role_arn or "").strip()
-
-    session_name   = _sanitize_session_name(requested_by)
-    session_policy = build_scoped_session_policy(
-        service, resource_id, region, target_account_id,
-        resource_name, ecs_service_name,
-    )
-
-    if role_arn:
-        session = assume_role(role_arn, external_id,
-                               session_name=session_name, policy=session_policy)
-    else:
-        own_account_id = get_own_account_id()
-        if target_account_id and own_account_id and str(target_account_id) == str(own_account_id):
-            logger.info(
-                "Console link for account %s uses self-federation (server's own account, no role_arn needed), "
-                "requested_by=%s service=%s",
-                target_account_id, requested_by, service,
-            )
-            session = get_self_federation_session(session_name=session_name, policy=session_policy)
-        else:
-            raise NoConsoleCredentialsError(
-                "No AWS role configured for this account, and it is not "
-                "the server's own AWS account, so no automatic credential "
-                "path is available. Set an IAM Role ARN for this account "
-                "in Settings to enable console access."
-            )
+    _write_console_open_audit(requested_by, target_account_id, service, resource_id)
+    return destination
 
     creds = session.get_credentials().get_frozen_credentials()
 
