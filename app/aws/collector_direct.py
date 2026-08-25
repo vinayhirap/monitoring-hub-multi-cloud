@@ -429,6 +429,456 @@ def _elb_raw(region) -> list:
         logger.error(f"ELB [{region}]: {e}"); return []
 
 
+# ── Extended services (lightweight discovery only, no CW metrics) ───────
+# One cheap describe/list call each, used ONLY to answer "does this
+# account have any resources of this type right now" for the Services
+# page tile filter (see app/api/live_data.py resource-counts endpoint).
+# Cached the same way as the core collectors above.
+
+def collect_nlb(region=None) -> list:
+    return _cached(f"nlb_{region}", lambda: _nlb_raw(region))
+
+def _nlb_raw(region) -> list:
+    try:
+        elb = get_session(region).client("elbv2")
+        out = [lb for lb in elb.describe_load_balancers().get("LoadBalancers", [])
+               if lb.get("Type") == "network"]
+        logger.info(f"NLB: {len(out)} in {region}")
+        return out
+    except Exception as e:
+        logger.error(f"NLB [{region}]: {e}"); return []
+
+
+def collect_acm_certificates(region=None) -> list:
+    return _cached(f"acm_{region}", lambda: _acm_raw(region))
+
+def _acm_raw(region) -> list:
+    try:
+        acm = get_session(region).client("acm")
+        out = []
+        for page in acm.get_paginator("list_certificates").paginate():
+            out.extend(page.get("CertificateSummaryList", []))
+        logger.info(f"ACM: {len(out)} certificates in {region}")
+        return out
+    except Exception as e:
+        logger.error(f"ACM [{region}]: {e}"); return []
+
+
+def collect_backup_resources(region=None) -> list:
+    return _cached(f"backup_{region}", lambda: _backup_raw(region))
+
+def _backup_raw(region) -> list:
+    try:
+        backup = get_session(region).client("backup")
+        out = []
+        for page in backup.get_paginator("list_protected_resources").paginate():
+            out.extend(page.get("Results", []))
+        logger.info(f"Backup: {len(out)} protected resources in {region}")
+        return out
+    except Exception as e:
+        logger.error(f"Backup [{region}]: {e}"); return []
+
+
+def collect_dms_instances(region=None) -> list:
+    return _cached(f"dms_{region}", lambda: _dms_raw(region))
+
+def _dms_raw(region) -> list:
+    try:
+        dms = get_session(region).client("dms")
+        out = []
+        for page in dms.get_paginator("describe_replication_instances").paginate():
+            out.extend(page.get("ReplicationInstances", []))
+        logger.info(f"DMS: {len(out)} replication instances in {region}")
+        return out
+    except Exception as e:
+        logger.error(f"DMS [{region}]: {e}"); return []
+
+
+def collect_direct_connections(region=None) -> list:
+    return _cached(f"directconnect_{region}", lambda: _directconnect_raw(region))
+
+def _directconnect_raw(region) -> list:
+    try:
+        dx = get_session(region).client("directconnect")
+        out = dx.describe_connections().get("connections", [])
+        logger.info(f"Direct Connect: {len(out)} connections in {region}")
+        return out
+    except Exception as e:
+        logger.error(f"Direct Connect [{region}]: {e}"); return []
+
+
+def collect_state_machines(region=None) -> list:
+    return _cached(f"states_{region}", lambda: _states_raw(region))
+
+def _states_raw(region) -> list:
+    try:
+        sfn = get_session(region).client("stepfunctions")
+        out = []
+        for page in sfn.get_paginator("list_state_machines").paginate():
+            out.extend(page.get("stateMachines", []))
+        logger.info(f"Step Functions: {len(out)} state machines in {region}")
+        return out
+    except Exception as e:
+        logger.error(f"Step Functions [{region}]: {e}"); return []
+
+
+# ── Directory-tier services (lightweight discovery only) ────────────────
+# One cheap list/describe call each, same purpose as the extended-service
+# collectors above: answer "does this account have any of these right
+# now" for the Services page tile filter. Nothing here fetches metrics.
+
+def collect_apigateway(region=None) -> list:
+    return _cached(f"apigateway_{region}", lambda: _apigateway_raw(region))
+
+def _apigateway_raw(region) -> list:
+    try:
+        s = get_session(region)
+        rest = s.client("apigateway").get_paginator("get_rest_apis")
+        rest_items = [i for p in rest.paginate() for i in p.get("items", [])]
+        http_items = []
+        try:
+            v2 = s.client("apigatewayv2").get_paginator("get_apis")
+            http_items = [i for p in v2.paginate() for i in p.get("Items", [])]
+        except Exception:
+            pass
+        return rest_items + http_items
+    except Exception as e:
+        logger.error(f"API Gateway [{region}]: {e}"); return []
+
+
+def collect_dynamodb_tables(region=None) -> list:
+    return _cached(f"dynamodb_{region}", lambda: _dynamodb_raw(region))
+
+def _dynamodb_raw(region) -> list:
+    try:
+        ddb = get_session(region).client("dynamodb")
+        out = []
+        for page in ddb.get_paginator("list_tables").paginate():
+            out.extend(page.get("TableNames", []))
+        return out
+    except Exception as e:
+        logger.error(f"DynamoDB [{region}]: {e}"); return []
+
+
+def collect_sqs_queues(region=None) -> list:
+    return _cached(f"sqs_{region}", lambda: _sqs_raw(region))
+
+def _sqs_raw(region) -> list:
+    try:
+        sqs = get_session(region).client("sqs")
+        out = []
+        for page in sqs.get_paginator("list_queues").paginate():
+            out.extend(page.get("QueueUrls", []))
+        return out
+    except Exception as e:
+        logger.error(f"SQS [{region}]: {e}"); return []
+
+
+def collect_sns_topics(region=None) -> list:
+    return _cached(f"sns_{region}", lambda: _sns_raw(region))
+
+def _sns_raw(region) -> list:
+    try:
+        sns = get_session(region).client("sns")
+        out = []
+        for page in sns.get_paginator("list_topics").paginate():
+            out.extend(page.get("Topics", []))
+        return out
+    except Exception as e:
+        logger.error(f"SNS [{region}]: {e}"); return []
+
+
+def collect_cloudfront_distributions(region=None) -> list:
+    # Global service — region argument intentionally unused.
+    return _cached("cloudfront", _cloudfront_raw)
+
+def _cloudfront_raw() -> list:
+    try:
+        cf = boto3.client("cloudfront")
+        resp = cf.list_distributions()
+        return resp.get("DistributionList", {}).get("Items", [])
+    except Exception as e:
+        logger.error(f"CloudFront: {e}"); return []
+
+
+def collect_elasticache_clusters(region=None) -> list:
+    return _cached(f"elasticache_{region}", lambda: _elasticache_raw(region))
+
+def _elasticache_raw(region) -> list:
+    try:
+        ec = get_session(region).client("elasticache")
+        out = []
+        for page in ec.get_paginator("describe_cache_clusters").paginate():
+            out.extend(page.get("CacheClusters", []))
+        return out
+    except Exception as e:
+        logger.error(f"ElastiCache [{region}]: {e}"); return []
+
+
+def collect_opensearch_domains(region=None) -> list:
+    return _cached(f"opensearch_{region}", lambda: _opensearch_raw(region))
+
+def _opensearch_raw(region) -> list:
+    try:
+        es = get_session(region).client("opensearch")
+        return es.list_domain_names().get("DomainNames", [])
+    except Exception as e:
+        logger.error(f"OpenSearch [{region}]: {e}"); return []
+
+
+def collect_eks_clusters(region=None) -> list:
+    return _cached(f"eks_{region}", lambda: _eks_raw(region))
+
+def _eks_raw(region) -> list:
+    try:
+        eks = get_session(region).client("eks")
+        out = []
+        for page in eks.get_paginator("list_clusters").paginate():
+            out.extend(page.get("clusters", []))
+        return out
+    except Exception as e:
+        logger.error(f"EKS [{region}]: {e}"); return []
+
+
+def collect_efs_filesystems(region=None) -> list:
+    return _cached(f"efs_{region}", lambda: _efs_raw(region))
+
+def _efs_raw(region) -> list:
+    try:
+        efs = get_session(region).client("efs")
+        out = []
+        for page in efs.get_paginator("describe_file_systems").paginate():
+            out.extend(page.get("FileSystems", []))
+        return out
+    except Exception as e:
+        logger.error(f"EFS [{region}]: {e}"); return []
+
+
+def collect_documentdb_clusters(region=None) -> list:
+    return _cached(f"documentdb_{region}", lambda: _documentdb_raw(region))
+
+def _documentdb_raw(region) -> list:
+    try:
+        docdb = get_session(region).client("docdb")
+        out = []
+        for page in docdb.get_paginator("describe_db_clusters").paginate():
+            out.extend(page.get("DBClusters", []))
+        return out
+    except Exception as e:
+        logger.error(f"DocumentDB [{region}]: {e}"); return []
+
+
+def collect_neptune_clusters(region=None) -> list:
+    return _cached(f"neptune_{region}", lambda: _neptune_raw(region))
+
+def _neptune_raw(region) -> list:
+    try:
+        neptune = get_session(region).client("neptune")
+        out = []
+        for page in neptune.get_paginator("describe_db_clusters").paginate():
+            out.extend(page.get("DBClusters", []))
+        return out
+    except Exception as e:
+        logger.error(f"Neptune [{region}]: {e}"); return []
+
+
+def collect_msk_clusters(region=None) -> list:
+    return _cached(f"msk_{region}", lambda: _msk_raw(region))
+
+def _msk_raw(region) -> list:
+    try:
+        kafka = get_session(region).client("kafka")
+        out = []
+        for page in kafka.get_paginator("list_clusters_v2").paginate():
+            out.extend(page.get("ClusterInfoList", []))
+        return out
+    except Exception as e:
+        logger.error(f"MSK [{region}]: {e}"); return []
+
+
+def collect_kinesis_streams(region=None) -> list:
+    return _cached(f"kinesis_{region}", lambda: _kinesis_raw(region))
+
+def _kinesis_raw(region) -> list:
+    try:
+        k = get_session(region).client("kinesis")
+        out = []
+        for page in k.get_paginator("list_streams").paginate():
+            out.extend(page.get("StreamNames", []))
+        return out
+    except Exception as e:
+        logger.error(f"Kinesis [{region}]: {e}"); return []
+
+
+def collect_firehose_streams(region=None) -> list:
+    return _cached(f"firehose_{region}", lambda: _firehose_raw(region))
+
+def _firehose_raw(region) -> list:
+    try:
+        fh = get_session(region).client("firehose")
+        return fh.list_delivery_streams().get("DeliveryStreamNames", [])
+    except Exception as e:
+        logger.error(f"Firehose [{region}]: {e}"); return []
+
+
+def collect_autoscaling_groups(region=None) -> list:
+    return _cached(f"autoscaling_{region}", lambda: _autoscaling_raw(region))
+
+def _autoscaling_raw(region) -> list:
+    try:
+        asg = get_session(region).client("autoscaling")
+        out = []
+        for page in asg.get_paginator("describe_auto_scaling_groups").paginate():
+            out.extend(page.get("AutoScalingGroups", []))
+        return out
+    except Exception as e:
+        logger.error(f"Auto Scaling [{region}]: {e}"); return []
+
+
+def collect_nat_gateways(region=None) -> list:
+    return _cached(f"natgateway_{region}", lambda: _natgateway_raw(region))
+
+def _natgateway_raw(region) -> list:
+    try:
+        ec2 = get_session(region).client("ec2")
+        out = []
+        for page in ec2.get_paginator("describe_nat_gateways").paginate():
+            out.extend([n for n in page.get("NatGateways", []) if n.get("State") != "deleted"])
+        return out
+    except Exception as e:
+        logger.error(f"NAT Gateway [{region}]: {e}"); return []
+
+
+def collect_transit_gateways(region=None) -> list:
+    return _cached(f"transitgateway_{region}", lambda: _transitgateway_raw(region))
+
+def _transitgateway_raw(region) -> list:
+    try:
+        ec2 = get_session(region).client("ec2")
+        out = []
+        for page in ec2.get_paginator("describe_transit_gateways").paginate():
+            out.extend([t for t in page.get("TransitGateways", []) if t.get("State") != "deleted"])
+        return out
+    except Exception as e:
+        logger.error(f"Transit Gateway [{region}]: {e}"); return []
+
+
+def collect_route53_zones(region=None) -> list:
+    # Global service — region argument intentionally unused.
+    return _cached("route53", _route53_raw)
+
+def _route53_raw() -> list:
+    try:
+        r53 = boto3.client("route53")
+        out = []
+        for page in r53.get_paginator("list_hosted_zones").paginate():
+            out.extend(page.get("HostedZones", []))
+        return out
+    except Exception as e:
+        logger.error(f"Route 53: {e}"); return []
+
+
+def collect_waf_web_acls(region=None) -> list:
+    return _cached(f"wafv2_{region}", lambda: _waf_raw(region))
+
+def _waf_raw(region) -> list:
+    try:
+        waf = get_session(region).client("wafv2")
+        return waf.list_web_acls(Scope="REGIONAL").get("WebACLs", [])
+    except Exception as e:
+        logger.error(f"WAF [{region}]: {e}"); return []
+
+
+def collect_redshift_clusters(region=None) -> list:
+    return _cached(f"redshift_{region}", lambda: _redshift_raw(region))
+
+def _redshift_raw(region) -> list:
+    try:
+        rs = get_session(region).client("redshift")
+        out = []
+        for page in rs.get_paginator("describe_clusters").paginate():
+            out.extend(page.get("Clusters", []))
+        return out
+    except Exception as e:
+        logger.error(f"Redshift [{region}]: {e}"); return []
+
+
+def collect_memorydb_clusters(region=None) -> list:
+    return _cached(f"memorydb_{region}", lambda: _memorydb_raw(region))
+
+def _memorydb_raw(region) -> list:
+    try:
+        mdb = get_session(region).client("memorydb")
+        return mdb.describe_clusters().get("Clusters", [])
+    except Exception as e:
+        logger.error(f"MemoryDB [{region}]: {e}"); return []
+
+
+def collect_dax_clusters(region=None) -> list:
+    return _cached(f"dax_{region}", lambda: _dax_raw(region))
+
+def _dax_raw(region) -> list:
+    try:
+        dax = get_session(region).client("dax")
+        return dax.describe_clusters().get("Clusters", [])
+    except Exception as e:
+        logger.error(f"DAX [{region}]: {e}"); return []
+
+
+def collect_eventbridge_rules(region=None) -> list:
+    return _cached(f"events_{region}", lambda: _eventbridge_raw(region))
+
+def _eventbridge_raw(region) -> list:
+    try:
+        ev = get_session(region).client("events")
+        out = []
+        for page in ev.get_paginator("list_rules").paginate():
+            out.extend(page.get("Rules", []))
+        return out
+    except Exception as e:
+        logger.error(f"EventBridge [{region}]: {e}"); return []
+
+
+def collect_kms_keys(region=None) -> list:
+    return _cached(f"kms_{region}", lambda: _kms_raw(region))
+
+def _kms_raw(region) -> list:
+    try:
+        kms = get_session(region).client("kms")
+        out = []
+        for page in kms.get_paginator("list_keys").paginate():
+            out.extend(page.get("Keys", []))
+        return out
+    except Exception as e:
+        logger.error(f"KMS [{region}]: {e}"); return []
+
+
+def collect_cloudwatch_log_groups(region=None) -> list:
+    return _cached(f"logs_{region}", lambda: _logs_raw(region))
+
+def _logs_raw(region) -> list:
+    try:
+        logs_client = get_session(region).client("logs")
+        out = []
+        for page in logs_client.get_paginator("describe_log_groups").paginate():
+            out.extend(page.get("logGroups", []))
+        return out
+    except Exception as e:
+        logger.error(f"CloudWatch Logs [{region}]: {e}"); return []
+
+
+def collect_vpn_connections(region=None) -> list:
+    return _cached(f"vpn_{region}", lambda: _vpn_raw(region))
+
+def _vpn_raw(region) -> list:
+    try:
+        ec2 = get_session(region).client("ec2")
+        conns = ec2.describe_vpn_connections().get("VpnConnections", [])
+        return [c for c in conns if c.get("State") not in ("deleted", "deleting")]
+    except Exception as e:
+        logger.error(f"Site-to-Site VPN [{region}]: {e}"); return []
+
+
 # ── ECS (unchanged — not in YACE config) ─────────────────────────────────
 
 def collect_ecs_clusters(region=None) -> list:
