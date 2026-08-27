@@ -14,7 +14,11 @@
 -- table existence first (safe to re-run).
 
 CREATE TABLE IF NOT EXISTS provider_credentials (
-  aws_account_id     INT NOT NULL PRIMARY KEY,
+  -- aws_account_id must match aws_accounts.id's type (BIGINT) -- fix:
+  -- 2026-08-26, was INT, which fails FK creation with "Referencing column
+  -- ... and referenced column ... are incompatible" (error 3780) on any
+  -- environment where this table didn't already exist with the wrong type.
+  aws_account_id     BIGINT NOT NULL PRIMARY KEY,
   provider            ENUM('azure','gcp') NOT NULL,
   credential_ref      VARCHAR(64) NOT NULL,
   secret_encrypted     MEDIUMBLOB NOT NULL,
