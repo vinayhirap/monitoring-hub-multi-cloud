@@ -5,6 +5,20 @@ apply_metrics_dedup_fix.py
 One-time fix for duplicate rows in `metrics` (resource_id, metric_name)
 before applying the uniq_metrics_resource_metric unique key.
 
+FIX (2026-08-26, AuroGov Mumbai incident): this script previously ran the
+`ALTER TABLE ... ADD UNIQUE KEY` unconditionally, with no existence check —
+unlike every other apply_*.py script in this project. On a DB where the key
+was already applied (e.g. via an earlier partial run, or copied in from
+another server's state), re-running this script failed with:
+
+  ERROR 1061 (42000): Duplicate key name 'uniq_metrics_resource_metric'
+
+Both setup.sh and update.sh document this script as "no-op once already
+applied" / "safe to re-run every deploy" — that was only true for the
+DELETE step, not the ALTER step. This version adds an index_exists() check
+so the ALTER is skipped (and reported) when the key is already present,
+matching the idempotency pattern used everywhere else in this project.
+
 Uses the `mysql` CLI client via subprocess (no Python DB driver dependency).
 Reads DB credentials directly from the app's .env file rather than relying
 on inherited shell environment variables — `sudo -u hcsadmin` starts a fresh
@@ -28,6 +42,7 @@ DB_NAME = "monitoring_hub"
 DB_USER = "monitor"
 
 RECENCY_CANDIDATES = ["recorded_at", "timestamp", "ts", "updated_at", "created_at"]
+UNIQUE_KEY_NAME = "uniq_metrics_resource_metric"
 
 # Same search order apply_fresh_schema_migrations.py uses: script directory first,
 # since it's normally run from /opt/monitoring-hub/app where .env lives.
@@ -88,6 +103,11 @@ def detect_recency_column():
     return None
 
 
+def index_exists(index_name):
+    out = run_sql(f"SHOW INDEX FROM metrics WHERE Key_name = '{index_name}'")
+    return bool(out.strip())
+
+
 def build_keep_ids_subquery(order_col):
     # Extra derived-table layer forces MySQL to materialize the result before
     # the DELETE touches `metrics` again — avoids error 1093
@@ -119,6 +139,10 @@ def main():
         print("WARNING: no DB password found via env vars or .env file — "
               "connection will likely fail with access denied.")
 
+    key_already_present = index_exists(UNIQUE_KEY_NAME)
+    if key_already_present:
+        print(f"'{UNIQUE_KEY_NAME}' already exists on metrics — skipping the ALTER step.")
+
     recency_col = detect_recency_column()
     if recency_col:
         order_col = recency_col
@@ -149,12 +173,19 @@ def main():
 
     print("Plan:")
     print("  1. DELETE every metrics row NOT IN the 'keep newest per group' set")
-    print("  2. ALTER TABLE metrics ADD UNIQUE KEY uniq_metrics_resource_metric (resource_id, metric_name)")
+    if key_already_present:
+        print(f"  2. (skipped — {UNIQUE_KEY_NAME} already exists)")
+    else:
+        print(f"  2. ALTER TABLE metrics ADD UNIQUE KEY {UNIQUE_KEY_NAME} (resource_id, metric_name)")
     print(f"  Total rows currently in metrics: {total_rows}")
     print(f"  Rows that WOULD be deleted: {would_delete}")
 
     if args.dry_run:
         print("--dry-run: no changes made.")
+        return
+
+    if would_delete == 0 and key_already_present:
+        print("Nothing to do — no duplicates to delete and the unique key already exists.")
         return
 
     # Backup before touching data
@@ -174,18 +205,20 @@ def main():
 
     print("Applying...")
     try:
-        delete_sql = f"DELETE FROM metrics WHERE id NOT IN ({keep_ids_subquery})"
-        run_sql(delete_sql)
+        if would_delete > 0:
+            delete_sql = f"DELETE FROM metrics WHERE id NOT IN ({keep_ids_subquery})"
+            run_sql(delete_sql)
 
-        alter_sql = (
-            "ALTER TABLE metrics "
-            "ADD UNIQUE KEY uniq_metrics_resource_metric (resource_id, metric_name)"
-        )
-        run_sql(alter_sql)
+        if not key_already_present:
+            alter_sql = (
+                "ALTER TABLE metrics "
+                f"ADD UNIQUE KEY {UNIQUE_KEY_NAME} (resource_id, metric_name)"
+            )
+            run_sql(alter_sql)
+            print(f"Added unique key {UNIQUE_KEY_NAME}.")
 
         remaining = int(run_sql("SELECT COUNT(*) FROM metrics").strip())
         print(f"Deleted {total_rows - remaining} row(s). {remaining} row(s) remain.")
-        print("Added unique key uniq_metrics_resource_metric.")
         print("Done.")
     except Exception as e:
         print(f"ERROR: {e}")
