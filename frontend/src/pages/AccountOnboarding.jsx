@@ -8,6 +8,7 @@ const BASE = "";
 
 const AWS_REGIONS = [
   { id: "ap-south-1",     label: "ap-south-1 (Mumbai)" },
+  { id: "ap-south-2",     label: "ap-south-2 (Hyderabad)" },
   { id: "ap-southeast-1", label: "ap-southeast-1 (Singapore)" },
   { id: "ap-southeast-2", label: "ap-southeast-2 (Sydney)" },
   { id: "ap-northeast-1", label: "ap-northeast-1 (Tokyo)" },
