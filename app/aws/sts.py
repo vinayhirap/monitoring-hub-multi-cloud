@@ -105,7 +105,35 @@ def assume_role(role_arn: str, external_id: str | None = None,
     JSON string (see federation.build_scoped_session_policy) — AWS
     takes the INTERSECTION of the role's own permissions and this
     policy, so it can only restrict, never expand, access.
+
+    SAME-ACCOUNT SHORT-CIRCUIT (fix: 2026-08-26 AuroGov Mumbai incident):
+    role_arn's account can legitimately be the SAME account the server's
+    own credentials belong to (an account row doesn't have to be
+    cross-account). Real sts:AssumeRole on your own role always fails
+    AccessDenied unless its trust policy explicitly allows self-assumption
+    -- which nothing here configures and shouldn't have to. Detect this via
+    the role ARN's account id vs get_own_account_id() and skip straight to
+    the instance's own default credential chain instead. Any genuinely
+    cross-account role_arn is completely unaffected by this check.
     """
+    match = re.match(r"arn:aws:iam::(\d+):role/", role_arn or "")
+    if match:
+        target_account_id = match.group(1)
+        own_account_id = get_own_account_id()
+        if own_account_id and target_account_id == own_account_id:
+            # NOTE (2026-08-26): get_self_federation_session() was tried
+            # here first but AWS rejects STS GetFederationToken when called
+            # with SESSION credentials -- confirmed live: "Cannot call
+            # GetFederationToken with session credentials". An EC2 instance
+            # profile (what this server runs as) always provides temporary
+            # session credentials via IMDS, so that call can never succeed
+            # regardless of target account. No STS call is actually needed
+            # for the same-account case -- the instance's own default
+            # credential chain already has whatever permissions its
+            # instance profile grants, same as the existing no-role_arn
+            # fallback in discovery/runner.py and metrics/runner.py.
+            return boto3.Session()
+
     sts = boto3.client("sts")
 
     params = {
