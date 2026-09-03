@@ -1016,6 +1016,67 @@ def _lambda_raw(region) -> list:
 
 # ── Metric series — EC2 (now VM-backed) ──────────────────────────────────
 
+def _ec2_cwagent_installed(instance_id, region=None) -> bool:
+    """
+    True iff the CWAgent CloudWatch namespace has ANY metric published
+    for this instance — the only reliable signal that the CloudWatch
+    Agent is actually installed AND reporting (an SSM association only
+    proves an install was *attempted*, not that the agent process is
+    running and publishing). Cached briefly since this runs on every
+    EC2 detail-page open.
+    """
+    return _cached(
+        f"cwagent_present_{instance_id}_{region}",
+        lambda: _ec2_cwagent_installed_raw(instance_id, region),
+        ttl=300,
+    )
+
+
+def _ec2_cwagent_installed_raw(instance_id, region=None) -> bool:
+    try:
+        cw = boto3.client("cloudwatch", region_name=region)
+        resp = cw.list_metrics(
+            Namespace="CWAgent",
+            Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
+        )
+        return bool(resp.get("Metrics"))
+    except Exception as e:
+        logger.warning(f"CWAgent presence check [{instance_id}]: {e}")
+        return False
+
+
+def _ec2_cwagent_dimensions(cw, metric_name, instance_id):
+    """
+    Find the exact dimension set CWAgent published `metric_name` under
+    for this instance. mem_used_percent is dimensioned by InstanceId
+    alone, but disk_used_percent also carries `path` / `device` /
+    `fstype` (CWAgent's own defaults, one metric per mount point) —
+    GetMetricData needs the COMPLETE dimension set a datapoint was
+    actually published under; a partial match (InstanceId only)
+    returns nothing. If multiple mount points are reporting, prefer
+    the root filesystem ("/" on Linux, "C:" on Windows) since that's
+    what "disk space utilized" means to someone glancing at the
+    dashboard; otherwise fall back to whichever mount point
+    CloudWatch happens to return first.
+    """
+    try:
+        resp = cw.list_metrics(
+            Namespace="CWAgent", MetricName=metric_name,
+            Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
+        )
+        metrics = resp.get("Metrics", [])
+        if not metrics:
+            return None
+        for m in metrics:
+            dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
+            if dims.get("path") in ("/", "C:"):
+                return m["Dimensions"]
+        return metrics[0]["Dimensions"]
+    except Exception as e:
+        logger.warning(f"CWAgent dimension lookup [{instance_id}/{metric_name}]: {e}")
+        return None
+
+
 def get_ec2_metric_series(instance_id, region=None, hours=6) -> dict:
     try:
         end    = datetime.now(timezone.utc)
@@ -1029,20 +1090,58 @@ def get_ec2_metric_series(instance_id, region=None, hours=6) -> dict:
                 start=int(start.timestamp()), end=int(end.timestamp()),
                 step=f"{period}s",
             )
+
+        cwagent_installed = _ec2_cwagent_installed(instance_id, region)
+
+        # Memory/disk-space utilization ONLY exist if the CloudWatch
+        # Agent is installed and reporting — EC2 never publishes these
+        # from the hypervisor side the way CPU/Network/StatusCheck are.
+        # Skip the GetMetricData calls entirely when the agent isn't
+        # present (zero extra cost) rather than making them and
+        # getting empty series back — the frontend uses
+        # cwagent_installed to decide whether to render the chart
+        # boxes at all, not just whether they have data.
+        mem_utilization   = []
+        disk_used_percent = []
+        if cwagent_installed:
+            try:
+                cw        = boto3.client("cloudwatch", region_name=region)
+                cw_period = max(period, 60)  # CWAgent's own default reporting interval
+
+                mem_dims  = _ec2_cwagent_dimensions(cw, "mem_used_percent",  instance_id)
+                disk_dims = _ec2_cwagent_dimensions(cw, "disk_used_percent", instance_id)
+
+                queries = []
+                if mem_dims:
+                    queries.append(_make_query("mem",  "CWAgent", "mem_used_percent",  mem_dims,  "Average", cw_period))
+                if disk_dims:
+                    queries.append(_make_query("disk", "CWAgent", "disk_used_percent", disk_dims, "Average", cw_period))
+
+                if queries:
+                    fb = _gmd_series(cw, queries, hours)
+                    mem_utilization   = fb.get("mem", [])
+                    disk_used_percent = fb.get("disk", [])
+            except Exception as e:
+                logger.warning(f"CWAgent series [{instance_id}]: {e}")
+
         return {
-            "instance_id":  instance_id,
-            "cpu":          s("aws_ec2_cpuutilization_average"),
-            "network_in":   s("aws_ec2_network_in_average"),
-            "network_out":  s("aws_ec2_network_out_average"),
-            "disk_read":    s("aws_ec2_disk_read_bytes_sum"),
-            "disk_write":   s("aws_ec2_disk_write_bytes_sum"),
-            "period_hours": hours,
-            "period_secs":  period,
+            "instance_id":       instance_id,
+            "cpu":               s("aws_ec2_cpuutilization_average"),
+            "network_in":        s("aws_ec2_network_in_average"),
+            "network_out":       s("aws_ec2_network_out_average"),
+            "disk_read":         s("aws_ec2_disk_read_bytes_sum"),
+            "disk_write":        s("aws_ec2_disk_write_bytes_sum"),
+            "cwagent_installed": cwagent_installed,
+            "mem_utilization":   mem_utilization,
+            "disk_used_percent": disk_used_percent,
+            "period_hours":      hours,
+            "period_secs":       period,
         }
     except Exception as e:
         logger.warning(f"EC2 series [{instance_id}]: {e}")
         return {"instance_id": instance_id, "cpu": [], "network_in": [],
-                "network_out": [], "disk_read": [], "disk_write": []}
+                "network_out": [], "disk_read": [], "disk_write": [],
+                "cwagent_installed": False, "mem_utilization": [], "disk_used_percent": []}
 
 
 # ── Metric series — EBS (now VM-backed) ──────────────────────────────────
