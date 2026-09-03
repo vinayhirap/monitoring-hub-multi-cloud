@@ -1,0 +1,713 @@
+diff --git a/app/providers/azure/discovery.py b/app/providers/azure/discovery.py
+index f5c4362..0e103cc 100644
+--- a/app/providers/azure/discovery.py
++++ b/app/providers/azure/discovery.py
+@@ -4,10 +4,14 @@ Real Azure resource discovery via azure-mgmt SDKs. Mirrors
+ app.collector.discovery.runner's contract: writes/updates rows in
+ `resources`, scoped to a single account, called from AzureProvider.
+ 
+-Only three resource types for now (VMs, Storage Accounts, SQL Databases) —
+-matches the CORE tier in metric_catalog_data.CURATED. Extending to more
+-Azure resource types is just adding another _discover_* function here and
+-wiring it into discover_account_resources, same pattern as AWS's runner.py.
++Covers all 19 services curated in app.providers.azure.metric_catalog_data
++(4 core + 15 extended). Every _discover_* function below was written
++against azure-mgmt SDK client/method signatures verified by instantiating
++each client with a dummy credential and introspecting its operations
++group in a sandbox (no live Azure account was available to exercise these
++end-to-end) — see the per-function notes for method choices that weren't
++obvious (e.g. Redis/KeyVault have no namespace-wide `.list()`, VNet
++Gateways require enumerating resource groups first).
+ """
+ import json
+ import logging
+@@ -17,6 +21,21 @@ from azure.mgmt.compute import ComputeManagementClient
+ from azure.mgmt.storage import StorageManagementClient
+ from azure.mgmt.sql import SqlManagementClient
+ from azure.mgmt.web import WebSiteManagementClient
++from azure.mgmt.containerservice import ContainerServiceClient
++from azure.mgmt.cosmosdb import CosmosDBManagementClient
++from azure.mgmt.redis import RedisManagementClient
++from azure.mgmt.servicebus import ServiceBusManagementClient
++from azure.mgmt.eventhub import EventHubManagementClient
++from azure.mgmt.network import NetworkManagementClient
++from azure.mgmt.keyvault import KeyVaultManagementClient
++from azure.mgmt.containerinstance import ContainerInstanceManagementClient
++from azure.mgmt.cdn import CdnManagementClient
++from azure.mgmt.datafactory import DataFactoryManagementClient
++# ResourceManagementClient is NOT importable from azure.mgmt.resource's
++# top-level package on the azure-mgmt-resource version range pinned in
++# requirements.txt (23-27) — confirmed in sandbox; must come from the
++# .resources submodule. Same gotcha noted previously for SubscriptionClient.
++from azure.mgmt.resource.resources import ResourceManagementClient
+ 
+ from app.db import get_connection
+ 
+@@ -85,8 +104,15 @@ def _discover_sql_databases(sql_client, account_id, cursor) -> int:
+ 
+ 
+ def _discover_app_services(web_client, account_id, cursor) -> int:
++    # web_apps.list() returns BOTH regular Web Apps and Function Apps —
++    # Function Apps are just Sites with "functionapp" in their `kind`
++    # string (e.g. "functionapp", "functionapp,linux"). Split them out
++    # here so each lands under its own metric_catalog service key instead
++    # of function apps silently being counted (and monitored) as app_service.
+     count = 0
+     for site in web_client.web_apps.list():
++        if "functionapp" in (site.kind or ""):
++            continue
+         _upsert_resource(
+             cursor, account_id, "app_service", site.id, site.name,
+             dict(site.tags or {}), site.location, "compute",
+@@ -95,6 +121,199 @@ def _discover_app_services(web_client, account_id, cursor) -> int:
+     return count
+ 
+ 
++def _discover_function_apps(web_client, account_id, cursor) -> int:
++    count = 0
++    for site in web_client.web_apps.list():
++        if "functionapp" not in (site.kind or ""):
++            continue
++        _upsert_resource(
++            cursor, account_id, "function_app", site.id, site.name,
++            dict(site.tags or {}), site.location, "compute",
++        )
++        count += 1
++    return count
++
++
++def _discover_vmss(compute_client, account_id, cursor) -> int:
++    count = 0
++    for vmss in compute_client.virtual_machine_scale_sets.list_all():
++        _upsert_resource(
++            cursor, account_id, "vmss", vmss.id, vmss.name,
++            dict(vmss.tags or {}), vmss.location, "compute",
++        )
++        count += 1
++    return count
++
++
++def _discover_aks_clusters(cred, sub_id, account_id, cursor) -> int:
++    client = ContainerServiceClient(cred, sub_id)
++    count = 0
++    for cluster in client.managed_clusters.list():
++        _upsert_resource(
++            cursor, account_id, "aks_cluster", cluster.id, cluster.name,
++            dict(cluster.tags or {}), cluster.location, "compute",
++        )
++        count += 1
++    return count
++
++
++def _discover_cosmosdb_accounts(cred, sub_id, account_id, cursor) -> int:
++    client = CosmosDBManagementClient(cred, sub_id)
++    count = 0
++    for acct in client.database_accounts.list():
++        _upsert_resource(
++            cursor, account_id, "cosmosdb_account", acct.id, acct.name,
++            dict(acct.tags or {}), acct.location, "database",
++        )
++        count += 1
++    return count
++
++
++def _discover_redis_caches(cred, sub_id, account_id, cursor) -> int:
++    # RedisManagementClient.redis has no subscription-wide `.list()` (only
++    # `.list_by_resource_group` / `.list_by_subscription`) — confirmed by
++    # inspecting the operations group directly; `.list_by_subscription()`
++    # is the one that doesn't require enumerating resource groups first.
++    client = RedisManagementClient(cred, sub_id)
++    count = 0
++    for cache in client.redis.list_by_subscription():
++        _upsert_resource(
++            cursor, account_id, "redis_cache", cache.id, cache.name,
++            dict(cache.tags or {}), cache.location, "database",
++        )
++        count += 1
++    return count
++
++
++def _discover_service_bus_namespaces(cred, sub_id, account_id, cursor) -> int:
++    client = ServiceBusManagementClient(cred, sub_id)
++    count = 0
++    for ns in client.namespaces.list():
++        _upsert_resource(
++            cursor, account_id, "service_bus_namespace", ns.id, ns.name,
++            dict(ns.tags or {}), ns.location, "messaging",
++        )
++        count += 1
++    return count
++
++
++def _discover_eventhub_namespaces(cred, sub_id, account_id, cursor) -> int:
++    client = EventHubManagementClient(cred, sub_id)
++    count = 0
++    for ns in client.namespaces.list():
++        _upsert_resource(
++            cursor, account_id, "eventhub_namespace", ns.id, ns.name,
++            dict(ns.tags or {}), ns.location, "messaging",
++        )
++        count += 1
++    return count
++
++
++def _discover_load_balancers(net_client, account_id, cursor) -> int:
++    count = 0
++    for lb in net_client.load_balancers.list_all():
++        _upsert_resource(
++            cursor, account_id, "load_balancer", lb.id, lb.name,
++            dict(lb.tags or {}), lb.location, "networking",
++        )
++        count += 1
++    return count
++
++
++def _discover_application_gateways(net_client, account_id, cursor) -> int:
++    count = 0
++    for agw in net_client.application_gateways.list_all():
++        _upsert_resource(
++            cursor, account_id, "application_gateway", agw.id, agw.name,
++            dict(agw.tags or {}), agw.location, "networking",
++        )
++        count += 1
++    return count
++
++
++def _discover_vpn_gateways(net_client, resource_client, account_id, cursor) -> int:
++    # VirtualNetworkGateways has no subscription-wide list — its `.list()`
++    # requires a resource_group_name (verified via signature inspection),
++    # unlike load_balancers/application_gateways which have `.list_all()`.
++    # Enumerate resource groups first, same pattern AWS/GCP don't need but
++    # Azure's ARM hierarchy does.
++    count = 0
++    for rg in resource_client.resource_groups.list():
++        try:
++            for gw in net_client.virtual_network_gateways.list(rg.name):
++                _upsert_resource(
++                    cursor, account_id, "vpn_gateway", gw.id, gw.name,
++                    dict(gw.tags or {}), gw.location, "networking",
++                )
++                count += 1
++        except Exception as e:
++            logger.debug(f"VPN gateway discovery skipped for resource group {rg.name}: {e}")
++    return count
++
++
++def _discover_key_vaults(cred, sub_id, account_id, cursor) -> int:
++    # vaults.list() (no suffix) returns generic Resource objects missing
++    # location/tags — list_by_subscription() returns the full Vault model
++    # these fields actually need. Confirmed via signature/return-type
++    # inspection in sandbox.
++    client = KeyVaultManagementClient(cred, sub_id)
++    count = 0
++    for kv in client.vaults.list_by_subscription():
++        _upsert_resource(
++            cursor, account_id, "key_vault", kv.id, kv.name,
++            dict(kv.tags or {}), kv.location, "security",
++        )
++        count += 1
++    return count
++
++
++def _discover_container_instances(cred, sub_id, account_id, cursor) -> int:
++    client = ContainerInstanceManagementClient(cred, sub_id)
++    count = 0
++    for cg in client.container_groups.list():
++        _upsert_resource(
++            cursor, account_id, "container_instance", cg.id, cg.name,
++            dict(cg.tags or {}), cg.location, "compute",
++        )
++        count += 1
++    return count
++
++
++def _discover_cdn_profiles(cred, sub_id, account_id, cursor) -> int:
++    client = CdnManagementClient(cred, sub_id)
++    count = 0
++    for profile in client.profiles.list():
++        _upsert_resource(
++            cursor, account_id, "cdn_profile", profile.id, profile.name,
++            dict(profile.tags or {}), getattr(profile, "location", "global") or "global", "networking",
++        )
++        count += 1
++    return count
++
++
++def _discover_data_factories(cred, sub_id, account_id, cursor) -> int:
++    client = DataFactoryManagementClient(cred, sub_id)
++    count = 0
++    for df in client.factories.list():
++        _upsert_resource(
++            cursor, account_id, "data_factory", df.id, df.name,
++            dict(df.tags or {}), df.location, "analytics",
++        )
++        count += 1
++    return count
++
++
++def _discover_managed_disks(compute_client, account_id, cursor) -> int:
++    count = 0
++    for disk in compute_client.disks.list():
++        _upsert_resource(
++            cursor, account_id, "managed_disk", disk.id, disk.name,
++            dict(disk.tags or {}), disk.location, "storage",
++        )
++        count += 1
++    return count
++
++
+ def discover_account_resources(account: dict, secret: str) -> dict:
+     """Run discovery for a single Azure account. Returns a per-type count."""
+     cred = _credential(account, secret)
+@@ -104,15 +323,53 @@ def discover_account_resources(account: dict, secret: str) -> dict:
+     storage_client = StorageManagementClient(cred, sub_id)
+     sql_client = SqlManagementClient(cred, sub_id)
+     web_client = WebSiteManagementClient(cred, sub_id)
++    net_client = NetworkManagementClient(cred, sub_id)
++    resource_client = ResourceManagementClient(cred, sub_id)
+ 
+     conn = get_connection()
+     cursor = conn.cursor()
+-    counts = {"vm": 0, "storage_account": 0, "sql_database": 0, "app_service": 0}
++    counts = {
++        "vm": 0, "storage_account": 0, "sql_database": 0, "app_service": 0,
++        "vmss": 0, "aks_cluster": 0, "function_app": 0, "cosmosdb_account": 0,
++        "redis_cache": 0, "service_bus_namespace": 0, "eventhub_namespace": 0,
++        "load_balancer": 0, "application_gateway": 0, "key_vault": 0,
++        "container_instance": 0, "cdn_profile": 0, "vpn_gateway": 0,
++        "data_factory": 0, "managed_disk": 0,
++    }
++    # (count_key, fn) pairs. Each service is wrapped individually rather
++    # than in one big try/except — a single service that's unregistered
++    # for this subscription (e.g. Microsoft.ContainerService never
++    # enabled) or hits a permissions gap shouldn't take down discovery for
++    # every other service. Matches the fail-open design already used for
++    # AWS's per-namespace collector fallback.
++    steps = [
++        ("vm",                    lambda: _discover_vms(compute_client, account["id"], cursor)),
++        ("storage_account",       lambda: _discover_storage_accounts(storage_client, account["id"], cursor)),
++        ("sql_database",          lambda: _discover_sql_databases(sql_client, account["id"], cursor)),
++        ("app_service",           lambda: _discover_app_services(web_client, account["id"], cursor)),
++        ("function_app",          lambda: _discover_function_apps(web_client, account["id"], cursor)),
++        ("vmss",                  lambda: _discover_vmss(compute_client, account["id"], cursor)),
++        ("managed_disk",          lambda: _discover_managed_disks(compute_client, account["id"], cursor)),
++        ("aks_cluster",           lambda: _discover_aks_clusters(cred, sub_id, account["id"], cursor)),
++        ("cosmosdb_account",      lambda: _discover_cosmosdb_accounts(cred, sub_id, account["id"], cursor)),
++        ("redis_cache",           lambda: _discover_redis_caches(cred, sub_id, account["id"], cursor)),
++        ("service_bus_namespace", lambda: _discover_service_bus_namespaces(cred, sub_id, account["id"], cursor)),
++        ("eventhub_namespace",    lambda: _discover_eventhub_namespaces(cred, sub_id, account["id"], cursor)),
++        ("load_balancer",         lambda: _discover_load_balancers(net_client, account["id"], cursor)),
++        ("application_gateway",   lambda: _discover_application_gateways(net_client, account["id"], cursor)),
++        ("vpn_gateway",           lambda: _discover_vpn_gateways(net_client, resource_client, account["id"], cursor)),
++        ("key_vault",             lambda: _discover_key_vaults(cred, sub_id, account["id"], cursor)),
++        ("container_instance",    lambda: _discover_container_instances(cred, sub_id, account["id"], cursor)),
++        ("cdn_profile",           lambda: _discover_cdn_profiles(cred, sub_id, account["id"], cursor)),
++        ("data_factory",          lambda: _discover_data_factories(cred, sub_id, account["id"], cursor)),
++    ]
++
+     try:
+-        counts["vm"] = _discover_vms(compute_client, account["id"], cursor)
+-        counts["storage_account"] = _discover_storage_accounts(storage_client, account["id"], cursor)
+-        counts["sql_database"] = _discover_sql_databases(sql_client, account["id"], cursor)
+-        counts["app_service"] = _discover_app_services(web_client, account["id"], cursor)
++        for key, fn in steps:
++            try:
++                counts[key] = fn()
++            except Exception as e:
++                logger.warning(f"Azure {key} discovery failed for {account.get('account_name')}: {e}")
+         conn.commit()
+     except Exception:
+         conn.rollback()
+diff --git a/app/providers/gcp/discovery.py b/app/providers/gcp/discovery.py
+index a6317d7..10d1f59 100644
+--- a/app/providers/gcp/discovery.py
++++ b/app/providers/gcp/discovery.py
+@@ -4,9 +4,14 @@ Real GCP resource discovery. Mirrors app.collector.discovery.runner's
+ contract: writes/updates rows in `resources`, scoped to a single account,
+ called from GCPProvider.
+ 
+-Compute + Storage use the google-cloud-* client libraries; Cloud SQL uses
+-the SQL Admin API via google-api-python-client (no dedicated google-cloud
+-library exists for it).
++Covers all 16 services curated in app.providers.gcp.metric_catalog_data
++(4 core + 12 extended). Compute + Storage use the google-cloud-* client
++libraries; Cloud SQL uses the SQL Admin API via google-api-python-client
++(no dedicated google-cloud library exists for it). Every new client/method
++below was verified by import + signature inspection in a sandbox (no live
++GCP project was available to exercise these end-to-end) — see per-function
++notes for the handful of services (BigQuery, Firestore, Spanner) that
++don't fit the "list resources of type X" shape the others share.
+ """
+ import json
+ import logging
+@@ -15,6 +20,13 @@ from google.oauth2 import service_account as gcp_service_account
+ from google.cloud import compute_v1
+ from google.cloud import storage as gcs
+ from google.cloud import run_v2
++from google.cloud import container_v1
++from google.cloud import functions_v2
++from google.cloud import pubsub_v1
++from google.cloud import redis_v1
++from google.cloud import bigquery
++from google.cloud import firestore_admin_v1
++from google.cloud.spanner_admin_instance_v1 import InstanceAdminClient as SpannerInstanceAdminClient
+ from googleapiclient.discovery import build as gapi_build
+ 
+ logger = logging.getLogger(__name__)
+@@ -122,6 +134,220 @@ def _discover_cloud_run(creds, project_id, account_id, cursor) -> int:
+     return count
+ 
+ 
++def _discover_gke_clusters(creds, project_id, account_id, cursor) -> int:
++    client = container_v1.ClusterManagerClient(credentials=creds)
++    count = 0
++    resp = client.list_clusters(parent=f"projects/{project_id}/locations/-")
++    for cluster in resp.clusters:
++        location = cluster.location or cluster.zone
++        resource_id = f"projects/{project_id}/locations/{location}/clusters/{cluster.name}"
++        _upsert_resource(
++            cursor, account_id, "gke_cluster", resource_id, cluster.name,
++            dict(cluster.resource_labels or {}), location, "compute",
++        )
++        count += 1
++    return count
++
++
++def _discover_gke_nodes(creds, project_id, account_id, cursor) -> int:
++    # The Cluster Manager API doesn't expose individual nodes directly —
++    # node counts live per node pool (cluster.node_pools[].initial_node_count
++    # / cluster.node_pools[].autoscaling). Register one resource per node
++    # pool (matching the "GKE Nodes" curated service, whose metrics are
++    # pool-scoped anyway), rather than trying to enumerate raw Compute
++    # Engine instances a second time (already covered by compute_instance).
++    client = container_v1.ClusterManagerClient(credentials=creds)
++    count = 0
++    resp = client.list_clusters(parent=f"projects/{project_id}/locations/-")
++    for cluster in resp.clusters:
++        location = cluster.location or cluster.zone
++        for pool in cluster.node_pools:
++            resource_id = (
++                f"projects/{project_id}/locations/{location}/clusters/"
++                f"{cluster.name}/nodePools/{pool.name}"
++            )
++            _upsert_resource(
++                cursor, account_id, "gke_node", resource_id, f"{cluster.name}/{pool.name}",
++                {}, location, "compute",
++            )
++            count += 1
++    return count
++
++
++def _discover_cloudfunctions(creds, project_id, account_id, cursor) -> int:
++    client = functions_v2.FunctionServiceClient(credentials=creds)
++    count = 0
++    for fn in client.list_functions(parent=f"projects/{project_id}/locations/-"):
++        name = fn.name.split("/")[-1]
++        # location is the 4th path segment: projects/{p}/locations/{loc}/functions/{name}
++        parts = fn.name.split("/")
++        location = parts[3] if len(parts) > 3 else ""
++        _upsert_resource(
++            cursor, account_id, "cloudfunctions_function", fn.name, name,
++            dict(fn.labels or {}), location, "compute",
++        )
++        count += 1
++    return count
++
++
++def _discover_pubsub_topics(creds, project_id, account_id, cursor) -> int:
++    client = pubsub_v1.PublisherClient(credentials=creds)
++    count = 0
++    for topic in client.list_topics(project=f"projects/{project_id}"):
++        name = topic.name.split("/")[-1]
++        _upsert_resource(
++            cursor, account_id, "pubsub_topic", topic.name, name,
++            dict(topic.labels or {}), "global", "messaging",
++        )
++        count += 1
++    return count
++
++
++def _discover_pubsub_subscriptions(creds, project_id, account_id, cursor) -> int:
++    client = pubsub_v1.SubscriberClient(credentials=creds)
++    count = 0
++    for sub in client.list_subscriptions(project=f"projects/{project_id}"):
++        name = sub.name.split("/")[-1]
++        _upsert_resource(
++            cursor, account_id, "pubsub_subscription", sub.name, name,
++            dict(sub.labels or {}), "global", "messaging",
++        )
++        count += 1
++    return count
++
++
++def _discover_cloud_lb(creds, project_id, account_id, cursor) -> int:
++    # "Cloud Load Balancing" spans several underlying resource kinds
++    # (global HTTP(S) LB, regional internal/network LB). Forwarding rules
++    # are the one object type that exists for every LB flavor — a global
++    # forwarding rule for global LBs, a regional one for regional LBs —
++    # so counting both gives an accurate total without double-counting
++    # backend services, which can be shared across multiple LBs.
++    count = 0
++    global_client = compute_v1.GlobalForwardingRulesClient(credentials=creds)
++    for rule in global_client.list(project=project_id):
++        resource_id = f"projects/{project_id}/global/forwardingRules/{rule.name}"
++        _upsert_resource(
++            cursor, account_id, "cloud_lb", resource_id, rule.name,
++            dict(rule.labels or {}), "global", "networking",
++        )
++        count += 1
++
++    regional_client = compute_v1.ForwardingRulesClient(credentials=creds)
++    for region, response in regional_client.aggregated_list(project=project_id):
++        if not response.forwarding_rules:
++            continue
++        region_name = region.split("/")[-1]
++        for rule in response.forwarding_rules:
++            resource_id = f"projects/{project_id}/regions/{region_name}/forwardingRules/{rule.name}"
++            _upsert_resource(
++                cursor, account_id, "cloud_lb", resource_id, rule.name,
++                dict(rule.labels or {}), region_name, "networking",
++            )
++            count += 1
++    return count
++
++
++def _discover_redis_instances(creds, project_id, account_id, cursor) -> int:
++    client = redis_v1.CloudRedisClient(credentials=creds)
++    count = 0
++    for inst in client.list_instances(parent=f"projects/{project_id}/locations/-"):
++        name = inst.name.split("/")[-1]
++        parts = inst.name.split("/")
++        location = parts[3] if len(parts) > 3 else ""
++        _upsert_resource(
++            cursor, account_id, "redis_instance", inst.name, name,
++            dict(inst.labels or {}), location, "database",
++        )
++        count += 1
++    return count
++
++
++def _discover_bigquery_datasets(creds, project_id, account_id, cursor) -> int:
++    # BigQuery has no "instance" concept — a dataset is the closest
++    # analog to a monitorable resource unit. list_datasets() also
++    # confirms the API is enabled / project actually uses BigQuery at all
++    # (matches the "does this account use this service" question the
++    # rest of discovery is answering).
++    client = bigquery.Client(project=project_id, credentials=creds)
++    count = 0
++    for ds in client.list_datasets():
++        resource_id = f"projects/{project_id}/datasets/{ds.dataset_id}"
++        _upsert_resource(
++            cursor, account_id, "bigquery_project", resource_id, ds.dataset_id,
++            dict(ds.labels or {}) if hasattr(ds, "labels") else {}, "global", "analytics",
++        )
++        count += 1
++    return count
++
++
++def _discover_spanner_instances(creds, project_id, account_id, cursor) -> int:
++    client = SpannerInstanceAdminClient(credentials=creds)
++    count = 0
++    for inst in client.list_instances(parent=f"projects/{project_id}"):
++        name = inst.name.split("/")[-1]
++        _upsert_resource(
++            cursor, account_id, "spanner_instance", inst.name, name,
++            dict(inst.labels or {}), inst.config.split("/")[-1] if inst.config else "", "database",
++        )
++        count += 1
++    return count
++
++
++def _discover_firestore_databases(creds, project_id, account_id, cursor) -> int:
++    client = firestore_admin_v1.FirestoreAdminClient(credentials=creds)
++    count = 0
++    resp = client.list_databases(parent=f"projects/{project_id}")
++    for db in resp.databases:
++        name = db.name.split("/")[-1]
++        _upsert_resource(
++            cursor, account_id, "firestore_database", db.name, name,
++            {}, getattr(db, "location_id", "") or "", "database",
++        )
++        count += 1
++    return count
++
++
++def _discover_nat_gateways(creds, project_id, account_id, cursor) -> int:
++    # Cloud NAT is a sub-resource of a Router, not a standalone listable
++    # object — enumerate routers, then each router's `.nats` entries.
++    client = compute_v1.RoutersClient(credentials=creds)
++    count = 0
++    for region, response in client.aggregated_list(project=project_id):
++        if not response.routers:
++            continue
++        region_name = region.split("/")[-1]
++        for router in response.routers:
++            for nat in (router.nats or []):
++                resource_id = (
++                    f"projects/{project_id}/regions/{region_name}/routers/"
++                    f"{router.name}/nats/{nat.name}"
++                )
++                _upsert_resource(
++                    cursor, account_id, "nat_gateway", resource_id, nat.name,
++                    {}, region_name, "networking",
++                )
++                count += 1
++    return count
++
++
++def _discover_persistent_disks(creds, project_id, account_id, cursor) -> int:
++    client = compute_v1.DisksClient(credentials=creds)
++    count = 0
++    for zone, response in client.aggregated_list(project=project_id):
++        if not response.disks:
++            continue
++        zone_name = zone.split("/")[-1]
++        for disk in response.disks:
++            resource_id = f"projects/{project_id}/zones/{zone_name}/disks/{disk.name}"
++            _upsert_resource(
++                cursor, account_id, "gce_persistent_disk", resource_id, disk.name,
++                dict(disk.labels or {}), zone_name, "storage",
++            )
++            count += 1
++    return count
++
++
+ def discover_account_resources(account: dict, sa_key_json: str) -> dict:
+     """Run discovery for a single GCP account. Returns a per-type count."""
+     creds = _credentials(sa_key_json)
+@@ -130,12 +356,40 @@ def discover_account_resources(account: dict, sa_key_json: str) -> dict:
+     from app.db import get_connection
+     conn = get_connection()
+     cursor = conn.cursor()
+-    counts = {"compute_instance": 0, "gcs_bucket": 0, "cloudsql_instance": 0, "cloud_run_service": 0}
++    counts = {
++        "compute_instance": 0, "gcs_bucket": 0, "cloudsql_instance": 0, "cloud_run_service": 0,
++        "gke_cluster": 0, "gke_node": 0, "cloudfunctions_function": 0, "pubsub_topic": 0,
++        "pubsub_subscription": 0, "cloud_lb": 0, "redis_instance": 0, "bigquery_project": 0,
++        "spanner_instance": 0, "firestore_database": 0, "nat_gateway": 0, "gce_persistent_disk": 0,
++    }
++    # Same fail-open pattern as Azure: a service that's never been enabled
++    # for this project (API not turned on) or hits a permissions gap
++    # shouldn't abort discovery for every other service.
++    steps = [
++        ("compute_instance",         lambda: _discover_compute_instances(creds, project_id, account["id"], cursor)),
++        ("gcs_bucket",               lambda: _discover_gcs_buckets(creds, project_id, account["id"], cursor)),
++        ("cloudsql_instance",        lambda: _discover_cloudsql_instances(creds, project_id, account["id"], cursor)),
++        ("cloud_run_service",        lambda: _discover_cloud_run(creds, project_id, account["id"], cursor)),
++        ("gke_cluster",              lambda: _discover_gke_clusters(creds, project_id, account["id"], cursor)),
++        ("gke_node",                 lambda: _discover_gke_nodes(creds, project_id, account["id"], cursor)),
++        ("cloudfunctions_function",  lambda: _discover_cloudfunctions(creds, project_id, account["id"], cursor)),
++        ("pubsub_topic",             lambda: _discover_pubsub_topics(creds, project_id, account["id"], cursor)),
++        ("pubsub_subscription",      lambda: _discover_pubsub_subscriptions(creds, project_id, account["id"], cursor)),
++        ("cloud_lb",                 lambda: _discover_cloud_lb(creds, project_id, account["id"], cursor)),
++        ("redis_instance",           lambda: _discover_redis_instances(creds, project_id, account["id"], cursor)),
++        ("bigquery_project",         lambda: _discover_bigquery_datasets(creds, project_id, account["id"], cursor)),
++        ("spanner_instance",         lambda: _discover_spanner_instances(creds, project_id, account["id"], cursor)),
++        ("firestore_database",       lambda: _discover_firestore_databases(creds, project_id, account["id"], cursor)),
++        ("nat_gateway",              lambda: _discover_nat_gateways(creds, project_id, account["id"], cursor)),
++        ("gce_persistent_disk",      lambda: _discover_persistent_disks(creds, project_id, account["id"], cursor)),
++    ]
++
+     try:
+-        counts["compute_instance"] = _discover_compute_instances(creds, project_id, account["id"], cursor)
+-        counts["gcs_bucket"] = _discover_gcs_buckets(creds, project_id, account["id"], cursor)
+-        counts["cloudsql_instance"] = _discover_cloudsql_instances(creds, project_id, account["id"], cursor)
+-        counts["cloud_run_service"] = _discover_cloud_run(creds, project_id, account["id"], cursor)
++        for key, fn in steps:
++            try:
++                counts[key] = fn()
++            except Exception as e:
++                logger.warning(f"GCP {key} discovery failed for {account.get('account_name')}: {e}")
+         conn.commit()
+     except Exception:
+         conn.rollback()
+diff --git a/db/migrations/013_resources_upsert_unique_key.sql b/db/migrations/013_resources_upsert_unique_key.sql
+new file mode 100644
+index 0000000..153df93
+--- /dev/null
++++ b/db/migrations/013_resources_upsert_unique_key.sql
+@@ -0,0 +1,45 @@
++-- db/migrations/013_resources_upsert_unique_key.sql
++--
++-- app/providers/azure/discovery.py and app/providers/gcp/discovery.py's
++-- _upsert_resource() has always written via
++--   INSERT INTO resources (...) VALUES (...)
++--   ON DUPLICATE KEY UPDATE ...
++-- which only actually upserts if a UNIQUE key covers the columns that
++-- identify "the same resource" -- (aws_account_id, resource_type,
++-- resource_id). No committed migration ever added one. Without it, MySQL
++-- silently falls back to a plain INSERT on every call, so every 15-minute
++-- discovery cycle has been appending a fresh duplicate row per resource
++-- instead of updating the existing one (same class of drift flagged in
++-- 002_resources_region_instance_state.sql's docstring -- a column/key an
++-- environment may have picked up ad-hoc, never captured as a migration).
++--
++-- This was containable while Azure/GCP discovery only covered 4 resource
++-- types each; extending both to their full curated service list (19
++-- Azure, 16 GCP) running every 15 minutes makes unbounded duplicate
++-- growth in `resources` a real problem, so this migration is a
++-- prerequisite for that expansion rather than an optional cleanup.
++--
++-- Safe to run repeatedly (IF NOT EXISTS guard). If duplicate rows already
++-- exist from past discovery cycles, run the dedup step below FIRST or the
++-- ADD UNIQUE KEY statement will fail with "Duplicate entry".
++--
++-- Run: mysql -uroot -proot123 monitoring_hub < db/migrations/013_resources_upsert_unique_key.sql
++
++-- ── 1. Dedup existing rows first (keep the newest row per identity) ────
++-- Safe no-op if no duplicates exist yet.
++DELETE r1 FROM resources r1
++INNER JOIN resources r2
++  ON  r1.aws_account_id = r2.aws_account_id
++  AND r1.resource_type   = r2.resource_type
++  AND r1.resource_id      = r2.resource_id
++  AND r1.id < r2.id;
++
++-- ── 2. Add the unique key the upsert logic has always assumed exists ──
++-- resource_id is VARCHAR(512) (widened by migration 011 for Azure ARM
++-- IDs) -- a full-column unique key on utf8mb4 would need up to 2048
++-- bytes for that column alone, safely under InnoDB's 3072-byte index
++-- limit even combined with the other two key columns, so no prefix
++-- index is needed here.
++ALTER TABLE resources
++    ADD UNIQUE KEY IF NOT EXISTS uniq_resource_identity
++        (aws_account_id, resource_type, resource_id);
+diff --git a/requirements.txt b/requirements.txt
+index bf659a3..c4452fe 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -39,6 +39,18 @@ azure-mgmt-sql>=4,<5
+ azure-mgmt-web>=7,<8
+ azure-mgmt-monitor>=6,<7
+ azure-monitor-query>=1.2,<2
++# Added for full 19-service Azure discovery coverage (previously only
++# VM/Storage/SQL/App Service — see app/providers/azure/discovery.py)
++azure-mgmt-containerservice>=25,<36
++azure-mgmt-cosmosdb>=9,<10
++azure-mgmt-redis>=14,<15
++azure-mgmt-servicebus>=8,<9
++azure-mgmt-eventhub>=10,<11
++azure-mgmt-network>=25,<29
++azure-mgmt-keyvault>=10,<11
++azure-mgmt-containerinstance>=10,<11
++azure-mgmt-cdn>=12,<14
++azure-mgmt-datafactory>=3,<4
+ 
+ # GCP provider (Service Account auth + real discovery)
+ google-cloud-compute>=1.19,<2
+@@ -47,6 +59,15 @@ google-cloud-resource-manager>=1.12,<2
+ google-cloud-run>=0.10,<1
+ google-cloud-monitoring>=2.21,<3
+ google-api-python-client>=2.140,<3
++# Added for full 16-service GCP discovery coverage (previously only
++# Compute/GCS/Cloud SQL/Cloud Run — see app/providers/gcp/discovery.py)
++google-cloud-container>=2.50,<3
++google-cloud-functions>=1.16,<2
++google-cloud-pubsub>=2.21,<3
++google-cloud-redis>=2.16,<3
++google-cloud-bigquery>=3.25,<4
++google-cloud-spanner>=3.49,<4
++google-cloud-firestore>=2.17,<3
+ 
+ # Credential encryption-at-rest (Azure client secret / GCP SA key JSON)
+ cryptography>=42,<44

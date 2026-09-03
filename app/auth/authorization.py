@@ -57,6 +57,16 @@ GROUP_LEVELS = ("L1", "L2", "L3")
 # L1 -> None (top of the tree, no parent allowed).
 GROUP_PARENT_LEVEL = {"L1": None, "L2": "L1", "L3": "L2"}
 
+# The role a user is given automatically when added to a group at each
+# level -- L1 members get read-only Viewer access, L2 get Editor
+# (configure alerts, onboard accounts), L3 get full Admin. Assigning a
+# user to a group is now the single action that sets BOTH their scope
+# (inherited group policy) and their role tier in one step, instead of
+# the two being picked independently on the Add User form and
+# potentially disagreeing (e.g. an L3 group member left as a Viewer
+# by mistake).
+GROUP_LEVEL_ROLE = {"L1": "viewer", "L2": "editor", "L3": "admin"}
+
 
 @dataclass
 class ScopeGrant:
