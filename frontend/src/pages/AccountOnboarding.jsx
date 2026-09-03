@@ -1,7 +1,7 @@
 ﻿// monitoring-hub/frontend/src/pages/AccountOnboarding.jsx
 import { useState, useEffect, useRef } from "react";
 import MetricSelector from "../components/MetricSelector";
-import { getMetricCatalog, testAzureCredentials, testGcpCredentials } from "../api/api";
+import { getMetricCatalog, testAzureCredentials, testGcpCredentials, testRole } from "../api/api";
 import "./AccountOnboarding.css";
 
 const BASE = "";
@@ -157,6 +157,8 @@ export default function AccountOnboarding() {
 
   const [testStatus, setTestStatus] = useState(null); // null | loading | success | error
   const [testMsg,    setTestMsg]    = useState("");
+  const [detectedServices, setDetectedServices] = useState([]); // service_keys found by test-role's tagging sweep
+  const [metricsEdited, setMetricsEdited] = useState(false); // true once the user touches MetricSelector directly
 
   const [catalog,        setCatalog]        = useState([]);
   const [selectedIds,    setSelectedIds]    = useState(new Set());
@@ -196,6 +198,8 @@ export default function AccountOnboarding() {
     setApiErr(null);
     setTestStatus(null);
     setTestMsg("");
+    setDetectedServices([]);
+    setMetricsEdited(false);
   }
 
   function validate() {
@@ -232,8 +236,23 @@ export default function AccountOnboarding() {
   async function handleTestConnection() {
     setTestStatus("loading");
     setTestMsg("");
+    setDetectedServices([]);
     try {
-      if (provider === "azure") {
+      if (provider === "aws") {
+        const r = await testRole({
+          role_arn:    form.iam_role_arn.trim(),
+          external_id: form.external_id.trim(),
+          region:      form.primary_region,
+        });
+        setTestStatus("success");
+        setDetectedServices(r.detected_services || []);
+        setTestMsg(
+          r.detected_services && r.detected_services.length
+            ? `Verified — account ${r.assumed_account}`
+            : `Verified — account ${r.assumed_account} (no tagged resources detected yet; ` +
+              `defaults will be applied instead)`
+        );
+      } else if (provider === "azure") {
         const r = await testAzureCredentials({
           tenant_id: form.tenant_id.trim(),
           subscription_id: form.subscription_id.trim(),
@@ -266,6 +285,15 @@ export default function AccountOnboarding() {
     const accountName = form.account_name.trim();
     setQueue(prev => prev.filter(q => q.account_name !== accountName));
 
+    // If AWS auto-detection found real services and the user never touched
+    // the metric selector afterwards, let the backend's own detection run
+    // (app/api/admin/accounts.py add_account) instead of sending the
+    // pre-checked default set — that's what tags the resulting selection
+    // as source='discovered' rather than 'manual', and re-runs detection
+    // server-side against the live account rather than trusting the
+    // client's possibly-stale snapshot from Test Connection.
+    const useAutoDetect = provider === "aws" && detectedServices.length > 0 && !metricsEdited;
+
     let body = {
       provider,
       account_name:   accountName,
@@ -274,7 +302,7 @@ export default function AccountOnboarding() {
       owner_team:     form.owner_team.trim(),
       alias:          form.alias.trim(),
       description:    form.description.trim(),
-      selected_metric_ids: Array.from(selectedIds),
+      ...(useAutoDetect ? {} : { selected_metric_ids: Array.from(selectedIds) }),
     };
 
     if (provider === "aws") {
@@ -317,6 +345,8 @@ export default function AccountOnboarding() {
       setErrors({});
       setTestStatus(null);
       setTestMsg("");
+      setDetectedServices([]);
+      setMetricsEdited(false);
       setTimeout(() => refreshQueue(setQueue), 1000);
       setTimeout(() => refreshQueue(setQueue), 4000);
     } catch (err) {
@@ -334,6 +364,8 @@ export default function AccountOnboarding() {
     setSuccess(null);
     setTestStatus(null);
     setTestMsg("");
+    setDetectedServices([]);
+    setMetricsEdited(false);
     const defaults = new Set();
     catalog.forEach(g => g.metrics.forEach(m => { if (m.is_default) defaults.add(m.id); }));
     setSelectedIds(defaults);
@@ -557,6 +589,10 @@ export default function AccountOnboarding() {
                   </Field>
                 </div>
               )}
+
+              {form.auth_method === "iam_role" && (
+                <TestConnectionButton onTest={handleTestConnection} status={testStatus} resultText={testMsg} />
+              )}
             </div>
           )}
 
@@ -631,17 +667,30 @@ export default function AccountOnboarding() {
           {/* Metrics to Monitor */}
           <div className="ob-section">
             <div className="ob-section-title">METRICS TO MONITOR</div>
-            <p className="ob-metrics-hint">
-              Recommended cost-optimized defaults are pre-selected. Add or remove any
-              metric now, or come back later from Settings → Metrics for this account.
-            </p>
+            {provider === "aws" && detectedServices.length > 0 ? (
+              <p className="ob-metrics-hint">
+                Detected {detectedServices.length} service{detectedServices.length !== 1 ? "s" : ""} in this
+                account/region: <strong>{detectedServices.join(", ")}</strong>. Their default metrics will be
+                enabled automatically on submit — no need to pick anything below unless you want to add,
+                remove, or fine-tune the selection now.
+              </p>
+            ) : (
+              <p className="ob-metrics-hint">
+                Recommended cost-optimized defaults are pre-selected. Add or remove any
+                metric now, or come back later from Settings → Metrics for this account.
+                {provider === "aws" && (
+                  <> Run "Test Connection" above first to auto-detect what's actually in this
+                  account instead of picking manually.</>
+                )}
+              </p>
+            )}
             {catalogLoading ? (
               <div className="ob-metrics-loading">Loading metric catalog…</div>
             ) : (
               <MetricSelector
                 catalog={catalog}
                 selectedIds={selectedIds}
-                onChange={setSelectedIds}
+                onChange={ids => { setSelectedIds(ids); setMetricsEdited(true); }}
                 compact
                 provider={provider}
               />
