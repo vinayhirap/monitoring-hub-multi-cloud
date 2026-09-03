@@ -8,6 +8,7 @@ import {
   LockIcon, CheckIcon, XCircleIcon, LinkIcon, GlobeIcon, LayersIcon,
   XIcon, TagIcon, BarChartIcon, ToolIcon, ZapIcon,
 } from "../components/icons";
+import { useTimezone } from "../contexts/TimezoneContext";
 
 const BASE = "";
 
@@ -914,8 +915,17 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
             {service === "EC2" && <>
               <MetricChart title="Network In (KB)"  data={metrics.network_in?.map(d => ({ ...d, v: d.v / 1024 }))}  color="#22c55e" unit="KB" timeRange={rangLabel} />
               <MetricChart title="Network Out (KB)" data={metrics.network_out?.map(d => ({ ...d, v: d.v / 1024 }))} color="#7c6ee0" unit="KB" timeRange={rangLabel} />
-              <MetricChart title="Disk Read (bytes)"  data={metrics.disk_read}  color="#fbbf24" unit="B" timeRange={rangLabel} />
-              <MetricChart title="Disk Write (bytes)" data={metrics.disk_write} color="#fb7185" unit="B" timeRange={rangLabel} />
+              {/* Disk Read/Write are instance-store metrics that modern
+                  EBS-backed instances never publish — removed outright
+                  rather than shown as permanently-empty boxes. Memory
+                  and disk-space utilization require the CloudWatch
+                  Agent and are hidden completely (not shown as "no
+                  data") when it isn't installed/reporting for this
+                  instance — see cwagent_installed in get_ec2_metric_series. */}
+              {metrics.cwagent_installed && <>
+                <MetricChart title="Memory Utilization %"  data={metrics.mem_utilization}   color="#7c6ee0" unit="%" threshold={90} timeRange={rangLabel} />
+                <MetricChart title="Disk Space Utilized %" data={metrics.disk_used_percent} color="#fbbf24" unit="%" threshold={90} timeRange={rangLabel} />
+              </>}
             </>}
 
             {service === "EBS" && <>
@@ -1161,6 +1171,7 @@ function CpuBar({ cpu, state }) { if (state !== "running") return <span classNam
 function QuickStat({ label, value, color, mono }) { return <div className="qs-item"><div className="qs-label">{label}</div><div className={`qs-value ${color ? `c-${color}` : ""}${mono ? " mono" : ""}`}>{value}</div></div>; }
 
 function MetricChart({ title, data, color, unit, threshold, thresholdLabel, timeRange }) {
+  const { ianaName } = useTimezone();
   if (!data || data.length === 0) return (
     <div className="chart-box">
       <div className="chart-title">{title}</div>
@@ -1169,7 +1180,7 @@ function MetricChart({ title, data, color, unit, threshold, thresholdLabel, time
   );
   const latest = data[data.length - 1]?.v ?? 0;
   const formatted = data.map(d => ({
-    t: new Date(d.t).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }),
+    t: new Date(d.t).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: ianaName }),
     v: d.v,
     ...(threshold ? { threshold } : {}),
   }));

@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useWebSocket } from "../hooks/useWebSocket";
 import "./Alerts.css";
+import { useTimezone, formatInTz } from "../contexts/TimezoneContext";
 
 const BASE = "";
 
@@ -116,6 +117,7 @@ const SEV_ORDER = { CRITICAL: 0, WARNING: 1, INFO: 2 };
 export default function Alerts() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { ianaName } = useTimezone();
   const role     = (user?.role || "viewer").toLowerCase();
   const canAct   = role === "admin" || role === "editor";
 
@@ -429,7 +431,7 @@ export default function Alerts() {
                       <td><StatusBadge status={status} /></td>
 
                       <td className="mono small">
-                        {a.triggered_at ? shortDateTime(a.triggered_at) : "—"}
+                        {a.triggered_at ? shortDateTime(a.triggered_at, ianaName) : "—"}
                         {a.stale && (
                           <div
                             className="alert-stale-flag"
@@ -580,18 +582,18 @@ function timeSince(iso) {
   }
 }
 
-function shortDateTime(iso) {
-  try {
-    return new Date(iso).toLocaleString("en-US", {
-      month:  "numeric",
-      day:    "numeric",
-      year:   "numeric",
-      hour:   "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-    });
-  } catch {
-    return iso;
-  }
+function shortDateTime(iso, ianaName) {
+  // Timezone-aware version of the previous browser-local formatter —
+  // ianaName is threaded in from the calling component's useTimezone()
+  // since this is a plain helper, not a component, and can't call
+  // hooks itself.
+  return formatInTz(iso, ianaName, {
+    month:  "numeric",
+    day:    "numeric",
+    year:   "numeric",
+    hour:   "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }) || iso;
 }

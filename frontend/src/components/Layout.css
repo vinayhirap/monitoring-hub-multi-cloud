@@ -603,6 +603,29 @@ body {
   border-color: rgba(99,130,190,0.4);
 }
 
+/* ── Timezone selector — same visual family as the theme toggle ── */
+.tz-select {
+  background: rgba(99,130,190,0.1);
+  border: 1px solid rgba(99,130,190,0.2);
+  border-radius: 6px;
+  color: #a8bdd8;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  height: 30px;
+  padding: 0 6px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+.tz-select:hover {
+  background: rgba(99,130,190,0.2);
+  border-color: rgba(99,130,190,0.4);
+}
+.tz-select option {
+  background: #0b1220;
+  color: #a8bdd8;
+}
+
 /* ── sidebar toggle — visible at every breakpoint, sidebar is
    closed by default (see .layout.nav-open .sidebar above) ── */
 .btn-nav-toggle {
@@ -768,6 +791,8 @@ body {
 [data-theme="light"] .live-pill            { background: rgba(0,135,90,0.1); border-color: rgba(0,135,90,0.25); color: #00875a; }
 [data-theme="light"] .live-dot             { background: #00875a; }
 [data-theme="light"] .btn-theme-toggle     { background: rgba(0,119,204,0.07); border-color: rgba(0,119,204,0.2); color: #2bb3ac; }
+[data-theme="light"] .tz-select            { background: rgba(0,119,204,0.07); border-color: rgba(0,119,204,0.2); color: #2bb3ac; }
+[data-theme="light"] .tz-select option     { background: #ffffff; color: #2bb3ac; }
 [data-theme="light"] .btn-logout           { background: rgba(192,57,43,0.06); border-color: rgba(192,57,43,0.18); color: #c0392b; }
 [data-theme="light"] .btn-logout:hover     { background: rgba(192,57,43,0.12); }
 
