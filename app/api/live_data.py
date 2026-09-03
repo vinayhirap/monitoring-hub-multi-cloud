@@ -105,26 +105,53 @@ def _get_db_account(account_db_id: int) -> dict:
     return row
 
 
-def _get_active_alert_resources() -> set:
+def _get_active_alert_counts_by_account() -> dict:
+    """
+    THE authoritative source for account-level health: {aws_account_id:
+    {"critical": N, "warning": N}}, counting DISTINCT alerting
+    resources of each severity, resolved to an account via `resources`
+    (which carries aws_account_id for every resource type this app
+    discovers — EC2, EBS, RDS, Lambda, ELB, ECS), not just EC2.
+
+    This replaces the previous _get_active_alert_resources(), which
+    returned raw (critical_ids, warning_ids) sets that the caller then
+    intersected against ONLY that account's EC2 instance_ids — meaning
+    a critical alert on an EBS volume, S3 bucket, RDS instance, or
+    Lambda function never counted toward that account's status at all.
+    That's exactly how a dashboard can show "7 CRITICAL · 3 WARNING"
+    in the alerts banner (built straight from the alerts table) while
+    the account summary tiles above it say 0 critical, 0 healthy — the
+    two were computed from different data. Routing both through this
+    one function is what keeps them in agreement.
+    """
     try:
         conn   = get_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute("""
-            SELECT resource_id, severity
-            FROM alerts
-            WHERE status = 'active'
-              AND (resolved_at IS NULL)
-              AND triggered_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+            SELECT r.aws_account_id, a.severity, COUNT(DISTINCT a.resource_id) AS cnt
+            FROM alerts a
+            JOIN resources r ON r.resource_id = a.resource_id
+            WHERE a.status = 'active'
+              AND a.resolved_at IS NULL
+              AND a.triggered_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+            GROUP BY r.aws_account_id, a.severity
         """)
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        critical = {r["resource_id"] for r in rows if (r["severity"] or "").upper() == "CRITICAL"}
-        warning  = {r["resource_id"] for r in rows if (r["severity"] or "").upper() == "WARNING"}
-        return critical, warning
+
+        out = {}
+        for r in rows:
+            bucket = out.setdefault(r["aws_account_id"], {"critical": 0, "warning": 0})
+            sev = (r["severity"] or "").upper()
+            if sev == "CRITICAL":
+                bucket["critical"] += r["cnt"]
+            elif sev == "WARNING":
+                bucket["warning"] += r["cnt"]
+        return out
     except Exception as e:
-        logger.error(f"Active alert fetch error: {e}")
-        return set(), set()
+        logger.error(f"Active alert count fetch error: {e}")
+        return {}
 
 
 @router.get("/accounts")
@@ -137,7 +164,7 @@ def live_accounts():
 
     accounts = _get_db_accounts()
 
-    critical_resources, warning_resources = _get_active_alert_resources()
+    alert_counts_by_account = _get_active_alert_counts_by_account()
 
     def process_account(acc):
         region  = acc.get("default_region")
@@ -146,15 +173,17 @@ def live_accounts():
         total   = summary.get("ec2_total",   0)
         avg_cpu = summary.get("ec2_avg_cpu", 0)
 
-        ec2_list     = summary.get("instances", [])
-        instance_ids = {i["instance_id"] for i in ec2_list}
+        counts        = alert_counts_by_account.get(acc["id"], {"critical": 0, "warning": 0})
+        acct_critical = counts["critical"]
+        acct_warning  = counts["warning"]
 
-        has_critical = bool(critical_resources & instance_ids)
-        has_warning  = bool(warning_resources  & instance_ids)
-
-        if has_critical:
+        # Real active alerts (any resource type) are authoritative.
+        # avg_cpu is only a fallback heuristic for the rare case where
+        # nothing has alerted yet at all — it must never override an
+        # actual open alert, critical or warning.
+        if acct_critical > 0:
             health = "critical"
-        elif has_warning:
+        elif acct_warning > 0:
             health = "warning"
         elif avg_cpu > 80:
             health = "critical"
@@ -163,9 +192,8 @@ def live_accounts():
         else:
             health = "healthy"
 
-        unhealthy_ids   = (critical_resources | warning_resources) & instance_ids
-        healthy_count   = running - len(unhealthy_ids)
-        unhealthy_count = len(unhealthy_ids)
+        unhealthy_count = min(acct_critical + acct_warning, running) if running else (acct_critical + acct_warning)
+        healthy_count   = max(running - unhealthy_count, 0)
 
         services = []
         if summary.get("ec2_total", 0) > 0:
@@ -207,9 +235,12 @@ def live_accounts():
             "elb_total":        summary.get("elb_total",    0),
             "ecs_total":        summary.get("ecs_total",    0),
             "avg_cpu":          avg_cpu,
-            "alerts":           0,
+            # Was hardcoded to 0 before this fix, regardless of reality.
+            "alerts":           acct_critical + acct_warning,
+            "critical_alerts":  acct_critical,
+            "warning_alerts":   acct_warning,
             "instance_count":   total,
-            "healthy_resources":   max(healthy_count, 0),
+            "healthy_resources":   healthy_count,
             "unhealthy_resources": unhealthy_count,
             "services":         services,
             "created_at":       acc.get("created_at"),

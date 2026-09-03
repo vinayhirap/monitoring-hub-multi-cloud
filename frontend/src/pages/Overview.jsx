@@ -5,6 +5,7 @@ import { useWebSocket } from "../hooks/useWebSocket";
 import { getLiveAccounts, getAlerts } from "../api/api";
 import "./Overview.css";
 import { useTimezone } from "../contexts/TimezoneContext";
+import { getCached, setCached } from "../utils/dataCache";
 
 const BASE = "";
 
@@ -37,14 +38,23 @@ function aggregateStatus(regions) {
 function aggregateStats(regions) {
   return regions.reduce(
     (acc, r) => ({
-      ec2_total:    acc.ec2_total    + (r.ec2_total    || 0),
-      ec2_running:  acc.ec2_running  + (r.ec2_running  || 0),
-      ebs_total:    acc.ebs_total    + (r.ebs_total    || 0),
-      s3_total:     acc.s3_total     + (r.s3_total     || 0),
-      lambda_total: acc.lambda_total + (r.lambda_total || 0),
-      rds_total:    acc.rds_total    + (r.rds_total    || 0),
+      ec2_total:       acc.ec2_total       + (r.ec2_total       || 0),
+      ec2_running:     acc.ec2_running     + (r.ec2_running     || 0),
+      ebs_total:       acc.ebs_total       + (r.ebs_total       || 0),
+      s3_total:        acc.s3_total        + (r.s3_total        || 0),
+      lambda_total:    acc.lambda_total    + (r.lambda_total    || 0),
+      rds_total:       acc.rds_total       + (r.rds_total       || 0),
+      // Authoritative per-account alert counts computed server-side in
+      // app/api/live_data.py (resolved via resources.aws_account_id
+      // across every resource type, not just EC2) -- summed across
+      // this account's regions the same way every other stat here is.
+      critical_alerts: acc.critical_alerts + (r.critical_alerts || 0),
+      warning_alerts:  acc.warning_alerts  + (r.warning_alerts  || 0),
     }),
-    { ec2_total: 0, ec2_running: 0, ebs_total: 0, s3_total: 0, lambda_total: 0, rds_total: 0 }
+    {
+      ec2_total: 0, ec2_running: 0, ebs_total: 0, s3_total: 0, lambda_total: 0, rds_total: 0,
+      critical_alerts: 0, warning_alerts: 0,
+    }
   );
 }
 
@@ -54,6 +64,7 @@ export default function Overview() {
   const [accounts,    setAccounts]    = useState([]);
   const [alerts,      setAlerts]      = useState([]);
   const [loading,     setLoading]     = useState(true);
+  const [revalidating, setRevalidating] = useState(false);
   const [filter,      setFilter]      = useState("All");
   const [lastSync,    setLastSync]    = useState(null);
   const [expandedIds, setExpandedIds] = useState(new Set());
@@ -62,6 +73,7 @@ export default function Overview() {
   const { lastMessage: alertMsg } = useWebSocket("alerts");
 
   const loadAll = useCallback(async () => {
+    setRevalidating(true);
     try {
       const [accs, als] = await Promise.all([
         getLiveAccounts().catch(() => []),
@@ -69,12 +81,30 @@ export default function Overview() {
       ]);
       const filtered = (Array.isArray(accs) ? accs : [])
         .filter(a => !deletedIds.current.has(a.id));
+      const freshAlerts = Array.isArray(als) ? als : [];
       setAccounts(filtered);
-      setAlerts(Array.isArray(als) ? als : []);
+      setAlerts(freshAlerts);
       setLastSync(new Date());
+      setCached("overview:accounts_alerts", { accounts: filtered, alerts: freshAlerts });
     } finally {
       setLoading(false);
+      setRevalidating(false);
     }
+  }, []);
+
+  // Hydrate instantly from whatever was cached last time this page
+  // loaded -- lets the dashboard render immediately on open/reload
+  // instead of sitting on "Fetching live AWS data..." every time,
+  // while loadAll() below still fetches fresh data in the background
+  // and replaces it (and the cache) as soon as it arrives.
+  useEffect(() => {
+    const cached = getCached("overview:accounts_alerts");
+    if (!cached) return;
+    const filtered = (cached.data.accounts || []).filter(a => !deletedIds.current.has(a.id));
+    setAccounts(filtered);
+    setAlerts(cached.data.alerts || []);
+    setLastSync(new Date(cached.ts));
+    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -146,6 +176,7 @@ export default function Overview() {
           {lastSync && (
             <span style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
               Synced {lastSync.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: ianaName })}
+              {revalidating && <span style={{ marginLeft: 6, opacity: 0.7 }}>· updating…</span>}
             </span>
           )}
           <button className="btn-refresh" onClick={loadAll} title="Refresh now">↻ Refresh</button>
@@ -216,7 +247,6 @@ export default function Overview() {
             <AccountGroupCard
               key={group.account_id}
               group={group}
-              alerts={alerts}
               expanded={expandedIds.has(group.account_id)}
               onToggle={() => toggleExpand(group.account_id)}
               onRegionClick={(regionRow) => navigate(`/accounts/${regionRow.id}/services`)}
@@ -231,19 +261,19 @@ export default function Overview() {
 
 // ─── Account Group Card ──────────────────────────────────────────────────────
 
-function AccountGroupCard({ group, alerts, expanded, onToggle, onRegionClick, onDelete }) {
+function AccountGroupCard({ group, expanded, onToggle, onRegionClick, onDelete }) {
   const status = aggregateStatus(group.regions);
   const stats  = aggregateStats(group.regions);
   const regionCount = group.regions.length;
 
-  // Aggregate alert counts across all regions
-  const acctAlerts = alerts.filter(a => {
-    const r = a.resource || a.resource_id || "";
-    return r.includes(group.account_id || "____");
-  });
-  const activeAcctAlerts = acctAlerts.filter(a => (a.status || "").toLowerCase() === "active");
-  const acctCritical     = activeAcctAlerts.filter(a => (a.severity || "").toUpperCase() === "CRITICAL").length;
-  const acctWarning      = activeAcctAlerts.filter(a => (a.severity || "").toUpperCase() === "WARNING").length;
+  // Same server-computed counts that drove this account's status pill
+  // above (via aggregateStatus/aggregateStats) -- the badge below can
+  // never disagree with the ring/pill the way the old
+  // alerts.filter(a => a.resource.includes(account_id)) substring
+  // match sometimes did (most resource ids never literally contain
+  // the AWS account id string).
+  const acctCritical = stats.critical_alerts;
+  const acctWarning  = stats.warning_alerts;
 
   // Donut based on aggregated ec2_running
   const total         = stats.ec2_running || 0;
@@ -346,7 +376,6 @@ function AccountGroupCard({ group, alerts, expanded, onToggle, onRegionClick, on
             <RegionRow
               key={regionRow.id}
               regionRow={regionRow}
-              alerts={alerts}
               onClick={() => onRegionClick(regionRow)}
               onDelete={(e) => onDelete(e, regionRow)}
             />
@@ -359,16 +388,14 @@ function AccountGroupCard({ group, alerts, expanded, onToggle, onRegionClick, on
 
 // ─── Region Row (drilldown) ───────────────────────────────────────────────────
 
-function RegionRow({ regionRow, alerts, onClick, onDelete }) {
+function RegionRow({ regionRow, onClick, onDelete }) {
   const status = regionRow.status || "healthy";
 
-  const acctAlerts = alerts.filter(a => {
-    const r = a.resource || a.resource_id || "";
-    return r.includes(regionRow.account_id || "____");
-  });
-  const activeAlerts = acctAlerts.filter(a => (a.status || "").toLowerCase() === "active");
-  const critical     = activeAlerts.filter(a => (a.severity || "").toUpperCase() === "CRITICAL").length;
-  const warning      = activeAlerts.filter(a => (a.severity || "").toUpperCase() === "WARNING").length;
+  // Same authoritative per-region counts the backend used to set
+  // regionRow.status -- no more independent (and fragile) re-derivation
+  // of severity from a raw alerts list here.
+  const critical = regionRow.critical_alerts || 0;
+  const warning  = regionRow.warning_alerts  || 0;
 
   const statusClass = {
     healthy:  "region-row-healthy",
