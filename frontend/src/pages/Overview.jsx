@@ -61,10 +61,17 @@ function aggregateStats(regions) {
 export default function Overview() {
   const navigate = useNavigate();
   const { ianaName } = useTimezone();
+  const OVERVIEW_CACHE_KEY = "overview:accounts_alerts";
+
   const [accounts,    setAccounts]    = useState([]);
   const [alerts,      setAlerts]      = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [revalidating, setRevalidating] = useState(false);
+  // True only when the MOST RECENT fetch attempt failed outright (network
+  // error, backend unreachable) -- lets the empty state say "couldn't
+  // reach the server" instead of the misleading "no accounts found" when
+  // accounts genuinely exist but the last request just didn't succeed.
+  const [loadError,   setLoadError]   = useState(false);
   const [filter,      setFilter]      = useState("All");
   const [lastSync,    setLastSync]    = useState(null);
   const [expandedIds, setExpandedIds] = useState(new Set());
@@ -74,22 +81,42 @@ export default function Overview() {
 
   const loadAll = useCallback(async () => {
     setRevalidating(true);
-    try {
-      const [accs, als] = await Promise.all([
-        getLiveAccounts().catch(() => []),
-        getAlerts().catch(() => []),
-      ]);
-      const filtered = (Array.isArray(accs) ? accs : [])
+    // Promise.allSettled (not Promise.all + .catch(() => [])) is the whole
+    // fix here: a failed request must NEVER be indistinguishable from a
+    // successful one that happens to return zero rows. Each of
+    // accounts/alerts only updates state (and the cache) for the specific
+    // one that actually succeeded -- a transient failure changes nothing
+    // on screen and leaves the cache untouched, rather than overwriting
+    // good data with an empty snapshot that then sticks around on every
+    // reload until the next successful poll happens to fix it.
+    const [accResult, alertResult] = await Promise.allSettled([getLiveAccounts(), getAlerts()]);
+
+    if (accResult.status === "fulfilled") {
+      const filtered = (Array.isArray(accResult.value) ? accResult.value : [])
         .filter(a => !deletedIds.current.has(a.id));
-      const freshAlerts = Array.isArray(als) ? als : [];
       setAccounts(filtered);
-      setAlerts(freshAlerts);
-      setLastSync(new Date());
-      setCached("overview:accounts_alerts", { accounts: filtered, alerts: freshAlerts });
-    } finally {
-      setLoading(false);
-      setRevalidating(false);
+      setLoadError(false);
+      const cachedAlerts = getCached(OVERVIEW_CACHE_KEY)?.data?.alerts || [];
+      setCached(OVERVIEW_CACHE_KEY, {
+        accounts: filtered,
+        alerts: alertResult.status === "fulfilled" && Array.isArray(alertResult.value)
+          ? alertResult.value
+          : cachedAlerts,
+      });
+    } else {
+      console.error("Overview: accounts fetch failed, keeping last known data:", accResult.reason);
+      setLoadError(true);
     }
+
+    if (alertResult.status === "fulfilled") {
+      setAlerts(Array.isArray(alertResult.value) ? alertResult.value : []);
+    } else {
+      console.error("Overview: alerts fetch failed, keeping last known data:", alertResult.reason);
+    }
+
+    setLastSync(new Date());
+    setLoading(false);
+    setRevalidating(false);
   }, []);
 
   // Hydrate instantly from whatever was cached last time this page
@@ -98,7 +125,7 @@ export default function Overview() {
   // while loadAll() below still fetches fresh data in the background
   // and replaces it (and the cache) as soon as it arrives.
   useEffect(() => {
-    const cached = getCached("overview:accounts_alerts");
+    const cached = getCached(OVERVIEW_CACHE_KEY);
     if (!cached) return;
     const filtered = (cached.data.accounts || []).filter(a => !deletedIds.current.has(a.id));
     setAccounts(filtered);
@@ -184,10 +211,18 @@ export default function Overview() {
       </div>
 
       <div className="ov-summary">
-        <SummaryTile icon={<IconAccounts />} label="Total Accounts" value={grouped.length} />
-        <SummaryTile icon={<IconHealthy />}  label="Healthy"  value={healthyCount}  color="green" />
-        <SummaryTile icon={<IconWarning />}  label="Warning"  value={warningCount}  color={warningCount  > 0 ? "yellow" : "default"} pulse={warningCount  > 0} />
-        <SummaryTile icon={<IconCritical />} label="Critical" value={criticalCount} color={criticalCount > 0 ? "red"    : "default"} pulse={criticalCount > 0} />
+        {loading ? (
+          <>
+            <SkeletonTile /><SkeletonTile /><SkeletonTile /><SkeletonTile />
+          </>
+        ) : (
+          <>
+            <SummaryTile icon={<IconAccounts />} label="Total Accounts" value={grouped.length} />
+            <SummaryTile icon={<IconHealthy />}  label="Healthy"  value={healthyCount}  color="green" />
+            <SummaryTile icon={<IconWarning />}  label="Warning"  value={warningCount}  color={warningCount  > 0 ? "yellow" : "default"} pulse={warningCount  > 0} />
+            <SummaryTile icon={<IconCritical />} label="Critical" value={criticalCount} color={criticalCount > 0 ? "red"    : "default"} pulse={criticalCount > 0} />
+          </>
+        )}
       </div>
 
       {(criticalAlerts > 0 || warningAlerts > 0) && (
@@ -235,7 +270,14 @@ export default function Overview() {
       </div>
 
       {loading ? (
-        <div className="ov-loading"><span className="spin">◌</span> Fetching live AWS data…</div>
+        <div className="accounts-grid">
+          <SkeletonAccountCard /><SkeletonAccountCard /><SkeletonAccountCard />
+        </div>
+      ) : filteredGroups.length === 0 && loadError ? (
+        <div className="ov-empty">
+          Couldn't reach the server just now — showing the last known state.{" "}
+          <span className="ov-link" onClick={loadAll}>Retry →</span>
+        </div>
       ) : filteredGroups.length === 0 ? (
         <div className="ov-empty">
           No accounts found.{" "}
@@ -410,48 +452,46 @@ function RegionRow({ regionRow, onClick, onDelete }) {
       onClick={onClick}
       className={`region-row ${statusClass}`}
     >
-      {/* Status dot */}
-      <span style={{
-        width: 8, height: 8, borderRadius: "50%",
-        background: dotColor, flexShrink: 0,
-        boxShadow: `0 0 6px ${dotColor}80`,
-      }} />
-
-      {/* Region name */}
-      <span className="region-row-name">
-        {regionRow.region}
-      </span>
-
-      {/* Resource chips — compact */}
-      <div style={{ display: "flex", gap: 5, flex: 1, flexWrap: "wrap" }}>
-        <MiniChip label="EC2"    value={regionRow.ec2_total}    sub={`${regionRow.ec2_running}▶`} />
-        <MiniChip label="EBS"    value={regionRow.ebs_total}    />
-        <MiniChip label="S3"     value={regionRow.s3_total}     />
-        <MiniChip label="λ"      value={regionRow.lambda_total} />
+      {/* Left group: dot + name + resource chips -- allowed to wrap.
+          Right group (alert badges + delete) is a separate flex item
+          pinned to the end via margin-left:auto on region-row-actions;
+          if the row is too narrow for both, the WHOLE actions group
+          wraps to its own line below instead of the delete button
+          silently losing the fight for space and disappearing off the
+          edge, which is what happened when everything shared one
+          nowrap-by-default flex row. */}
+      <div className="region-row-main">
+        <span style={{
+          width: 8, height: 8, borderRadius: "50%",
+          background: dotColor, flexShrink: 0,
+          boxShadow: `0 0 6px ${dotColor}80`,
+        }} />
+        <span className="region-row-name">
+          {regionRow.region}
+        </span>
+        <div className="region-row-chips">
+          <MiniChip label="EC2"    value={regionRow.ec2_total}    sub={`${regionRow.ec2_running}▶`} />
+          <MiniChip label="EBS"    value={regionRow.ebs_total}    />
+          <MiniChip label="S3"     value={regionRow.s3_total}     />
+          <MiniChip label="λ"      value={regionRow.lambda_total} />
+        </div>
       </div>
 
-      {/* Alert badges */}
-      <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+      <div className="region-row-actions">
         {critical > 0 && (
-          <span style={{ fontSize: 10, color: "#ef4444", background: "rgba(239,68,68,0.15)", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>
-            ● {critical}
-          </span>
+          <span className="region-alert-badge region-alert-critical">● {critical}</span>
         )}
         {warning > 0 && (
-          <span style={{ fontSize: 10, color: "#f59e0b", background: "rgba(245,158,11,0.15)", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>
-            ⚠ {warning}
-          </span>
+          <span className="region-alert-badge region-alert-warning">⚠ {warning}</span>
         )}
+        <span className="region-row-goto">Services →</span>
+        <button
+          className="btn-delete-sm"
+          onClick={onDelete}
+          title="Remove region"
+          aria-label="Remove region"
+        >✕</button>
       </div>
-
-      <span style={{ fontSize: 11, color: "var(--text-muted)", flexShrink: 0 }}>Services →</span>
-
-      <button
-        className="btn-delete-sm"
-        onClick={onDelete}
-        title="Remove region"
-        style={{ flexShrink: 0 }}
-      >✕</button>
     </div>
   );
 }
@@ -572,6 +612,46 @@ function IconWarning() {
 }
 function IconCritical() {
   return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>;
+}
+
+// Skeleton placeholders shown ONLY on a genuine first-ever load (no
+// cache to hydrate from yet) -- a shimmering approximation of the real
+// layout communicates "this is actively loading" far more convincingly
+// than a spinner + line of text, and avoids the summary tiles briefly
+// showing a bare "0" that reads as a confirmed (rather than pending)
+// count.
+function SkeletonTile() {
+  return (
+    <div className="sum-tile sum-default">
+      <span className="sum-icon sk-block" style={{ width: 32, height: 32 }} />
+      <div className="sum-body">
+        <div className="sk-block" style={{ width: 70, height: 10, marginBottom: 6 }} />
+        <div className="sk-block" style={{ width: 40, height: 20 }} />
+      </div>
+    </div>
+  );
+}
+
+function SkeletonAccountCard() {
+  return (
+    <div className="account-card" style={{ cursor: "default" }}>
+      <div className="sk-block" style={{ width: "60%", height: 15, marginBottom: 8 }} />
+      <div className="sk-block" style={{ width: "40%", height: 11, marginBottom: 12 }} />
+      <div style={{ display: "flex", gap: 5, marginBottom: 14 }}>
+        <div className="sk-block" style={{ width: 50, height: 16, borderRadius: 10 }} />
+        <div className="sk-block" style={{ width: 64, height: 16, borderRadius: 10 }} />
+      </div>
+      <div className="acc-body">
+        <div className="sk-block" style={{ width: 76, height: 76, borderRadius: "50%", flexShrink: 0 }} />
+        <div className="acc-chips" style={{ flex: 1 }}>
+          <div className="sk-block" style={{ width: "100%", height: 26, marginBottom: 6 }} />
+          <div className="sk-block" style={{ width: "100%", height: 26, marginBottom: 6 }} />
+          <div className="sk-block" style={{ width: "100%", height: 26, marginBottom: 6 }} />
+          <div className="sk-block" style={{ width: "100%", height: 26 }} />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function SummaryTile({ icon, label, value, color, pulse }) {

@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Body, Response, Depends
 from app.db import get_connection
 from app.auth.security import create_access_token
 from app.auth.deps import get_current_user, COOKIE_NAME
+from app.email import mailer
 import bcrypt
 import logging
 import secrets
@@ -165,7 +166,7 @@ def forgot_password(payload: dict = Body(...)):
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
-        "SELECT id FROM users WHERE username = %s AND active = 1",
+        "SELECT id, email FROM users WHERE username = %s AND active = 1",
         (username,),
     )
     user = cursor.fetchone()
@@ -195,6 +196,29 @@ def forgot_password(payload: dict = Body(...)):
     conn.close()
 
     _write_audit(username, "Password reset requested", {"username": username})
+
+    # Email the link when SMTP + an address on file are both available;
+    # otherwise fall back to the original behavior (return the token
+    # directly in the response) rather than leave the user stuck with
+    # no way to reset at all -- this is exactly the swap-in point the
+    # original docstring/comment on this endpoint called for.
+    if user.get("email") and mailer.is_configured():
+        reset_link = f"{mailer.get_public_app_url()}/reset-password?token={token}"
+        sent = mailer.send_email(
+            to_addr=user["email"],
+            subject="CloudOps password reset",
+            body_text=(
+                f"A password reset was requested for the account '{username}'.\n\n"
+                f"Reset your password (link valid {RESET_TOKEN_TTL_MINUTES} minutes):\n{reset_link}\n\n"
+                f"If you didn't request this, you can ignore this email.\n"
+            ),
+        )
+        if sent:
+            return {
+                "status":  "ok",
+                "message": "If that account exists, a reset link has been emailed to it.",
+                "expires_in_minutes": RESET_TOKEN_TTL_MINUTES,
+            }
 
     return {
         "status":     "ok",

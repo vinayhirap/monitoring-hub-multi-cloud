@@ -95,8 +95,8 @@
 
 .acc-footer { display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border); padding-top:10px; }
 .view-link { font-size:12px; color:var(--accent); font-weight:600; }
-.btn-delete-sm { background:none; border:1px solid transparent; color:var(--text-muted); width:22px; height:22px; border-radius:4px; font-size:12px; display:flex; align-items:center; justify-content:center; transition:all .15s; }
-.btn-delete-sm:hover { border-color:var(--red); color:var(--red); }
+.btn-delete-sm { background:rgba(255,255,255,0.04); border:1px solid var(--border); color:var(--text-muted); width:22px; height:22px; border-radius:4px; font-size:12px; display:flex; align-items:center; justify-content:center; transition:all .15s; }
+.btn-delete-sm:hover { background:rgba(239,68,68,0.12); border-color:var(--red); color:var(--red); }
 
 .tag { font-size:10px; padding:2px 7px; border-radius:4px; font-family:var(--font-mono); font-weight:600; }
 .tag-blue   { background:rgba(43,179,172,0.1);   color:var(--accent); }
@@ -148,11 +148,39 @@
   font-family: var(--font-mono);
 }
 
-/* ── Region rows (drilldown) ── */
+
+/* ── Loading skeletons (Overview) ──
+   Shown only on a genuine first-ever load with nothing cached yet.
+   A shimmering block in the real layout's shape reads as "actively
+   loading" far more clearly than a spinner + line of text, and never
+   shows a bare "0" that could be mistaken for a confirmed count. */
+.sk-block {
+  background: linear-gradient(90deg, rgba(255,255,255,0.045) 25%, rgba(255,255,255,0.10) 37%, rgba(255,255,255,0.045) 63%);
+  background-size: 400% 100%;
+  animation: sk-shimmer 1.4s ease infinite;
+  border-radius: 4px;
+  display: block;
+}
+@keyframes sk-shimmer {
+  0%   { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+[data-theme="light"] .sk-block {
+  background: linear-gradient(90deg, rgba(15,28,53,0.05) 25%, rgba(15,28,53,0.10) 37%, rgba(15,28,53,0.05) 63%);
+  background-size: 400% 100%;
+}
+/* ── Region rows (drilldown) ──
+   Two wrap-safe groups instead of one flat nowrap row: region-row-main
+   (dot/name/chips) grows and wraps freely; region-row-actions (alert
+   badges + delete) is pinned to the end via margin-left:auto and, if
+   the row is too narrow for both groups on one line, wraps as a whole
+   onto its own line below rather than clipping the delete button off
+   the edge. */
 .region-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   padding: 9px 12px;
   border-radius: 8px;
   cursor: pointer;
@@ -164,6 +192,46 @@
 .region-row-healthy  { background: rgba(34,197,94,0.06);  border-color: rgba(34,197,94,0.18); }
 .region-row-warning  { background: rgba(245,158,11,0.06); border-color: rgba(245,158,11,0.18); }
 .region-row-critical { background: rgba(239,68,68,0.06); border-color: rgba(239,68,68,0.18); }
+
+.region-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.region-row-chips {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.region-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.region-row-goto {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.region-alert-badge {
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+.region-alert-critical { color: #ef4444; background: rgba(239,68,68,0.15); }
+.region-alert-warning  { color: #f59e0b; background: rgba(245,158,11,0.15); }
 
 .region-row-name {
   font-family: var(--font-mono);
