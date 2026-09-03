@@ -39,6 +39,18 @@ azure-mgmt-sql>=4,<5
 azure-mgmt-web>=7,<8
 azure-mgmt-monitor>=6,<7
 azure-monitor-query>=1.2,<2
+# Added for full 19-service Azure discovery coverage (previously only
+# VM/Storage/SQL/App Service — see app/providers/azure/discovery.py)
+azure-mgmt-containerservice>=25,<36
+azure-mgmt-cosmosdb>=9,<10
+azure-mgmt-redis>=14,<15
+azure-mgmt-servicebus>=8,<9
+azure-mgmt-eventhub>=10,<11
+azure-mgmt-network>=25,<29
+azure-mgmt-keyvault>=10,<11
+azure-mgmt-containerinstance>=10,<11
+azure-mgmt-cdn>=12,<14
+azure-mgmt-datafactory>=3,<4
 
 # GCP provider (Service Account auth + real discovery)
 google-cloud-compute>=1.19,<2
@@ -47,6 +59,15 @@ google-cloud-resource-manager>=1.12,<2
 google-cloud-run>=0.10,<1
 google-cloud-monitoring>=2.21,<3
 google-api-python-client>=2.140,<3
+# Added for full 16-service GCP discovery coverage (previously only
+# Compute/GCS/Cloud SQL/Cloud Run — see app/providers/gcp/discovery.py)
+google-cloud-container>=2.50,<3
+google-cloud-functions>=1.16,<2
+google-cloud-pubsub>=2.21,<3
+google-cloud-redis>=2.16,<3
+google-cloud-bigquery>=3.25,<4
+google-cloud-spanner>=3.49,<4
+google-cloud-firestore>=2.17,<3
 
 # Credential encryption-at-rest (Azure client secret / GCP SA key JSON)
 cryptography>=42,<44
