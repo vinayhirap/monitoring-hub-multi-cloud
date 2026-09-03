@@ -322,6 +322,53 @@ def add_account(payload: dict = Body(...)):
             result = enable_metrics_for_services(new_id, detected, provider="aws", source="discovered")
             if not result["added"]:
                 seed_account_defaults(new_id, provider=provider_name)
+<<<<<<< ours
+=======
+        elif provider_name == "azure":
+            from app.api.metric_catalog import enable_metrics_for_services
+            from app.providers.azure.discovery import discover_account_resources
+
+            detected = set()
+            try:
+                account_for_discovery = {
+                    "id": new_id,
+                    "account_name": account_name,
+                    "tenant_id":       (payload.get("tenant_id") or "").strip(),
+                    "subscription_id": (payload.get("subscription_id") or "").strip(),
+                    "client_id":       (payload.get("client_id") or "").strip(),
+                }
+                secret = (payload.get("client_secret") or "").strip()
+                counts = discover_account_resources(account_for_discovery, secret)
+                detected = {k for k, v in counts.items() if v}
+            except Exception as e:
+                logger.warning(f"Azure onboarding auto-detection failed, falling back to template: {e}")
+
+            result = enable_metrics_for_services(new_id, detected, provider="azure", source="discovered")
+            if not result["added"]:
+                seed_account_defaults(new_id, provider=provider_name)
+
+        elif provider_name == "gcp":
+            from app.api.metric_catalog import enable_metrics_for_services
+            from app.providers.gcp.discovery import discover_account_resources
+
+            detected = set()
+            try:
+                account_for_discovery = {
+                    "id": new_id,
+                    "account_name": account_name,
+                    "project_id": (payload.get("project_id") or "").strip(),
+                }
+                sa_key_json = (payload.get("service_account_key") or "").strip()
+                counts = discover_account_resources(account_for_discovery, sa_key_json)
+                detected = {k for k, v in counts.items() if v}
+            except Exception as e:
+                logger.warning(f"GCP onboarding auto-detection failed, falling back to template: {e}")
+
+            result = enable_metrics_for_services(new_id, detected, provider="gcp", source="discovered")
+            if not result["added"]:
+                seed_account_defaults(new_id, provider=provider_name)
+
+>>>>>>> theirs
         else:
             seed_account_defaults(new_id, provider=provider_name)
     except Exception as e:

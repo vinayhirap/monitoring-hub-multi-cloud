@@ -80,7 +80,22 @@ class AzureProvider(CloudProvider):
                 secret = load_credential(account["id"])
                 if not secret:
                     continue
-                discover_account_resources(account, secret)
+                counts = discover_account_resources(account, secret)
+
+                # Additive metric auto-enable — mirrors AWS's discovery/
+                # runner.py reconciliation. Azure has no Tagging-API-style
+                # limitation: these counts come straight from real ARM SDK
+                # list calls, so nothing here depends on the resources
+                # being tagged.
+                from app.api.metric_catalog import enable_metrics_for_services
+                detected = {k for k, v in counts.items() if v}
+                result = enable_metrics_for_services(account["id"], detected, provider="azure", source="discovered")
+                if result["added"]:
+                    import logging
+                    logging.getLogger(__name__).info(
+                        f"Azure: auto-enabled {result['added']} metric(s) for "
+                        f"{account['account_name']} across services={result['services']}"
+                    )
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).error(

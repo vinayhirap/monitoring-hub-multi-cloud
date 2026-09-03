@@ -85,7 +85,17 @@ class GCPProvider(CloudProvider):
                 sa_key_json = load_credential(account["id"])
                 if not sa_key_json:
                     continue
-                discover_account_resources(account, sa_key_json)
+                counts = discover_account_resources(account, sa_key_json)
+
+                from app.api.metric_catalog import enable_metrics_for_services
+                detected = {k for k, v in counts.items() if v}
+                result = enable_metrics_for_services(account["id"], detected, provider="gcp", source="discovered")
+                if result["added"]:
+                    import logging
+                    logging.getLogger(__name__).info(
+                        f"GCP: auto-enabled {result['added']} metric(s) for "
+                        f"{account['account_name']} across services={result['services']}"
+                    )
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).error(
