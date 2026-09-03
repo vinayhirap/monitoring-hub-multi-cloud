@@ -4,6 +4,9 @@ from app.db import get_connection
 from app.auth.deps import get_current_user
 import datetime
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/accounts", tags=["Admin - Accounts"])
 
@@ -282,15 +285,43 @@ def add_account(payload: dict = Body(...)):
     else:
         new_id, account_name, provider_name = _add_aws_account(payload)
 
-    # Optional: list of metric_catalog IDs the user picked in the onboarding
-    # wizard's "Metrics to Monitor" step. If omitted, the recommended default
-    # template (scoped to this provider) is applied automatically.
+    # Optional: list of metric_catalog IDs the user explicitly picked in the
+    # onboarding wizard's "Metrics to Monitor" step (manual override always
+    # wins — respected first, no auto-detection runs). If omitted, we try to
+    # detect what's actually in the account/region and enable exactly those
+    # services' default metrics; only if detection finds nothing at all
+    # (brand-new account, insufficient permissions, non-AWS provider) do we
+    # fall back to the generic template so the account isn't left blank.
     selected_metric_ids = payload.get("selected_metric_ids")
     try:
         from app.api.metric_catalog import seed_account_defaults
         if selected_metric_ids:
             from app.api.metric_catalog import set_account_metrics
             set_account_metrics(new_id, {"enabled_metric_ids": selected_metric_ids})
+        elif provider_name == "aws":
+            from app.api.metric_catalog import enable_metrics_for_services
+            from app.aws.resource_discovery import discover_all_service_keys
+            from app.aws.sts import assume_role
+            import boto3 as _boto3
+
+            role_arn = (payload.get("role_arn") or payload.get("iam_role_arn") or "").strip()
+            if role_arn.lower() in ("n/a", "none", "na"):
+                role_arn = ""
+            region = (payload.get("default_region") or "ap-south-1").split(" ")[0]
+
+            detected = set()
+            try:
+                # Same-account monitoring (no cross-account role) uses the
+                # server's own credentials, same fallback discovery/runner.py
+                # already relies on for that case.
+                session = assume_role(role_arn, payload.get("external_id")) if role_arn else _boto3.Session()
+                detected = discover_all_service_keys(session, region)
+            except Exception as e:
+                logger.warning(f"Onboarding auto-detection failed, falling back to template: {e}")
+
+            result = enable_metrics_for_services(new_id, detected, provider="aws", source="discovered")
+            if not result["added"]:
+                seed_account_defaults(new_id, provider=provider_name)
         else:
             seed_account_defaults(new_id, provider=provider_name)
     except Exception as e:
@@ -404,14 +435,34 @@ def test_role(payload: dict = Body(...)):
     if not role_arn or not role_arn.startswith("arn:aws:"):
         raise HTTPException(status_code=400, detail="Valid IAM Role ARN required")
 
+    region = (payload.get("region") or payload.get("default_region") or "ap-south-1").strip()
+
     try:
         from app.aws.sts import assume_role
         session  = assume_role(role_arn, ext_id)
         sts      = session.client("sts")
         identity = sts.get_caller_identity()
-        return {"status": "success", "assumed_account": identity["Account"], "assumed_arn": identity["Arn"]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Role assumption failed: {str(e)}")
+
+    # Best-effort service detection for the onboarding wizard preview
+    # ("Detected: EC2, RDS, ALB — monitoring will be enabled automatically").
+    # Never fails the role-test itself — a role that can AssumeRole but is
+    # still missing a Describe/Tagging permission should still onboard;
+    # discovery just runs again on the next 15-min cycle either way.
+    detected_services = []
+    try:
+        from app.aws.resource_discovery import discover_all_service_keys
+        detected_services = sorted(discover_all_service_keys(session, region))
+    except Exception as e:
+        logger.warning(f"test-role service detection skipped: {e}")
+
+    return {
+        "status": "success",
+        "assumed_account": identity["Account"],
+        "assumed_arn": identity["Arn"],
+        "detected_services": detected_services,
+    }
 
 
 @router.post("/test-azure-credentials")

@@ -178,6 +178,38 @@ def _discover_lambda(session, account, region, cursor):
         logger.error(f"  Lambda discovery failed [{account['account_name']}/{region}]: {e}")
 
 
+# ── Continuous metric auto-enable ───────────────────────────────
+#
+# Closes the "new service type shows up, nobody flips it on" gap: every
+# discovery cycle (15 min), sweep for services the account has started
+# using since the last cycle and turn on their default metrics — additive
+# only, never touches a selection a person set manually (see
+# enable_metrics_for_services in app/api/metric_catalog.py).
+#
+# NOTE this only keeps the *metric selection* current. The generated YACE
+# config still has to be re-fetched and redeployed to the regional
+# monitoring server for a brand-new namespace to actually start getting
+# scraped — this app generates config, it doesn't push it (see
+# generate_yace_config's docstring). That redeploy step is a real gap
+# that's out of this module's scope; flagging rather than silently
+# implying full automation.
+
+def _reconcile_service_metrics(session, account, region):
+    try:
+        from app.aws.resource_discovery import discover_all_service_keys
+        from app.api.metric_catalog import enable_metrics_for_services
+
+        detected = discover_all_service_keys(session, region)
+        result = enable_metrics_for_services(account["id"], detected, provider="aws", source="discovered")
+        if result["added"]:
+            logger.info(
+                f"  Auto-enabled {result['added']} new metric(s) for "
+                f"{account['account_name']} across services={result['services']}"
+            )
+    except Exception as e:
+        logger.error(f"  Metric auto-enable failed [{account['account_name']}]: {e}")
+
+
 # ── Per-account discovery ─────────────────────────────────────
 
 def _discover_account(account):
@@ -207,7 +239,9 @@ def _discover_account(account):
                 (account["id"],)
             )
             conn.commit()
-            break  # success
+            break  # success -- resource inventory succeeded; metric
+            # auto-enable runs after the loop below, using its own
+            # connection, so a failure there can't roll back inventory
         except Exception as e:
             conn.rollback()
             if "Deadlock" in str(e) and attempt < max_retries - 1:
@@ -219,6 +253,8 @@ def _discover_account(account):
         finally:
             cursor.close()
             conn.close()
+
+    _reconcile_service_metrics(session, account, region)
 
 
 # ── Main entry point ──────────────────────────────────────────
