@@ -3,6 +3,7 @@ import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useState, useEffect } from "react";
 import AlertToast from "./AlertToast";
+import { useTimezone, TIMEZONE_OPTIONS } from "../contexts/TimezoneContext";
 import "./Layout.css";
 
 // Role-based nav visibility:
@@ -21,6 +22,7 @@ const NAV_ITEMS = [
 export default function Layout() {
   const { user, logout } = useAuth();
   const navigate          = useNavigate();
+  const { timezone, setTimezone, ianaName } = useTimezone();
   const role              = (user?.role || "viewer").toLowerCase();
   const [now, setNow]     = useState(new Date());
   const [alertCount, setAlertCount] = useState(0);
@@ -57,9 +59,11 @@ export default function Layout() {
     navigate("/login", { replace: true });
   }
 
-  const timeStr = now.toLocaleTimeString("en-IN", {
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    timeZone: "Asia/Kolkata",
+  // Respects the IST/UTC selector in the topbar (TimezoneContext) —
+  // previously hardcoded to Asia/Kolkata regardless of any preference.
+  const timeStr = now.toLocaleTimeString("en-US", {
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    timeZone: ianaName,
   });
 
   const visibleNav = NAV_ITEMS.filter(item => item.roles.includes(role));
@@ -90,7 +94,7 @@ export default function Layout() {
           <div className="sidebar-last-updated">
             <span className="lup-label">Last updated</span>
             <span className="lup-time">
-              {now.toLocaleDateString("en-IN", { month: "short", day: "numeric", year: "numeric" })},{" "}
+              {now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: ianaName })},{" "}
               {timeStr.split(":").slice(0, 3).join(":")}
             </span>
           </div>
@@ -141,8 +145,19 @@ export default function Layout() {
             >
               {dark ? "☀" : "🌙"}
             </button>
+            <select
+              className="tz-select"
+              value={timezone}
+              onChange={e => setTimezone(e.target.value)}
+              title="Display timezone — applies to every clock and chart"
+              aria-label="Display timezone"
+            >
+              {Object.entries(TIMEZONE_OPTIONS).map(([key, opt]) => (
+                <option key={key} value={key}>{opt.label}</option>
+              ))}
+            </select>
             <div className="topbar-clock">
-              {timeStr} <span className="topbar-tz">IST</span>
+              {timeStr} <span className="topbar-tz">{timezone}</span>
             </div>
             <div className="topbar-user">
               <span className="topbar-user-icon">

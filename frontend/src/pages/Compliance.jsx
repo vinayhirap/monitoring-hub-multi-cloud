@@ -2,6 +2,7 @@
 import { getAuditLogs } from "../api/api";
 import { useAuth } from "../auth/AuthContext";
 import "./Compliance.css";
+import { useTimezone } from "../contexts/TimezoneContext";
 import {
   SearchIcon, BarChartIcon, BuildingIcon, LockIcon, CheckCircleIcon,
   CheckIcon, AlertOctagonIcon, PlusIcon, MinusIcon, UserIcon, TrashIcon,
@@ -84,6 +85,7 @@ function AuditRow({ log }) {
 export default function Compliance() {
   const { user } = useAuth();
   const isAdmin = (user?.role || "viewer").toLowerCase() === "admin";
+  const { ianaName } = useTimezone();
   const [logs,        setLogs]        = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState(null);
@@ -191,7 +193,7 @@ export default function Compliance() {
             <span className="bar-title">ACTIVITY FEED</span>
             <span className="bar-count">{visible.length} entries</span>
             {lastFetch && (
-              <span className="bar-sync">· synced {lastFetch.toLocaleTimeString()}</span>
+              <span className="bar-sync">· synced {lastFetch.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: ianaName })}</span>
             )}
           </div>
           <input

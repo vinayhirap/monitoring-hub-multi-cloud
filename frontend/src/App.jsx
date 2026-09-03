@@ -1,6 +1,7 @@
 // monitoring-hub/frontend/src/App.jsx
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth }  from "./auth/AuthContext";
+import { TimezoneProvider } from "./contexts/TimezoneContext";
 import Layout            from "./components/Layout";
 import Login             from "./pages/Login";
 import Overview          from "./pages/Overview";
@@ -58,10 +59,12 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
-    </AuthProvider>
+    <TimezoneProvider>
+      <AuthProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </AuthProvider>
+    </TimezoneProvider>
   );
 }
