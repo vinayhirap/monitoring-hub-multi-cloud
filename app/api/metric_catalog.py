@@ -147,6 +147,59 @@ def seed_account_defaults(account_id: int, provider: str = "aws"):
     return len(ids)
 
 
+def enable_metrics_for_services(account_id: int, service_keys: set, provider: str = "aws",
+                                 source: str = "discovered") -> dict:
+    """
+    Additive-only auto-enable: for each service_key actually detected in
+    the account (real resources found, via tagging sweep or describe-API
+    discovery — see app/aws/resource_discovery.py and
+    app/collector/discovery/runner.py), turn on that service's default
+    metric set.
+
+    Deliberately never disables or removes anything. A metric a person
+    manually unchecked in Settings -> Metrics stays off even if this
+    function runs again later — it only ever adds rows for service_keys
+    that have no selection at all yet for this account (INSERT IGNORE),
+    so re-running it every discovery cycle is safe and idempotent.
+    """
+    if not service_keys:
+        return {"added": 0, "services": []}
+
+    conn = get_connection(); cur = conn.cursor(dictionary=True)
+    placeholders = ",".join(["%s"] * len(service_keys))
+    cur.execute(f"""
+        SELECT id FROM metric_catalog
+        WHERE provider = %s AND is_default = 1 AND service IN ({placeholders})
+    """, (provider, *service_keys))
+    metric_ids = [r["id"] for r in cur.fetchall()]
+    cur.close()
+
+    if not metric_ids:
+        conn.close()
+        return {"added": 0, "services": sorted(service_keys)}
+
+    cur = conn.cursor()
+    added = 0
+    for mid in metric_ids:
+        cur.execute("""
+            INSERT IGNORE INTO account_metric_selections
+                (aws_account_id, metric_id, enabled, source)
+            VALUES (%s, %s, 1, %s)
+        """, (account_id, mid, source))
+        added += cur.rowcount
+
+    if added:
+        _sync_thresholds_for_selection(cur, account_id, set(metric_ids), set())
+
+    conn.commit(); cur.close(); conn.close()
+
+    if added:
+        _write_audit("system", "Auto-detected services enabled",
+                      f"account={account_id} services={sorted(service_keys)} new_metrics={added}")
+
+    return {"added": added, "services": sorted(service_keys)}
+
+
 @router.get("/api/account-metrics/{account_id}")
 def get_account_metrics(account_id: int):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
