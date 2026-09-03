@@ -5,6 +5,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import { getLiveEC2, getLiveEC2Metrics } from "../api/api";
 import "./AccountDetail.css";
 import { useTimezone } from "../contexts/TimezoneContext";
+import { getCached, setCached } from "../utils/dataCache";
 
 async function openAccountConsole(accountId, service, resourceId) {
   try {
@@ -41,6 +42,22 @@ export default function AccountDetail() {
   const [account,   setAccount]   = useState({ name: "AuroGov", id: "924922671984", region: "ap-south-2" });
 
   useEffect(() => {
+    // Hydrate instantly from whatever was cached for THIS account last
+    // time, so switching accounts (or reloading this page) doesn't sit
+    // on "Loading instances..." every time -- loadInstances() below
+    // still fetches fresh data in the background and replaces both the
+    // displayed list and the cache as soon as it arrives. Falls back to
+    // a normal loading state when there's nothing cached yet for this
+    // specific account id (never shows a DIFFERENT account's leftover
+    // instances under this URL).
+    const cached = getCached(`account:${id}:ec2`);
+    if (cached) {
+      setInstances(Array.isArray(cached.data) ? cached.data : []);
+      setLoading(false);
+    } else {
+      setInstances([]);
+      setLoading(true);
+    }
     loadInstances();
     const t = setInterval(loadInstances, 30000);
     return () => clearInterval(t);
@@ -49,7 +66,9 @@ export default function AccountDetail() {
   async function loadInstances() {
     try {
       const data = await getLiveEC2(id);
-      setInstances(Array.isArray(data) ? data : []);
+      const list = Array.isArray(data) ? data : [];
+      setInstances(list);
+      setCached(`account:${id}:ec2`, list);
     } catch (e) {
       console.error("EC2 load error:", e);
     } finally {

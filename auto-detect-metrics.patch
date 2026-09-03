@@ -1,0 +1,439 @@
+diff --git a/app/api/admin/accounts.py b/app/api/admin/accounts.py
+index 2cf3dc0..4d7e3cc 100644
+--- a/app/api/admin/accounts.py
++++ b/app/api/admin/accounts.py
+@@ -4,6 +4,9 @@ from app.db import get_connection
+ from app.auth.deps import get_current_user
+ import datetime
+ import json
++import logging
++
++logger = logging.getLogger(__name__)
+ 
+ router = APIRouter(prefix="/api/admin/accounts", tags=["Admin - Accounts"])
+ 
+@@ -282,15 +285,43 @@ def add_account(payload: dict = Body(...)):
+     else:
+         new_id, account_name, provider_name = _add_aws_account(payload)
+ 
+-    # Optional: list of metric_catalog IDs the user picked in the onboarding
+-    # wizard's "Metrics to Monitor" step. If omitted, the recommended default
+-    # template (scoped to this provider) is applied automatically.
++    # Optional: list of metric_catalog IDs the user explicitly picked in the
++    # onboarding wizard's "Metrics to Monitor" step (manual override always
++    # wins — respected first, no auto-detection runs). If omitted, we try to
++    # detect what's actually in the account/region and enable exactly those
++    # services' default metrics; only if detection finds nothing at all
++    # (brand-new account, insufficient permissions, non-AWS provider) do we
++    # fall back to the generic template so the account isn't left blank.
+     selected_metric_ids = payload.get("selected_metric_ids")
+     try:
+         from app.api.metric_catalog import seed_account_defaults
+         if selected_metric_ids:
+             from app.api.metric_catalog import set_account_metrics
+             set_account_metrics(new_id, {"enabled_metric_ids": selected_metric_ids})
++        elif provider_name == "aws":
++            from app.api.metric_catalog import enable_metrics_for_services
++            from app.aws.resource_discovery import discover_all_service_keys
++            from app.aws.sts import assume_role
++            import boto3 as _boto3
++
++            role_arn = (payload.get("role_arn") or payload.get("iam_role_arn") or "").strip()
++            if role_arn.lower() in ("n/a", "none", "na"):
++                role_arn = ""
++            region = (payload.get("default_region") or "ap-south-1").split(" ")[0]
++
++            detected = set()
++            try:
++                # Same-account monitoring (no cross-account role) uses the
++                # server's own credentials, same fallback discovery/runner.py
++                # already relies on for that case.
++                session = assume_role(role_arn, payload.get("external_id")) if role_arn else _boto3.Session()
++                detected = discover_all_service_keys(session, region)
++            except Exception as e:
++                logger.warning(f"Onboarding auto-detection failed, falling back to template: {e}")
++
++            result = enable_metrics_for_services(new_id, detected, provider="aws", source="discovered")
++            if not result["added"]:
++                seed_account_defaults(new_id, provider=provider_name)
+         else:
+             seed_account_defaults(new_id, provider=provider_name)
+     except Exception as e:
+@@ -404,15 +435,35 @@ def test_role(payload: dict = Body(...)):
+     if not role_arn or not role_arn.startswith("arn:aws:"):
+         raise HTTPException(status_code=400, detail="Valid IAM Role ARN required")
+ 
++    region = (payload.get("region") or payload.get("default_region") or "ap-south-1").strip()
++
+     try:
+         from app.aws.sts import assume_role
+         session  = assume_role(role_arn, ext_id)
+         sts      = session.client("sts")
+         identity = sts.get_caller_identity()
+-        return {"status": "success", "assumed_account": identity["Account"], "assumed_arn": identity["Arn"]}
+     except Exception as e:
+         raise HTTPException(status_code=400, detail=f"Role assumption failed: {str(e)}")
+ 
++    # Best-effort service detection for the onboarding wizard preview
++    # ("Detected: EC2, RDS, ALB — monitoring will be enabled automatically").
++    # Never fails the role-test itself — a role that can AssumeRole but is
++    # still missing a Describe/Tagging permission should still onboard;
++    # discovery just runs again on the next 15-min cycle either way.
++    detected_services = []
++    try:
++        from app.aws.resource_discovery import discover_all_service_keys
++        detected_services = sorted(discover_all_service_keys(session, region))
++    except Exception as e:
++        logger.warning(f"test-role service detection skipped: {e}")
++
++    return {
++        "status": "success",
++        "assumed_account": identity["Account"],
++        "assumed_arn": identity["Arn"],
++        "detected_services": detected_services,
++    }
++
+ 
+ @router.post("/test-azure-credentials")
+ def test_azure_credentials(payload: dict = Body(...)):
+diff --git a/app/api/metric_catalog.py b/app/api/metric_catalog.py
+index 762d732..5ba4265 100644
+--- a/app/api/metric_catalog.py
++++ b/app/api/metric_catalog.py
+@@ -147,6 +147,59 @@ def seed_account_defaults(account_id: int, provider: str = "aws"):
+     return len(ids)
+ 
+ 
++def enable_metrics_for_services(account_id: int, service_keys: set, provider: str = "aws",
++                                 source: str = "discovered") -> dict:
++    """
++    Additive-only auto-enable: for each service_key actually detected in
++    the account (real resources found, via tagging sweep or describe-API
++    discovery — see app/aws/resource_discovery.py and
++    app/collector/discovery/runner.py), turn on that service's default
++    metric set.
++
++    Deliberately never disables or removes anything. A metric a person
++    manually unchecked in Settings -> Metrics stays off even if this
++    function runs again later — it only ever adds rows for service_keys
++    that have no selection at all yet for this account (INSERT IGNORE),
++    so re-running it every discovery cycle is safe and idempotent.
++    """
++    if not service_keys:
++        return {"added": 0, "services": []}
++
++    conn = get_connection(); cur = conn.cursor(dictionary=True)
++    placeholders = ",".join(["%s"] * len(service_keys))
++    cur.execute(f"""
++        SELECT id FROM metric_catalog
++        WHERE provider = %s AND is_default = 1 AND service IN ({placeholders})
++    """, (provider, *service_keys))
++    metric_ids = [r["id"] for r in cur.fetchall()]
++    cur.close()
++
++    if not metric_ids:
++        conn.close()
++        return {"added": 0, "services": sorted(service_keys)}
++
++    cur = conn.cursor()
++    added = 0
++    for mid in metric_ids:
++        cur.execute("""
++            INSERT IGNORE INTO account_metric_selections
++                (aws_account_id, metric_id, enabled, source)
++            VALUES (%s, %s, 1, %s)
++        """, (account_id, mid, source))
++        added += cur.rowcount
++
++    if added:
++        _sync_thresholds_for_selection(cur, account_id, set(metric_ids), set())
++
++    conn.commit(); cur.close(); conn.close()
++
++    if added:
++        _write_audit("system", "Auto-detected services enabled",
++                      f"account={account_id} services={sorted(service_keys)} new_metrics={added}")
++
++    return {"added": added, "services": sorted(service_keys)}
++
++
+ @router.get("/api/account-metrics/{account_id}")
+ def get_account_metrics(account_id: int):
+     conn = get_connection(); cur = conn.cursor(dictionary=True)
+diff --git a/app/aws/resource_discovery.py b/app/aws/resource_discovery.py
+new file mode 100644
+index 0000000..c0d5e67
+--- /dev/null
++++ b/app/aws/resource_discovery.py
+@@ -0,0 +1,208 @@
++# app/aws/resource_discovery.py
++"""
++Auto-detects which AWS services are actually in use in an account/region,
++so metric selection can be driven by what's really there instead of a
++manual checkbox pick.
++
++Two complementary signals, because neither one alone is trustworthy:
++
++  1. Resource Groups Tagging API (`resourcegroupstaggingapi:GetResources`)
++     — one cheap paginated call covers ~35 of our 40 curated services at
++     once. CAVEAT (confirmed via scripts/check_resource_tags.py against a
++     real account): this API — and therefore YACE's own discovery job,
++     which uses the same API — only returns resources that have at least
++     one tag. An untagged S3 bucket or Lambda function is invisible here,
++     not because of a bug in this app, but because AWS's tagging index
++     simply never indexed it. This is a real, external limitation, not
++     something this module can fully paper over.
++
++  2. The existing Describe/List-API discovery already run every 15 min in
++     app/collector/discovery/runner.py for EC2/RDS/ELB/ECS/Lambda. That
++     path does NOT depend on tags at all (describe_instances etc. return
++     every resource regardless of tagging), so it's the authoritative
++     signal for those 5 "core" service keys — the tagging sweep is only
++     the primary signal for the ~35 "extended"/"directory" service keys
++     that have no dedicated describe-based collector.
++
++Combine both (see app/collector/discovery/runner.py) for the best
++available picture; callers should not rely on this module alone for
++core services.
++"""
++import logging
++import re
++
++logger = logging.getLogger(__name__)
++
++# ARN service segment ("arn:aws:<service>:...") -> our metric_catalog
++# service key, for every unambiguous 1:1 case. Case is exactly what AWS
++# uses in the ARN.
++#
++# Deliberately excludes:
++#   - "elasticloadbalancing" (ARN resource path alone tells app/net/gwy —
++#     handled in _classify_elb below, not a fixed 1:1 map entry)
++#   - "rds" (ARN alone can't distinguish plain RDS from DocumentDB or
++#     Neptune, which also live under the rds:// service ARN — handled by
++#     disambiguate_rds_family() via a describe call)
++ARN_SERVICE_MAP = {
++    "lambda":            "lambda",
++    "ecs":               "ecs",
++    "apigateway":        "apigateway",
++    "dynamodb":          "dynamodb",
++    "sqs":               "sqs",
++    "sns":               "sns",
++    "cloudfront":        "cloudfront",
++    "elasticache":       "elasticache",
++    "es":                "opensearch",
++    "eks":               "eks",
++    "elasticfilesystem": "efs",
++    "kafka":             "msk",
++    "kinesis":           "kinesis",
++    "firehose":          "firehose",
++    "autoscaling":       "autoscaling",
++    "route53":           "route53",
++    "wafv2":             "wafv2",
++    "redshift":          "redshift",
++    "memorydb":          "memorydb",
++    "dax":               "dax",
++    "states":            "states",
++    "events":            "events",
++    "kms":               "kms",
++    "acm":               "certificatemanager",
++    "backup":            "backup",
++    "cognito-idp":       "cognito",
++    "logs":              "logs",
++    "globalaccelerator": "globalaccelerator",
++    "dms":               "dms",
++    "directconnect":     "directconnect",
++    "s3":                "s3",
++    "ec2":               None,  # handled separately below (natgw/tgw/vpn/instance/volume all share this prefix)
++}
++
++# Services whose Tagging API index — and therefore YACE discovery — is
++# only ever populated in us-east-1, regardless of which region the
++# resources themselves live in or which region the account defaults to.
++# (Confirmed this session for CloudFront; Route53 and WAFv2-global follow
++# the same global-resource rule.)
++GLOBAL_NAMESPACE_SERVICES = {"cloudfront", "route53", "s3"}
++
++_EC2_ARN_RESOURCE_MAP = {
++    "natgateway":      "natgateway",
++    "transit-gateway": "transitgateway",
++    "vpn-connection":  "vpn",
++}
++
++
++def _classify_arn(arn: str) -> str | None:
++    """arn:aws:<service>:<region>:<account>:<resource> -> service_key or None."""
++    parts = arn.split(":", 5)
++    if len(parts) < 6:
++        return None
++    service, resource = parts[2], parts[5]
++
++    if service == "elasticloadbalancing":
++        if resource.startswith("loadbalancer/app/"):
++            return "alb"
++        if resource.startswith("loadbalancer/net/"):
++            return "nlb"
++        return None  # gateway-LB etc. — not in our curated catalog
++
++    if service == "ec2":
++        resource_type = resource.split("/", 1)[0]
++        return _EC2_ARN_RESOURCE_MAP.get(resource_type)
++
++    if service == "rds":
++        return None  # ambiguous — see disambiguate_rds_family
++
++    mapped = ARN_SERVICE_MAP.get(service)
++    return mapped
++
++
++def _sweep_region(tagging_client) -> set[str]:
++    found = set()
++    paginator = tagging_client.get_paginator("get_resources")
++    for page in paginator.paginate():
++        for item in page.get("ResourceTagMappingList", []):
++            key = _classify_arn(item.get("ResourceARN", ""))
++            if key:
++                found.add(key)
++    return found
++
++
++def discover_tagged_service_keys(session, region: str) -> set[str]:
++    """
++    One paginated sweep of every TAGGED resource in `region`, plus a
++    second sweep in us-east-1 for the handful of services whose tagging
++    index is global-only. Returns the set of metric_catalog service keys
++    found. Resources with zero tags are invisible to this call — that's
++    an AWS Tagging API limitation, not a bug here (see module docstring).
++    """
++    found: set[str] = set()
++    try:
++        regional = session.client("resourcegroupstaggingapi", region_name=region)
++        found |= _sweep_region(regional)
++    except Exception as e:
++        logger.error(f"Tagging API sweep failed [{region}]: {e}")
++
++    if region != "us-east-1":
++        try:
++            global_client = session.client("resourcegroupstaggingapi", region_name="us-east-1")
++            global_found = _sweep_region(global_client)
++            # Only trust the us-east-1 sweep for the services that are
++            # genuinely global-indexed; a regional service's ARNs showing
++            # up here would just mean the account also has resources in
++            # us-east-1 itself, which isn't what we're asking.
++            found |= (global_found & GLOBAL_NAMESPACE_SERVICES)
++        except Exception as e:
++            logger.error(f"Tagging API global sweep failed: {e}")
++
++    return found
++
++
++def disambiguate_rds_family(session, region: str, service_keys: set[str]) -> set[str]:
++    """
++    The Tagging API can't tell plain RDS apart from DocumentDB/Neptune —
++    all three share the `arn:aws:rds:...` prefix. If any 'rds'-service
++    ARNs were seen, make one real describe call to resolve engine names
++    into the correct catalog key(s). Mutates and returns a new set;
++    doesn't touch service_keys that came from elsewhere.
++    """
++    result = set(service_keys)
++    try:
++        rds = session.client("rds", region_name=region)
++        engines = set()
++
++        for page in rds.get_paginator("describe_db_instances").paginate():
++            for db in page.get("DBInstances", []):
++                engines.add(db.get("Engine", ""))
++
++        try:
++            for page in rds.get_paginator("describe_db_clusters").paginate():
++                for c in page.get("DBClusters", []):
++                    engines.add(c.get("Engine", ""))
++        except Exception:
++            pass  # some accounts/regions have no cluster API access; instance pass already covers plain RDS
++
++        if any(e == "docdb" for e in engines):
++            result.add("documentdb")
++        if any(e == "neptune" for e in engines):
++            result.add("neptune")
++        if any(e not in ("docdb", "neptune") for e in engines):
++            result.add("rds")
++    except Exception as e:
++        logger.error(f"RDS engine disambiguation failed [{region}]: {e}")
++        # Fall back to the conservative guess: assume plain RDS rather than
++        # silently dropping the signal that *something* under rds:// exists.
++        result.add("rds")
++
++    return result
++
++
++def discover_all_service_keys(session, region: str) -> set[str]:
++    """
++    Full sweep: tagging API for everything else, plus one always-run RDS
++    describe call (since _classify_arn always returns None for rds://
++    ARNs, 'rds'/'documentdb'/'neptune' can only ever be added here).
++    """
++    found = discover_tagged_service_keys(session, region)
++    found = disambiguate_rds_family(session, region, found)
++    return found
+diff --git a/app/collector/discovery/runner.py b/app/collector/discovery/runner.py
+index 687d5ea..3c71610 100644
+--- a/app/collector/discovery/runner.py
++++ b/app/collector/discovery/runner.py
+@@ -178,6 +178,38 @@ def _discover_lambda(session, account, region, cursor):
+         logger.error(f"  Lambda discovery failed [{account['account_name']}/{region}]: {e}")
+ 
+ 
++# ── Continuous metric auto-enable ───────────────────────────────
++#
++# Closes the "new service type shows up, nobody flips it on" gap: every
++# discovery cycle (15 min), sweep for services the account has started
++# using since the last cycle and turn on their default metrics — additive
++# only, never touches a selection a person set manually (see
++# enable_metrics_for_services in app/api/metric_catalog.py).
++#
++# NOTE this only keeps the *metric selection* current. The generated YACE
++# config still has to be re-fetched and redeployed to the regional
++# monitoring server for a brand-new namespace to actually start getting
++# scraped — this app generates config, it doesn't push it (see
++# generate_yace_config's docstring). That redeploy step is a real gap
++# that's out of this module's scope; flagging rather than silently
++# implying full automation.
++
++def _reconcile_service_metrics(session, account, region):
++    try:
++        from app.aws.resource_discovery import discover_all_service_keys
++        from app.api.metric_catalog import enable_metrics_for_services
++
++        detected = discover_all_service_keys(session, region)
++        result = enable_metrics_for_services(account["id"], detected, provider="aws", source="discovered")
++        if result["added"]:
++            logger.info(
++                f"  Auto-enabled {result['added']} new metric(s) for "
++                f"{account['account_name']} across services={result['services']}"
++            )
++    except Exception as e:
++        logger.error(f"  Metric auto-enable failed [{account['account_name']}]: {e}")
++
++
+ # ── Per-account discovery ─────────────────────────────────────
+ 
+ def _discover_account(account):
+@@ -207,7 +239,9 @@ def _discover_account(account):
+                 (account["id"],)
+             )
+             conn.commit()
+-            break  # success
++            break  # success -- resource inventory succeeded; metric
++            # auto-enable runs after the loop below, using its own
++            # connection, so a failure there can't roll back inventory
+         except Exception as e:
+             conn.rollback()
+             if "Deadlock" in str(e) and attempt < max_retries - 1:
+@@ -220,6 +254,8 @@ def _discover_account(account):
+             cursor.close()
+             conn.close()
+ 
++    _reconcile_service_metrics(session, account, region)
++
+ 
+ # ── Main entry point ──────────────────────────────────────────
+ 

@@ -9,6 +9,7 @@ import {
   XIcon, TagIcon, BarChartIcon, ToolIcon, ZapIcon,
 } from "../components/icons";
 import { useTimezone } from "../contexts/TimezoneContext";
+import { getCached, setCached } from "../utils/dataCache";
 
 const BASE = "";
 
@@ -182,7 +183,9 @@ fetchAccount(id).then(setAccount).catch(err => {
     setError(null);
     try {
       const data = await fetchService(id, service);
-      setRows(Array.isArray(data) ? data : []);
+      const list = Array.isArray(data) ? data : [];
+      setRows(list);
+      setCached(`service:${id}:${service}`, list);
     } catch (e) {
       if (e.status === 404) {
         // Any unmapped/unimplemented service 404s the same way -- treat
@@ -201,13 +204,24 @@ fetchAccount(id).then(setAccount).catch(err => {
   useEffect(() => {
     notImplRef.current = false;
     setNotImpl(false);
-    setLoading(true);
-    setRows([]);
     setError(null);
+    // Hydrate instantly from whatever was cached for this
+    // account+service last time -- switching services/accounts (or
+    // reloading) doesn't have to sit on "Loading..." every time.
+    // loadRows() below still fetches fresh data in the background and
+    // replaces both the table and the cache once it arrives.
+    const cached = service ? getCached(`service:${id}:${service}`) : null;
+    if (cached) {
+      setRows(Array.isArray(cached.data) ? cached.data : []);
+      setLoading(false);
+    } else {
+      setRows([]);
+      setLoading(true);
+    }
     loadRows();
     const t = setInterval(() => { if (!notImplRef.current) loadRows(); }, 15000);
     return () => clearInterval(t);
-  }, [loadRows]);
+  }, [loadRows, id, service]);
 
   useEffect(() => {
     if (!selectedRef.current) return;

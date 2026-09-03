@@ -3,9 +3,11 @@ from fastapi import APIRouter, HTTPException, Body, Depends
 from app.db import get_connection
 from app.auth.deps import require_role
 from app.auth import authorization as authz
+from app.email import mailer
 import bcrypt
 import datetime
 import json
+import secrets
 
 router = APIRouter(prefix="/api/users", tags=["Users"])
 
@@ -176,6 +178,7 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
     password = (payload.get("password") or "").strip()
     role     = (payload.get("role") or "viewer").strip().lower()
     scopes   = payload.get("scopes") or []
+    email    = (payload.get("email") or "").strip() or None
 
     if not username:
         raise HTTPException(status_code=400, detail="username required")
@@ -204,8 +207,8 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
 
     try:
         cursor.execute(
-            "INSERT INTO users (username, password, role) VALUES (%s, %s, %s)",
-            (username, pw_hash, role)
+            "INSERT INTO users (username, password, role, email) VALUES (%s, %s, %s, %s)",
+            (username, pw_hash, role, email)
         )
         conn.commit()
         new_id = cursor.lastrowid
@@ -234,7 +237,44 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
         actor=current_user["username"], action="User created",
         detail=f"{username} added as {role.upper()} with {len(scopes)} scope grant(s)",
     )
-    return {"status": "created", "id": new_id, "username": username, "role": role, "scopes_granted": len(scopes)}
+
+    # Welcome email with a set-your-password link, not the raw
+    # password -- reuses the exact same password_reset_tokens flow as
+    # /api/auth/forgot-password rather than a separate mechanism, and
+    # never puts a plaintext credential in an email body/inbox. A
+    # no-op (logged, not raised) if SMTP isn't configured or the user
+    # has no email on file -- account creation itself already
+    # succeeded above and must not be undone by a mail failure.
+    email_sent = False
+    if email and mailer.is_configured():
+        token      = secrets.token_urlsafe(32)
+        expires_at = datetime.datetime.utcnow() + datetime.timedelta(minutes=60 * 24)
+        mail_conn  = get_connection()
+        mail_cur   = mail_conn.cursor()
+        mail_cur.execute(
+            "INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES (%s, %s, %s)",
+            (new_id, token, expires_at),
+        )
+        mail_conn.commit()
+        mail_cur.close()
+        mail_conn.close()
+
+        reset_link = f"{mailer.get_public_app_url()}/reset-password?token={token}"
+        email_sent = mailer.send_email(
+            to_addr=email,
+            subject="Your CloudOps account has been created",
+            body_text=(
+                f"Hi {username},\n\n"
+                f"An account has been created for you on CloudOps with the role: {role.upper()}.\n\n"
+                f"Set your password (link valid 24 hours):\n{reset_link}\n\n"
+                f"If you weren't expecting this, contact your CloudOps administrator.\n"
+            ),
+        )
+
+    return {
+        "status": "created", "id": new_id, "username": username, "role": role,
+        "scopes_granted": len(scopes), "email_sent": email_sent,
+    }
 
 
 @router.patch("/{user_id}/role")
