@@ -4,9 +4,14 @@ Real GCP resource discovery. Mirrors app.collector.discovery.runner's
 contract: writes/updates rows in `resources`, scoped to a single account,
 called from GCPProvider.
 
-Compute + Storage use the google-cloud-* client libraries; Cloud SQL uses
-the SQL Admin API via google-api-python-client (no dedicated google-cloud
-library exists for it).
+Covers all 16 services curated in app.providers.gcp.metric_catalog_data
+(4 core + 12 extended). Compute + Storage use the google-cloud-* client
+libraries; Cloud SQL uses the SQL Admin API via google-api-python-client
+(no dedicated google-cloud library exists for it). Every new client/method
+below was verified by import + signature inspection in a sandbox (no live
+GCP project was available to exercise these end-to-end) — see per-function
+notes for the handful of services (BigQuery, Firestore, Spanner) that
+don't fit the "list resources of type X" shape the others share.
 """
 import json
 import logging
@@ -15,6 +20,13 @@ from google.oauth2 import service_account as gcp_service_account
 from google.cloud import compute_v1
 from google.cloud import storage as gcs
 from google.cloud import run_v2
+from google.cloud import container_v1
+from google.cloud import functions_v2
+from google.cloud import pubsub_v1
+from google.cloud import redis_v1
+from google.cloud import bigquery
+from google.cloud import firestore_admin_v1
+from google.cloud.spanner_admin_instance_v1 import InstanceAdminClient as SpannerInstanceAdminClient
 from googleapiclient.discovery import build as gapi_build
 
 logger = logging.getLogger(__name__)
@@ -122,6 +134,220 @@ def _discover_cloud_run(creds, project_id, account_id, cursor) -> int:
     return count
 
 
+def _discover_gke_clusters(creds, project_id, account_id, cursor) -> int:
+    client = container_v1.ClusterManagerClient(credentials=creds)
+    count = 0
+    resp = client.list_clusters(parent=f"projects/{project_id}/locations/-")
+    for cluster in resp.clusters:
+        location = cluster.location or cluster.zone
+        resource_id = f"projects/{project_id}/locations/{location}/clusters/{cluster.name}"
+        _upsert_resource(
+            cursor, account_id, "gke_cluster", resource_id, cluster.name,
+            dict(cluster.resource_labels or {}), location, "compute",
+        )
+        count += 1
+    return count
+
+
+def _discover_gke_nodes(creds, project_id, account_id, cursor) -> int:
+    # The Cluster Manager API doesn't expose individual nodes directly —
+    # node counts live per node pool (cluster.node_pools[].initial_node_count
+    # / cluster.node_pools[].autoscaling). Register one resource per node
+    # pool (matching the "GKE Nodes" curated service, whose metrics are
+    # pool-scoped anyway), rather than trying to enumerate raw Compute
+    # Engine instances a second time (already covered by compute_instance).
+    client = container_v1.ClusterManagerClient(credentials=creds)
+    count = 0
+    resp = client.list_clusters(parent=f"projects/{project_id}/locations/-")
+    for cluster in resp.clusters:
+        location = cluster.location or cluster.zone
+        for pool in cluster.node_pools:
+            resource_id = (
+                f"projects/{project_id}/locations/{location}/clusters/"
+                f"{cluster.name}/nodePools/{pool.name}"
+            )
+            _upsert_resource(
+                cursor, account_id, "gke_node", resource_id, f"{cluster.name}/{pool.name}",
+                {}, location, "compute",
+            )
+            count += 1
+    return count
+
+
+def _discover_cloudfunctions(creds, project_id, account_id, cursor) -> int:
+    client = functions_v2.FunctionServiceClient(credentials=creds)
+    count = 0
+    for fn in client.list_functions(parent=f"projects/{project_id}/locations/-"):
+        name = fn.name.split("/")[-1]
+        # location is the 4th path segment: projects/{p}/locations/{loc}/functions/{name}
+        parts = fn.name.split("/")
+        location = parts[3] if len(parts) > 3 else ""
+        _upsert_resource(
+            cursor, account_id, "cloudfunctions_function", fn.name, name,
+            dict(fn.labels or {}), location, "compute",
+        )
+        count += 1
+    return count
+
+
+def _discover_pubsub_topics(creds, project_id, account_id, cursor) -> int:
+    client = pubsub_v1.PublisherClient(credentials=creds)
+    count = 0
+    for topic in client.list_topics(project=f"projects/{project_id}"):
+        name = topic.name.split("/")[-1]
+        _upsert_resource(
+            cursor, account_id, "pubsub_topic", topic.name, name,
+            dict(topic.labels or {}), "global", "messaging",
+        )
+        count += 1
+    return count
+
+
+def _discover_pubsub_subscriptions(creds, project_id, account_id, cursor) -> int:
+    client = pubsub_v1.SubscriberClient(credentials=creds)
+    count = 0
+    for sub in client.list_subscriptions(project=f"projects/{project_id}"):
+        name = sub.name.split("/")[-1]
+        _upsert_resource(
+            cursor, account_id, "pubsub_subscription", sub.name, name,
+            dict(sub.labels or {}), "global", "messaging",
+        )
+        count += 1
+    return count
+
+
+def _discover_cloud_lb(creds, project_id, account_id, cursor) -> int:
+    # "Cloud Load Balancing" spans several underlying resource kinds
+    # (global HTTP(S) LB, regional internal/network LB). Forwarding rules
+    # are the one object type that exists for every LB flavor — a global
+    # forwarding rule for global LBs, a regional one for regional LBs —
+    # so counting both gives an accurate total without double-counting
+    # backend services, which can be shared across multiple LBs.
+    count = 0
+    global_client = compute_v1.GlobalForwardingRulesClient(credentials=creds)
+    for rule in global_client.list(project=project_id):
+        resource_id = f"projects/{project_id}/global/forwardingRules/{rule.name}"
+        _upsert_resource(
+            cursor, account_id, "cloud_lb", resource_id, rule.name,
+            dict(rule.labels or {}), "global", "networking",
+        )
+        count += 1
+
+    regional_client = compute_v1.ForwardingRulesClient(credentials=creds)
+    for region, response in regional_client.aggregated_list(project=project_id):
+        if not response.forwarding_rules:
+            continue
+        region_name = region.split("/")[-1]
+        for rule in response.forwarding_rules:
+            resource_id = f"projects/{project_id}/regions/{region_name}/forwardingRules/{rule.name}"
+            _upsert_resource(
+                cursor, account_id, "cloud_lb", resource_id, rule.name,
+                dict(rule.labels or {}), region_name, "networking",
+            )
+            count += 1
+    return count
+
+
+def _discover_redis_instances(creds, project_id, account_id, cursor) -> int:
+    client = redis_v1.CloudRedisClient(credentials=creds)
+    count = 0
+    for inst in client.list_instances(parent=f"projects/{project_id}/locations/-"):
+        name = inst.name.split("/")[-1]
+        parts = inst.name.split("/")
+        location = parts[3] if len(parts) > 3 else ""
+        _upsert_resource(
+            cursor, account_id, "redis_instance", inst.name, name,
+            dict(inst.labels or {}), location, "database",
+        )
+        count += 1
+    return count
+
+
+def _discover_bigquery_datasets(creds, project_id, account_id, cursor) -> int:
+    # BigQuery has no "instance" concept — a dataset is the closest
+    # analog to a monitorable resource unit. list_datasets() also
+    # confirms the API is enabled / project actually uses BigQuery at all
+    # (matches the "does this account use this service" question the
+    # rest of discovery is answering).
+    client = bigquery.Client(project=project_id, credentials=creds)
+    count = 0
+    for ds in client.list_datasets():
+        resource_id = f"projects/{project_id}/datasets/{ds.dataset_id}"
+        _upsert_resource(
+            cursor, account_id, "bigquery_project", resource_id, ds.dataset_id,
+            dict(ds.labels or {}) if hasattr(ds, "labels") else {}, "global", "analytics",
+        )
+        count += 1
+    return count
+
+
+def _discover_spanner_instances(creds, project_id, account_id, cursor) -> int:
+    client = SpannerInstanceAdminClient(credentials=creds)
+    count = 0
+    for inst in client.list_instances(parent=f"projects/{project_id}"):
+        name = inst.name.split("/")[-1]
+        _upsert_resource(
+            cursor, account_id, "spanner_instance", inst.name, name,
+            dict(inst.labels or {}), inst.config.split("/")[-1] if inst.config else "", "database",
+        )
+        count += 1
+    return count
+
+
+def _discover_firestore_databases(creds, project_id, account_id, cursor) -> int:
+    client = firestore_admin_v1.FirestoreAdminClient(credentials=creds)
+    count = 0
+    resp = client.list_databases(parent=f"projects/{project_id}")
+    for db in resp.databases:
+        name = db.name.split("/")[-1]
+        _upsert_resource(
+            cursor, account_id, "firestore_database", db.name, name,
+            {}, getattr(db, "location_id", "") or "", "database",
+        )
+        count += 1
+    return count
+
+
+def _discover_nat_gateways(creds, project_id, account_id, cursor) -> int:
+    # Cloud NAT is a sub-resource of a Router, not a standalone listable
+    # object — enumerate routers, then each router's `.nats` entries.
+    client = compute_v1.RoutersClient(credentials=creds)
+    count = 0
+    for region, response in client.aggregated_list(project=project_id):
+        if not response.routers:
+            continue
+        region_name = region.split("/")[-1]
+        for router in response.routers:
+            for nat in (router.nats or []):
+                resource_id = (
+                    f"projects/{project_id}/regions/{region_name}/routers/"
+                    f"{router.name}/nats/{nat.name}"
+                )
+                _upsert_resource(
+                    cursor, account_id, "nat_gateway", resource_id, nat.name,
+                    {}, region_name, "networking",
+                )
+                count += 1
+    return count
+
+
+def _discover_persistent_disks(creds, project_id, account_id, cursor) -> int:
+    client = compute_v1.DisksClient(credentials=creds)
+    count = 0
+    for zone, response in client.aggregated_list(project=project_id):
+        if not response.disks:
+            continue
+        zone_name = zone.split("/")[-1]
+        for disk in response.disks:
+            resource_id = f"projects/{project_id}/zones/{zone_name}/disks/{disk.name}"
+            _upsert_resource(
+                cursor, account_id, "gce_persistent_disk", resource_id, disk.name,
+                dict(disk.labels or {}), zone_name, "storage",
+            )
+            count += 1
+    return count
+
+
 def discover_account_resources(account: dict, sa_key_json: str) -> dict:
     """Run discovery for a single GCP account. Returns a per-type count."""
     creds = _credentials(sa_key_json)
@@ -130,12 +356,40 @@ def discover_account_resources(account: dict, sa_key_json: str) -> dict:
     from app.db import get_connection
     conn = get_connection()
     cursor = conn.cursor()
-    counts = {"compute_instance": 0, "gcs_bucket": 0, "cloudsql_instance": 0, "cloud_run_service": 0}
+    counts = {
+        "compute_instance": 0, "gcs_bucket": 0, "cloudsql_instance": 0, "cloud_run_service": 0,
+        "gke_cluster": 0, "gke_node": 0, "cloudfunctions_function": 0, "pubsub_topic": 0,
+        "pubsub_subscription": 0, "cloud_lb": 0, "redis_instance": 0, "bigquery_project": 0,
+        "spanner_instance": 0, "firestore_database": 0, "nat_gateway": 0, "gce_persistent_disk": 0,
+    }
+    # Same fail-open pattern as Azure: a service that's never been enabled
+    # for this project (API not turned on) or hits a permissions gap
+    # shouldn't abort discovery for every other service.
+    steps = [
+        ("compute_instance",         lambda: _discover_compute_instances(creds, project_id, account["id"], cursor)),
+        ("gcs_bucket",               lambda: _discover_gcs_buckets(creds, project_id, account["id"], cursor)),
+        ("cloudsql_instance",        lambda: _discover_cloudsql_instances(creds, project_id, account["id"], cursor)),
+        ("cloud_run_service",        lambda: _discover_cloud_run(creds, project_id, account["id"], cursor)),
+        ("gke_cluster",              lambda: _discover_gke_clusters(creds, project_id, account["id"], cursor)),
+        ("gke_node",                 lambda: _discover_gke_nodes(creds, project_id, account["id"], cursor)),
+        ("cloudfunctions_function",  lambda: _discover_cloudfunctions(creds, project_id, account["id"], cursor)),
+        ("pubsub_topic",             lambda: _discover_pubsub_topics(creds, project_id, account["id"], cursor)),
+        ("pubsub_subscription",      lambda: _discover_pubsub_subscriptions(creds, project_id, account["id"], cursor)),
+        ("cloud_lb",                 lambda: _discover_cloud_lb(creds, project_id, account["id"], cursor)),
+        ("redis_instance",           lambda: _discover_redis_instances(creds, project_id, account["id"], cursor)),
+        ("bigquery_project",         lambda: _discover_bigquery_datasets(creds, project_id, account["id"], cursor)),
+        ("spanner_instance",         lambda: _discover_spanner_instances(creds, project_id, account["id"], cursor)),
+        ("firestore_database",       lambda: _discover_firestore_databases(creds, project_id, account["id"], cursor)),
+        ("nat_gateway",              lambda: _discover_nat_gateways(creds, project_id, account["id"], cursor)),
+        ("gce_persistent_disk",      lambda: _discover_persistent_disks(creds, project_id, account["id"], cursor)),
+    ]
+
     try:
-        counts["compute_instance"] = _discover_compute_instances(creds, project_id, account["id"], cursor)
-        counts["gcs_bucket"] = _discover_gcs_buckets(creds, project_id, account["id"], cursor)
-        counts["cloudsql_instance"] = _discover_cloudsql_instances(creds, project_id, account["id"], cursor)
-        counts["cloud_run_service"] = _discover_cloud_run(creds, project_id, account["id"], cursor)
+        for key, fn in steps:
+            try:
+                counts[key] = fn()
+            except Exception as e:
+                logger.warning(f"GCP {key} discovery failed for {account.get('account_name')}: {e}")
         conn.commit()
     except Exception:
         conn.rollback()
