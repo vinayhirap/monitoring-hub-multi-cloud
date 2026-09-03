@@ -4,6 +4,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { getLiveEC2, getLiveEC2Metrics } from "../api/api";
 import "./AccountDetail.css";
+import { useTimezone } from "../contexts/TimezoneContext";
 
 async function openAccountConsole(accountId, service, resourceId) {
   try {
@@ -342,6 +343,7 @@ function QuickStat({ label, value, color, mono }) {
 }
 
 function MetricChart({ title, data, color, unit, threshold }) {
+  const { ianaName } = useTimezone();
   if (!data || data.length === 0) {
     return (
       <div className="chart-box">
@@ -353,7 +355,7 @@ function MetricChart({ title, data, color, unit, threshold }) {
 
   const latest = data[data.length - 1]?.v ?? 0;
   const formatted = data.map(d => ({
-    t: new Date(d.t).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }),
+    t: new Date(d.t).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: ianaName }),
     v: d.v,
   }));
 

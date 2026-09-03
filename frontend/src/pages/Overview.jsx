@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { getLiveAccounts, getAlerts } from "../api/api";
 import "./Overview.css";
+import { useTimezone } from "../contexts/TimezoneContext";
 
 const BASE = "";
 
@@ -49,6 +50,7 @@ function aggregateStats(regions) {
 
 export default function Overview() {
   const navigate = useNavigate();
+  const { ianaName } = useTimezone();
   const [accounts,    setAccounts]    = useState([]);
   const [alerts,      setAlerts]      = useState([]);
   const [loading,     setLoading]     = useState(true);
@@ -143,7 +145,7 @@ export default function Overview() {
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {lastSync && (
             <span style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-              Synced {lastSync.toLocaleTimeString()}
+              Synced {lastSync.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: ianaName })}
             </span>
           )}
           <button className="btn-refresh" onClick={loadAll} title="Refresh now">↻ Refresh</button>
