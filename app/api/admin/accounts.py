@@ -322,8 +322,6 @@ def add_account(payload: dict = Body(...)):
             result = enable_metrics_for_services(new_id, detected, provider="aws", source="discovered")
             if not result["added"]:
                 seed_account_defaults(new_id, provider=provider_name)
-<<<<<<< ours
-=======
         elif provider_name == "azure":
             from app.api.metric_catalog import enable_metrics_for_services
             from app.providers.azure.discovery import discover_account_resources
@@ -368,7 +366,6 @@ def add_account(payload: dict = Body(...)):
             if not result["added"]:
                 seed_account_defaults(new_id, provider=provider_name)
 
->>>>>>> theirs
         else:
             seed_account_defaults(new_id, provider=provider_name)
     except Exception as e:
