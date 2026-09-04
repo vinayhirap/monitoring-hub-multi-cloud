@@ -57,6 +57,16 @@ GROUP_LEVELS = ("L1", "L2", "L3")
 # L1 -> None (top of the tree, no parent allowed).
 GROUP_PARENT_LEVEL = {"L1": None, "L2": "L1", "L3": "L2"}
 
+# The role a user is given automatically when added as a member of a
+# group at each level. L1 = Viewer (least access), L2 = Editor (mid),
+# L3 = Admin (full access) -- referenced by app/api/admin/groups.py's
+# add_group_members() and mirrored client-side in UserManagement.jsx
+# purely for instant UI feedback; this dict here is the one and only
+# authoritative source. (Previously referenced from three places in
+# this codebase but never actually defined -- every group-membership
+# write has been crashing with AttributeError until this fix.)
+GROUP_LEVEL_ROLE = {"L1": "viewer", "L2": "editor", "L3": "admin"}
+
 
 @dataclass
 class ScopeGrant:
