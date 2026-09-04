@@ -186,6 +186,8 @@ def evaluate_alerts():
             r.aws_account_id,
             r.tags,
             r.region,
+            aa.account_name,
+            aa.default_region,
             m.metric_name,
             m.metric_value,
             m.metric_timestamp,
@@ -345,12 +347,14 @@ def evaluate_alerts():
 
         try:
             publish_alert(
-                alert_id   = new_alert_id,
-                severity   = promoted_severity,
-                metric     = metric_name,
-                value      = metric_value,
-                threshold  = threshold_value,
-                account_id = aws_account_id,
+                alert_id     = new_alert_id,
+                severity     = promoted_severity,
+                metric       = metric_name,
+                value        = metric_value,
+                threshold    = threshold_value,
+                account_id   = aws_account_id,
+                account_name = row["account_name"],
+                region       = row["region"] or row["default_region"],
             )
         except Exception as e:
             logger.warning(f"Alert publish failed: {e}")

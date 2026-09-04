@@ -20,12 +20,14 @@ export default function AlertToast() {
   useEffect(() => {
     if (!alertMsg || alertMsg.type !== "new_alert") return;
     const toast = {
-      id:        Date.now(),
-      severity:  alertMsg.severity  || "WARNING",
-      metric:    alertMsg.metric    || "Unknown",
-      value:     alertMsg.value     ?? 0,
-      threshold: alertMsg.threshold ?? 0,
-      account_id:alertMsg.account_id,
+      id:          Date.now(),
+      severity:    alertMsg.severity   || "WARNING",
+      metric:      alertMsg.metric     || "Unknown",
+      value:       alertMsg.value      ?? 0,
+      threshold:   alertMsg.threshold  ?? 0,
+      account_id:  alertMsg.account_id,
+      account_name:alertMsg.account_name,
+      region:      alertMsg.region,
     };
     setToasts(prev => [toast, ...prev].slice(0, 5));
 
@@ -79,7 +81,10 @@ function ToastItem({ toast, onClose }) {
         <div style={{ fontSize: 13, color: "#dce6f5", marginBottom: 2 }}>
           {toast.metric} — <strong>{toast.value}%</strong> (threshold: {toast.threshold}%)
         </div>
-        <div style={{ fontSize: 11, color: "#4a5f80" }}>Account #{toast.account_id}</div>
+        <div style={{ fontSize: 11, color: "#4a5f80" }}>
+          {toast.account_name || `Account #${toast.account_id}`}
+          {toast.region ? ` · ${toast.region}` : ""}
+        </div>
       </div>
       <button onClick={onClose} style={{
         background: "none", border: "none", color: "#4a5f80",

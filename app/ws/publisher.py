@@ -45,7 +45,8 @@ def publish_metric_update(account_id: int, service: str, cpu: float, memory: flo
 
 
 def publish_alert(alert_id: int, severity: str, metric: str,
-                  value: float, threshold: float, account_id: int):
+                  value: float, threshold: float, account_id: int,
+                  account_name: str = None, region: str = None):
     publish("alerts", {
         "type": "new_alert",
         "alert_id": alert_id,
@@ -54,6 +55,8 @@ def publish_alert(alert_id: int, severity: str, metric: str,
         "value": round(value, 2),
         "threshold": round(threshold, 2),
         "account_id": account_id,
+        "account_name": account_name,
+        "region": region,
     })
 
 
