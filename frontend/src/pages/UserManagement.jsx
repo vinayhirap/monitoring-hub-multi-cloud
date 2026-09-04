@@ -90,6 +90,18 @@ export default function UserManagement() {
 
   useEffect(() => { loadUsers(); }, [loadUsers]);
 
+  // Roles & Permissions tab -- the real permission catalog + per-role
+  // grant matrix from the backend (GET /api/permissions), not a
+  // hardcoded frontend list. is_internal permissions (SMTP, system
+  // config) are excluded server-side before this ever arrives -- see
+  // app/api/permissions.py -- so there's nothing to filter here.
+  const [permCategories, setPermCategories] = useState([]);
+  useEffect(() => {
+    if (tab === "roles" && isAdmin) {
+      apiFetch("/api/permissions").then(setPermCategories).catch(() => setPermCategories([]));
+    }
+  }, [tab, isAdmin]);
+
   function validateForm() {
     const e = {};
     if (!form.username.trim()) e.username = "Username required";
@@ -401,12 +413,40 @@ export default function UserManagement() {
         </>
       )}
 
-      {/* Roles Tab */}
+      {/* Roles Tab -- real permission catalog from the backend
+          (GET /api/permissions), grouped by category, showing exactly
+          which of Viewer(L1)/Editor(L2)/Admin(L3) each permission is
+          granted to. This is a READ-ONLY view of role_permissions in
+          this pass -- changing what a role grants is a database
+          change (db/migrations/015_permissions_rbac.sql), not yet
+          editable from here. */}
       {tab === "roles" && (
-        <div className="roles-grid">
-          <RoleCard title="Admin Role"  icon={ToolIcon} color="orange" desc="Unrestricted access to all platform features including account onboarding, user management, alert configuration, and audit logs." granted={ADMIN_PERMS} denied={[]} />
-          <RoleCard title="Editor Role" icon={EditIcon} color="purple" desc="Monitor infrastructure, configure alerts, and onboard accounts. Cannot manage users or access audit logs."                        granted={EDITOR_PERMS} denied={EDITOR_DENIED} />
-          <RoleCard title="Viewer Role" icon={EyeIcon}  color="blue"   desc="Monitor account health, view metrics, drill into services, and read alerts. Cannot modify configuration or onboard accounts."  granted={VIEWER_PERMS} denied={VIEWER_DENIED} />
+        <div className="roles-grid" style={{ gridTemplateColumns: "1fr 1fr", alignItems: "start" }}>
+          {permCategories.length === 0 ? (
+            <div style={{ gridColumn: "1 / -1", padding: 24, color: "var(--text-muted)", fontSize: 13 }}>
+              Loading permission catalog…
+            </div>
+          ) : (
+            permCategories.map(cat => (
+              <div key={cat.category} className="role-card">
+                <div className="role-card-header">
+                  <span className="role-card-title">{cat.category}</span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {cat.permissions.map(p => (
+                    <div key={p.code} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }} title={p.description || ""}>
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>{p.label}</span>
+                      <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                        <span className={`perm-chip ${p.roles.viewer ? "granted" : "denied"}`}>L1</span>
+                        <span className={`perm-chip ${p.roles.editor ? "granted" : "denied"}`}>L2</span>
+                        <span className={`perm-chip ${p.roles.admin ? "granted" : "denied"}`}>L3</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))
+          )}
         </div>
       )}
     </div>

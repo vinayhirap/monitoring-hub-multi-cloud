@@ -40,6 +40,7 @@ Design decisions:
 from fastapi import APIRouter, HTTPException, Body, Depends
 from app.db import get_connection
 from app.auth.deps import require_role
+from app.auth.permissions import require_permission
 from app.auth import authorization as authz
 import datetime
 import json
@@ -188,7 +189,7 @@ def get_user_groups(user_id: int, current_user: dict = Depends(require_role("adm
 
 
 @router.post("")
-def create_group(payload: dict = Body(...), current_user: dict = Depends(require_role("admin"))):
+def create_group(payload: dict = Body(...), current_user: dict = Depends(require_permission("groups.create"))):
     name = (payload.get("name") or "").strip()
     level = (payload.get("level") or "").strip().upper()
     parent_group_id = payload.get("parent_group_id")
@@ -243,7 +244,7 @@ def get_group_detail(group_id: int, current_user: dict = Depends(require_role("a
 
 
 @router.delete("/{group_id}")
-def delete_group(group_id: int, current_user: dict = Depends(require_role("admin"))):
+def delete_group(group_id: int, current_user: dict = Depends(require_permission("groups.delete"))):
     conn = get_connection()
     g = authz.get_group(conn, group_id)
     if not g:
@@ -274,7 +275,7 @@ def delete_group(group_id: int, current_user: dict = Depends(require_role("admin
 
 
 @router.post("/{group_id}/policies")
-def add_group_policy(group_id: int, payload: dict = Body(...), current_user: dict = Depends(require_role("admin"))):
+def add_group_policy(group_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("groups.update"))):
     """
     Attach one or more account/region-specific policy grants to this
     group. Every user who is a direct member of this group, OR a
@@ -327,7 +328,7 @@ def add_group_policy(group_id: int, payload: dict = Body(...), current_user: dic
 
 
 @router.delete("/policies/{policy_id}")
-def delete_group_policy(policy_id: int, current_user: dict = Depends(require_role("admin"))):
+def delete_group_policy(policy_id: int, current_user: dict = Depends(require_permission("groups.update"))):
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
@@ -352,7 +353,7 @@ def delete_group_policy(policy_id: int, current_user: dict = Depends(require_rol
 
 
 @router.post("/{group_id}/members")
-def add_group_members(group_id: int, payload: dict = Body(...), current_user: dict = Depends(require_role("admin"))):
+def add_group_members(group_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("groups.update"))):
     user_ids = payload.get("user_ids") or []
     if not user_ids:
         raise HTTPException(status_code=400, detail="user_ids required")
@@ -419,7 +420,7 @@ def add_group_members(group_id: int, payload: dict = Body(...), current_user: di
 
 
 @router.delete("/{group_id}/members/{user_id}")
-def remove_group_member(group_id: int, user_id: int, current_user: dict = Depends(require_role("admin"))):
+def remove_group_member(group_id: int, user_id: int, current_user: dict = Depends(require_permission("groups.update"))):
     conn = get_connection()
     g = authz.get_group(conn, group_id)
     if not g:

@@ -10,17 +10,24 @@ import "./Layout.css";
 // admin   → all items
 // editor  → overview, alerts, compliance, settings (NO onboarding, NO user mgmt)
 // viewer  → overview, alerts, compliance (NO onboarding, NO user mgmt, NO settings)
+// `roles` stays the filter for general app pages (unrelated to the
+// RBAC permission matrix below). User Management is the one item this
+// spec's permission model actually covers, so it's filtered by
+// `perm` (checked via hasPermission from AuthContext) instead of a
+// role array -- see visibleNav below. This is the intended pattern
+// going forward: add `perm: "some.code"` to a nav item instead of
+// widening `roles`, as more of the app gets its own permission codes.
 const NAV_ITEMS = [
   { to: "/overview",   label: "Overview",           icon: OverviewIcon,   roles: ["admin","editor","viewer"] },
   { to: "/alerts",     label: "Alerts",             icon: AlertIcon,      roles: ["admin","editor","viewer"], badge: true },
   { to: "/onboarding", label: "Account Onboarding", icon: OnboardIcon,    roles: ["admin","editor"] },
-  { to: "/users",      label: "User Management",    icon: UsersIcon,      roles: ["admin"] },
+  { to: "/users",      label: "User Management",    icon: UsersIcon,      roles: ["admin","editor","viewer"], perm: "users.view" },
   { to: "/compliance", label: "Compliance",         icon: ComplianceIcon, roles: ["admin","editor","viewer"] },
   { to: "/settings",   label: "Settings",           icon: SettingsIcon,   roles: ["admin","editor"] },
 ];
 
 export default function Layout() {
-  const { user, logout } = useAuth();
+  const { user, logout, hasPermission } = useAuth();
   const navigate          = useNavigate();
   const { timezone, setTimezone, ianaName } = useTimezone();
   const role              = (user?.role || "viewer").toLowerCase();
@@ -66,7 +73,14 @@ export default function Layout() {
     timeZone: ianaName,
   });
 
-  const visibleNav = NAV_ITEMS.filter(item => item.roles.includes(role));
+  // An item with a `perm` must pass the real permission check (not just
+  // the role array) -- role stays a coarse first filter for everything
+  // else, `perm` is the actual RBAC-spec authorization decision where
+  // it's defined. Backend enforcement (app/auth/permissions.py) is
+  // independent of this either way; this only controls what's shown.
+  const visibleNav = NAV_ITEMS.filter(item =>
+    item.roles.includes(role) && (!item.perm || hasPermission(item.perm))
+  );
 
   return (
     <div className={`layout ${navOpen ? "nav-open" : ""}`}>

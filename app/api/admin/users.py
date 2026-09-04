@@ -2,6 +2,7 @@
 from fastapi import APIRouter, HTTPException, Body, Depends
 from app.db import get_connection
 from app.auth.deps import require_role
+from app.auth.permissions import require_permission
 from app.auth import authorization as authz
 from app.email import mailer
 import bcrypt
@@ -278,7 +279,7 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
 
 
 @router.patch("/{user_id}/role")
-def update_role(user_id: int, payload: dict = Body(...), current_user: dict = Depends(require_role("admin"))):
+def update_role(user_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("roles.manage"))):
     # Role changes stay admin-only by design: an editor's authority is
     # to manage VIEWER accounts within their scope, not to change what
     # role anyone holds (including promoting a viewer they manage into
