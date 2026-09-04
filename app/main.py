@@ -15,6 +15,7 @@ from app.api.admin.accounts import router as admin_accounts_router
 from app.api.auth           import router as auth_router
 from app.api.admin.users    import router as admin_users_router
 from app.api.admin.groups   import router as admin_groups_router
+from app.api.permissions    import router as permissions_router
 from app.api.settings       import router as settings_router
 from app.api.live_data      import router as live_data_router
 from app.api.audit_logs     import router as audit_logs_router
@@ -144,6 +145,7 @@ app.include_router(admin_accounts_router, dependencies=_auth_dep)
 app.include_router(auth_router)
 app.include_router(admin_users_router)
 app.include_router(admin_groups_router)
+app.include_router(permissions_router)
 app.include_router(live_data_router,      dependencies=_auth_dep)
 app.include_router(audit_logs_router,     dependencies=_auth_dep)
 app.include_router(settings_router,       dependencies=_auth_dep)
