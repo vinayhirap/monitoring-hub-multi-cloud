@@ -138,6 +138,13 @@ run_migration scripts/seed_metric_catalog.py \
     "seed: metric_catalog curated + directory entries"
 
 echo "--- Rebuilding frontend ---"
+# --- perm-fix-2026-09-04: force frontend build dir ownership before build ---
+# Root cause: dist/assets can end up owned by root from any root-context
+# build (manual `sudo npm run build`, a differently-run script, etc).
+# `sudo -u "$REAL_USER" npm run build` then fails vite's EACCES trying to
+# unlink files it doesn't own before it can even start. Fixed at the
+# source: force correct ownership immediately before every build, always.
+chown -R "$REAL_USER":"$REAL_USER" "/opt/monitoring-hub/app/frontend/dist" "/opt/monitoring-hub/app/frontend/node_modules" 2>/dev/null || true
 cd "$REPO_DIR/frontend"
 sudo -u "$REAL_USER" npm install --silent
 sudo -u "$REAL_USER" npm run build
