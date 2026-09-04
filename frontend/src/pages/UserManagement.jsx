@@ -120,7 +120,12 @@ export default function UserManagement() {
       // never implemented server-side, so account access silently never
       // applied no matter what was selected here (the request 404'd and
       // was swallowed by .catch(() => {})).
-      if (form.role === "viewer" && form.accountIds?.length > 0) {
+      // Editors are scoped the same way viewers are -- an editor with
+      // no scope restriction can configure alerts/onboard accounts
+      // across every AWS account this app knows about, which is rarely
+      // the intent; the backend (add_user_access) has always supported
+      // scoping any role, this was purely a frontend gate.
+      if ((form.role === "viewer" || form.role === "editor") && form.accountIds?.length > 0) {
         await apiFetch(`/api/users/${created.id}/access`, {
           method: "POST",
           body: JSON.stringify({
@@ -266,11 +271,9 @@ export default function UserManagement() {
                     </option>
                   ))}
                 </select>
-                <span className="field-hint">
-                  {groups.length === 0
-                    ? "No organization groups set up yet."
-                    : "Sets the role below automatically (L1 = Viewer, L2 = Editor, L3 = Admin) and inherits this group's access plus every parent group's access."}
-                </span>
+                {groups.length === 0 && (
+                  <span className="field-hint">No organization groups set up yet.</span>
+                )}
               </div>
               <div className="mfield">
                 <label>Role{form.groupId ? " (set by group)" : ""}</label>
@@ -289,7 +292,7 @@ export default function UserManagement() {
                   </span>
                 )}
               </div>
-              {form.role === "viewer" && accounts.length > 0 && (
+              {(form.role === "viewer" || form.role === "editor") && accounts.length > 0 && (
                 <div className="mfield">
                   <label>Account Access</label>
                   <select
