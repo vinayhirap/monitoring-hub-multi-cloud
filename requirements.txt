@@ -24,7 +24,7 @@ uvicorn==0.41.0
 uvicorn[standard]
 websockets
 redis
-bcrypt
+bcrypt==4.0.1
 passlib[bcrypt]
 PyJWT==2.10.1
 requests==2.32.3
