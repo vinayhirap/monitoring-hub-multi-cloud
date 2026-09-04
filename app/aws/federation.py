@@ -291,39 +291,61 @@ def build_federated_console_url(role_arn: str | None, external_id: str | None,
                                  resource_name: str | None = None,
                                  ecs_service_name: str | None = None) -> str:
     """
-    Returns the plain AWS Console URL for `destination` directly — no
-    AWS session is minted for this — see apply_console_direct_link_fix.py.
-    Whichever AWS identity is already signed into the browser (or gets
-    prompted to sign in, if none) governs what's actually visible.
-    That's a deliberate change from the previous federated-session
-    approach: access is now genuinely the viewer's own AWS credentials
-    and entitlements, not an app-controlled impersonated identity, and
-    there is no token embedded that can silently re-authenticate
-    someone after they sign out of the AWS console.
+    Mints a short-lived, least-privilege AWS Console sign-in URL for
+    `destination` and returns it — clicking it lands the browser
+    already authenticated into the CORRECT account, with no manual
+    account ID / username / password entry, regardless of whatever
+    AWS identity (if any) is already signed into that browser.
 
-    `role_arn`/`external_id` are accepted for backward compatibility
-    with callers but are no longer used to mint credentials here.
-    `requested_by`/`service`/`resource_id`/`target_account_id` are used
-    only to record the click in the app's own audit log, since the app
-    is no longer in a position to attribute anything on the AWS side.
+    The session is scoped as tightly as IAM allows:
+      - build_scoped_session_policy() narrows it to read-only access
+        for the ONE service (and, where AWS IAM supports it, the ONE
+        resource) being opened -- never broader than that, and never
+        broader than the underlying role's own permissions either
+        (AWS enforces the intersection).
+      - The STS RoleSessionName is the requesting monitoring-hub
+        user's own username (_sanitize_session_name), so the
+        resulting CloudTrail record on the AWS side is attributable
+        to a specific person, not a shared generic session name.
+
+    Cross-account (role_arn set) uses AssumeRole; same-account (no
+    role_arn, target account matches the server's own) uses
+    GetFederationToken via get_self_federation_session -- see that
+    function's docstring for why no role_arn is required there.
+    Raises NoConsoleCredentialsError if neither path applies, so
+    callers can surface a clean 400 instead of a raw AWS error.
     """
     _write_console_open_audit(requested_by, target_account_id, service, resource_id)
-    return destination
+
+    session_name = _sanitize_session_name(requested_by)
+    policy = build_scoped_session_policy(
+        service, resource_id, region, target_account_id, resource_name, ecs_service_name,
+    )
+
+    if role_arn:
+        session = assume_role(role_arn, external_id, session_name=session_name, policy=policy)
+    elif target_account_id and target_account_id == get_own_account_id():
+        session = get_self_federation_session(session_name=session_name, policy=policy)
+    else:
+        raise NoConsoleCredentialsError(
+            f"No role_arn configured for account {target_account_id!r}, and it isn't "
+            "this server's own account -- cannot mint console credentials for it."
+        )
 
     creds = session.get_credentials().get_frozen_credentials()
 
     session_json = json.dumps({
-        "sessionId": creds.access_key,
-        "sessionKey": creds.secret_key,
+        "sessionId":    creds.access_key,
+        "sessionKey":   creds.secret_key,
         "sessionToken": creds.token,
     })
 
     resp = requests.get(
         FEDERATION_ENDPOINT,
         params={
-            "Action": "getSigninToken",
+            "Action":          "getSigninToken",
             "SessionDuration": SESSION_DURATION_SECONDS,
-            "Session": session_json,
+            "Session":         session_json,
         },
         timeout=10,
     )
