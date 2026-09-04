@@ -24,25 +24,32 @@ the single source of truth, with three safe operations:
       the tracker starts in sync with reality instead of assuming a
       freshly-created tracking table means a freshly-empty schema.
 
+  baseline --all-except-rollbacks
+      Same as above, but auto-selects every currently-pending file whose
+      name doesn't contain "rollback" instead of requiring you to type
+      or paste a long filename list by hand.
+
   apply <file>
       Actually executes one .sql file's statements against the DB inside
       a transaction where possible, then records it in schema_migrations.
       Refuses if the file is already marked applied (idempotent) or
       doesn't exist on disk.
 
-  apply --all-pending
+  apply --all-pending [--yes]
       Applies every PENDING file in filename-sorted order, stopping
-      immediately on the first error. Does NOT try to resolve the
-      duplicate 011/013 numbering or the unnumbered add_monitoring_tier.sql
-      seen in `status` -- fix those filenames/ordering by hand first if
-      you plan to use this mode; it trusts sort order completely.
+      immediately on the first error. Prompts for confirmation unless
+      --yes is passed (needed for unattended use inside update.sh).
+      Does NOT try to resolve the duplicate 011/013 numbering or the
+      unnumbered add_monitoring_tier.sql seen in `status` -- fix those
+      filenames/ordering by hand first if you plan to use this mode;
+      it trusts sort order completely.
 
 Nothing here auto-applies anything by default. `status` is safe to run
 at any time, including in production, with zero risk of mutating schema.
 
 Usage:
     python migrate.py status
-    python migrate.py baseline 002_resources_region_instance_state.sql 003_metric_catalog_full.sql ...
+    python migrate.py baseline --all-except-rollbacks
     python migrate.py apply 014_user_email_column.sql
     python migrate.py apply --all-pending
 """
@@ -210,7 +217,7 @@ def cmd_apply(conn, filename):
         cursor.close()
 
 
-def cmd_apply_all_pending(conn):
+def cmd_apply_all_pending(conn, skip_confirm: bool = False):
     ensure_tracking_table(conn)
     applied = get_applied(conn)
     files = list_migration_files()
@@ -231,10 +238,12 @@ def cmd_apply_all_pending(conn):
     print(f"Will apply {len(pending)} file(s) in this order:")
     for f in pending:
         print(f"  {f}")
-    confirm = input("\nType 'apply' to continue: ")
-    if confirm.strip() != "apply":
-        print("Aborted.")
-        return
+
+    if not skip_confirm:
+        confirm = input("\nType 'apply' to continue: ")
+        if confirm.strip() != "apply":
+            print("Aborted.")
+            return
 
     for f in pending:
         cmd_apply(conn, f)
@@ -247,11 +256,19 @@ def main():
     sub.add_parser("status")
 
     p_baseline = sub.add_parser("baseline")
-    p_baseline.add_argument("files", nargs="+")
+    p_baseline.add_argument("files", nargs="*")
+    p_baseline.add_argument(
+        "--all-except-rollbacks",
+        action="store_true",
+        help="Baseline every currently-pending file whose name doesn't contain 'rollback', "
+             "instead of listing filenames by hand.",
+    )
 
     p_apply = sub.add_parser("apply")
     p_apply.add_argument("file", nargs="?")
     p_apply.add_argument("--all-pending", action="store_true")
+    p_apply.add_argument("--yes", action="store_true",
+                          help="Skip the interactive confirmation prompt (for use in unattended scripts like update.sh).")
 
     args = parser.parse_args()
     command = args.command or "status"
@@ -266,10 +283,22 @@ def main():
         if command == "status":
             cmd_status(conn)
         elif command == "baseline":
-            cmd_baseline(conn, args.files)
+            if args.all_except_rollbacks:
+                all_files = list_migration_files()
+                targets = [f for f in all_files if "rollback" not in f.lower()]
+                print(f"Auto-selected {len(targets)} file(s) (excluding {len(all_files) - len(targets)} rollback file(s)):")
+                for f in targets:
+                    print(f"  {f}")
+                print()
+            elif args.files:
+                targets = args.files
+            else:
+                print("Specify filenames, or use --all-except-rollbacks", file=sys.stderr)
+                sys.exit(1)
+            cmd_baseline(conn, targets)
         elif command == "apply":
             if args.all_pending:
-                cmd_apply_all_pending(conn)
+                cmd_apply_all_pending(conn, skip_confirm=args.yes)
             elif args.file:
                 cmd_apply(conn, args.file)
             else:
