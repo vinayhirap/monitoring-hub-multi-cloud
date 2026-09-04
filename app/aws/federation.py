@@ -291,37 +291,47 @@ def build_federated_console_url(role_arn: str | None, external_id: str | None,
                                  resource_name: str | None = None,
                                  ecs_service_name: str | None = None) -> str:
     """
-    Returns the plain AWS Console deep-link URL for `destination`
-    directly -- NO session is minted, NO identity is assumed on the
-    person's behalf. AWS itself prompts for sign-in when the link is
-    opened, and each person is expected to have their OWN, separately
-    provisioned native AWS IAM user (created directly in AWS -- this
-    app has no ability to create or manage AWS IAM users) to sign in
-    with. Whatever that person's OWN IAM permissions allow is what
-    they'll be able to see/do in the console; this app has no bearing
-    on it either way.
+    Returns an account-LOCKED AWS Console sign-in URL for `destination`
+    -- NO session is minted, NO identity is assumed on the person's
+    behalf, and NO password is ever seen or handled by this app. Every
+    AWS account has this exact URL built in (Account Settings > "IAM
+    users sign-in link" shows the identical format) -- pointing the
+    browser at it is not a workaround, it's the standard way AWS
+    itself expects a company to link people straight to sign-in for a
+    SPECIFIC account instead of AWS's blank, generic sign-in page.
 
-    Deliberate trade-off, chosen over the alternative (a previous
-    version of this function minted a temporary, scoped, app-assumed-
-    role session so the correct account/region/resource would already
-    be selected with no manual entry -- see apply_restore_console_
-    federation.py for that version): AWS's sign-in page cannot be
-    made to auto-fill a person's own individual password, so
-    "auto-selects the account" and "signs in as the person's own,
-    distinct AWS identity" are mutually exclusive. This app is
-    configured to prioritize the latter -- console access reflects
-    each person's real, independently-managed AWS entitlements, not
-    an app-controlled impersonated session, at the cost of the
-    account/region/resource needing to be selected manually after
-    signing in (though `destination` below still encodes the intended
-    region and resource, for once they're signed in).
+    What this fixes: the generic https://signin.aws.amazon.com page
+    shows an empty "Account ID or alias" field the person has to know
+    and type before they can even get to the username/password
+    fields. The account-locked URL below skips that field entirely --
+    the account is already implied by the URL itself -- so the person
+    only ever sees IAM username + password, which are theirs alone.
+    AWS's own sign-in flow carries the `redirect_uri` through to
+    `destination` after a successful login, landing them on the
+    specific resource page, not just the account's console home.
+
+    This is NOT federation: no STS call happens here, no temporary
+    credentials are minted, and there is nothing embedded in this URL
+    that can authenticate anyone -- it is exactly as safe to share/
+    log/click as a plain https://console.aws.amazon.com link. Each
+    person still needs their own, separately provisioned native AWS
+    IAM user (this app cannot create or manage AWS IAM users), and
+    whatever THEIR OWN IAM permissions allow is what they'll be able
+    to do in the console -- this app has no bearing on that either
+    way.
 
     `role_arn`/`external_id` are accepted for backward compatibility
-    with callers but are not used to mint credentials here.
-    `requested_by`/`service`/`resource_id`/`target_account_id` are
-    used only to record the click in the app's own audit log, since
-    the app is no longer in a position to attribute anything on the
-    AWS side.
+    with callers but are not used here (no credentials are minted).
+    `requested_by`/`service`/`resource_id` are used only to record the
+    click in the app's own audit log, since the app is no longer in a
+    position to attribute anything on the AWS side.
     """
     _write_console_open_audit(requested_by, target_account_id, service, resource_id)
+
+    if target_account_id:
+        return (
+            f"https://{target_account_id}.signin.aws.amazon.com/console"
+            f"?region={urllib.parse.quote(region or 'us-east-1', safe='')}"
+            f"&redirect_uri={urllib.parse.quote(destination, safe='')}"
+        )
     return destination
