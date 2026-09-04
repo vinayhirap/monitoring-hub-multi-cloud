@@ -81,7 +81,7 @@ def _get_db_accounts():
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
             SELECT id, account_name, account_id,
-                default_region, status,
+                default_region, status, role_arn, external_id,
                 created_at, last_synced_at
             FROM aws_accounts
             WHERE status = 'active'
@@ -183,7 +183,7 @@ def live_accounts():
 
     def process_account(acc):
         region  = acc.get("default_region")
-        summary = get_account_summary(region)
+        summary = get_account_summary(region, role_arn=acc.get("role_arn"), external_id=acc.get("external_id"))
         running = summary.get("ec2_running", 0)
         total   = summary.get("ec2_total",   0)
         avg_cpu = summary.get("ec2_avg_cpu", 0)
