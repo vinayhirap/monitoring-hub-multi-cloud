@@ -123,6 +123,20 @@ def _get_active_alert_counts_by_account() -> dict:
     the account summary tiles above it say 0 critical, 0 healthy — the
     two were computed from different data. Routing both through this
     one function is what keeps them in agreement.
+
+    "Active" is defined EXACTLY once here, identically to the banner's
+    own query (app/api/alerts.py: open_alerts): status = 'active' AND
+    resolved_at IS NULL, resolved to an ACTIVE account via the same
+    `aws_accounts.status = 'active'` gate the banner uses. No extra
+    age window is applied — an alert open for 10 minutes and one open
+    for 10 days both count for as long as they remain unresolved.
+    (A previous version of this query additionally required
+    `triggered_at > NOW() - 24h`, a clause the banner never had; any
+    alert older than a day was silently excluded from account health
+    while still showing in the banner, reproducing the exact
+    banner/tiles disagreement this function exists to prevent. Alert
+    *age* is a display concern — see alerts.py's `stale` flag — never
+    a reason to stop counting an alert that is still open.)
     """
     try:
         conn   = get_connection()
@@ -130,10 +144,11 @@ def _get_active_alert_counts_by_account() -> dict:
         cursor.execute("""
             SELECT r.aws_account_id, a.severity, COUNT(DISTINCT a.resource_id) AS cnt
             FROM alerts a
-            JOIN resources r ON r.resource_id = a.resource_id
+            JOIN resources r      ON r.resource_id = a.resource_id
+            JOIN aws_accounts acc ON acc.id = r.aws_account_id
+                                   AND acc.status = 'active'
             WHERE a.status = 'active'
               AND a.resolved_at IS NULL
-              AND a.triggered_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
             GROUP BY r.aws_account_id, a.severity
         """)
         rows = cursor.fetchall()
