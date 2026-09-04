@@ -3,7 +3,7 @@ import { useAuth } from "../auth/AuthContext";
 import "./UserManagement.css";
 import {
   PlusIcon, XIcon, AlertTriangleIcon, UsersIcon, LockIcon,
-  ToolIcon, EditIcon, EyeIcon, CheckIcon,
+  ToolIcon, EditIcon, EyeIcon, CheckIcon, LayersIcon,
 } from "../components/icons";
 
 const BASE = "";
@@ -55,6 +55,17 @@ export default function UserManagement() {
   const [saving,     setSaving]     = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // Groups tab (L1/L2/L3 organization groups) -- separate state from
+  // the Add User modal's own use of `groups`/`users`, but reuses both
+  // lists rather than re-fetching them a second time.
+  const [showAddGroup,     setShowAddGroup]     = useState(false);
+  const [groupForm,        setGroupForm]        = useState({ name: "", level: "L1", parentGroupId: "", description: "" });
+  const [groupFormErrs,    setGroupFormErrs]    = useState({});
+  const [groupSubmitting,  setGroupSubmitting]  = useState(false);
+  const [expandedGroupId,  setExpandedGroupId]  = useState(null);
+  const [groupDetails,     setGroupDetails]     = useState({}); // group id -> detail payload from GET /api/groups/{id}
+  const [groupDetailLoad,  setGroupDetailLoad]  = useState(null);
+
   const loadUsers = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -68,25 +79,35 @@ export default function UserManagement() {
     }
   }, []);
 
-  // Accounts (Account Access picker) and org groups (Group picker) both
-  // feed the Add User modal. Fetched on mount AND again every time the
-  // modal opens -- a single mount-time fetch could race a still-settling
-  // backend and come back empty, which previously made the Account
-  // Access field silently never appear with no way to retry short of a
-  // full page reload; re-fetching on open fixes that.
-  const loadAccountsAndGroups = useCallback(() => {
+  // Accounts feed only the Add User modal's AWS-account picker, so
+  // stay admin-only (only admins can open that modal). Groups feed
+  // BOTH the Add User modal's Group dropdown AND the Groups tab below,
+  // and GET /api/groups is explicitly allowed for admin OR editor
+  // (see require_role("admin","editor") on list_groups) -- gating this
+  // fetch to admin-only, as it used to be, meant an editor opening the
+  // Groups tab saw a permanently empty list with no way to know why.
+  // Fetched on mount AND again every time the Add User modal opens --
+  // a single mount-time fetch could race a still-settling backend and
+  // come back empty, which previously made the Account Access field
+  // silently never appear with no way to retry short of a full page
+  // reload; re-fetching on open fixes that.
+  const loadAccounts = useCallback(() => {
     if (!isAdmin) return;
     fetch(`${BASE}/api/live/accounts`)
       .then(r => r.json())
       .then(data => setAccounts(Array.isArray(data) ? data : []))
       .catch(() => {});
+  }, [isAdmin]);
+
+  const loadGroups = useCallback(() => {
+    if (!isAdmin && !isEditor) return;
     apiFetch("/api/groups")
       .then(data => setGroups(Array.isArray(data) ? data : []))
       .catch(() => {});
-  }, [isAdmin]);
+  }, [isAdmin, isEditor]);
 
-  useEffect(() => { loadAccountsAndGroups(); }, [loadAccountsAndGroups]);
-  useEffect(() => { if (showAdd) loadAccountsAndGroups(); }, [showAdd, loadAccountsAndGroups]);
+  useEffect(() => { loadAccounts(); loadGroups(); }, [loadAccounts, loadGroups]);
+  useEffect(() => { if (showAdd) { loadAccounts(); loadGroups(); } }, [showAdd, loadAccounts, loadGroups]);
 
   useEffect(() => { loadUsers(); }, [loadUsers]);
 
@@ -195,6 +216,118 @@ export default function UserManagement() {
       alert("Role update failed: " + err.message);
     } finally {
       setSaving(null);
+    }
+  }
+
+  // Which parent level a group at this level must have -- mirrors
+  // app.auth.authorization.GROUP_PARENT_LEVEL exactly (L1 -> none,
+  // L2 -> L1, L3 -> L2), purely to filter the parent dropdown and
+  // give an inline error before the backend has to reject it.
+  const GROUP_PARENT_LEVEL = { L1: null, L2: "L1", L3: "L2" };
+
+  function validGroupParents(level) {
+    const parentLevel = GROUP_PARENT_LEVEL[level];
+    if (!parentLevel) return [];
+    return groups.filter(g => g.level === parentLevel);
+  }
+
+  function validateGroupForm() {
+    const e = {};
+    if (!groupForm.name.trim()) e.name = "Name required";
+    const parentLevel = GROUP_PARENT_LEVEL[groupForm.level];
+    if (parentLevel && !groupForm.parentGroupId) {
+      e.parentGroupId = `Select a parent ${parentLevel} group`;
+    }
+    return e;
+  }
+
+  async function handleAddGroup() {
+    if (!isAdmin) return; // hard guard
+    const e = validateGroupForm();
+    if (Object.keys(e).length) { setGroupFormErrs(e); return; }
+    setGroupSubmitting(true);
+    try {
+      await apiFetch("/api/groups", {
+        method: "POST",
+        body: JSON.stringify({
+          name: groupForm.name.trim(),
+          level: groupForm.level,
+          parent_group_id: groupForm.parentGroupId ? Number(groupForm.parentGroupId) : null,
+          description: groupForm.description.trim() || undefined,
+        }),
+      });
+      setGroupForm({ name: "", level: "L1", parentGroupId: "", description: "" });
+      setGroupFormErrs({});
+      setShowAddGroup(false);
+      await loadGroups();
+    } catch (err) {
+      setGroupFormErrs({ submit: err.message });
+    } finally {
+      setGroupSubmitting(false);
+    }
+  }
+
+  async function handleDeleteGroup(id, name) {
+    if (!isAdmin) return; // hard guard
+    // Backend refuses (409) if this group still has children -- surfaced
+    // as-is rather than trying to pre-compute it client-side, since the
+    // backend is the single source of truth for the tree's real shape.
+    if (!window.confirm(`Delete group "${name}"? This cannot be undone.`)) return;
+    try {
+      await apiFetch(`/api/groups/${id}`, { method: "DELETE" });
+      setGroupDetails(d => { const next = { ...d }; delete next[id]; return next; });
+      if (expandedGroupId === id) setExpandedGroupId(null);
+      await loadGroups();
+    } catch (err) {
+      alert("Delete failed: " + err.message);
+    }
+  }
+
+  async function toggleGroupExpand(id) {
+    if (expandedGroupId === id) { setExpandedGroupId(null); return; }
+    setExpandedGroupId(id);
+    if (groupDetails[id]) return; // already cached from a previous expand
+    setGroupDetailLoad(id);
+    try {
+      const detail = await apiFetch(`/api/groups/${id}`);
+      setGroupDetails(d => ({ ...d, [id]: detail }));
+    } catch (err) {
+      setGroupDetails(d => ({ ...d, [id]: { error: err.message } }));
+    } finally {
+      setGroupDetailLoad(null);
+    }
+  }
+
+  async function refreshGroupDetail(id) {
+    try {
+      const detail = await apiFetch(`/api/groups/${id}`);
+      setGroupDetails(d => ({ ...d, [id]: detail }));
+    } catch (err) {
+      setGroupDetails(d => ({ ...d, [id]: { error: err.message } }));
+    }
+  }
+
+  async function handleAddGroupMember(groupId, userId) {
+    if (!isAdmin) return; // hard guard
+    try {
+      await apiFetch(`/api/groups/${groupId}/members`, {
+        method: "POST",
+        body: JSON.stringify({ user_ids: [Number(userId)] }),
+      });
+      await refreshGroupDetail(groupId);
+      await loadUsers(); // the member's role may have just been synced to the group's level
+    } catch (err) {
+      alert("Add member failed: " + err.message);
+    }
+  }
+
+  async function handleRemoveGroupMember(groupId, userId) {
+    if (!isAdmin) return; // hard guard
+    try {
+      await apiFetch(`/api/groups/${groupId}/members/${userId}`, { method: "DELETE" });
+      await refreshGroupDetail(groupId);
+    } catch (err) {
+      alert("Remove member failed: " + err.message);
     }
   }
 
@@ -335,10 +468,85 @@ export default function UserManagement() {
         </div>
       )}
 
+      {/* Add Group Modal — admin only */}
+      {showAddGroup && isAdmin && (
+        <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && setShowAddGroup(false)}>
+          <div className="modal-card">
+            <div className="modal-header">
+              <span>Add Organization Group</span>
+              <button className="modal-close" onClick={() => setShowAddGroup(false)}><XIcon size={16} /></button>
+            </div>
+            <div className="modal-body">
+              <div className={`mfield ${groupFormErrs.name ? "merr" : ""}`}>
+                <label>Name *</label>
+                <input
+                  value={groupForm.name}
+                  onChange={e => setGroupForm(f => ({ ...f, name: e.target.value }))}
+                  placeholder="Group name"
+                  autoComplete="off"
+                />
+                {groupFormErrs.name && <span className="err-msg">{groupFormErrs.name}</span>}
+              </div>
+              <div className="mfield">
+                <label>Level</label>
+                <select
+                  value={groupForm.level}
+                  onChange={e => setGroupForm(f => ({ ...f, level: e.target.value, parentGroupId: "" }))}
+                >
+                  <option value="L1">L1 — top level, Viewer access</option>
+                  <option value="L2">L2 — mid level, Editor access</option>
+                  <option value="L3">L3 — leaf level, Admin access</option>
+                </select>
+                <span className="field-hint">Sets the role any member of this group is given automatically.</span>
+              </div>
+              {groupForm.level !== "L1" && (
+                <div className={`mfield ${groupFormErrs.parentGroupId ? "merr" : ""}`}>
+                  <label>Parent Group *</label>
+                  <select
+                    value={groupForm.parentGroupId}
+                    onChange={e => setGroupForm(f => ({ ...f, parentGroupId: e.target.value }))}
+                  >
+                    <option value="">Select a parent…</option>
+                    {validGroupParents(groupForm.level).map(g => (
+                      <option key={g.id} value={g.id}>{g.name}</option>
+                    ))}
+                  </select>
+                  {groupFormErrs.parentGroupId && <span className="err-msg">{groupFormErrs.parentGroupId}</span>}
+                  {validGroupParents(groupForm.level).length === 0 && (
+                    <span className="field-hint">
+                      No {GROUP_PARENT_LEVEL[groupForm.level]} groups exist yet — create one first.
+                    </span>
+                  )}
+                </div>
+              )}
+              <div className="mfield">
+                <label>Description (optional)</label>
+                <input
+                  value={groupForm.description}
+                  onChange={e => setGroupForm(f => ({ ...f, description: e.target.value }))}
+                  placeholder="What this group is for"
+                  autoComplete="off"
+                />
+              </div>
+              {groupFormErrs.submit && <div className="mfield-error"><AlertTriangleIcon size={13} /> {groupFormErrs.submit}</div>}
+            </div>
+            <div className="modal-footer">
+              <button className="btn-ghost" onClick={() => setShowAddGroup(false)}>Cancel</button>
+              <button className="btn-primary" onClick={handleAddGroup} disabled={groupSubmitting}>
+                {groupSubmitting ? "Creating…" : "Add Group"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="tabs">
         <button className={`tab ${tab === "users" ? "active" : ""}`} onClick={() => setTab("users")}><UsersIcon size={14} /> Users</button>
         <button className={`tab ${tab === "roles" ? "active" : ""}`} onClick={() => setTab("roles")}><LockIcon size={14} /> Roles & Permissions</button>
+        {(isAdmin || isEditor) && (
+          <button className={`tab ${tab === "groups" ? "active" : ""}`} onClick={() => setTab("groups")}><LayersIcon size={14} /> Groups</button>
+        )}
       </div>
 
       {/* Users Tab */}
@@ -446,6 +654,113 @@ export default function UserManagement() {
                 </div>
               </div>
             ))
+          )}
+        </div>
+      )}
+
+      {/* Groups Tab -- L1/L2/L3 organization groups: create/delete
+          (admin-only), expand to manage membership and see directly-
+          attached access policies. Attaching NEW policies to a group
+          still has to go through the API directly for now; this reads
+          real data (GET /api/groups/{id}) but doesn't yet write new
+          group_policies rows from the UI. */}
+      {tab === "groups" && (isAdmin || isEditor) && (
+        <div className="groups-panel">
+          <div className="groups-panel-header">
+            <p className="subtitle" style={{ margin: 0 }}>
+              L1 (Viewer) → L2 (Editor) → L3 (Admin). Each level inherits its parent group's access plus whatever is granted to it directly.
+            </p>
+            {isAdmin && (
+              <button
+                className="btn-primary"
+                onClick={() => { setShowAddGroup(true); setGroupFormErrs({}); setGroupForm({ name: "", level: "L1", parentGroupId: "", description: "" }); }}
+              >
+                <PlusIcon size={14} /> Add Group
+              </button>
+            )}
+          </div>
+          {groups.length === 0 ? (
+            <div className="users-empty">No organization groups set up yet.</div>
+          ) : (
+            <div className="group-tree">
+              {groups.map(g => {
+                const detail = groupDetails[g.id];
+                const isOpen = expandedGroupId === g.id;
+                return (
+                  <div key={g.id} className="group-node">
+                    <div className="group-node-row" onClick={() => toggleGroupExpand(g.id)}>
+                      <span className={`group-level-badge level-${g.level.toLowerCase()}`}>{g.level}</span>
+                      <span className="group-name">{g.name}</span>
+                      {g.description && <span className="group-desc">{g.description}</span>}
+                      <span className="group-role-hint">{{ L1: "viewer", L2: "editor", L3: "admin" }[g.level]}</span>
+                      {isAdmin && (
+                        <button
+                          className="btn-sm-danger"
+                          onClick={e => { e.stopPropagation(); handleDeleteGroup(g.id, g.name); }}
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                    {isOpen && (
+                      <div className="group-node-detail">
+                        {groupDetailLoad === g.id && <div className="field-hint">Loading…</div>}
+                        {detail?.error && <div className="mfield-error"><AlertTriangleIcon size={13} /> {detail.error}</div>}
+                        {detail && !detail.error && (
+                          <>
+                            <div className="group-detail-section">
+                              <div className="perms-label">MEMBERS</div>
+                              <div className="member-chips">
+                                {detail.members.length === 0 && <span className="field-hint">No members yet.</span>}
+                                {detail.members.map(m => (
+                                  <span key={m.id} className="member-chip">
+                                    {m.username}
+                                    {isAdmin && (
+                                      <button className="chip-x" onClick={() => handleRemoveGroupMember(g.id, m.id)}>
+                                        <XIcon size={10} />
+                                      </button>
+                                    )}
+                                  </span>
+                                ))}
+                              </div>
+                              {isAdmin && (
+                                <select
+                                  className="role-select"
+                                  value=""
+                                  onChange={e => { if (e.target.value) handleAddGroupMember(g.id, e.target.value); }}
+                                >
+                                  <option value="">+ Add member…</option>
+                                  {users
+                                    .filter(u => !detail.members.some(m => m.id === u.id))
+                                    .map(u => <option key={u.id} value={u.id}>{u.username}</option>)}
+                                </select>
+                              )}
+                            </div>
+                            <div className="group-detail-section">
+                              <div className="perms-label">ACCESS POLICIES (own — not counting inherited)</div>
+                              {detail.own_policies.length === 0 ? (
+                                <span className="field-hint">
+                                  No policies attached directly to this group yet — it only inherits from its parent.
+                                </span>
+                              ) : (
+                                <ul className="policy-list">
+                                  {detail.own_policies.map(p => (
+                                    <li key={p.id}>
+                                      {p.cloud.toUpperCase()}{p.account_ref_id ? ` · account #${p.account_ref_id}` : " · all accounts"}
+                                      {p.regions?.length ? ` · ${p.regions.join(", ")}` : ""}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       )}
