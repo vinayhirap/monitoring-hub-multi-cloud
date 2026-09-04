@@ -128,6 +128,12 @@ run_migration apply_access_scopes_migration.py \
     "011: access_scopes table (Phase 1 authorization)"
 run_migration apply_alert_evaluation_hardening_migration.py \
     "012: alerts.last_seen_at/healthy_streak + alert_pending table"
+run_migration apply_org_group_rbac.py \
+    "013: org_groups/group_policies/user_group_memberships (hierarchical L1/L2/L3 RBAC groups) -- fixes editor/viewer 500s on any scoped endpoint"
+run_migration apply_permission_rbac_system.py \
+    "code: app/auth/permissions.py + granular permission checks (also (re)writes db/migrations/015_permissions_rbac.sql)"
+run_migration apply_permission_rbac_migration.py \
+    "015: permissions/role_permissions seed data (must run AFTER apply_permission_rbac_system.py above)"
 run_migration scripts/seed_metric_catalog.py \
     "seed: metric_catalog curated + directory entries"
 

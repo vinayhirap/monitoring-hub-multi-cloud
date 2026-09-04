@@ -263,7 +263,7 @@ def live_accounts():
         })
 
     result = []
-    with ThreadPoolExecutor(max_workers=min(len(accounts), 8)) as ex:
+    with ThreadPoolExecutor(max_workers=min(len(accounts), 8) or 1) as ex:
         futures = {ex.submit(process_account, acc): acc for acc in accounts}
         for f in as_completed(futures):
             try:
