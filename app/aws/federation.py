@@ -291,70 +291,37 @@ def build_federated_console_url(role_arn: str | None, external_id: str | None,
                                  resource_name: str | None = None,
                                  ecs_service_name: str | None = None) -> str:
     """
-    Mints a short-lived, least-privilege AWS Console sign-in URL for
-    `destination` and returns it — clicking it lands the browser
-    already authenticated into the CORRECT account, with no manual
-    account ID / username / password entry, regardless of whatever
-    AWS identity (if any) is already signed into that browser.
+    Returns the plain AWS Console deep-link URL for `destination`
+    directly -- NO session is minted, NO identity is assumed on the
+    person's behalf. AWS itself prompts for sign-in when the link is
+    opened, and each person is expected to have their OWN, separately
+    provisioned native AWS IAM user (created directly in AWS -- this
+    app has no ability to create or manage AWS IAM users) to sign in
+    with. Whatever that person's OWN IAM permissions allow is what
+    they'll be able to see/do in the console; this app has no bearing
+    on it either way.
 
-    The session is scoped as tightly as IAM allows:
-      - build_scoped_session_policy() narrows it to read-only access
-        for the ONE service (and, where AWS IAM supports it, the ONE
-        resource) being opened -- never broader than that, and never
-        broader than the underlying role's own permissions either
-        (AWS enforces the intersection).
-      - The STS RoleSessionName is the requesting monitoring-hub
-        user's own username (_sanitize_session_name), so the
-        resulting CloudTrail record on the AWS side is attributable
-        to a specific person, not a shared generic session name.
+    Deliberate trade-off, chosen over the alternative (a previous
+    version of this function minted a temporary, scoped, app-assumed-
+    role session so the correct account/region/resource would already
+    be selected with no manual entry -- see apply_restore_console_
+    federation.py for that version): AWS's sign-in page cannot be
+    made to auto-fill a person's own individual password, so
+    "auto-selects the account" and "signs in as the person's own,
+    distinct AWS identity" are mutually exclusive. This app is
+    configured to prioritize the latter -- console access reflects
+    each person's real, independently-managed AWS entitlements, not
+    an app-controlled impersonated session, at the cost of the
+    account/region/resource needing to be selected manually after
+    signing in (though `destination` below still encodes the intended
+    region and resource, for once they're signed in).
 
-    Cross-account (role_arn set) uses AssumeRole; same-account (no
-    role_arn, target account matches the server's own) uses
-    GetFederationToken via get_self_federation_session -- see that
-    function's docstring for why no role_arn is required there.
-    Raises NoConsoleCredentialsError if neither path applies, so
-    callers can surface a clean 400 instead of a raw AWS error.
+    `role_arn`/`external_id` are accepted for backward compatibility
+    with callers but are not used to mint credentials here.
+    `requested_by`/`service`/`resource_id`/`target_account_id` are
+    used only to record the click in the app's own audit log, since
+    the app is no longer in a position to attribute anything on the
+    AWS side.
     """
     _write_console_open_audit(requested_by, target_account_id, service, resource_id)
-
-    session_name = _sanitize_session_name(requested_by)
-    policy = build_scoped_session_policy(
-        service, resource_id, region, target_account_id, resource_name, ecs_service_name,
-    )
-
-    if role_arn:
-        session = assume_role(role_arn, external_id, session_name=session_name, policy=policy)
-    elif target_account_id and target_account_id == get_own_account_id():
-        session = get_self_federation_session(session_name=session_name, policy=policy)
-    else:
-        raise NoConsoleCredentialsError(
-            f"No role_arn configured for account {target_account_id!r}, and it isn't "
-            "this server's own account -- cannot mint console credentials for it."
-        )
-
-    creds = session.get_credentials().get_frozen_credentials()
-
-    session_json = json.dumps({
-        "sessionId":    creds.access_key,
-        "sessionKey":   creds.secret_key,
-        "sessionToken": creds.token,
-    })
-
-    resp = requests.get(
-        FEDERATION_ENDPOINT,
-        params={
-            "Action":          "getSigninToken",
-            "SessionDuration": SESSION_DURATION_SECONDS,
-            "Session":         session_json,
-        },
-        timeout=10,
-    )
-    resp.raise_for_status()
-    signin_token = resp.json()["SigninToken"]
-
-    return (
-        f"{FEDERATION_ENDPOINT}?Action=login"
-        f"&Issuer={urllib.parse.quote(ISSUER, safe='')}"
-        f"&Destination={urllib.parse.quote(destination, safe='')}"
-        f"&SigninToken={urllib.parse.quote(signin_token, safe='')}"
-    )
+    return destination
