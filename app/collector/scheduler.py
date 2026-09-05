@@ -33,16 +33,17 @@ DISCOVERY_INTERVAL = 900    # 15 min — aligned with low tier
 def _get_active_accounts():
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
-        SELECT id, account_name, account_id,
-               role_arn, external_id, default_region
-        FROM aws_accounts
-        WHERE status = 'active'
-    """)
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
+    try:
+        cursor.execute("""
+            SELECT id, account_name, account_id,
+                   role_arn, external_id, default_region
+            FROM aws_accounts
+            WHERE status = 'active'
+        """)
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def run_once(tier="standard"):

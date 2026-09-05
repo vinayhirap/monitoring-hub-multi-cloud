@@ -170,12 +170,14 @@ def collect_account_metrics(account: dict) -> dict:
 def collect_all_azure_accounts() -> dict:
     """Runs collect_account_metrics() for every active Azure account. Used by the scheduler."""
     conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT * FROM aws_accounts
-        WHERE status = 'active' AND provider = 'azure'
-    """)
-    accounts = cur.fetchall()
-    cur.close(); conn.close()
+    try:
+        cur.execute("""
+            SELECT * FROM aws_accounts
+            WHERE status = 'active' AND provider = 'azure'
+        """)
+        accounts = cur.fetchall()
+    finally:
+        cur.close(); conn.close()
 
     totals = {"accounts": len(accounts), "pushed": 0, "errors": []}
     for account in accounts:

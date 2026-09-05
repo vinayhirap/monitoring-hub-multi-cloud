@@ -97,26 +97,27 @@ def _fetch_enabled_threshold_targets():
     """
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
-        SELECT DISTINCT
-            r.id             AS resource_db_id,
-            r.resource_id    AS aws_resource_id,
-            r.resource_type,
-            mc.metric_name,
-            mc.service,
-            mc.statistic
-        FROM thresholds t
-        JOIN metric_catalog mc
-            ON mc.id = t.metric_id
-        JOIN resources r
-            ON r.resource_type  = t.resource_type
-           AND r.aws_account_id = t.aws_account_id
-        WHERE t.enabled = 1
-    """)
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
+    try:
+        cursor.execute("""
+            SELECT DISTINCT
+                r.id             AS resource_db_id,
+                r.resource_id    AS aws_resource_id,
+                r.resource_type,
+                mc.metric_name,
+                mc.service,
+                mc.statistic
+            FROM thresholds t
+            JOIN metric_catalog mc
+                ON mc.id = t.metric_id
+            JOIN resources r
+                ON r.resource_type  = t.resource_type
+               AND r.aws_account_id = t.aws_account_id
+            WHERE t.enabled = 1
+        """)
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def sync_metrics_from_vm() -> int:
