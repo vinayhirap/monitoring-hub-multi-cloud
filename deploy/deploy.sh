@@ -50,12 +50,6 @@
 set -e
 set -o pipefail
 
-# Directory this script itself lives in (NOT $REPO_DIR, NOT the caller's
-# cwd) -- used below to find sibling helper scripts like
-# apply_group_level_role_fix.py, which live alongside deploy.sh/update.sh and are
-# NOT part of the git repo, so they never land in $REPO_DIR on their own.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 REPO_URL="https://github.com/vinayhirap/monitoring-hub-multi-cloud.git"
 APP_DIR="/opt/monitoring-hub"
 REPO_DIR="$APP_DIR/app"
@@ -185,11 +179,6 @@ mkdir -p "$APP_DIR"
 chown "$REAL_USER":"$REAL_USER" "$APP_DIR"
 retry sudo -u "$REAL_USER" git clone "$REPO_URL" "$REPO_DIR"
 cd "$REPO_DIR"
-
-# Sibling helper migration scripts (not part of the git repo) need to
-# physically exist inside $REPO_DIR for run_migration to find them --
-# copy them in now, right after the checkout, before anything runs.
-cp "$SCRIPT_DIR/apply_group_level_role_fix.py" "$REPO_DIR/apply_group_level_role_fix.py"
 
 mkdir -p "$REPO_DIR/db_backups"
 chown -R "$REAL_USER":"$REAL_USER" "$REPO_DIR/db_backups"

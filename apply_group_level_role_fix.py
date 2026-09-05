@@ -5,19 +5,32 @@ apply_group_level_role_fix.py
 Guarantees GROUP_LEVEL_ROLE exists in app/auth/authorization.py,
 regardless of what ran before it in this deploy/update.
 
-Root cause this exists to permanently close: apply_org_group_rbac.py
-does a FULL REWRITE of authorization.py from a template embedded in
-that script, predating GROUP_LEVEL_ROLE. Every fresh deploy that runs
-apply_org_group_rbac.py regresses this dict away again. Rather than
-one more one-time patch script that can itself go stale or get
-reordered/retired, this is a small standalone guard that re-asserts
-the invariant every single run: if GROUP_LEVEL_ROLE is missing, add
-it; if it's already there, do nothing. No history-dependent state.
+WHY THIS EXISTS (root cause, found 2026-09-05):
+apply_org_group_rbac.py does a FULL REWRITE of authorization.py from a
+template embedded in that script -- a template written before
+GROUP_LEVEL_ROLE existed. It rewrites unconditionally, every single
+run, regardless of what's already in the file. Without this guard,
+every fresh deploy or update loses GROUP_LEVEL_ROLE, which crashes
+every POST /api/groups/{id}/members call with AttributeError.
+
+This is now a permanent, tracked file in the repo (not copied in from
+outside it) -- `git clone`/`git pull` bring it automatically, same as
+any other file, on both the dev box and any production box pulling
+via update.sh.
+
+The inserted text is BYTE-IDENTICAL to what's committed in this repo's
+own app/auth/authorization.py right now. That matters: it means after
+apply_org_group_rbac.py regresses the file and this guard restores it,
+the working tree is byte-for-byte identical to git HEAD again --
+`git status` comes back clean, with no manual reset step needed before
+the next `git pull`. If this ever needs to change, update BOTH this
+script's INSERT text and the real file in the same commit, so they
+never drift apart again.
 
 Uses Path.cwd() (not this file's own location) to find the repo root,
-so it works correctly regardless of where this script physically
-lives, as long as it's invoked with cwd set to the repo root -- which
-deploy.sh/update.sh already do via `cd "$REPO_DIR"`.
+so it works correctly regardless of where it's invoked from, as long
+as cwd is the repo root -- which deploy.sh/update.sh already guarantee
+via `cd "$REPO_DIR"` before any migration runs.
 """
 import shutil
 import sys
@@ -34,9 +47,9 @@ INSERT = (
     '# L3 = Admin (full access) -- referenced by app/api/admin/groups.py\'s\n'
     '# add_group_members() and mirrored client-side in UserManagement.jsx\n'
     '# purely for instant UI feedback; this dict here is the one and only\n'
-    '# authoritative source. Re-asserted on every deploy by this guard\n'
-    '# script because apply_org_group_rbac.py fully rewrites this file\n'
-    '# from an embedded template that predates this dict.\n'
+    '# authoritative source. (Previously referenced from three places in\n'
+    '# this codebase but never actually defined -- every group-membership\n'
+    '# write has been crashing with AttributeError until this fix.)\n'
     'GROUP_LEVEL_ROLE = {"L1": "viewer", "L2": "editor", "L3": "admin"}\n'
 )
 
