@@ -70,15 +70,17 @@ class GCPProvider(CloudProvider):
 
         conn = get_connection()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT id, account_name, account_id, project_id,
-                   service_account_email, default_region
-            FROM aws_accounts
-            WHERE status = 'active' AND provider = 'gcp'
-        """)
-        accounts = cursor.fetchall()
-        cursor.close()
-        conn.close()
+        try:
+            cursor.execute("""
+                SELECT id, account_name, account_id, project_id,
+                       service_account_email, default_region
+                FROM aws_accounts
+                WHERE status = 'active' AND provider = 'gcp'
+            """)
+            accounts = cursor.fetchall()
+        finally:
+            cursor.close()
+            conn.close()
 
         for account in accounts:
             try:

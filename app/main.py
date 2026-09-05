@@ -72,14 +72,25 @@ def _run_multicloud_collector():
         logger.error(f"Multi-cloud collector crashed: {e}")
 
 
-@asynccontextmanager
-async def lifespan(app):
-    # ── Startup ───────────────────────────────────────────────
+def _start_all_collector_threads():
     threading.Thread(target=_run_collector, daemon=True, name="collector").start()
     threading.Thread(target=_run_describe_poll_loop, daemon=True, name="describe-poll").start()
     threading.Thread(target=_run_multicloud_collector, daemon=True, name="multicloud-collector").start()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    # ── Startup ───────────────────────────────────────────────
+    # Leader election across uvicorn workers -- see app/collector/leader.py
+    # for why this exists (Sep 5 2026 incident: duplicate collector loops
+    # across --workers 2 caused DB deadlocks + doubled AWS API calls).
+    # Only the worker that wins the MySQL named lock actually starts the
+    # background threads; others stand by and take over automatically if
+    # the leader worker dies.
+    from app.collector.leader import run_when_leader
+    run_when_leader(_start_all_collector_threads)
     redis_task = asyncio.create_task(_safe_redis_listener())
-    logger.info("Startup complete — collector running, Redis listener started")
+    logger.info("Startup complete — collector leader-election started, Redis listener started")
     yield
     # ── Shutdown ────────────────────────────────────────────────
     logger.info("Shutting down")

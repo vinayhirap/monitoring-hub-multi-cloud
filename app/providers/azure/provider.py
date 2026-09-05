@@ -65,15 +65,17 @@ class AzureProvider(CloudProvider):
 
         conn = get_connection()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT id, account_name, account_id, tenant_id, subscription_id,
-                   client_id, default_region
-            FROM aws_accounts
-            WHERE status = 'active' AND provider = 'azure'
-        """)
-        accounts = cursor.fetchall()
-        cursor.close()
-        conn.close()
+        try:
+            cursor.execute("""
+                SELECT id, account_name, account_id, tenant_id, subscription_id,
+                       client_id, default_region
+                FROM aws_accounts
+                WHERE status = 'active' AND provider = 'azure'
+            """)
+            accounts = cursor.fetchall()
+        finally:
+            cursor.close()
+            conn.close()
 
         for account in accounts:
             try:
