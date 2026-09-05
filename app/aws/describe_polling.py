@@ -52,17 +52,19 @@ def _get_ec2_instances_by_region():
     """{(account_row): [instance_id, ...]} grouped by account+region, active accounts only."""
     conn = get_connection()
     cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT a.id AS account_db_id, a.role_arn, a.external_id, a.default_region,
-               r.resource_id
-        FROM resources r
-        JOIN aws_accounts a ON a.id = r.aws_account_id
-        WHERE r.resource_type = 'ec2'
-          AND r.instance_state = 'running'
-          AND a.status = 'active'
-    """)
-    rows = cur.fetchall()
-    cur.close(); conn.close()
+    try:
+        cur.execute("""
+            SELECT a.id AS account_db_id, a.role_arn, a.external_id, a.default_region,
+                   r.resource_id
+            FROM resources r
+            JOIN aws_accounts a ON a.id = r.aws_account_id
+            WHERE r.resource_type = 'ec2'
+              AND r.instance_state = 'running'
+              AND a.status = 'active'
+        """)
+        rows = cur.fetchall()
+    finally:
+        cur.close(); conn.close()
 
     grouped = {}
     for row in rows:
@@ -116,12 +118,14 @@ def _get_target_groups_by_region():
     """{(account_db_id, role_arn, external_id, region): [tg_arn, ...]}"""
     conn = get_connection()
     cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT id AS account_db_id, role_arn, external_id, default_region
-        FROM aws_accounts WHERE status = 'active'
-    """)
-    accounts = cur.fetchall()
-    cur.close(); conn.close()
+    try:
+        cur.execute("""
+            SELECT id AS account_db_id, role_arn, external_id, default_region
+            FROM aws_accounts WHERE status = 'active'
+        """)
+        accounts = cur.fetchall()
+    finally:
+        cur.close(); conn.close()
 
     grouped = {}
     for a in accounts:

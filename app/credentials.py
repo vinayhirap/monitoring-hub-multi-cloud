@@ -60,18 +60,20 @@ def save_credential(account_id: int, provider: str, secret_plaintext: str, ref: 
     token = _fernet().encrypt(secret_plaintext.encode())
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO provider_credentials (aws_account_id, provider, credential_ref, secret_encrypted)
-        VALUES (%s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            provider = VALUES(provider),
-            credential_ref = VALUES(credential_ref),
-            secret_encrypted = VALUES(secret_encrypted),
-            updated_at = NOW()
-    """, (account_id, provider, ref, token))
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur.execute("""
+            INSERT INTO provider_credentials (aws_account_id, provider, credential_ref, secret_encrypted)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                provider = VALUES(provider),
+                credential_ref = VALUES(credential_ref),
+                secret_encrypted = VALUES(secret_encrypted),
+                updated_at = NOW()
+        """, (account_id, provider, ref, token))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
 
 
 def load_credential(account_id: int) -> str | None:
@@ -79,13 +81,15 @@ def load_credential(account_id: int) -> str | None:
     (e.g. AWS accounts, which don't use this table at all)."""
     conn = get_connection()
     cur = conn.cursor(dictionary=True)
-    cur.execute(
-        "SELECT secret_encrypted FROM provider_credentials WHERE aws_account_id = %s",
-        (account_id,),
-    )
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
+    try:
+        cur.execute(
+            "SELECT secret_encrypted FROM provider_credentials WHERE aws_account_id = %s",
+            (account_id,),
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
     if not row:
         return None
     blob = row["secret_encrypted"]
@@ -97,7 +101,9 @@ def load_credential(account_id: int) -> str | None:
 def delete_credential(account_id: int) -> None:
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM provider_credentials WHERE aws_account_id = %s", (account_id,))
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur.execute("DELETE FROM provider_credentials WHERE aws_account_id = %s", (account_id,))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()

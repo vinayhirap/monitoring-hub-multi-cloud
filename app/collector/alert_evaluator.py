@@ -164,7 +164,28 @@ def _clear_pending(cursor, resource_id, metric_name):
 def evaluate_alerts():
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
+    try:
+        _evaluate_alerts_body(conn, cursor)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        cursor.close()
+        conn.close()
 
+
+def _evaluate_alerts_body(conn, cursor):
+    """
+    Body of evaluate_alerts(), split out so the connection/cursor
+    acquired in evaluate_alerts() are guaranteed to be released via
+    try/finally even if a MySQL deadlock (observed in production, Sep
+    5 2026) or any other exception happens partway through -- this
+    used to leak the connection every time that happened, which is
+    what exhausted the pool and took the dashboard offline for hours.
+    """
     stale_total, stale_accounts, stale_orphans = _auto_resolve_stale_alerts(cursor)
     conn.commit()
     if stale_total:
@@ -360,8 +381,6 @@ def evaluate_alerts():
             logger.warning(f"Alert publish failed: {e}")
 
     conn.commit()
-    cursor.close()
-    conn.close()
 
     logger.info(
         f"Alert evaluation complete — "
