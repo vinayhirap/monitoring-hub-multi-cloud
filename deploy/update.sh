@@ -31,12 +31,6 @@
 set -e
 set -o pipefail
 
-# Directory this script itself lives in (NOT $REPO_DIR, NOT the caller's
-# cwd) -- used below to find sibling helper scripts like
-# apply_group_level_role_fix.py, which live alongside deploy.sh/update.sh and are
-# NOT part of the git repo, so they never land in $REPO_DIR on their own.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 APP_DIR="/opt/monitoring-hub"
 REPO_DIR="$APP_DIR/app"
 VENV_DIR="$APP_DIR/venv"
@@ -74,14 +68,6 @@ trap 'DEPLOY_FAILED=true' ERR
 
 echo "=== Updating Monitoring Hub ==="
 cd "$REPO_DIR"
-
-# apply_group_level_role_fix.py and the authorization.py edit it makes
-# are expected, self-regenerating side effects of every update run (see
-# that script's own docstring) -- not real drift worth blocking a pull
-# over. Reset exactly these two known artifacts before the dirty-checkout
-# guard below; anything else uncommitted still correctly blocks the pull.
-sudo -u "$REAL_USER" git checkout -- app/auth/authorization.py 2>/dev/null || true
-rm -f "$REPO_DIR/apply_group_level_role_fix.py"
 
 CURRENT_REMOTE=$(sudo -u "$REAL_USER" git remote get-url origin 2>/dev/null || echo "")
 if [ "$CURRENT_REMOTE" != "$EXPECTED_REPO" ]; then
@@ -127,11 +113,6 @@ chown -R "$REAL_USER":"$REAL_USER" "$REPO_DIR/db_backups"
 
 echo "--- Stopping backend service before migrations ---"
 systemctl stop ${SERVICE_NAME} 2>/dev/null || true
-
-# Copy the helper guard script in now (after the pull, right before it's
-# needed) -- it is not part of the git repo so `git pull` above never
-# brings it in on its own.
-cp "$SCRIPT_DIR/apply_group_level_role_fix.py" "$REPO_DIR/apply_group_level_role_fix.py"
 
 echo "--- Idempotent schema migrations ---"
 MIGRATION_FAILURES=()
