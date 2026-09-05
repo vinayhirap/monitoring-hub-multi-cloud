@@ -121,6 +121,32 @@ retry() {
 }
 retry curl -m5 -sI http://security.ubuntu.com > /dev/null
 
+# --- Disk headroom hard gate ------------------------------------------------
+# Root cause of the Sep 5 2026 production incident's disk half: a box was
+# provisioned with a 6.7G root volume, which this stack (app + venv + MySQL
+# growth + logs + swap) fills to 80%+ within days of normal operation —
+# never a code/config problem, an undersized volume from the very first
+# boot. Catching this HERE, before any package installs, means a new/
+# replacement server fails fast with a clear fix instead of "succeeding"
+# today and dying from disk pressure next week. 15G is a hard floor
+# (this stack's baseline footprint); 20G+ is the recommended real target.
+echo "=== [0b] Disk headroom pre-flight (hard gate) ==="
+MIN_ROOT_GB=15
+ROOT_AVAIL_KB=$(df --output=avail / | tail -1 | tr -dc '0-9')
+ROOT_AVAIL_GB=$((ROOT_AVAIL_KB / 1024 / 1024))
+if [ "$ROOT_AVAIL_GB" -lt "$MIN_ROOT_GB" ]; then
+    echo "ERROR: only ${ROOT_AVAIL_GB}G available on / — this stack needs at"
+    echo "least ${MIN_ROOT_GB}G free to deploy safely (20G+ recommended for"
+    echo "real headroom). Resize the EBS volume in the AWS Console first"
+    echo "(Modify Volume), then on this box:"
+    echo "    lsblk                          # confirm device/partition names"
+    echo "    sudo growpart /dev/nvme0n1 1   # or the correct device from lsblk"
+    echo "    sudo resize2fs /dev/nvme0n1p1  # or the correct partition"
+    echo "Re-run this script after confirming 'df -h /' shows enough space."
+    exit 1
+fi
+echo "OK — ${ROOT_AVAIL_GB}G available on / (minimum ${MIN_ROOT_GB}G)."
+
 # --- Auto-detect this instance's public IP via IMDSv2 (no more hand-editing) ---
 echo "=== [1/11] Detect public IP (IMDSv2) ==="
 IMDS_TOKEN=$(retry curl -sf -m5 -X PUT "http://169.254.169.254/latest/api/token" \
@@ -150,7 +176,7 @@ fi
 echo "=== [3/11] System packages ==="
 retry apt update
 apt upgrade -y
-apt install -y python3 python3-venv python3-pip mysql-server redis-server nginx git curl
+apt install -y python3 python3-venv python3-pip mysql-server redis-server nginx git curl chrony
 
 echo "=== [4/11] MySQL + Redis ==="
 systemctl enable --now mysql
@@ -353,6 +379,80 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t
 systemctl restart nginx
 
+# --- Infra hardening: swap, OOM protection, NTP, self-check monitoring -----
+# Every one of these was a real, separate incident on Sep 5 2026 (production
+# was found with 0 swap and 142M free RAM, no OOM protection so the kernel
+# would pick this process first under pressure, and chrony stuck on
+# unreachable public NTP pool servers in a locked-down VPC). None of these
+# depend on WIPE_DB or which migration path ran, so they're unconditional
+# and idempotent — safe to re-run this whole script on an already-hardened
+# box without creating duplicate swapfiles or cron entries.
+echo "=== [Hardening] Swap ==="
+if ! swapon --show | grep -q '/swapfile'; then
+    if [ ! -f /swapfile ]; then
+        fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+        chmod 600 /swapfile
+        mkswap /swapfile
+    fi
+    swapon /swapfile
+    echo "Created and enabled 2G /swapfile."
+else
+    echo "Swap already active — skipping."
+fi
+grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+sysctl vm.swappiness=10 > /dev/null
+grep -q '^vm.swappiness' /etc/sysctl.conf 2>/dev/null || echo 'vm.swappiness=10' >> /etc/sysctl.conf
+
+echo "=== [Hardening] OOM protection for ${SERVICE_NAME}.service ==="
+mkdir -p /etc/systemd/system/${SERVICE_NAME}.service.d
+tee /etc/systemd/system/${SERVICE_NAME}.service.d/oom-protect.conf > /dev/null <<EOF
+[Service]
+OOMScoreAdjust=-500
+EOF
+systemctl daemon-reload
+systemctl restart ${SERVICE_NAME}
+
+echo "=== [Hardening] NTP (chrony) ==="
+# The public Ubuntu NTS pool servers in /etc/chrony/sources.d are frequently
+# unreachable from a locked-down VPC (outbound NTS negotiation port 4460/tcp
+# or general egress blocked) — chrony then never converges even though
+# Amazon's own Time Sync Service (169.254.169.123, always reachable inside
+# any VPC, already configured with `prefer` in /etc/chrony/conf.d/00-cpc.conf
+# by the Ubuntu cloud image) is fine. Disable the pool file that can never
+# work in this network rather than leaving chrony stuck waiting on it.
+if [ -f /etc/chrony/sources.d/ubuntu-ntp-pools.sources ]; then
+    mv /etc/chrony/sources.d/ubuntu-ntp-pools.sources \
+       /etc/chrony/sources.d/ubuntu-ntp-pools.sources.disabled
+fi
+systemctl restart chrony
+sleep 5
+if ! timedatectl status | grep -q "System clock synchronized: yes"; then
+    echo "WARNING: chrony did not reach synchronized state within 5s — check"
+    echo "'chronyc sources -v' manually. Deploy continues (not a hard fail:"
+    echo "clock sync can take longer on some networks), but this needs eyes on."
+fi
+
+echo "=== [Hardening] Self-check monitoring (disk/memory/pool-leak/deadlock) ==="
+mkdir -p "$APP_DIR/scripts"
+tee "$APP_DIR/scripts/self_check.sh" > /dev/null <<'SCRIPT_EOF'
+#!/bin/bash
+DISK_PCT=$(df / --output=pcent | tail -1 | tr -dc '0-9')
+MEM_AVAIL_MB=$(free -m | awk '/^Mem:/{print $7}')
+POOL_ERRORS=$(sudo journalctl -u monitoring-hub --since "-5min" | grep -c "pool exhausted")
+DEADLOCKS=$(sudo journalctl -u monitoring-hub --since "-5min" | grep -c "Deadlock found")
+
+if [ "$DISK_PCT" -ge 80 ] || [ "$MEM_AVAIL_MB" -lt 300 ] || [ "$POOL_ERRORS" -gt 0 ] || [ "$DEADLOCKS" -gt 2 ]; then
+    echo "ALERT [$(hostname)]: disk=${DISK_PCT}% mem_avail=${MEM_AVAIL_MB}MB pool_errors=${POOL_ERRORS} deadlocks=${DEADLOCKS}"
+    # Uncomment once you have a webhook URL:
+    # curl -s -X POST -H 'Content-type: application/json' \
+    #   --data "{\"text\":\"ALERT [$(hostname)]: disk=${DISK_PCT}% mem_avail=${MEM_AVAIL_MB}MB pool_errors=${POOL_ERRORS} deadlocks=${DEADLOCKS}\"}" \
+    #   "<your Slack/Teams webhook URL here>"
+fi
+SCRIPT_EOF
+chmod +x "$APP_DIR/scripts/self_check.sh"
+CRON_LINE="*/5 * * * * $APP_DIR/scripts/self_check.sh >> /var/log/monitoring-hub-selfcheck.log 2>&1"
+( sudo -u "$REAL_USER" crontab -l 2>/dev/null | grep -vF "$APP_DIR/scripts/self_check.sh" ; echo "$CRON_LINE" ) | sudo -u "$REAL_USER" crontab -
+
 # --- HARD verification: exit non-zero if anything critical is actually missing ---
 echo ""
 echo "=== Post-deploy verification (hard gate — non-zero exit means NOT done) ==="
@@ -389,6 +489,25 @@ if ! grep -q "GROUP_LEVEL_ROLE = " app/auth/authorization.py 2>/dev/null; then
     VERIFY_FAILED=true
 fi
 
+if [ ! -f app/collector/leader.py ] || ! grep -q "run_when_leader" app/main.py 2>/dev/null; then
+    echo "FAIL: app/collector/leader.py / app/main.py leader-election is missing."
+    echo "      With --workers 2, every worker would start its own independent"
+    echo "      copy of the scheduler/describe-poll/multicloud loops -- this is"
+    echo "      the exact root cause of the Sep 5 2026 incident (duplicate"
+    echo "      cycles, MySQL deadlocks, doubled AWS API calls). See"
+    echo "      apply_db_pool_leak_and_leader_election_fix.py for the full story."
+    VERIFY_FAILED=true
+fi
+
+if ! grep -q "def get_db_cursor" app/db.py 2>/dev/null || ! grep -q "weakref" app/db.py 2>/dev/null; then
+    echo "FAIL: app/db.py is missing the connection-pool leak-guard/context"
+    echo "      manager. Without it, any exception in a DB call site without"
+    echo "      try/finally leaks a pooled connection permanently -- this is"
+    echo "      what exhausted the pool and took the dashboard offline for"
+    echo "      hours on Sep 5 2026."
+    VERIFY_FAILED=true
+fi
+
 check_table "org_groups"
 ORG_GROUP_COUNT=$(mysql -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" -e "SELECT COUNT(*) FROM org_groups;" 2>/dev/null | tail -1)
 if [ "${ORG_GROUP_COUNT:-0}" -lt 3 ]; then
@@ -410,6 +529,24 @@ if ! systemctl is-active --quiet ${SERVICE_NAME}; then
 fi
 
 sleep 3
+
+echo "--- Leader-election sanity (exactly one worker should have started collectors) ---"
+LEADER_COUNT=$(journalctl -u ${SERVICE_NAME} --no-pager -S "$(date -d '-30 seconds' '+%Y-%m-%d %H:%M:%S')" 2>/dev/null \
+    | grep -c "\[leader\] acquired")
+echo "leader-election log lines since restart: ${LEADER_COUNT}"
+if [ "$LEADER_COUNT" -eq 0 ]; then
+    echo "FAIL: no worker acquired the collector leader lock -- background"
+    echo "      loops (scheduler/discovery/alerts) are not running at all."
+    echo "      Check MySQL connectivity from app/collector/leader.py."
+    VERIFY_FAILED=true
+elif [ "$LEADER_COUNT" -gt 1 ]; then
+    echo "FAIL: ${LEADER_COUNT} workers acquired the leader lock -- this is"
+    echo "      the exact duplicate-collector-loops condition that caused the"
+    echo "      Sep 5 2026 MySQL deadlocks and pool exhaustion. Leader election"
+    echo "      is broken; do not consider this deploy done."
+    VERIFY_FAILED=true
+fi
+
 AUTH_ME_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/api/auth/me || true)
 echo "auth/me:        ${AUTH_ME_CODE}"
 LIVE_ACCOUNTS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/api/live/accounts || true)
@@ -445,6 +582,15 @@ fi
 if [ -f "$REPO_DIR/verify_deployment.py" ]; then
     sudo -u "$REAL_USER" "$VENV_DIR/bin/python3" "$REPO_DIR/verify_deployment.py" || VERIFY_FAILED=true
 fi
+
+echo "--- Infra hardening checks (soft — logged, do not fail the deploy) ---"
+swapon --show | grep -q '/swapfile' || echo "WARNING: swap is not active."
+[ "$(systemctl show ${SERVICE_NAME} -p OOMScoreAdjust --value)" = "-500" ] \
+    || echo "WARNING: OOMScoreAdjust is not set to -500 on ${SERVICE_NAME}."
+timedatectl status | grep -q "System clock synchronized: yes" \
+    || echo "WARNING: system clock is not NTP-synchronized (check 'chronyc sources -v')."
+sudo -u "$REAL_USER" crontab -l 2>/dev/null | grep -qF "self_check.sh" \
+    || echo "WARNING: self_check.sh cron job is not installed."
 
 echo ""
 if [ "$VERIFY_FAILED" = true ]; then
