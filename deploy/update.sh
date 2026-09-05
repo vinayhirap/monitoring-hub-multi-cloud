@@ -237,6 +237,26 @@ if ! grep -q "GROUP_LEVEL_ROLE = " app/auth/authorization.py 2>/dev/null; then
     VERIFY_FAILED=true
 fi
 
+if [ ! -f app/collector/leader.py ] || ! grep -q "run_when_leader" app/main.py 2>/dev/null; then
+    echo "FAIL: app/collector/leader.py / app/main.py leader-election is missing."
+    echo "      With --workers 2, every worker would start its own independent"
+    echo "      copy of the scheduler/describe-poll/multicloud loops -- this is"
+    echo "      the exact root cause of the Sep 5 2026 incident (duplicate"
+    echo "      cycles, MySQL deadlocks, doubled AWS API calls). If a future"
+    echo "      commit removed this, that commit needs to be reverted, not"
+    echo "      this check."
+    VERIFY_FAILED=true
+fi
+
+if ! grep -q "def get_db_cursor" app/db.py 2>/dev/null || ! grep -q "weakref" app/db.py 2>/dev/null; then
+    echo "FAIL: app/db.py is missing the connection-pool leak-guard/context"
+    echo "      manager. Without it, any exception in a DB call site without"
+    echo "      try/finally leaks a pooled connection permanently -- this is"
+    echo "      what exhausted the pool and took the dashboard offline for"
+    echo "      hours on Sep 5 2026."
+    VERIFY_FAILED=true
+fi
+
 if [ ${#MIGRATION_FAILURES[@]} -gt 0 ]; then
     echo "FAIL: these migration scripts reported errors: ${MIGRATION_FAILURES[*]}"
     VERIFY_FAILED=true
@@ -251,6 +271,24 @@ if ! systemctl is-active --quiet ${SERVICE_NAME}; then
 fi
 
 sleep 3
+
+echo "--- Leader-election sanity (exactly one worker should have started collectors) ---"
+LEADER_COUNT=$(journalctl -u ${SERVICE_NAME} --no-pager -S "$(date -d '-30 seconds' '+%Y-%m-%d %H:%M:%S')" 2>/dev/null \
+    | grep -c "\[leader\] acquired")
+echo "leader-election log lines since restart: ${LEADER_COUNT}"
+if [ "$LEADER_COUNT" -eq 0 ]; then
+    echo "FAIL: no worker acquired the collector leader lock -- background"
+    echo "      loops (scheduler/discovery/alerts) are not running at all."
+    echo "      Check MySQL connectivity from app/collector/leader.py."
+    VERIFY_FAILED=true
+elif [ "$LEADER_COUNT" -gt 1 ]; then
+    echo "FAIL: ${LEADER_COUNT} workers acquired the leader lock -- this is"
+    echo "      the exact duplicate-collector-loops condition that caused the"
+    echo "      Sep 5 2026 MySQL deadlocks and pool exhaustion. Leader election"
+    echo "      is broken; do not consider this update done."
+    VERIFY_FAILED=true
+fi
+
 AUTH_ME_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/api/auth/me || true)
 echo "auth/me:        ${AUTH_ME_CODE}"
 LIVE_ACCOUNTS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/api/live/accounts || true)
@@ -283,6 +321,23 @@ fi
 
 if [ -f "$REPO_DIR/verify_deployment.py" ]; then
     sudo -u "$REAL_USER" "$VENV_DIR/bin/python3" "$REPO_DIR/verify_deployment.py" || VERIFY_FAILED=true
+fi
+
+echo "--- Infra hardening checks (soft — logged, do not fail the update) ---"
+# update.sh doesn't re-provision infra (that's deploy.sh's job) but a quick
+# re-check here catches drift -- e.g. a box deployed with an older deploy.sh
+# before this hardening existed, or someone manually disabling swap/cron.
+swapon --show | grep -q '/swapfile' || echo "WARNING: swap is not active -- see deploy.sh's [Hardening] Swap section to add it."
+[ "$(systemctl show ${SERVICE_NAME} -p OOMScoreAdjust --value 2>/dev/null)" = "-500" ] \
+    || echo "WARNING: OOMScoreAdjust is not set to -500 on ${SERVICE_NAME}."
+timedatectl status | grep -q "System clock synchronized: yes" \
+    || echo "WARNING: system clock is not NTP-synchronized (check 'chronyc sources -v')."
+if [ -x "$APP_DIR/scripts/self_check.sh" ]; then
+    CRON_LINE="*/5 * * * * $APP_DIR/scripts/self_check.sh >> /var/log/monitoring-hub-selfcheck.log 2>&1"
+    sudo -u "$REAL_USER" crontab -l 2>/dev/null | grep -qF "self_check.sh" \
+        || ( sudo -u "$REAL_USER" crontab -l 2>/dev/null; echo "$CRON_LINE" ) | sudo -u "$REAL_USER" crontab -
+else
+    echo "WARNING: $APP_DIR/scripts/self_check.sh not found -- re-run deploy.sh's hardening section or copy it manually."
 fi
 
 echo ""
