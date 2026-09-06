@@ -415,15 +415,24 @@ export default function Settings() {
             <button className="btn-clear" onClick={resetToDefaultMetrics} disabled={metricsSaving || !accountId}>
               <RotateCcwIcon size={13}/> Reset to Recommended
             </button>
-            <button className="btn-clear" onClick={() => handleDownloadYaceConfig("critical")} disabled={!accountId} title="60s poll — run as its own YACE instance">
-              <DownloadIcon size={13}/> Critical (60s)
-            </button>
-            <button className="btn-clear" onClick={() => handleDownloadYaceConfig("standard")} disabled={!accountId} title="300s poll — run as its own YACE instance">
-              <DownloadIcon size={13}/> Standard (300s)
-            </button>
-            <button className="btn-clear" onClick={() => handleDownloadYaceConfig("trend")} disabled={!accountId} title="900s poll — run as its own YACE instance">
-              <DownloadIcon size={13}/> Trend (900s)
-            </button>
+            {/* YACE is AWS/CloudWatch-specific -- Azure/GCP use this app's own
+                push collectors instead (see app/providers/{azure,gcp}/
+                metrics_collector.py), so these downloads are meaningless
+                for them. Show for AWS or while nothing is selected yet
+                (matches the existing disabled-until-selected behavior). */}
+            {(!selectedAccount || selectedAccount.provider === "aws") && (
+              <>
+                <button className="btn-clear" onClick={() => handleDownloadYaceConfig("critical")} disabled={!accountId} title="60s poll — run as its own YACE instance">
+                  <DownloadIcon size={13}/> Critical (60s)
+                </button>
+                <button className="btn-clear" onClick={() => handleDownloadYaceConfig("standard")} disabled={!accountId} title="300s poll — run as its own YACE instance">
+                  <DownloadIcon size={13}/> Standard (300s)
+                </button>
+                <button className="btn-clear" onClick={() => handleDownloadYaceConfig("trend")} disabled={!accountId} title="900s poll — run as its own YACE instance">
+                  <DownloadIcon size={13}/> Trend (900s)
+                </button>
+              </>
+            )}
             <button className="btn-check" onClick={saveMetricSelection} disabled={metricsSaving || !metricsDirty}>
               {metricsSaving ? "Saving…" : <span style={{display:"inline-flex",alignItems:"center",gap:6}}><SaveIcon size={13}/> Save Selection</span>}
             </button>
@@ -436,14 +445,23 @@ export default function Settings() {
           <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>Select an account above.</div>
         ) : (
           <div style={{ padding: "12px 20px 20px" }}>
-            <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "0 0 10px 0" }}>
-              Each tier button generates a separate config.yml for that polling speed — deploy all three as
-              separate YACE instances on this account/region's monitoring server (Critical/60s, Standard/300s,
-              Trend/900s), each started with the matching <code>--scraping-interval</code> flag. This
-              is what actually saves GetMetricData cost: one YACE process only has one global scrape interval,
-              so splitting by tier is required for tiering to affect AWS call volume, not just query windows.
-              Nothing is pushed automatically.
-            </p>
+            {(!selectedAccount || selectedAccount.provider === "aws") ? (
+              <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "0 0 10px 0" }}>
+                Each tier button generates a separate config.yml for that polling speed — deploy all three as
+                separate YACE instances on this account/region's monitoring server (Critical/60s, Standard/300s,
+                Trend/900s), each started with the matching <code>--scraping-interval</code> flag. This
+                is what actually saves GetMetricData cost: one YACE process only has one global scrape interval,
+                so splitting by tier is required for tiering to affect AWS call volume, not just query windows.
+                Nothing is pushed automatically.
+              </p>
+            ) : (
+              <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "0 0 10px 0" }}>
+                {selectedAccount.provider === "azure" ? "Azure" : "GCP"} metrics for this account are collected
+                automatically every 5 minutes by this app's built-in collector — there's no separate config
+                to download or deploy, and no per-call cost to tier around (platform metric reads are free
+                on this provider).
+              </p>
+            )}
             <MetricSelector
               catalog={metricCatalog}
               selectedIds={metricSelected}
