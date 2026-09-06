@@ -91,9 +91,14 @@ _STAT_SUFFIX  = {"Average": "average", "Sum": "sum", "Maximum": "maximum"}
 
 def _fetch_enabled_threshold_targets():
     """
-    One row per (resource, metric) that has an enabled threshold.
+    One row per (resource, metric) that has an enabled threshold, for
+    EVERY provider -- this query itself was never AWS-specific, it just
+    had no working sync path for anything but AWS until this fix. Now
+    also selects mc.provider so sync_metrics_from_vm() can route each
+    row through the right VM query convention.
+
     Resources come from the `resources` table -- populated by the
-    discovery cycle, no AWS calls made here.
+    discovery cycle, no cloud API calls made here.
     """
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -105,7 +110,8 @@ def _fetch_enabled_threshold_targets():
                 r.resource_type,
                 mc.metric_name,
                 mc.service,
-                mc.statistic
+                mc.statistic,
+                mc.provider
             FROM thresholds t
             JOIN metric_catalog mc
                 ON mc.id = t.metric_id
@@ -120,27 +126,30 @@ def _fetch_enabled_threshold_targets():
         conn.close()
 
 
-def sync_metrics_from_vm() -> int:
-    """
-    Populates `metrics` from VM for every enabled threshold's resources.
-    Returns the number of datapoints written. Zero AWS API calls.
-    """
-    rows = _fetch_enabled_threshold_targets()
-    if not rows:
-        logger.info("VM metrics sync: no enabled thresholds -- nothing to do")
-        return 0
+def _slug(name: str) -> str:
+    """'Percentage CPU' -> 'percentage_cpu'. Matches EXACTLY the slug
+    logic in app/providers/{azure,gcp}/metrics_collector.py's _slug() --
+    must stay mirrored, since this has to reconstruct the same VM metric
+    name those collectors already pushed under."""
+    import re
+    s = re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_").lower()
+    return s or "value"
 
-    # Group by (service, metric_name) so each distinct metric gets exactly
-    # ONE VM call (vm_query_all fetches every resource's value at once)
-    # instead of one VM call per resource.
+
+def _sync_aws_metrics(rows) -> tuple[list, dict, int]:
+    """
+    Unchanged AWS sync logic, extracted as-is from the pre-fix
+    sync_metrics_from_vm() so this fix makes zero behavior changes to the
+    AWS path. Returns (datapoints, skipped_no_stub, matched).
+    """
     by_metric = {}
     for row in rows:
         key = (row["service"], row["metric_name"])
         by_metric.setdefault(key, []).append(row)
 
-    datapoints      = []   # (resource_db_id, metric_name, value)
-    skipped_no_stub = {}   # (service, metric_name) -> resource count
-    matched         = 0
+    datapoints = []
+    skipped_no_stub = {}
+    matched = 0
 
     for (service, metric_name), resource_rows in by_metric.items():
         stub      = _VM_METRIC_STUB.get((service, metric_name))
@@ -158,23 +167,94 @@ def sync_metrics_from_vm() -> int:
         for row in resource_rows:
             val = values.get(row["aws_resource_id"])
             if val is not None:
-                # metric_name here is metric_catalog's CamelCase form
-                # (e.g. "CPUUtilization"), matching what evaluate_alerts()
-                # joins against.
                 datapoints.append((row["resource_db_id"], metric_name, val))
                 matched += 1
 
+    return datapoints, skipped_no_stub, matched
+
+
+def _sync_azure_gcp_metrics(rows) -> tuple[list, dict, int]:
+    """
+    Azure/GCP sync -- the actual fix. These collectors (see
+    app/providers/{azure,gcp}/metrics_collector.py) push a plain
+    `resource_id` label per datapoint, not AWS/YACE's per-service
+    dimension_XxxId scheme, and the VM metric name is mechanically
+    derivable (f"{provider}_{service}_{slug(metric_name)}") rather than
+    needing a hand-curated stub table like AWS/YACE requires -- so this
+    needs no equivalent of _VM_METRIC_STUB at all.
+
+    Returns (datapoints, skipped_no_series, matched) -- same shape as
+    _sync_aws_metrics so the caller can combine both uniformly.
+    """
+    by_metric = {}
+    for row in rows:
+        key = (row["provider"], row["service"], row["metric_name"])
+        by_metric.setdefault(key, []).append(row)
+
+    datapoints = []
+    skipped_no_series = {}
+    matched = 0
+
+    for (provider, service, metric_name), resource_rows in by_metric.items():
+        vm_metric = f"{provider}_{service}_{_slug(metric_name)}"
+        values = vm_query_all(vm_metric, "resource_id")
+
+        if not values:
+            skipped_no_series[(provider, service, metric_name)] = len(resource_rows)
+            continue
+
+        for row in resource_rows:
+            val = values.get(row["aws_resource_id"])
+            if val is not None:
+                # metric_name here is metric_catalog's exact stored name
+                # (e.g. "Percentage CPU"), matching what evaluate_alerts()
+                # joins against -- NOT the slugged VM series name above,
+                # which is only used to know which series to query.
+                datapoints.append((row["resource_db_id"], metric_name, val))
+                matched += 1
+            else:
+                skipped_no_series.setdefault((provider, service, metric_name), 0)
+
+    return datapoints, skipped_no_series, matched
+
+
+def sync_metrics_from_vm() -> int:
+    """
+    Populates `metrics` from VM for every enabled threshold's resources,
+    across ALL THREE providers. Returns the number of datapoints written.
+    Zero AWS/Azure/GCP API calls -- purely a VM read + MySQL write, same
+    as before this fix; the fix is routing Azure/GCP rows through their
+    own working query convention instead of the AWS-only one they were
+    silently falling through before (see this file's module-level
+    docstring, and fix_azure_gcp_alert_evaluation_gap.py, for the full
+    story on why this was needed).
+    """
+    rows = _fetch_enabled_threshold_targets()
+    if not rows:
+        logger.info("VM metrics sync: no enabled thresholds -- nothing to do")
+        return 0
+
+    aws_rows = [r for r in rows if (r.get("provider") or "aws") == "aws"]
+    other_rows = [r for r in rows if (r.get("provider") or "aws") != "aws"]
+
+    aws_datapoints, aws_skipped, aws_matched = _sync_aws_metrics(aws_rows)
+    other_datapoints, other_skipped, other_matched = _sync_azure_gcp_metrics(other_rows)
+
+    datapoints = aws_datapoints + other_datapoints
+    matched = aws_matched + other_matched
+
     write_metrics_batch(datapoints)
 
-    if skipped_no_stub:
-        total_skipped = sum(skipped_no_stub.values())
-        detail = ", ".join(
-            f"{svc}/{metric} x{n}"
-            for (svc, metric), n in sorted(skipped_no_stub.items())
-        )
+    total_skipped = sum(aws_skipped.values()) + sum(other_skipped.values())
+    if total_skipped:
+        detail_parts = [
+            f"{svc}/{metric} x{n}" for (svc, metric), n in sorted(aws_skipped.items())
+        ] + [
+            f"{prov}:{svc}/{metric} x{n}" for (prov, svc, metric), n in sorted(other_skipped.items())
+        ]
         logger.info(
             f"VM metrics sync: {matched} written, {total_skipped} skipped "
-            f"(no VM series yet) -- {detail}"
+            f"(no VM series yet) -- {', '.join(detail_parts)}"
         )
     else:
         logger.info(f"VM metrics sync: {matched} written, 0 skipped")
