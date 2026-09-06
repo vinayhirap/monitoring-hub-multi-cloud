@@ -7,11 +7,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from app.db import get_connection
 from app.auth.deps import get_current_user, require_role
 from app.auth.permissions import require_permission
-from app.aws.federation import (
-    build_federated_console_url,
-    resource_console_destination,
-    NoConsoleCredentialsError,
-)
+from app.aws.federation import NoConsoleCredentialsError
 from app.ws.publisher import publish_alert_resolved
 
 logger = logging.getLogger(__name__)
@@ -163,9 +159,16 @@ def open_alerts(current_user: dict = Depends(require_permission("alerts.view")))
 @router.get("/{alert_id}/console-url")
 def get_console_url(alert_id: int, user: dict = Depends(require_permission("alerts.view"))):
     """
-    Returns a federated sign-in URL that opens THIS alert's resource in
-    THIS alert's AWS account — regardless of which account the operator's
+    Returns a console deep link that opens THIS alert's resource in THIS
+    alert's account -- regardless of which account/cloud the operator's
     browser currently happens to be signed into.
+
+    Dispatches through the provider layer (get_provider().get_console_url)
+    the same way app/api/admin/accounts.py's sibling endpoint already
+    does -- this one was the one place that migration was never finished,
+    which meant no Azure/GCP alert could ever produce a working console
+    link (AWS's federation helpers were being called directly regardless
+    of the alert's actual account provider).
     """
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -175,9 +178,7 @@ def get_console_url(alert_id: int, user: dict = Depends(require_permission("aler
             r.resource_type                        AS resource_type,
             r.name                                  AS resource_name,
             COALESCE(a.region, acc.default_region) AS region,
-            acc.account_id                         AS aws_account_id,
-            acc.role_arn,
-            acc.external_id
+            acc.*
         FROM alerts a
         JOIN resources r      ON r.resource_id = a.resource_id
         JOIN aws_accounts acc ON acc.id = r.aws_account_id
@@ -190,26 +191,21 @@ def get_console_url(alert_id: int, user: dict = Depends(require_permission("aler
     if not row:
         raise HTTPException(status_code=404, detail="Alert not found")
 
-    destination = resource_console_destination(
-        row.get("resource_type"), row["resource"], row["region"],
-        resource_name=row.get("resource_name"),
-    )
-
     try:
-        url = build_federated_console_url(
-            row.get("role_arn"), row.get("external_id"), destination,
-            target_account_id=row.get("aws_account_id"),
+        from app.providers.registry import get_provider
+        provider = get_provider(row.get("provider") or "aws")
+        url = provider.get_console_url(
+            row, row["resource"], row["region"],
+            service=row.get("resource_type"), resource_name=row.get("resource_name"),
             requested_by=user["username"],
-            service=row.get("resource_type"), resource_id=row["resource"],
-            region=row["region"], resource_name=row.get("resource_name"),
         )
     except NoConsoleCredentialsError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
-        logger.exception("Failed to build federated console URL for alert %s", alert_id)
-        raise HTTPException(status_code=502, detail="Could not generate AWS console link")
+        logger.exception("Failed to build console URL for alert %s", alert_id)
+        raise HTTPException(status_code=502, detail="Could not generate console link")
 
-    return {"url": url, "account_id": row["aws_account_id"]}
+    return {"url": url, "account_id": row["account_id"]}
 
 
 # ── ACK ───────────────────────────────────────────────────────

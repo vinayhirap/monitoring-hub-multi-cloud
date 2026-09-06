@@ -119,7 +119,13 @@ export default function ServiceList() {
   }, [account, id]);
 
   function openInConsole(serviceId) {
-    if (provider !== "aws") return;
+    // Previously bailed out here for any non-AWS provider. The backend
+    // endpoint this calls (getConsoleUrl -> /api/admin/accounts/{id}/
+    // console-url) already dispatches through get_provider() and works
+    // for Azure/GCP too -- Azure generically, GCP with real per-service
+    // deep links for 10 of 16 curated types. Removed the bailout; the
+    // existing catch below already surfaces a clear error if a
+    // particular service genuinely has no console link available yet.
     setConsoleLoading(serviceId);
     getConsoleUrl(id, serviceId)
       .then(r => { if (r?.url) window.open(r.url, "_blank", "noopener,noreferrer"); })
