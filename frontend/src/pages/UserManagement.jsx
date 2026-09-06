@@ -28,15 +28,6 @@ const VIEWER_DENIED = ["Onboard Accounts","Manage Users","Audit Logs","Configure
 
 const INITIAL_FORM = { username: "", password: "", email: "", role: "viewer", accountIds: [], groupId: "" };
 
-// Mirrors app/auth/authorization.py's GROUP_LEVEL_ROLE exactly -- the
-// role a user is given automatically when assigned to a group at each
-// level. Kept in sync here purely so the Role dropdown can show/lock
-// to the right value the instant a group is picked, without waiting
-// on a round trip; the backend applies the same mapping authoritatively
-// when the membership is actually created, so this can never drift
-// into being the source of truth.
-const GROUP_LEVEL_ROLE = { L1: "viewer", L2: "editor", L3: "admin" };
-
 export default function UserManagement() {
   const { user: currentUser } = useAuth();
   const currentRole = (currentUser?.role || "viewer").toLowerCase();
@@ -399,14 +390,11 @@ export default function UserManagement() {
                   value={form.groupId}
                   onChange={e => {
                     const groupId = e.target.value;
-                    const selected = groups.find(g => String(g.id) === groupId);
-                    const impliedRole = selected ? GROUP_LEVEL_ROLE[selected.level] : null;
-                    setForm(f => ({
-                      ...f,
-                      groupId,
-                      role: impliedRole || f.role,
-                      accountIds: impliedRole ? [] : f.accountIds,
-                    }));
+                    // Group membership only ever grants account/region
+                    // scope (see app/auth/authorization.py) -- it never
+                    // changes role, so picking a group here doesn't
+                    // touch form.role or clear accountIds.
+                    setForm(f => ({ ...f, groupId }));
                   }}
                 >
                   <option value="">No group</option>
@@ -421,10 +409,9 @@ export default function UserManagement() {
                 )}
               </div>
               <div className="mfield">
-                <label>Role{form.groupId ? " (set by group)" : ""}</label>
+                <label>Role</label>
                 <select
                   value={form.role}
-                  disabled={!!form.groupId}
                   onChange={e => setForm(f => ({ ...f, role: e.target.value, accountIds: [] }))}
                 >
                   <option value="viewer">Viewer — read-only</option>
@@ -433,7 +420,7 @@ export default function UserManagement() {
                 </select>
                 {form.groupId && (
                   <span className="field-hint">
-                    Role is locked to this group's level. Choose "No group" above to set a role manually instead.
+                    Group membership grants this user additional account/region access; it does not change their role.
                   </span>
                 )}
               </div>
@@ -692,7 +679,6 @@ export default function UserManagement() {
                       <span className={`group-level-badge level-${g.level.toLowerCase()}`}>{g.level}</span>
                       <span className="group-name">{g.name}</span>
                       {g.description && <span className="group-desc">{g.description}</span>}
-                      <span className="group-role-hint">{{ L1: "viewer", L2: "editor", L3: "admin" }[g.level]}</span>
                       {isAdmin && (
                         <button
                           className="btn-sm-danger"

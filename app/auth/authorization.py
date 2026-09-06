@@ -30,10 +30,16 @@ GROUP HIERARCHY (L1 / L2 / L3)
   PLUS its L2 parent's PLUS its L1 grandparent's -- ADDITIVE (union),
   not restrictive (not an SCP-style narrowing). This mirrors how
   AWS IAM Identity Center permission sets attached at different OU
-  levels all apply to a principal beneath them, and matches the
-  "tiered support" mental model (L1/L2/L3) this was built for: an L3
-  on-call engineer should see everything their L2 team and L1 org see,
-  plus whatever extra the L3 tier itself was granted -- never less.
+  levels all apply to a principal beneath them.
+
+  Groups are a scope container ONLY. Membership never changes a
+  user's role (admin/editor/viewer) -- role is always assigned
+  deliberately and independently of which group(s) someone belongs
+  to. (An earlier version of this system auto-set role from group
+  level via a GROUP_LEVEL_ROLE mapping; that was removed because it
+  silently granted full Admin on joining an L3 group and never
+  revoked it on leaving one -- a real, permanent privilege-escalation
+  bug, not just a naming confusion.)
 
   Every group policy, at any level, is itself account/region specific
   (same shape as a user's own access_scopes row) -- there is no
@@ -57,15 +63,13 @@ GROUP_LEVELS = ("L1", "L2", "L3")
 # L1 -> None (top of the tree, no parent allowed).
 GROUP_PARENT_LEVEL = {"L1": None, "L2": "L1", "L3": "L2"}
 
-# The role a user is given automatically when added as a member of a
-# group at each level. L1 = Viewer (least access), L2 = Editor (mid),
-# L3 = Admin (full access) -- referenced by app/api/admin/groups.py's
-# add_group_members() and mirrored client-side in UserManagement.jsx
-# purely for instant UI feedback; this dict here is the one and only
-# authoritative source. (Previously referenced from three places in
-# this codebase but never actually defined -- every group-membership
-# write has been crashing with AttributeError until this fix.)
-GROUP_LEVEL_ROLE = {"L1": "viewer", "L2": "editor", "L3": "admin"}
+# NOTE: there is deliberately no L1/L2/L3 -> role mapping here anymore.
+# A prior version (GROUP_LEVEL_ROLE) auto-set a user's role based on
+# which group they joined, which meant joining an L3 group silently
+# granted full system Admin with no corresponding revoke when removed
+# -- a real privilege-escalation bug. Groups now only ever grant scope
+# (via group_policies, resolved in get_effective_scope below); role is
+# always assigned deliberately via app/api/admin/users.py.
 
 
 @dataclass

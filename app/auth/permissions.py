@@ -5,12 +5,12 @@ app/auth/permissions.py
 Granular permission-identifier RBAC, layered ON TOP OF the existing
 role system (admin/editor/viewer) rather than replacing it --
 role_permissions (db/migrations/015_permissions_rbac.sql) maps each of
-the 3 existing roles to a set of permission codes. Nothing about how a
-user GETS a role changes here -- direct assignment, or via L1/L2/L3
-group membership through app.auth.authorization.GROUP_LEVEL_ROLE --
-this only makes what that role can DO expressible as named permissions
-(users.create, groups.manage, ...) instead of role checks scattered
-through every endpoint.
+the 3 existing roles to a set of permission codes. A user's role is
+always assigned deliberately (app/api/admin/users.py) and is never
+derived from L1/L2/L3 group membership -- groups only ever grant
+account/region SCOPE, never role. This only makes what a role can DO
+expressible as named permissions (users.create, groups.manage, ...)
+instead of role checks scattered through every endpoint.
 
 admin implicitly has every permission (bypasses the table lookup
 entirely) -- deliberate: a gap in role_permissions seed data can never

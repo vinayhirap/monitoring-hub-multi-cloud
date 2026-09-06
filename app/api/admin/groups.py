@@ -392,31 +392,28 @@ def add_group_members(group_id: int, payload: dict = Body(...), current_user: di
                 conn.close()
                 raise HTTPException(status_code=500, detail=str(e))
 
-    # Group level sets the member's role tier -- L1 members become
-    # Viewer, L2 Editor, L3 Admin (see authz.GROUP_LEVEL_ROLE). This is
-    # what makes "which group is this person in" the single source of
-    # truth for both scope (via get_effective_scope) and capability
-    # tier, instead of the two being picked independently and
-    # potentially disagreeing. Applied to every id in user_ids, not
-    # just newly-inserted ones, so re-adding an existing member still
-    # reconciles their role if it had drifted.
-    synced_role = authz.GROUP_LEVEL_ROLE.get(g["level"])
-    if synced_role:
-        cursor.execute(
-            f"UPDATE users SET role = %s WHERE id IN ({placeholders})",
-            (synced_role, *user_ids),
-        )
-
+    # Groups are a PURE scope container -- membership grants
+    # account/region access (via group_policies + get_effective_scope)
+    # and nothing else. It deliberately does NOT touch users.role.
+    #
+    # Previously this ran `UPDATE users SET role = ...` based on the
+    # group's L1/L2/L3 level (GROUP_LEVEL_ROLE), which meant adding
+    # someone to an L3 group silently made them a full system Admin --
+    # and removing them from that group never reversed it, since this
+    # was the only place that ever wrote users.role from group
+    # membership. That was a real privilege-escalation bug (permanent,
+    # silent admin promotion with no corresponding revoke path), fixed
+    # by removing the auto-sync entirely. Role is now only ever changed
+    # deliberately (see app/api/admin/users.py's role-update endpoint).
     conn.commit()
     cursor.close()
     conn.close()
 
     _write_audit(
         current_user["username"], "Group membership added",
-        f"{g['name']}: +{len(added)} user(s)" + (f", {len(already)} already member" if already else "")
-        + (f" -- role synced to {synced_role}" if synced_role else ""),
+        f"{g['name']}: +{len(added)} user(s)" + (f", {len(already)} already member" if already else ""),
     )
-    return {"status": "updated", "group_id": group_id, "added": added, "already_member": already, "role_synced": synced_role}
+    return {"status": "updated", "group_id": group_id, "added": added, "already_member": already}
 
 
 @router.delete("/{group_id}/members/{user_id}")
