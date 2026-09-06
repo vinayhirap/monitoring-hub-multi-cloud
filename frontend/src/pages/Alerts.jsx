@@ -67,15 +67,15 @@ function playBeep(severity) {
 // for a federated sign-in link scoped to THIS alert's account
 // (see openConsole / GET /alerts/{id}/console-url).
 function hasConsoleTarget(resource) {
-  if (!resource) return false;
-  return (
-    resource.startsWith("i-") ||
-    resource.startsWith("vol-") ||
-    resource.includes("lambda") ||
-    resource.startsWith("arn:aws:lambda") ||
-    resource.startsWith("db-") ||
-    resource.includes("rds")
-  );
+  // Previously guessed AWS resource-ID shapes (i-.../vol-.../arn:aws:...)
+  // -- an Azure ARM path or GCP asset name never matches any of those,
+  // so the console button silently never appeared for non-AWS alerts at
+  // all. The backend endpoint this gates (/api/alerts/{id}/console-url)
+  // now dispatches through get_provider() for any cloud, so any alert
+  // with a resource at all is worth attempting -- the existing
+  // try/catch in openConsole() below already surfaces a clear error for
+  // the genuine case where a console link truly isn't available.
+  return !!resource;
 }
 
 // ── Internal resource detail route ─────────────────────────────
@@ -246,7 +246,7 @@ export default function Alerts() {
       else window.open(url, "_blank", "noopener,noreferrer");
     } catch (e) {
       if (tab) tab.close();
-      alert("Couldn't open AWS console: " + e.message);
+      alert("Couldn't open console: " + e.message);
     } finally {
       setOpeningConsole(null);
     }
@@ -459,7 +459,7 @@ export default function Alerts() {
                               className="btn-console-aws"
                               disabled={isOpeningAws}
                               onClick={e => { e.stopPropagation(); openConsole(a.id); }}
-                              title="Open in AWS Management Console (correct account)"
+                              title="Open in cloud console (correct account)"
                             >
                               {isOpeningAws ? "☁ Opening…" : "☁ Console"}
                             </button>
