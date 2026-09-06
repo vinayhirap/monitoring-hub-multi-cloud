@@ -153,7 +153,19 @@ export default function UserManagement() {
         await apiFetch(`/api/users/${created.id}/access`, {
           method: "POST",
           body: JSON.stringify({
-            scopes: form.accountIds.map(id => ({ cloud: "aws", account_ref_id: Number(id) })),
+            // Previously hardcoded cloud: "aws" for every selection regardless
+            // of the account's real provider -- the backend's
+            // validate_scope_shape() checks account_ref_id against a
+            // per-cloud valid-ID set, so an Azure/GCP account picked here
+            // either failed validation silently (.catch(() => {}) below
+            // swallows it) or, worse, could validate against an unrelated
+            // AWS account sharing the same numeric ID. Look up the real
+            // provider from the same `accounts` list the picker itself
+            // renders from.
+            scopes: form.accountIds.map(id => ({
+              cloud: accounts.find(a => a.id === Number(id))?.provider || "aws",
+              account_ref_id: Number(id),
+            })),
           }),
         }).catch(() => {});
       }
@@ -437,7 +449,9 @@ export default function UserManagement() {
                     style={{ height: 80 }}
                   >
                     {accounts.map(a => (
-                      <option key={a.id} value={a.id}>{a.account_name}</option>
+                      <option key={a.id} value={a.id}>
+                        {a.account_name} ({a.provider || "aws"})
+                      </option>
                     ))}
                   </select>
                   <span className="field-hint">Hold Ctrl for multiple. Empty = all accounts.</span>
