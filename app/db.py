@@ -19,6 +19,21 @@ logger = logging.getLogger(__name__)
 # Override via DB_POOL_SIZE if you change --workers count.
 _POOL_SIZE = int(os.getenv("DB_POOL_SIZE", 20))
 
+
+def _require_db_password() -> str:
+    """DB_PASSWORD must be set in the environment -- deliberately NO
+    insecure fallback default, same reasoning as JWT_SECRET in
+    app/auth/security.py: a shared/guessable default DB password
+    defeats the point of having one."""
+    pw = os.getenv("DB_PASSWORD")
+    if not pw:
+        raise RuntimeError(
+            "DB_PASSWORD is not set. Set it in .env (and .env.production "
+            "on the server) -- there is no default."
+        )
+    return pw
+
+
 _pool = pooling.MySQLConnectionPool(
     pool_name="monitoring_pool",
     pool_size=_POOL_SIZE,
@@ -26,7 +41,7 @@ _pool = pooling.MySQLConnectionPool(
     host=os.getenv("DB_HOST", "127.0.0.1"),
     port=int(os.getenv("DB_PORT", 3307)),      # 3307 = Docker local, 3306 = EC2 prod
     user=os.getenv("DB_USER", "root"),         # root = Docker local, monitor = EC2 prod
-    password=os.getenv("DB_PASSWORD", "root123"),
+    password=_require_db_password(),
     database=os.getenv("DB_NAME", "monitoring_hub"),
     use_pure=True,
     connection_timeout=10,
