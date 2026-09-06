@@ -252,6 +252,8 @@ run_migration() {
         echo "WARNING: $script failed — check manually before relying on: $what"
 }
 
+run_migration apply_ensure_metric_catalog_base_table.py \
+    "FOUNDATIONAL: create metric_catalog base table if this is a truly fresh DB (no-op otherwise) -- must run before everything below, which only ever ALTERs it"
 run_migration apply_multi_cloud_migration.py \
     "009: aws_accounts/resources/metric_catalog provider columns"
 run_migration apply_multi_cloud_credentials.py \
@@ -268,8 +270,19 @@ run_migration apply_access_scopes_migration.py \
     "011: access_scopes table (Phase 1 authorization)"
 run_migration apply_alert_evaluation_hardening_migration.py \
     "012: alerts.last_seen_at/healthy_streak + alert_pending table"
+run_migration apply_org_group_rbac.py \
+    "013: org_groups/group_policies/user_group_memberships -- required or ANY non-admin login 500s on scoped endpoints"
+run_migration apply_group_level_role_fix.py \
+    "guard: re-assert GROUP_LEVEL_ROLE in authorization.py after 013's full rewrite drops it"
+run_migration apply_default_org_groups_seed.py \
+    "seed: default L1 Monitoring / L2 Operations / L3 Administrator org groups (must run AFTER apply_org_groups_ui_and_role_sync_fix.py)"
+run_migration apply_permission_rbac_migration.py \
+    "015: permissions/role_permissions seed data (must run AFTER apply_permission_rbac_system.py)"
 run_migration scripts/seed_metric_catalog.py \
     "seed: metric_catalog curated + directory entries"
+
+echo "--- db/migrations/*.sql tracking (migrate.py) ---"
+sudo -u "$REAL_USER" "$VENV_DIR/bin/python3" migrate.py baseline --all-except-rollbacks
 
 echo "=== [9/10] Build frontend ==="
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -

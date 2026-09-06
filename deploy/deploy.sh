@@ -275,6 +275,8 @@ run_migration() {
     fi
 }
 
+run_migration apply_ensure_metric_catalog_base_table.py \
+    "FOUNDATIONAL: create metric_catalog base table if this is a truly fresh DB (no-op otherwise) -- must run before everything below, which only ever ALTERs it"
 run_migration apply_multi_cloud_migration.py \
     "009: aws_accounts/resources/metric_catalog provider columns"
 run_migration apply_multi_cloud_credentials.py \
