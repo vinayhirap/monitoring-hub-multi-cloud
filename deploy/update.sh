@@ -164,6 +164,8 @@ run_migration apply_permission_rbac_migration.py \
     "015: permissions/role_permissions seed data (must run AFTER apply_permission_rbac_system.py)"
 run_migration scripts/seed_metric_catalog.py \
     "seed: metric_catalog curated + directory entries"
+run_migration apply_drop_dead_tables.py \
+    "006 (now actually executed): drop metric_configs/metric_definitions/enabled_metrics/alert_rules/dashboards/dashboard_panels/account_permissions/user_accounts/user_roles/roles -- confirmed unreferenced by app/ or frontend/src/, refuses to drop any table with rows"
 
 echo "--- db/migrations/*.sql tracking (migrate.py) ---"
 # This is the permanent fix for the exact incident that prompted writing
