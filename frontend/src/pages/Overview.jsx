@@ -196,7 +196,7 @@ export default function Overview() {
             Infrastructure <span className="hl">Overview</span>
           </h1>
           <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 4 }}>
-            Live AWS infrastructure monitoring across all accounts
+            Live infrastructure monitoring across all accounts and clouds
           </p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -250,7 +250,7 @@ export default function Overview() {
 
       <div className="ov-section-bar">
         <h2 style={{ fontSize: 17, fontWeight: 700 }}>
-          AWS Accounts
+          Accounts
           <span style={{ fontWeight: 400, fontSize: 13, color: "var(--text-muted)", marginLeft: 8 }}>
             ({filteredGroups.length})
           </span>
