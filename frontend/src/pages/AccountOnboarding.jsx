@@ -684,7 +684,7 @@ export default function AccountOnboarding() {
           {/* Metrics to Monitor */}
           <div className="ob-section">
             <div className="ob-section-title">METRICS TO MONITOR</div>
-            {provider === "aws" && detectedServices.length > 0 ? (
+            {detectedServices.length > 0 ? (
               <p className="ob-metrics-hint">
                 Detected {detectedServices.length} service{detectedServices.length !== 1 ? "s" : ""} in this
                 account/region: <strong>{detectedServices.join(", ")}</strong>. Their default metrics will be
@@ -695,10 +695,11 @@ export default function AccountOnboarding() {
               <p className="ob-metrics-hint">
                 Recommended cost-optimized defaults are pre-selected. Add or remove any
                 metric now, or come back later from Settings → Metrics for this account.
-                {provider === "aws" && (
-                  <> Run "Test Connection" above first to auto-detect what's actually in this
-                  account instead of picking manually.</>
-                )}
+                {/* Previously AWS-only -- Test Connection now detects real
+                    services for Azure/GCP too (see fix_onboarding_autodetect_parity.py),
+                    so this hint applies to all three providers. */}
+                <> Run "Test Connection" above first to auto-detect what's actually in this
+                account instead of picking manually.</>
               </p>
             )}
             {catalogLoading ? (
