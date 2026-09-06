@@ -1,5 +1,7 @@
 # app/api/live_data.py
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
+from app.auth.permissions import require_permission
+from app.auth.authorization import get_accessible_account_ids
 from app.aws.collector_direct import (
     collect_ec2_instances,
     collect_ebs_volumes,
@@ -105,6 +107,40 @@ def _get_db_account(account_db_id: int) -> dict:
     return row
 
 
+def _check_account_scope(user: dict, account_db_id: int):
+    """403s if this account is outside the caller's effective scope.
+    None from get_accessible_account_ids means unrestricted (admin);
+    otherwise account_db_id must be in the returned set."""
+    accessible = get_accessible_account_ids(user)
+    if accessible is not None and account_db_id not in accessible:
+        raise HTTPException(status_code=403, detail="You do not have access to this account")
+
+
+def _check_resource_scope(user: dict, resource_identifier: str):
+    """Same idea as _check_account_scope, but for the metrics-by-
+    resource-id endpoints below (instance id / volume id / db id /
+    function name / bucket name) which don't take account_db_id
+    directly -- resolves the owning account via the `resources` table
+    first. If the resource isn't tracked yet (not in `resources`),
+    this intentionally does NOT block -- there's nothing to check
+    against, and returning a scope error would be misleading for what
+    is really just an empty/unknown metric lookup."""
+    accessible = get_accessible_account_ids(user)
+    if accessible is None:
+        return
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT aws_account_id FROM resources WHERE resource_id = %s LIMIT 1",
+        (resource_identifier,),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if row and row["aws_account_id"] not in accessible:
+        raise HTTPException(status_code=403, detail="You do not have access to this resource")
+
+
 def _get_active_alert_counts_by_account() -> dict:
     """
     THE authoritative source for account-level health: {aws_account_id:
@@ -170,14 +206,21 @@ def _get_active_alert_counts_by_account() -> dict:
 
 
 @router.get("/accounts")
-def live_accounts():
+def live_accounts(current_user: dict = Depends(require_permission("resources.view"))):
     global _accounts_cache
 
     now = time.time()
     if _accounts_cache["data"] is not None and now - _accounts_cache["ts"] < CACHE_TTL:
-        return _accounts_cache["data"]
+        accessible = get_accessible_account_ids(current_user)
+        cached = _accounts_cache["data"]
+        if accessible is not None:
+            cached = [a for a in cached if a["id"] in accessible]
+        return cached
 
     accounts = _get_db_accounts()
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is not None:
+        accounts = [a for a in accounts if a["id"] in accessible]
 
     alert_counts_by_account = _get_active_alert_counts_by_account()
 
@@ -279,49 +322,56 @@ def live_accounts():
 
 
 @router.get("/ec2/{account_db_id}")
-def live_ec2(account_db_id: int):
+def live_ec2(account_db_id: int, current_user: dict = Depends(require_permission("resources.view"))):
+    _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
     return _serialize(collect_ec2_instances(region))
 
 
 @router.get("/ebs/{account_db_id}")
-def live_ebs(account_db_id: int):
+def live_ebs(account_db_id: int, current_user: dict = Depends(require_permission("resources.view"))):
+    _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
     return _serialize(collect_ebs_volumes(region))
 
 
 @router.get("/rds/{account_db_id}")
-def live_rds(account_db_id: int):
+def live_rds(account_db_id: int, current_user: dict = Depends(require_permission("resources.view"))):
+    _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
     return _serialize(collect_rds_instances(region))
 
 
 @router.get("/lambda/{account_db_id}")
-def live_lambda(account_db_id: int):
+def live_lambda(account_db_id: int, current_user: dict = Depends(require_permission("resources.view"))):
+    _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
     return _serialize(collect_lambda_functions(region))
 
 
 @router.get("/s3/{account_db_id}")
-def live_s3(account_db_id: int):
+def live_s3(account_db_id: int, current_user: dict = Depends(require_permission("resources.view"))):
+    _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
     return _serialize(collect_s3_buckets(region))
 
 
 @router.get("/elb/{account_db_id}")
-def live_elb(account_db_id: int):
+def live_elb(account_db_id: int, current_user: dict = Depends(require_permission("resources.view"))):
+    _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
     return _serialize(collect_elb(region))
 
 
 @router.get("/ecs/{account_db_id}")
-def live_ecs(account_db_id: int):
+def live_ecs(account_db_id: int, current_user: dict = Depends(require_permission("resources.view"))):
+    _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
     return _serialize(collect_ecs_clusters(region))
@@ -386,7 +436,8 @@ _RESOURCE_COLLECTORS = {
 
 
 @router.get("/resource-counts/{account_db_id}")
-def live_resource_counts(account_db_id: int):
+def live_resource_counts(account_db_id: int, current_user: dict = Depends(require_permission("resources.view"))):
+    _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region")
     counts = {}
@@ -415,7 +466,9 @@ def live_ec2_metrics(
     instance_id: str,
     region: str = Query(None),
     hours: int  = Query(6),
+    current_user: dict = Depends(require_permission("metrics.view")),
 ):
+    _check_resource_scope(current_user, instance_id)
     return get_ec2_metric_series(instance_id, region, hours)
 
 
@@ -424,7 +477,9 @@ def live_ebs_metrics(
     volume_id: str,
     region: str = Query(None),
     hours: int  = Query(6),
+    current_user: dict = Depends(require_permission("metrics.view")),
 ):
+    _check_resource_scope(current_user, volume_id)
     return _get_ebs_metric_series(volume_id, region, hours)
 
 
@@ -433,7 +488,9 @@ def live_rds_metrics(
     db_id: str,
     region: str = Query(None),
     hours: int  = Query(6),
+    current_user: dict = Depends(require_permission("metrics.view")),
 ):
+    _check_resource_scope(current_user, db_id)
     return _get_rds_metric_series(db_id, region, hours)
 
 
@@ -442,7 +499,9 @@ def live_lambda_metrics(
     function_name: str,
     region: str = Query(None),
     hours: int  = Query(6),
+    current_user: dict = Depends(require_permission("metrics.view")),
 ):
+    _check_resource_scope(current_user, function_name)
     return _get_lambda_metric_series(function_name, region, hours)
 
 
@@ -450,7 +509,9 @@ def live_lambda_metrics(
 def live_s3_metrics(
     bucket_name: str,
     hours: int = Query(24),
+    current_user: dict = Depends(require_permission("metrics.view")),
 ):
+    _check_resource_scope(current_user, bucket_name)
     return get_s3_metric_series(bucket_name, hours)
 
 
@@ -460,11 +521,13 @@ def live_elb_metrics(
     lb_name: str = Query(..., description="Load balancer name"),
     region: str  = Query(None),
     hours: int   = Query(6),
+    current_user: dict = Depends(require_permission("metrics.view")),
 ):
     """
     ELB CloudWatch metrics for a specific load balancer by name.
     Frontend calls: /api/live/metrics/elb/{accountId}?lb_name=<name>&region=<r>&hours=<h>
     """
+    _check_account_scope(current_user, account_db_id)
     acc = _get_db_account(account_db_id)
     resolved_region = region or acc.get("default_region") 
     return _get_elb_metric_series(lb_name, resolved_region, hours)
@@ -477,11 +540,13 @@ def live_ecs_metrics(
     service_name: str  = Query(None, description="ECS service name (optional — omit for cluster-level)"),
     region: str        = Query(None),
     hours: int         = Query(6),
+    current_user: dict = Depends(require_permission("metrics.view")),
 ):
     """
     ECS CloudWatch metrics for a cluster or specific service.
     Frontend calls: /api/live/metrics/ecs/{accountId}?cluster_name=<c>&service_name=<s>&region=<r>&hours=<h>
     """
+    _check_account_scope(current_user, account_db_id)
     acc = _get_db_account(account_db_id)
     resolved_region = region or acc.get("default_region")
     return _get_ecs_metric_series(cluster_name, service_name, resolved_region, hours)

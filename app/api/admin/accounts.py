@@ -1,7 +1,9 @@
 # app/api/admin/accounts.py
 from fastapi import APIRouter, HTTPException, Body, Query, Depends
 from app.db import get_connection
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
+from app.auth.permissions import require_permission
+from app.auth.authorization import get_accessible_account_ids
 import datetime
 import json
 import logging
@@ -47,7 +49,7 @@ def _bust_accounts_cache():
 
 
 @router.get("")
-def list_accounts():
+def list_accounts(current_user: dict = Depends(require_permission("accounts.view"))):
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
@@ -63,6 +65,11 @@ def list_accounts():
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
+
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is not None:
+        rows = [r for r in rows if r["id"] in accessible]
+
     # Never leak secrets: these columns only ever hold identifiers, never
     # the client secret / SA key JSON (those live encrypted in
     # provider_credentials and are only decrypted server-side on demand).
@@ -70,7 +77,11 @@ def list_accounts():
 
 
 @router.get("/{account_id}")
-def get_account(account_id: int):
+def get_account(account_id: int, current_user: dict = Depends(require_permission("accounts.view"))):
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is not None and account_id not in accessible:
+        raise HTTPException(status_code=403, detail="You do not have access to this account")
+
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT * FROM aws_accounts WHERE id = %s", (account_id,))
@@ -275,7 +286,7 @@ def _add_gcp_account(payload: dict) -> tuple[int, str, str]:
 
 
 @router.post("")
-def add_account(payload: dict = Body(...)):
+def add_account(payload: dict = Body(...), current_user: dict = Depends(require_permission("accounts.onboard"))):
     provider_name = (payload.get("provider") or "aws").strip().lower()
 
     if provider_name == "azure":
@@ -377,7 +388,11 @@ def add_account(payload: dict = Body(...)):
 
 
 @router.delete("/{account_id}")
-def delete_account(account_id: int):
+def delete_account(account_id: int, current_user: dict = Depends(require_role("admin"))):
+    # Admin-only: no existing permission code covers "delete an entire
+    # monitored account" (accounts.onboard is scoped to ADDING one in the
+    # permission catalog's own description), and this is irreversible --
+    # deliberately not extending accounts.onboard to also cover deletion.
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
 
@@ -432,7 +447,7 @@ def get_account_console_url(
     region: str = Query(None),
     resource_name: str = Query(None),
     ecs_service_name: str = Query(None),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_permission("accounts.view")),
 ):
     """
     Generic account-scoped console deep link — the single backend source
@@ -441,6 +456,10 @@ def get_account_console_url(
     through the provider layer so this also works for Azure/GCP once
     those providers implement get_console_url.
     """
+    accessible = get_accessible_account_ids(user)
+    if accessible is not None and account_id not in accessible:
+        raise HTTPException(status_code=403, detail="You do not have access to this account")
+
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT * FROM aws_accounts WHERE id = %s AND status = 'active'", (account_id,))
@@ -472,7 +491,7 @@ def get_account_console_url(
 
 
 @router.post("/test-role")
-def test_role(payload: dict = Body(...)):
+def test_role(payload: dict = Body(...), current_user: dict = Depends(require_permission("accounts.onboard"))):
     role_arn = (payload.get("role_arn") or "").strip()
     ext_id   = (payload.get("external_id") or "").strip()
 
@@ -510,7 +529,7 @@ def test_role(payload: dict = Body(...)):
 
 
 @router.post("/test-azure-credentials")
-def test_azure_credentials(payload: dict = Body(...)):
+def test_azure_credentials(payload: dict = Body(...), current_user: dict = Depends(require_permission("accounts.onboard"))):
     """Onboarding-wizard 'Test Connection' for Azure — validates a Service
     Principal against real Azure Resource Manager before the account is saved."""
     from app.providers.registry import get_provider
@@ -534,7 +553,7 @@ def test_azure_credentials(payload: dict = Body(...)):
 
 
 @router.post("/test-gcp-credentials")
-def test_gcp_credentials(payload: dict = Body(...)):
+def test_gcp_credentials(payload: dict = Body(...), current_user: dict = Depends(require_permission("accounts.onboard"))):
     """Onboarding-wizard 'Test Connection' for GCP — validates a Service
     Account key against the real Cloud Resource Manager API before the
     account is saved."""
@@ -556,7 +575,7 @@ def test_gcp_credentials(payload: dict = Body(...)):
 
 
 @router.post("/{account_id}/discover")
-def discover_account(account_id: int):
+def discover_account(account_id: int, current_user: dict = Depends(require_permission("accounts.onboard"))):
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT * FROM aws_accounts WHERE id = %s AND status = 'active'", (account_id,))

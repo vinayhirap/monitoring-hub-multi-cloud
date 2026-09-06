@@ -5,7 +5,8 @@ import time
 import logging
 from fastapi import APIRouter, HTTPException, Depends
 from app.db import get_connection
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_role
+from app.auth.permissions import require_permission
 from app.aws.federation import (
     build_federated_console_url,
     resource_console_destination,
@@ -85,7 +86,7 @@ def _fetch_alerts_from_db():
 
 # ── GET all alerts (cached) ───────────────────────────────────
 @router.get("")
-def get_alerts():
+def get_alerts(current_user: dict = Depends(require_permission("alerts.view"))):
     now = time.time()
     if _alerts_cache["data"] is not None and now - _alerts_cache["ts"] < _CACHE_TTL:
         return _alerts_cache["data"]
@@ -97,7 +98,7 @@ def get_alerts():
 
 # ── GET open/active only ──────────────────────────────────────
 @router.get("/open")
-def open_alerts():
+def open_alerts(current_user: dict = Depends(require_permission("alerts.view"))):
     """
     Returns only unresolved alerts — used by Overview alert strip + api.js getAlerts().
     Also cached. Invalidated on ack/resolve.
@@ -160,7 +161,7 @@ def open_alerts():
 
 # ── AWS CONSOLE DEEP-LINK (account-correct) ────────────────────
 @router.get("/{alert_id}/console-url")
-def get_console_url(alert_id: int, user: dict = Depends(get_current_user)):
+def get_console_url(alert_id: int, user: dict = Depends(require_permission("alerts.view"))):
     """
     Returns a federated sign-in URL that opens THIS alert's resource in
     THIS alert's AWS account — regardless of which account the operator's
@@ -214,7 +215,7 @@ def get_console_url(alert_id: int, user: dict = Depends(get_current_user)):
 # ── ACK ───────────────────────────────────────────────────────
 @router.post("/{alert_id}/ack")
 @router.patch("/{alert_id}/ack")
-def ack_alert(alert_id: int):
+def ack_alert(alert_id: int, current_user: dict = Depends(require_permission("operations.execute"))):
     conn   = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -233,7 +234,7 @@ def ack_alert(alert_id: int):
 # ── RESOLVE ───────────────────────────────────────────────────
 @router.post("/{alert_id}/resolve")
 @router.patch("/{alert_id}/resolve")
-def resolve_alert(alert_id: int):
+def resolve_alert(alert_id: int, current_user: dict = Depends(require_permission("operations.execute"))):
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
@@ -267,7 +268,7 @@ def resolve_alert(alert_id: int):
 
 # ── MUTE ──────────────────────────────────────────────────────
 @router.post("/{alert_id}/mute")
-def mute_alert(alert_id: int, minutes: int = 30):
+def mute_alert(alert_id: int, minutes: int = 30, current_user: dict = Depends(require_permission("operations.execute"))):
     conn   = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -283,7 +284,11 @@ def mute_alert(alert_id: int, minutes: int = 30):
 
 # ── CLEAR ─────────────────────────────────────────────────────
 @router.delete("/clear")
-def clear_alerts():
+def clear_alerts(current_user: dict = Depends(require_role("admin"))):
+    # Admin-only: bulk-deletes every unresolved/unacked alert with no
+    # undo. No existing permission code covers a bulk-destructive action
+    # like this (operations.execute covers acting on ONE alert), so this
+    # is intentionally locked tighter than the single-alert actions above.
     conn = get_connection()
     cur  = conn.cursor()
     cur.execute("DELETE FROM alerts WHERE resolved_at IS NULL AND acked = 0")
