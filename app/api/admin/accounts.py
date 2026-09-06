@@ -547,9 +547,30 @@ def test_azure_credentials(payload: dict = Body(...), current_user: dict = Depen
             "tenant_id": tenant_id, "client_id": client_id,
             "subscription_id": subscription_id, "client_secret": client_secret,
         })
-        return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Azure credential validation failed: {e}")
+
+    # Best-effort service detection for the onboarding wizard preview, same
+    # rationale as test_role's AWS equivalent above: never fails the
+    # credential-test response itself if detection hits a permissions gap
+    # (Resource Graph is a separate RBAC surface from the per-service Reader
+    # roles already needed for the 19 curated discovery functions).
+    detected_services = []
+    try:
+        from azure.identity import ClientSecretCredential
+        from app.providers.azure.discovery import detect_extended_service_keys
+
+        cred = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
+        conn = get_connection(); cur = conn.cursor()
+        try:
+            detected_services = sorted(detect_extended_service_keys(cred, subscription_id, cur))
+        finally:
+            cur.close(); conn.close()
+    except Exception as e:
+        logger.warning(f"test-azure-credentials service detection skipped: {e}")
+
+    result["detected_services"] = detected_services
+    return result
 
 
 @router.post("/test-gcp-credentials")
@@ -569,9 +590,35 @@ def test_gcp_credentials(payload: dict = Body(...), current_user: dict = Depends
         result = get_provider("gcp").validate_credentials({
             "project_id": project_id, "service_account_key": service_account_key,
         })
-        return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"GCP credential validation failed: {e}")
+
+    # Best-effort service detection for the onboarding wizard preview, same
+    # rationale as test_role's AWS equivalent above: never fails the
+    # credential-test response itself if detection hits a permissions gap
+    # (Cloud Asset Inventory needs its own roles/cloudasset.viewer grant,
+    # separate from the per-service Viewer roles already needed for the 16
+    # curated discovery functions).
+    detected_services = []
+    try:
+        import json as _json
+        from google.oauth2 import service_account as gcp_service_account
+        from app.providers.gcp.discovery import detect_extended_service_keys
+
+        info = _json.loads(service_account_key)
+        creds = gcp_service_account.Credentials.from_service_account_info(
+            info, scopes=["https://www.googleapis.com/auth/cloud-platform.read-only"]
+        )
+        conn = get_connection(); cur = conn.cursor()
+        try:
+            detected_services = sorted(detect_extended_service_keys(creds, project_id, cur))
+        finally:
+            cur.close(); conn.close()
+    except Exception as e:
+        logger.warning(f"test-gcp-credentials service detection skipped: {e}")
+
+    result["detected_services"] = detected_services
+    return result
 
 
 @router.post("/{account_id}/discover")
