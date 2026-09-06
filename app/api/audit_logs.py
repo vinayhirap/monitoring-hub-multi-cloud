@@ -4,8 +4,9 @@ Audit log API — reads ONLY from the database.
 No hardcoded data anywhere.
 Every action in the system writes here automatically.
 """
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Depends
 from app.db import get_connection
+from app.auth.permissions import require_permission
 import datetime
 import json
 
@@ -43,6 +44,7 @@ def get_audit_logs(
     limit:  int = Query(200, ge=1, le=1000),
     actor:  str = Query(None),
     action: str = Query(None),
+    current_user: dict = Depends(require_permission("audit.view")),
 ):
     """
     Fetch audit logs from DB.

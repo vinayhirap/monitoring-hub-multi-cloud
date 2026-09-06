@@ -11,8 +11,9 @@ CloudWatch metric catalog + per-account metric selection.
   POST /api/account-metrics/{account_id}/discover        live ListMetrics for a directory namespace
   GET  /api/account-metrics/{account_id}/yace-config      generate a YACE discovery config.yml for this account's selection
 """
-from fastapi import APIRouter, HTTPException, Body, Query, Response
+from fastapi import APIRouter, HTTPException, Body, Query, Response, Depends
 from app.db import get_connection
+from app.auth.permissions import require_permission
 from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD
 import datetime
 import json
@@ -53,6 +54,7 @@ def get_catalog(
     service:  str = Query(None, description="service key, e.g. ec2"),
     provider: str = Query("aws", description="aws | azure | gcp"),
     search:   str = Query(None, description="matches metric name, service, or description"),
+    current_user: dict = Depends(require_permission("metrics.view")),
 ):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     clauses, params = ["provider = %s"], [provider]
@@ -100,7 +102,7 @@ def get_catalog(
 
 
 @router.get("/api/metric-catalog/services")
-def get_services(provider: str = Query("aws", description="aws | azure | gcp")):
+def get_services(provider: str = Query("aws", description="aws | azure | gcp"), current_user: dict = Depends(require_permission("metrics.view"))):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT service, display_service, namespace, category, COUNT(*) AS metric_count
@@ -114,7 +116,7 @@ def get_services(provider: str = Query("aws", description="aws | azure | gcp")):
 
 
 @router.get("/api/metric-catalog/default-template")
-def get_default_template(provider: str = Query("aws", description="aws | azure | gcp")):
+def get_default_template(provider: str = Query("aws", description="aws | azure | gcp"), current_user: dict = Depends(require_permission("metrics.view"))):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT id, service, display_service, metric_name
@@ -201,7 +203,7 @@ def enable_metrics_for_services(account_id: int, service_keys: set, provider: st
 
 
 @router.get("/api/account-metrics/{account_id}")
-def get_account_metrics(account_id: int):
+def get_account_metrics(account_id: int, current_user: dict = Depends(require_permission("metrics.view"))):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("SELECT id, provider FROM aws_accounts WHERE id = %s", (account_id,))
     account = cur.fetchone()
@@ -312,7 +314,7 @@ def _sync_thresholds_for_selection(cur, account_id: int, enabled_ids: set, disab
 
 
 @router.put("/api/account-metrics/{account_id}")
-def set_account_metrics(account_id: int, payload: dict = Body(...)):
+def set_account_metrics(account_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("alerts.configure"))):
     """
     Full-replace selection for this account.
     Body: { "enabled_metric_ids": [1, 2, 3, ...] }
@@ -361,7 +363,7 @@ def set_account_metrics(account_id: int, payload: dict = Body(...)):
 
 
 @router.post("/api/account-metrics/{account_id}/apply-default")
-def apply_default_template(account_id: int):
+def apply_default_template(account_id: int, current_user: dict = Depends(require_permission("alerts.configure"))):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("SELECT id, provider FROM aws_accounts WHERE id = %s", (account_id,))
     account = cur.fetchone()

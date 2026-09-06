@@ -1,6 +1,7 @@
 # app/api/settings.py
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Query, Depends
 from app.db import get_connection
+from app.auth.permissions import require_permission
 from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD
 import datetime, json, logging
 
@@ -16,7 +17,7 @@ def _ser(obj):
 
 
 @router.get("/thresholds")
-def get_thresholds(account_id: int = Query(3)):
+def get_thresholds(account_id: int = Query(3), current_user: dict = Depends(require_permission("alerts.view"))):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT
@@ -34,7 +35,7 @@ def get_thresholds(account_id: int = Query(3)):
 
 
 @router.post("/thresholds")
-def upsert_threshold(payload: dict = Body(...)):
+def upsert_threshold(payload: dict = Body(...), current_user: dict = Depends(require_permission("alerts.configure"))):
     account_id     = int(payload.get("account_id", 3))
     metric_id      = payload["metric_id"]
     resource_type  = payload.get("resource_type", "ec2")
@@ -66,7 +67,7 @@ def upsert_threshold(payload: dict = Body(...)):
 
 
 @router.patch("/thresholds/{threshold_id}/toggle")
-def toggle_threshold(threshold_id: int, payload: dict = Body(...)):
+def toggle_threshold(threshold_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("alerts.configure"))):
     enabled = int(payload.get("enabled", 1))
     conn = get_connection(); cur = conn.cursor()
     cur.execute("UPDATE thresholds SET enabled=%s WHERE id=%s", (enabled, threshold_id))
@@ -75,7 +76,7 @@ def toggle_threshold(threshold_id: int, payload: dict = Body(...)):
 
 
 @router.post("/thresholds/seed")
-def seed_default_thresholds(account_id: int = Query(3)):
+def seed_default_thresholds(account_id: int = Query(3), current_user: dict = Depends(require_permission("alerts.configure"))):
     # Only seed thresholds for metrics actually enabled in "Metrics to
     # Monitor" for this account (account_metric_selections). Previously this
     # pulled from the entire metric_catalog regardless of selection, so the
@@ -106,7 +107,7 @@ def seed_default_thresholds(account_id: int = Query(3)):
 
 
 @router.get("/check")
-def check_thresholds(account_id: int = Query(3)):
+def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(require_permission("alerts.view"))):
     from app.aws.collector_direct import check_and_write_alerts
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
