@@ -51,6 +51,7 @@ azure-mgmt-keyvault>=10,<11
 azure-mgmt-containerinstance>=10,<11
 azure-mgmt-cdn>=12,<14
 azure-mgmt-datafactory>=3,<4
+azure-mgmt-resourcegraph>=8,<9
 
 # GCP provider (Service Account auth + real discovery)
 google-cloud-compute>=1.19,<2
