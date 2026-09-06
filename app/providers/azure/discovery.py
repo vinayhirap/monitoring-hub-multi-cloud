@@ -31,6 +31,8 @@ from azure.mgmt.keyvault import KeyVaultManagementClient
 from azure.mgmt.containerinstance import ContainerInstanceManagementClient
 from azure.mgmt.cdn import CdnManagementClient
 from azure.mgmt.datafactory import DataFactoryManagementClient
+from azure.mgmt.resourcegraph import ResourceGraphClient
+from azure.mgmt.resourcegraph.models import QueryRequest, QueryRequestOptions
 # ResourceManagementClient is NOT importable from azure.mgmt.resource's
 # top-level package on the azure-mgmt-resource version range pinned in
 # requirements.txt (23-27) — confirmed in sandbox; must come from the
@@ -335,6 +337,7 @@ def discover_account_resources(account: dict, secret: str) -> dict:
         "load_balancer": 0, "application_gateway": 0, "key_vault": 0,
         "container_instance": 0, "cdn_profile": 0, "vpn_gateway": 0,
         "data_factory": 0, "managed_disk": 0,
+        "extended_via_resource_graph": 0,
     }
     # (count_key, fn) pairs. Each service is wrapped individually rather
     # than in one big try/except — a single service that's unregistered
@@ -362,6 +365,8 @@ def discover_account_resources(account: dict, secret: str) -> dict:
         ("container_instance",    lambda: _discover_container_instances(cred, sub_id, account["id"], cursor)),
         ("cdn_profile",           lambda: _discover_cdn_profiles(cred, sub_id, account["id"], cursor)),
         ("data_factory",          lambda: _discover_data_factories(cred, sub_id, account["id"], cursor)),
+        ("extended_via_resource_graph",
+         lambda: discover_extended_via_resource_graph(cred, sub_id, account["id"], cursor)["matched"]),
     ]
 
     try:
@@ -380,3 +385,124 @@ def discover_account_resources(account: dict, secret: str) -> dict:
 
     logger.info(f"Azure discovery for {account.get('account_name')}: {counts}")
     return counts
+
+
+# ── Generic extended-tier discovery (Resource Graph) ─────────────────
+#
+# Mirrors app.aws.resource_discovery's Tagging-API sweep, but for Azure:
+# ONE Resource Graph query enumerates every resource in the subscription,
+# any type, cross-referenced against metric_catalog so anything already
+# registered (CURATED or DIRECTORY) gets a real `resources` row instead
+# of sitting inert. See this module's own top-of-file docstring context
+# and fix_azure_extended_resource_discovery.py for the full story.
+
+_NAMESPACE_CATEGORY = {
+    "microsoft.compute": "compute",
+    "microsoft.storage": "storage",
+    "microsoft.sql": "database",
+    "microsoft.dbformysql": "database",
+    "microsoft.dbforpostgresql": "database",
+    "microsoft.documentdb": "database",
+    "microsoft.cache": "database",
+    "microsoft.network": "networking",
+    "microsoft.keyvault": "security",
+    "microsoft.recoveryservices": "security",
+    "microsoft.security": "security",
+    "microsoft.servicebus": "messaging",
+    "microsoft.eventhub": "messaging",
+    "microsoft.notificationhubs": "messaging",
+    "microsoft.logic": "messaging",
+    "microsoft.synapse": "analytics",
+    "microsoft.databricks": "analytics",
+    "microsoft.apimanagement": "networking",
+    "microsoft.cdn": "networking",
+    "microsoft.web": "compute",
+    "microsoft.containerservice": "compute",
+    "microsoft.containerinstance": "compute",
+    "microsoft.operationalinsights": "analytics",
+}
+
+
+def _normalize_category(arm_type: str) -> str:
+    """Best-effort ARM namespace -> normalized_resource_type. Anything
+    not in the map falls back to \"other\" rather than guessing wrong --
+    reviewable/extendable, not meant to be exhaustive."""
+    ns = arm_type.split("/", 1)[0].lower()
+    return _NAMESPACE_CATEGORY.get(ns, "other")
+
+
+def _load_azure_namespace_map(cursor) -> dict:
+    """namespace (lowercased) -> service key, from every azure row in
+    metric_catalog -- both CURATED and DIRECTORY entries land there once
+    scripts/seed_multicloud_metric_catalog.py has been run."""
+    cursor.execute(
+        "SELECT DISTINCT service, namespace FROM metric_catalog WHERE provider = \'azure\' "
+        "AND namespace IS NOT NULL AND namespace != \'\'"
+    )
+    return {row[1].lower(): row[0] for row in cursor.fetchall() if row[0] and row[1]}
+
+
+def discover_extended_via_resource_graph(cred, sub_id, account_id, cursor) -> dict:
+    """
+    One generic Azure Resource Graph query enumerates EVERY resource in
+    the subscription, any type. Cross-referenced against every namespace
+    already registered in metric_catalog (CURATED + DIRECTORY) -- any
+    match gets a `resources` row via the same _upsert_resource used by
+    every per-type discovery function above.
+
+    Additive, not a replacement: the per-type functions above still run
+    first and give richer per-type tag/name handling for the services
+    worth that investment. Re-covering an already-curated resource here
+    is a harmless no-op UPDATE (UNIQUE KEY on resource_id+resource_type).
+
+    An ARM type with no metric_catalog entry is logged (capped,
+    deduplicated) and left alone -- not silently made to look monitorable.
+
+    Returns {"matched": int, "unrecognized_types": sorted list capped at 20}.
+    """
+    namespace_map = _load_azure_namespace_map(cursor)
+    if not namespace_map:
+        logger.warning("Azure extended discovery: metric_catalog has no azure rows -- "
+                        "run scripts/seed_multicloud_metric_catalog.py first. Skipping.")
+        return {"matched": 0, "unrecognized_types": []}
+
+    client = ResourceGraphClient(cred)
+    query = "Resources | project id, type, name, tags, location"
+
+    matched = 0
+    unrecognized = set()
+    skip_token = None
+    while True:
+        if skip_token is None:
+            request = QueryRequest(query=query, subscriptions=[sub_id])
+        else:
+            request = QueryRequest(query=query, subscriptions=[sub_id],
+                                    options=QueryRequestOptions(skip_token=skip_token))
+        response = client.resources(request)
+        rows = response.data or []
+
+        for r in rows:
+            arm_type = (r.get("type") or "").lower()
+            service_key = namespace_map.get(arm_type)
+            if not service_key:
+                unrecognized.add(arm_type)
+                continue
+            _upsert_resource(
+                cursor, account_id, service_key, r.get("id"),
+                r.get("name") or r.get("id"), r.get("tags") or {},
+                r.get("location"), _normalize_category(arm_type),
+            )
+            matched += 1
+
+        skip_token = getattr(response, "skip_token", None)
+        if not skip_token or not rows:
+            break
+
+    if unrecognized:
+        logger.info(
+            f"Azure extended discovery: {len(unrecognized)} resource type(s) with no "
+            f"metric_catalog entry (not monitorable until reviewed/added): "
+            f"{sorted(unrecognized)[:20]}"
+        )
+
+    return {"matched": matched, "unrecognized_types": sorted(unrecognized)[:20]}
