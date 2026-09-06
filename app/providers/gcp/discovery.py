@@ -446,25 +446,22 @@ def _match_asset_type(asset_type: str, exact_map: dict, domain_map: dict):
     return domain_map.get(domain)
 
 
-def discover_extended_via_asset_inventory(creds, project_id, account_id, cursor) -> dict:
+def _scan_asset_inventory(creds, project_id, cursor):
     """
-    One generic Cloud Asset Inventory query enumerates EVERY resource in
-    the project, any type. Matches (see _match_asset_type) get a
-    `resources` row AND are collected into a real service-key set that's
-    handed straight to enable_metrics_for_services() -- this is what
-    actually closes GCP's gap: auto-enable was the missing piece, not
-    resource inventory (collection already works fleet-wide once enabled).
+    Pure detection half of the Asset Inventory sweep -- makes NO database
+    writes and does NOT call enable_metrics_for_services. Shared by
+    discover_extended_via_asset_inventory (the real discovery cycle) and
+    detect_extended_service_keys (the onboarding wizard's Test Connection
+    preview, which has no account_id yet).
 
-    An asset type matching nothing in metric_catalog is logged (capped,
-    deduplicated) and left alone -- not silently made to look monitorable.
-
-    Returns {"matched": int, "unrecognized_types": sorted list capped at 20}.
+    Returns (matches, unrecognized): matches is a list of
+    {"service_key", "id", "name", "tags", "location"} dicts.
     """
     exact_map, domain_map = _load_gcp_namespace_maps(cursor)
     if not exact_map and not domain_map:
         logger.warning("GCP extended discovery: metric_catalog has no gcp rows -- "
                         "run scripts/seed_multicloud_metric_catalog.py first. Skipping.")
-        return {"matched": 0, "unrecognized_types": []}
+        return [], set()
 
     client = asset_v1.AssetServiceClient(credentials=creds)
     request = asset_v1.ListAssetsRequest(
@@ -472,8 +469,7 @@ def discover_extended_via_asset_inventory(creds, project_id, account_id, cursor)
         content_type=asset_v1.ContentType.RESOURCE,
     )
 
-    matched = 0
-    matched_service_keys = set()
+    matches = []
     unrecognized = set()
     for asset in client.list_assets(request=request):
         service_key = _match_asset_type(asset.asset_type, exact_map, domain_map)
@@ -491,10 +487,32 @@ def discover_extended_via_asset_inventory(creds, project_id, account_id, cursor)
 
         name = resource_data.get("name") or asset.name
         tags = resource_data.get("labels") or {}
+        matches.append({"service_key": service_key, "id": asset.name, "name": name,
+                         "tags": tags, "location": location})
 
-        _upsert_resource(cursor, account_id, service_key, asset.name, name, tags, location, "other")
-        matched += 1
-        matched_service_keys.add(service_key)
+    return matches, unrecognized
+
+
+def discover_extended_via_asset_inventory(creds, project_id, account_id, cursor) -> dict:
+    """
+    One generic Cloud Asset Inventory query enumerates EVERY resource in
+    the project, any type. Matches get a `resources` row AND are handed
+    straight to enable_metrics_for_services() -- this is what actually
+    closes GCP's gap: auto-enable was the missing piece, not resource
+    inventory (collection already works fleet-wide once enabled).
+
+    An asset type matching nothing in metric_catalog is logged (capped,
+    deduplicated) and left alone -- not silently made to look monitorable.
+
+    Returns {"matched": int, "unrecognized_types": sorted list capped at 20}.
+    """
+    matches, unrecognized = _scan_asset_inventory(creds, project_id, cursor)
+
+    matched_service_keys = set()
+    for m in matches:
+        _upsert_resource(cursor, account_id, m["service_key"], m["id"], m["name"],
+                          m["tags"], m["location"], "other")
+        matched_service_keys.add(m["service_key"])
 
     if unrecognized:
         logger.info(
@@ -512,4 +530,16 @@ def discover_extended_via_asset_inventory(creds, project_id, account_id, cursor)
                 f"across services={result['services']}"
             )
 
-    return {"matched": matched, "unrecognized_types": sorted(unrecognized)[:20]}
+    return {"matched": len(matches), "unrecognized_types": sorted(unrecognized)[:20]}
+
+
+def detect_extended_service_keys(creds, project_id, cursor) -> set:
+    """
+    Read-only variant for the onboarding wizard's Test Connection preview,
+    where no account_id exists yet to write resource rows against, and
+    nothing should be auto-enabled before the account is even saved. Same
+    detection as discover_extended_via_asset_inventory, just the set of
+    matched service keys.
+    """
+    matches, _ = _scan_asset_inventory(creds, project_id, cursor)
+    return {m["service_key"] for m in matches}

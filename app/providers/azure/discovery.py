@@ -442,6 +442,58 @@ def _load_azure_namespace_map(cursor) -> dict:
     return {row[1].lower(): row[0] for row in cursor.fetchall() if row[0] and row[1]}
 
 
+def _scan_resource_graph(cred, sub_id, cursor):
+    """
+    Pure detection half of the Resource Graph sweep -- makes NO database
+    writes. Shared by discover_extended_via_resource_graph (the real
+    discovery cycle, which upserts these into `resources`) and
+    detect_extended_service_keys (the onboarding wizard's Test Connection
+    preview, which has no account_id yet to write against).
+
+    Returns (matches, unrecognized): matches is a list of
+    {"service_key", "id", "name", "tags", "location", "category"} dicts;
+    unrecognized is the set of lowercased ARM types with no catalog entry.
+    """
+    namespace_map = _load_azure_namespace_map(cursor)
+    if not namespace_map:
+        logger.warning("Azure extended discovery: metric_catalog has no azure rows -- "
+                        "run scripts/seed_multicloud_metric_catalog.py first. Skipping.")
+        return [], set()
+
+    client = ResourceGraphClient(cred)
+    query = "Resources | project id, type, name, tags, location"
+
+    matches = []
+    unrecognized = set()
+    skip_token = None
+    while True:
+        if skip_token is None:
+            request = QueryRequest(query=query, subscriptions=[sub_id])
+        else:
+            request = QueryRequest(query=query, subscriptions=[sub_id],
+                                    options=QueryRequestOptions(skip_token=skip_token))
+        response = client.resources(request)
+        rows = response.data or []
+
+        for r in rows:
+            arm_type = (r.get("type") or "").lower()
+            service_key = namespace_map.get(arm_type)
+            if not service_key:
+                unrecognized.add(arm_type)
+                continue
+            matches.append({
+                "service_key": service_key, "id": r.get("id"),
+                "name": r.get("name") or r.get("id"), "tags": r.get("tags") or {},
+                "location": r.get("location"), "category": _normalize_category(arm_type),
+            })
+
+        skip_token = getattr(response, "skip_token", None)
+        if not skip_token or not rows:
+            break
+
+    return matches, unrecognized
+
+
 def discover_extended_via_resource_graph(cred, sub_id, account_id, cursor) -> dict:
     """
     One generic Azure Resource Graph query enumerates EVERY resource in
@@ -460,43 +512,13 @@ def discover_extended_via_resource_graph(cred, sub_id, account_id, cursor) -> di
 
     Returns {"matched": int, "unrecognized_types": sorted list capped at 20}.
     """
-    namespace_map = _load_azure_namespace_map(cursor)
-    if not namespace_map:
-        logger.warning("Azure extended discovery: metric_catalog has no azure rows -- "
-                        "run scripts/seed_multicloud_metric_catalog.py first. Skipping.")
-        return {"matched": 0, "unrecognized_types": []}
+    matches, unrecognized = _scan_resource_graph(cred, sub_id, cursor)
 
-    client = ResourceGraphClient(cred)
-    query = "Resources | project id, type, name, tags, location"
-
-    matched = 0
-    unrecognized = set()
-    skip_token = None
-    while True:
-        if skip_token is None:
-            request = QueryRequest(query=query, subscriptions=[sub_id])
-        else:
-            request = QueryRequest(query=query, subscriptions=[sub_id],
-                                    options=QueryRequestOptions(skip_token=skip_token))
-        response = client.resources(request)
-        rows = response.data or []
-
-        for r in rows:
-            arm_type = (r.get("type") or "").lower()
-            service_key = namespace_map.get(arm_type)
-            if not service_key:
-                unrecognized.add(arm_type)
-                continue
-            _upsert_resource(
-                cursor, account_id, service_key, r.get("id"),
-                r.get("name") or r.get("id"), r.get("tags") or {},
-                r.get("location"), _normalize_category(arm_type),
-            )
-            matched += 1
-
-        skip_token = getattr(response, "skip_token", None)
-        if not skip_token or not rows:
-            break
+    for m in matches:
+        _upsert_resource(
+            cursor, account_id, m["service_key"], m["id"], m["name"],
+            m["tags"], m["location"], m["category"],
+        )
 
     if unrecognized:
         logger.info(
@@ -505,4 +527,15 @@ def discover_extended_via_resource_graph(cred, sub_id, account_id, cursor) -> di
             f"{sorted(unrecognized)[:20]}"
         )
 
-    return {"matched": matched, "unrecognized_types": sorted(unrecognized)[:20]}
+    return {"matched": len(matches), "unrecognized_types": sorted(unrecognized)[:20]}
+
+
+def detect_extended_service_keys(cred, sub_id, cursor) -> set:
+    """
+    Read-only variant for the onboarding wizard's Test Connection preview,
+    where no account_id exists yet to write resource rows against. Same
+    detection as discover_extended_via_resource_graph, just the set of
+    matched service keys -- nothing written to the database.
+    """
+    matches, _ = _scan_resource_graph(cred, sub_id, cursor)
+    return {m["service_key"] for m in matches}

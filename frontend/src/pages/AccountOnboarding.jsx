@@ -260,14 +260,26 @@ export default function AccountOnboarding() {
           client_secret: form.client_secret.trim(),
         });
         setTestStatus("success");
-        setTestMsg(`Verified — ${r.resource_groups_visible} resource group(s) visible`);
+        setDetectedServices(r.detected_services || []);
+        setTestMsg(
+          r.detected_services && r.detected_services.length
+            ? `Verified — ${r.resource_groups_visible} resource group(s) visible, ${r.detected_services.length} service type(s) detected`
+            : `Verified — ${r.resource_groups_visible} resource group(s) visible (no extra service types detected yet; ` +
+              `defaults will be applied instead)`
+        );
       } else if (provider === "gcp") {
         const r = await testGcpCredentials({
           project_id: form.project_id.trim(),
           service_account_key: form.service_account_key.trim(),
         });
         setTestStatus("success");
-        setTestMsg(`Verified — project "${r.project_display_name || form.project_id}"`);
+        setDetectedServices(r.detected_services || []);
+        setTestMsg(
+          r.detected_services && r.detected_services.length
+            ? `Verified — project "${r.project_display_name || form.project_id}", ${r.detected_services.length} service type(s) detected`
+            : `Verified — project "${r.project_display_name || form.project_id}" (no extra service types detected yet; ` +
+              `defaults will be applied instead)`
+        );
       }
     } catch (err) {
       setTestStatus("error");
@@ -292,7 +304,12 @@ export default function AccountOnboarding() {
     // as source='discovered' rather than 'manual', and re-runs detection
     // server-side against the live account rather than trusting the
     // client's possibly-stale snapshot from Test Connection.
-    const useAutoDetect = provider === "aws" && detectedServices.length > 0 && !metricsEdited;
+    // Same condition for all three providers now -- AWS, Azure and GCP all
+    // have a real, working server-side auto-detect path in add_account()
+    // (see app/api/admin/accounts.py); this was previously gated to AWS
+    // only here on the frontend, which is what made the Azure/GCP branches
+    // of that backend logic unreachable despite being fully implemented.
+    const useAutoDetect = detectedServices.length > 0 && !metricsEdited;
 
     let body = {
       provider,
