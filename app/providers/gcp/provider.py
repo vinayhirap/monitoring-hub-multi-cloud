@@ -61,6 +61,54 @@ class GCPProvider(CloudProvider):
             return f"https://console.cloud.google.com/storage/browser/{name}?project={project_id}"
         if service == "cloudsql_instance":
             return f"https://console.cloud.google.com/sql/instances/{name}/overview?project={project_id}"
+        if service == "gke_cluster":
+            return (f"https://console.cloud.google.com/kubernetes/clusters/details/"
+                    f"{region}/{name}/details?project={project_id}")
+        if service == "cloudfunctions_function":
+            return (f"https://console.cloud.google.com/functions/details/"
+                    f"{region}/{name}?project={project_id}")
+        if service == "pubsub_topic":
+            return f"https://console.cloud.google.com/cloudpubsub/topic/detail/{name}?project={project_id}"
+        if service == "pubsub_subscription":
+            return f"https://console.cloud.google.com/cloudpubsub/subscription/detail/{name}?project={project_id}"
+        if service == "cloud_run_service":
+            return (f"https://console.cloud.google.com/run/detail/"
+                    f"{region}/{name}/metrics?project={project_id}")
+        if service == "redis_instance":
+            return (f"https://console.cloud.google.com/memorystore/redis/locations/"
+                    f"{region}/instances/{name}/details/overview?project={project_id}")
+        if service == "spanner_instance":
+            return f"https://console.cloud.google.com/spanner/instances/{name}/details/databases?project={project_id}"
+        if service == "gce_persistent_disk":
+            zone = region or ""
+            return (f"https://console.cloud.google.com/compute/disksDetail/"
+                    f"zones/{zone}/disks/{name}?project={project_id}")
+        if service == "bigquery_project":
+            # This catalog entry is project-scoped by design (BigQuery
+            # datasets/tables aren't tracked as individual `resources` rows)
+            # -- the BigQuery console itself, not a guess at a specific table.
+            return f"https://console.cloud.google.com/bigquery?project={project_id}"
+
+        # Real deep links deliberately NOT attempted here -- constructing
+        # one would require data this call site doesn't have (GKE node
+        # pools need their parent cluster name) or the URL genuinely
+        # varies by a sub-type this app doesn't track (Cloud Load
+        # Balancing differs for HTTP(S)/TCP/internal; Cloud NAT is a
+        # sub-resource of an untracked Cloud Router; Firestore's default
+        # database name isn't reliably URL-safe across all modes). A
+        # service-LIST page is still a real improvement over the fully
+        # generic project dashboard below, without pretending precision
+        # this doesn't have -- see this project's "do not fake support"
+        # principle (app/providers/base.py's module docstring).
+        if service == "gke_node":
+            return f"https://console.cloud.google.com/kubernetes/list/overview?project={project_id}"
+        if service == "cloud_lb":
+            return f"https://console.cloud.google.com/net-services/loadbalancing/list/loadBalancers?project={project_id}"
+        if service == "nat_gateway":
+            return f"https://console.cloud.google.com/net-services/nat/list?project={project_id}"
+        if service == "firestore_database":
+            return f"https://console.cloud.google.com/firestore/databases?project={project_id}"
+
         return f"https://console.cloud.google.com/home/dashboard?project={project_id}"
 
     def discover_resources(self) -> None:
