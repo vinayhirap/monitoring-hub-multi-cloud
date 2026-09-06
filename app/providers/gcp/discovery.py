@@ -28,6 +28,7 @@ from google.cloud import bigquery
 from google.cloud import firestore_admin_v1
 from google.cloud.spanner_admin_instance_v1 import InstanceAdminClient as SpannerInstanceAdminClient
 from googleapiclient.discovery import build as gapi_build
+from google.cloud import asset_v1
 
 logger = logging.getLogger(__name__)
 
@@ -361,6 +362,7 @@ def discover_account_resources(account: dict, sa_key_json: str) -> dict:
         "gke_cluster": 0, "gke_node": 0, "cloudfunctions_function": 0, "pubsub_topic": 0,
         "pubsub_subscription": 0, "cloud_lb": 0, "redis_instance": 0, "bigquery_project": 0,
         "spanner_instance": 0, "firestore_database": 0, "nat_gateway": 0, "gce_persistent_disk": 0,
+        "extended_via_asset_inventory": 0,
     }
     # Same fail-open pattern as Azure: a service that's never been enabled
     # for this project (API not turned on) or hits a permissions gap
@@ -382,6 +384,8 @@ def discover_account_resources(account: dict, sa_key_json: str) -> dict:
         ("firestore_database",       lambda: _discover_firestore_databases(creds, project_id, account["id"], cursor)),
         ("nat_gateway",              lambda: _discover_nat_gateways(creds, project_id, account["id"], cursor)),
         ("gce_persistent_disk",      lambda: _discover_persistent_disks(creds, project_id, account["id"], cursor)),
+        ("extended_via_asset_inventory",
+         lambda: discover_extended_via_asset_inventory(creds, project_id, account["id"], cursor)["matched"]),
     ]
 
     try:
@@ -400,3 +404,112 @@ def discover_account_resources(account: dict, sa_key_json: str) -> dict:
 
     logger.info(f"GCP discovery for {account.get('account_name')}: {counts}")
     return counts
+
+
+# ── Generic extended-tier detection (Cloud Asset Inventory) ──────────
+#
+# See fix_gcp_extended_service_detection.py for the full story on why
+# this is shaped differently from the Azure equivalent: GCP's metric
+# collector already works fleet-wide without `resources` rows, so the
+# real gap here is auto-enable, not collection.
+
+def _load_gcp_namespace_maps(cursor) -> tuple[dict, dict]:
+    """
+    Returns (exact_map, domain_map):
+      exact_map:  full namespace (lowercased) -> service key
+      domain_map: service-domain prefix (before first "/") -> service key,
+                  ONLY for domains that map to exactly one service key
+                  (ambiguous domains are deliberately excluded).
+    """
+    cursor.execute(
+        "SELECT DISTINCT service, namespace FROM metric_catalog WHERE provider = \'gcp\' "
+        "AND namespace IS NOT NULL AND namespace != \'\'"
+    )
+    rows = [(r[0], r[1]) for r in cursor.fetchall() if r[0] and r[1]]
+
+    exact_map = {ns.lower(): service for service, ns in rows}
+
+    domain_candidates = {}
+    for service, ns in rows:
+        domain = ns.split("/", 1)[0].lower()
+        domain_candidates.setdefault(domain, set()).add(service)
+    domain_map = {d: next(iter(s)) for d, s in domain_candidates.items() if len(s) == 1}
+
+    return exact_map, domain_map
+
+
+def _match_asset_type(asset_type: str, exact_map: dict, domain_map: dict):
+    at = (asset_type or "").lower()
+    if at in exact_map:
+        return exact_map[at]
+    domain = at.split("/", 1)[0]
+    return domain_map.get(domain)
+
+
+def discover_extended_via_asset_inventory(creds, project_id, account_id, cursor) -> dict:
+    """
+    One generic Cloud Asset Inventory query enumerates EVERY resource in
+    the project, any type. Matches (see _match_asset_type) get a
+    `resources` row AND are collected into a real service-key set that's
+    handed straight to enable_metrics_for_services() -- this is what
+    actually closes GCP's gap: auto-enable was the missing piece, not
+    resource inventory (collection already works fleet-wide once enabled).
+
+    An asset type matching nothing in metric_catalog is logged (capped,
+    deduplicated) and left alone -- not silently made to look monitorable.
+
+    Returns {"matched": int, "unrecognized_types": sorted list capped at 20}.
+    """
+    exact_map, domain_map = _load_gcp_namespace_maps(cursor)
+    if not exact_map and not domain_map:
+        logger.warning("GCP extended discovery: metric_catalog has no gcp rows -- "
+                        "run scripts/seed_multicloud_metric_catalog.py first. Skipping.")
+        return {"matched": 0, "unrecognized_types": []}
+
+    client = asset_v1.AssetServiceClient(credentials=creds)
+    request = asset_v1.ListAssetsRequest(
+        parent=f"projects/{project_id}",
+        content_type=asset_v1.ContentType.RESOURCE,
+    )
+
+    matched = 0
+    matched_service_keys = set()
+    unrecognized = set()
+    for asset in client.list_assets(request=request):
+        service_key = _match_asset_type(asset.asset_type, exact_map, domain_map)
+        if not service_key:
+            unrecognized.add((asset.asset_type or "").lower())
+            continue
+
+        resource_data = {}
+        location = None
+        try:
+            resource_data = dict(asset.resource.data) if asset.resource else {}
+            location = asset.resource.location if asset.resource else None
+        except Exception:
+            pass  # best-effort -- some asset types don't populate resource.data the same way
+
+        name = resource_data.get("name") or asset.name
+        tags = resource_data.get("labels") or {}
+
+        _upsert_resource(cursor, account_id, service_key, asset.name, name, tags, location, "other")
+        matched += 1
+        matched_service_keys.add(service_key)
+
+    if unrecognized:
+        logger.info(
+            f"GCP extended discovery: {len(unrecognized)} asset type(s) with no "
+            f"metric_catalog entry (not monitorable until reviewed/added): "
+            f"{sorted(unrecognized)[:20]}"
+        )
+
+    if matched_service_keys:
+        from app.api.metric_catalog import enable_metrics_for_services
+        result = enable_metrics_for_services(account_id, matched_service_keys, provider="gcp", source="discovered")
+        if result["added"]:
+            logger.info(
+                f"GCP extended discovery: auto-enabled {result['added']} metric(s) "
+                f"across services={result['services']}"
+            )
+
+    return {"matched": matched, "unrecognized_types": sorted(unrecognized)[:20]}
