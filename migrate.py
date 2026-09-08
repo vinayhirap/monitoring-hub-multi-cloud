@@ -112,7 +112,10 @@ def get_applied(conn) -> dict:
 def list_migration_files():
     if not MIGRATIONS_DIR.exists():
         raise MigrateError(f"Migrations directory not found: {MIGRATIONS_DIR}")
-    return sorted(p.name for p in MIGRATIONS_DIR.glob("*.sql"))
+    return sorted(
+        p.name for p in MIGRATIONS_DIR.glob("*.sql")
+        if not p.name.endswith("_rollback.sql")
+    )
 
 
 def cmd_status(conn):
