@@ -12,9 +12,12 @@ apply_dashboard_charts_metric_history.py):
     fields, all of ECS) -- see apply_dashboard_charts_metric_history.py's
     docstring for the one real gap this created (EBS burst_balance has
     no fallback and is now permanently empty).
-  - LIST-view snapshot functions (_ec2_raw, _ebs_raw, etc. -- "every
-    resource's current value in one call") still read from VM via
-    vm_query_all. NOT yet converted -- Phase 4b, still open.
+  - LIST-view snapshot functions (_ec2_raw, _ebs_raw) now read from the
+    `metrics` last-value cache too (Phase 4b, see
+    apply_list_view_snapshots_metrics.py). check_and_write_alerts()
+    (below) has its OWN separate, still-VM-dependent alerting logic --
+    NOT part of Phase 4a/4b, found but deliberately not touched yet
+    (needs its own investigation first -- see that script's docstring).
   - S3: still boto3-only, unrelated to VM either way.
   - EC2 StatusCheckFailed (used only by check_and_write_alerts, below)
     reads from the FREE Describe-API path (app/aws/describe_polling.py)
@@ -26,10 +29,44 @@ Two GMD helpers (unchanged, still used for the boto3 fallback paths):
 """
 import boto3, logging, time, math
 from datetime import datetime, timedelta, timezone
-from app.clients.vm_client import vm_query, vm_query_all
+from app.clients.vm_client import vm_query  # vm_query_all retired here -- see apply_list_view_snapshots_metrics.py (Phase 4b). Still imported: vm_query, used only by check_and_write_alerts() below (NOT yet converted -- separate, not-yet-investigated legacy alert path, see this script's docstring).
 from app.db import get_connection
 
 logger = logging.getLogger(__name__)
+
+
+def _metric_snapshot_query_all(resource_type, db_metric_name):
+    """
+    Drop-in replacement for vm_client.vm_query_all's role in the
+    list-view snapshot functions below (_ec2_raw, _ebs_raw): every
+    resource's CURRENT value in one query, keyed by resources.resource_id
+    (bare instance_id/volume_id -- both list views only use resource_id-
+    based matching, same convention Phase 4a confirmed and used).
+    Reads the `metrics` last-value cache Phase 1's GMD collector already
+    maintains -- no time range needed, this is a snapshot, not a series.
+    Returns {} on any error -- same never-raises contract vm_query_all
+    had. See apply_list_view_snapshots_metrics.py (Phase 4b).
+    """
+    out = {}
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """SELECT r.resource_id, m.metric_value
+                   FROM metrics m JOIN resources r ON r.id = m.resource_id
+                   WHERE r.resource_type = %s AND m.metric_name = %s""",
+                (resource_type, db_metric_name),
+            )
+            for row in cur.fetchall():
+                if row["metric_value"] is not None:
+                    out[row["resource_id"]] = float(row["metric_value"])
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        logger.warning(f"metric snapshot query_all failed [{resource_type}/{db_metric_name}]: {e}")
+    return out
 
 
 def _metric_history_query_range(resource_type, identifier, db_metric_name,
@@ -242,11 +279,12 @@ def _ec2_raw(region, role_arn=None, external_id=None) -> list:
             for inst in r["Instances"]:
                 instances.append(inst)
 
-        # One VM call per metric gets EVERY instance's current value at once —
-        # no need to loop per-instance like the old GMD approach.
-        cpu_map    = vm_query_all("aws_ec2_cpuutilization_average", "dimension_InstanceId")
-        netin_map  = vm_query_all("aws_ec2_network_in_average",      "dimension_InstanceId")
-        netout_map = vm_query_all("aws_ec2_network_out_average",     "dimension_InstanceId")
+        # One DB query per metric gets EVERY instance's current value at
+        # once -- same "one call, not one per instance" shape the VM call
+        # this replaces had, just against the local `metrics` cache now.
+        cpu_map    = _metric_snapshot_query_all("ec2", "cpuutilization")
+        netin_map  = _metric_snapshot_query_all("ec2", "networkin")
+        netout_map = _metric_snapshot_query_all("ec2", "networkout")
 
         out = []
         for inst in instances:
@@ -269,7 +307,7 @@ def _ec2_raw(region, role_arn=None, external_id=None) -> list:
                 "tags":              tags,
             })
         running = [i for i in instances if i["State"]["Name"] == "running"]
-        logger.info(f"EC2: {len(out)} in {region} ({len(running)} running, via VM)")
+        logger.info(f"EC2: {len(out)} in {region} ({len(running)} running, via metrics cache)")
         return out
     except Exception as e:
         logger.error(f"EC2 [{region}]: {e}"); return []
@@ -285,12 +323,20 @@ def _ebs_raw(region, role_arn=None, external_id=None) -> list:
         ec2  = get_session(region, role_arn, external_id).client("ec2")
         vols = ec2.describe_volumes().get("Volumes", [])
 
-        read_ops_map  = vm_query_all("aws_ebs_volume_read_ops_average",     "dimension_VolumeId")
-        write_ops_map = vm_query_all("aws_ebs_volume_write_ops_average",    "dimension_VolumeId")
-        read_b_map    = vm_query_all("aws_ebs_volume_read_bytes_average",   "dimension_VolumeId")
-        write_b_map   = vm_query_all("aws_ebs_volume_write_bytes_average",  "dimension_VolumeId")
-        queue_map     = vm_query_all("aws_ebs_volume_queue_length_average", "dimension_VolumeId")
-        burst_map     = vm_query_all("aws_ebs_burst_balance_average", "dimension_VolumeId")
+        read_ops_map  = _metric_snapshot_query_all("ebs", "volumereadops")
+        write_ops_map = _metric_snapshot_query_all("ebs", "volumewriteops")
+        read_b_map    = _metric_snapshot_query_all("ebs", "volumereadbytes")
+        write_b_map   = _metric_snapshot_query_all("ebs", "volumewritebytes")
+        queue_map     = _metric_snapshot_query_all("ebs", "volumequeuelength")
+        # burst_balance: Phase 1's GMD collector never collects this
+        # (dropped per its own triage note, "gp3 irrelevant") -- always
+        # empty now, same documented gap as the EBS chart-detail page
+        # (Phase 4a). Unlike that page, this list view's burst_balance
+        # column has always defaulted to 0.0 via .get(vid, 0.0) below
+        # rather than showing "no data", so the visible behavior here is
+        # unchanged either way -- just always 0.0 now instead of
+        # sometimes-VM-sometimes-0.0.
+        burst_map     = _metric_snapshot_query_all("ebs", "volumeburstbalance")
 
         out = []
         for v in vols:
