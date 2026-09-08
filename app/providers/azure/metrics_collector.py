@@ -1,15 +1,19 @@
 # app/providers/azure/metrics_collector.py
 """
 Pulls metric VALUES for an Azure account's enabled metric selection and
-pushes them into VictoriaMetrics.
+writes them DIRECTLY into the local `metrics` last-value cache and
+`metric_history` table -- Azure's counterpart to Phase 1's AWS direct
+GetMetricData revival (see apply_direct_gmd_metrics_revival.py). Before
+Phase 2 (apply_azure_direct_metrics_fetch.py) this pushed into
+VictoriaMetrics instead, and metrics_vm_sync.py pulled the values back out
+again for alert_evaluator.py to read -- an unnecessary VM round-trip once
+Azure Monitor is already being called directly here. GCP is unaffected --
+see Phase 3.
 
-Why this exists: AWS's tiered pipeline is YACE (a standalone Prometheus
-exporter binary) scraping CloudWatch and pushing to VM on its own -- no
-Python collector loop is involved for AWS metric *values* anymore (see
-app/collector/scheduler.py's comment: "GMD collection skipped -- VM/YACE
-migration in progress"). There is no YACE-equivalent for Azure, so
-something has to actively pull Azure Monitor and push to VM. This is that
-something.
+Why a Python collector loop exists here at all (unlike AWS, which uses
+YACE, a standalone Prometheus exporter binary scraping CloudWatch on its
+own): there is no YACE-equivalent for Azure, so something has to actively
+pull Azure Monitor. This is that something.
 
 Cost note (different from AWS): Azure Monitor's platform-metric READ API
 (what MetricsClient.query_resources calls) is NOT billed per-call the way
@@ -27,22 +31,15 @@ metrics costs exactly 1 API call per collection cycle for that service,
 not 30 or 180.
 """
 import logging
-import re
 from datetime import timedelta
 
 from app.db import get_connection
 from app.credentials import load_credential
-from app.clients.vm_client import vm_write_batch
+from app.collector.metrics_writer import write_metrics_batch, write_metric_history_batch
 
 logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 50  # Azure Monitor Metrics Batch API hard limit per call
-
-
-def _slug(name: str) -> str:
-    """'Percentage CPU' -> 'percentage_cpu' for the VM metric name suffix."""
-    s = re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_").lower()
-    return s or "value"
 
 
 def _enabled_azure_metrics(cur, account_id: int):
@@ -136,31 +133,41 @@ def collect_account_metrics(account: dict) -> dict:
                 # order as resource_ids -- there's no resource_id field on
                 # the result object itself (verified against the SDK's
                 # MetricsQueryResult dataclass), so map back positionally.
-                series = []
+                #
+                # metrics_rows: (resource_db_id, metric_name, value) -> latest
+                #   value only, upserted into `metrics` for alert_evaluator.py.
+                # history_rows: (resource_db_id, metric_name, value, timestamp)
+                #   -> every returned datapoint, appended into `metric_history`.
+                # metric_name here is metric.name, the SDK's echo of the exact
+                # string this account's metric_catalog row requested -- matches
+                # what metrics_vm_sync.py's _sync_azure_gcp_metrics() used to
+                # write into `metrics` from VM, and what alert_evaluator.py's
+                # join against metric_catalog expects.
+                metrics_rows = []
+                history_rows = []
                 for resource_row, query_result in zip(chunk, query_results):
                     for metric in query_result.metrics:
                         for ts_elem in metric.timeseries:
                             if not ts_elem.data:
                                 continue
+                            for point in ts_elem.data:
+                                value = point.average
+                                if value is None:
+                                    continue
+                                history_rows.append((
+                                    resource_row["id"], metric.name,
+                                    float(value), point.timestamp,
+                                ))
                             latest = ts_elem.data[-1]  # most recent datapoint in the window
                             value = latest.average
                             if value is None:
                                 continue
-                            series.append({
-                                "metric": f"azure_{service}_{_slug(metric.name)}",
-                                "labels": {
-                                    "account_id": str(account["id"]),
-                                    "resource_id": resource_row["resource_id"],
-                                    "resource_name": resource_row["name"] or "",
-                                    "region": region,
-                                },
-                                "value": float(value),
-                            })
-                if series:
-                    if vm_write_batch(series):
-                        result["pushed"] += len(series)
-                    else:
-                        result["errors"].append(f"{service}: VM write failed for {len(series)} points")
+                            metrics_rows.append((resource_row["id"], metric.name, float(value)))
+                if metrics_rows:
+                    write_metrics_batch(metrics_rows)
+                    result["pushed"] += len(metrics_rows)
+                if history_rows:
+                    write_metric_history_batch(history_rows)
     finally:
         cur.close(); conn.close()
 
