@@ -45,7 +45,7 @@ def run_once():
         gcp_result = collect_all_gcp_accounts()
         logger.info(
             f"[multicloud] GCP: {gcp_result['accounts']} account(s), "
-            f"{gcp_result['pushed']} datapoints pushed"
+            f"{gcp_result['pushed']} datapoints written directly (Phase 3 -- no longer via VM)"
             + (f", {len(gcp_result['errors'])} account(s) had errors" if gcp_result["errors"] else "")
         )
     except Exception as e:
