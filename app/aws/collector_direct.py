@@ -29,7 +29,7 @@ Two GMD helpers (unchanged, still used for the boto3 fallback paths):
 """
 import boto3, logging, time, math
 from datetime import datetime, timedelta, timezone
-from app.clients.vm_client import vm_query  # vm_query_all retired here -- see apply_list_view_snapshots_metrics.py (Phase 4b). Still imported: vm_query, used only by check_and_write_alerts() below (NOT yet converted -- separate, not-yet-investigated legacy alert path, see this script's docstring).
+# vm_client fully retired from THIS file (apply_final_cleanup.py): vm_query_all went in Phase 4b, vm_query's only use (StatusCheckFailed) is fixed by describe_polling.py now also writing locally. vm_client.py itself is NOT retired overall -- see that script's docstring for its one remaining legitimate use (ALB target-group health, external-Grafana-compatible, in app/aws/describe_polling.py).
 from app.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -1719,6 +1719,14 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> li
         ("ec2", "NetworkOut"):      "networkout",
         ("ec2", "DiskReadBytes"):   "diskreadbytes",
         ("ec2", "DiskWriteBytes"):  "diskwritebytes",
+        # Fixed here (apply_final_cleanup.py) -- Phase 5 documented this
+        # as "left on vm_query()" but its own patch actually removed the
+        # vm_query() path entirely, so this was silently falling through
+        # to a real billed CloudWatch call. app/aws/describe_polling.py
+        # now also writes this into the local `metrics` table (in
+        # addition to its existing VM push, unchanged), so it belongs
+        # here for real now.
+        ("ec2", "StatusCheckFailed"): "statuscheckfailed",
 
         ("ebs", "VolumeQueueLength"): "volumequeuelength",
         ("ebs", "VolumeReadOps"):     "volumereadops",
