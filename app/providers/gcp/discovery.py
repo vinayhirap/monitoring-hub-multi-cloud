@@ -64,6 +64,16 @@ def _discover_compute_instances(creds, project_id, account_id, cursor) -> int:
         zone_name = zone.split("/")[-1]
         for inst in response.instances:
             labels = dict(inst.labels or {})
+            # Cloud Monitoring's gce_instance monitored resource only exposes
+            # the NUMERIC instance ID (see
+            # https://docs.cloud.google.com/monitoring/api/resources#tag_gce_instance),
+            # never the name -- but resource_id below (and everything else this
+            # app matches against) is name-based. Stash the numeric ID discovery
+            # already has in hand so Phase 3's direct-fetch collector
+            # (app/providers/gcp/metrics_collector.py) can resolve metrics back
+            # to this resource without an extra API call. See
+            # apply_gcp_direct_metrics_fetch.py.
+            labels["_gcp_numeric_id"] = str(inst.id)
             resource_id = f"projects/{project_id}/zones/{zone_name}/instances/{inst.name}"
             _upsert_resource(
                 cursor, account_id, "compute_instance", resource_id, inst.name,
