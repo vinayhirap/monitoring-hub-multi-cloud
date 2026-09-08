@@ -240,7 +240,16 @@ def sync_metrics_from_vm() -> int:
         logger.info("VM metrics sync: no enabled thresholds -- nothing to do")
         return 0
 
-    other_rows = [r for r in rows if (r.get("provider") or "aws") != "aws"]
+    # Azure is intentionally NOT synced from VM here anymore (Phase 2, see
+    # apply_azure_direct_metrics_fetch.py): app/providers/azure/metrics_collector.py
+    # now writes Azure's last-value cache directly from Azure Monitor, and
+    # multicloud_scheduler.py runs it on its own interval, independent of this
+    # sync job. If this function also synced Azure from VM afterward, it would
+    # race with those direct writes and could silently overwrite fresher values
+    # with stale/duplicate VM data on every cycle -- the same correctness bug
+    # Phase 1's AWS exclusion fixed. GCP is unaffected and still syncs from VM
+    # exactly as before, until Phase 3 replaces that too.
+    other_rows = [r for r in rows if (r.get("provider") or "aws") not in ("aws", "azure")]
 
     other_datapoints, other_skipped, other_matched = _sync_azure_gcp_metrics(other_rows)
 
@@ -255,12 +264,12 @@ def sync_metrics_from_vm() -> int:
             f"{prov}:{svc}/{metric} x{n}" for (prov, svc, metric), n in sorted(other_skipped.items())
         ]
         logger.info(
-            f"VM metrics sync (azure/gcp only -- AWS now handled by direct GMD): "
+            f"VM metrics sync (gcp only -- AWS + Azure now handled directly): "
             f"{matched} written, {total_skipped} skipped (no VM series yet) -- "
             f"{', '.join(detail_parts)}"
         )
     else:
-        logger.info(f"VM metrics sync (azure/gcp only -- AWS now handled by direct GMD): "
+        logger.info(f"VM metrics sync (gcp only -- AWS + Azure now handled directly): "
                      f"{matched} written, 0 skipped")
 
     return matched

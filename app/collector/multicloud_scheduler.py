@@ -35,7 +35,7 @@ def run_once():
         azure_result = collect_all_azure_accounts()
         logger.info(
             f"[multicloud] Azure: {azure_result['accounts']} account(s), "
-            f"{azure_result['pushed']} datapoints pushed"
+            f"{azure_result['pushed']} datapoints written directly (Phase 2 -- no longer via VM)"
             + (f", {len(azure_result['errors'])} account(s) had errors" if azure_result["errors"] else "")
         )
     except Exception as e:
