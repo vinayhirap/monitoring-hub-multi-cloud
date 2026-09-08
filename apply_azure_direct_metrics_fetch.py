@@ -410,7 +410,18 @@ def prepare_patch(path, label, replacements, done_marker):
     new_content = content
     for old, new in replacements:
         n = new_content.count(old)
-        if n != 1:
+        if n == 0:
+            # Not necessarily an error: a LATER phase script may have
+            # already rewritten this exact region (e.g. Phase 3 fully
+            # replacing sync_metrics_from_vm()'s body supersedes Phase
+            # 1/2's own edits to it, including whatever marker text
+            # those scripts check for). Treat "expected text absent, and
+            # it's not an ambiguous multi-match" as "already handled
+            # elsewhere" and skip gracefully rather than aborting -- see
+            # fix_deploy_script_drift.py for the chain-idempotency
+            # incident this caught.
+            return None, f"{label}: expected block not found (likely superseded by a later phase) -- skipping."
+        if n > 1:
             die(f"{label}: expected exactly 1 match for one of the expected blocks, found {n}. "
                 f"File may differ from what this script expects.")
         new_content = new_content.replace(old, new, 1)
@@ -420,10 +431,11 @@ def prepare_patch(path, label, replacements, done_marker):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--apply", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--apply", action="store_true",
+                        help="(default behavior; kept for backward compatibility with earlier docs/runbooks)")
+    parser.add_argument("--dry-run", action="store_true", help="preview only, make no changes")
     args = parser.parse_args()
-    apply_ = args.apply and not args.dry_run
+    apply_ = not args.dry_run
 
     repo_root = find_repo_root()
     print(f"Repo root: {repo_root}")
