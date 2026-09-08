@@ -22,12 +22,22 @@ Metric names pushed:
   aws_ec2_status_check_failed_describe{dimension_InstanceId="..."}   0|1
   aws_alb_healthy_host_count_describe{dimension_TargetGroup="..."}   int
   aws_alb_unhealthy_host_count_describe{dimension_TargetGroup="..."} int
+
+EC2 StatusCheckFailed is ALSO written into the local `metrics` table
+(see poll_ec2_status() below) -- so check_and_write_alerts() (Settings'
+"Check Thresholds Now") can read it locally instead of falling through
+to a real, billed CloudWatch call. Fixed a real bug found while
+investigating this file for Phase 5 -- see apply_final_cleanup.py.
+ALB target-group health stays VM-only: no "target_group" resource type
+exists in `resources` to write against, and this module's external-
+Grafana-compatible push (see above) is the only known consumer for it.
 """
 import time
 import logging
 import requests
 
 from app.db import get_connection
+from app.collector.metrics_writer import write_metrics_batch
 from app.aws.collector_direct import get_session
 from app.clients.vm_client import VM_URL
 
@@ -55,7 +65,7 @@ def _get_ec2_instances_by_region():
     try:
         cur.execute("""
             SELECT a.id AS account_db_id, a.role_arn, a.external_id, a.default_region,
-                   r.resource_id
+                   r.id AS resource_db_id, r.resource_id
             FROM resources r
             JOIN aws_accounts a ON a.id = r.aws_account_id
             WHERE r.resource_type = 'ec2'
@@ -69,7 +79,7 @@ def _get_ec2_instances_by_region():
     grouped = {}
     for row in rows:
         key = (row["account_db_id"], row["role_arn"], row["external_id"], row["default_region"])
-        grouped.setdefault(key, []).append(row["resource_id"])
+        grouped.setdefault(key, []).append((row["resource_id"], row["resource_db_id"]))
     return grouped
 
 
@@ -87,14 +97,17 @@ def poll_ec2_status() -> int:
     it costs nothing extra to run often. Returns count of instances polled.
     """
     total = 0
-    for (account_db_id, role_arn, external_id, region), instance_ids in _get_ec2_instances_by_region().items():
-        if not region or not instance_ids:
+    for (account_db_id, role_arn, external_id, region), instance_pairs in _get_ec2_instances_by_region().items():
+        if not region or not instance_pairs:
             continue
+        instance_ids = [iid for iid, _rdid in instance_pairs]
+        resource_db_id_by_iid = dict(instance_pairs)
         try:
             session = _session_for(role_arn, external_id, region)
             ec2 = session.client("ec2", region_name=region)
             ts = int(time.time() * 1000)
             lines = []
+            local_rows = []  # (resource_db_id, "statuscheckfailed", value) for the `metrics` table
             # DescribeInstanceStatus accepts up to 100 IDs per call — chunk defensively.
             for i in range(0, len(instance_ids), 100):
                 chunk = instance_ids[i:i + 100]
@@ -107,7 +120,12 @@ def poll_ec2_status() -> int:
                     lines.append(
                         f'aws_ec2_status_check_failed_describe{{dimension_InstanceId="{iid}",dimension_AccountId="{account_db_id}"}} {failed} {ts}'
                     )
+                    resource_db_id = resource_db_id_by_iid.get(iid)
+                    if resource_db_id is not None:
+                        local_rows.append((resource_db_id, "statuscheckfailed", float(failed)))
             _push_to_vm(lines)
+            if local_rows:
+                write_metrics_batch(local_rows)
             total += len(instance_ids)
         except Exception as e:
             logger.warning(f"describe_polling: EC2 status [{region}, account {account_db_id}]: {e}")
