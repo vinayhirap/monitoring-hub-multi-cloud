@@ -24,7 +24,7 @@ def _get_secret() -> str:
         raise RuntimeError(
             "JWT_SECRET is not set. Generate one and add it to your .env file:\n"
             "  python -c \"import secrets; print(secrets.token_hex(32))\"\n"
-            "then add JWT_SECRET=<the printed value> to .env (and .env.production on the server)."
+            "then add JWT_SECRET=<the printed value> to .env."
         )
     return secret
 

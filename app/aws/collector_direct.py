@@ -2,30 +2,23 @@
 """
 Live data collector for frontend detail pages.
 
-MIGRATION STATE (cost-optimization pass):
-  - EC2 / EBS / RDS metrics: VM-backed (fed by YACE), no boto3.
-  - ALB: all 8 metrics are VM-first with automatic per-metric boto3 fallback
-    (_get_elb_metric_series) — the 2 metrics YACE previously never scraped
-    (HTTPCode_ELB_5XX_Count, NewConnectionCount) now work the same way once
-    you enable them in the Metric Catalog and redeploy the YACE config.
-  - ECS: AWS/ECS CPUUtilization/MemoryUtilization are VM-first with boto3
-    fallback; ECS/ContainerInsights task-count fields stay boto3-only
-    (metric-name convention for that namespace not yet verified live).
-  - Lambda: VM-first with boto3 fallback (metric-name convention derived
-    from the confirmed EC2/RDS/ALB pattern but not yet verified live —
-    check `curl $VM_URL/api/v1/label/__name__/values | grep aws_lambda`
-    after first deploy).
-  - S3: still boto3-only (StorageType-dimensioned metrics need YACE storage-
-    type config which hasn't been set up; low call volume already since
-    this is only hit on a per-bucket detail-page click, not a poll loop).
-  - EC2 StatusCheckFailed (used only by check_and_write_alerts, below) now
+MIGRATION STATE (Phase 4a of removing VictoriaMetrics -- see
+apply_dashboard_charts_metric_history.py):
+  - EC2 / EBS / RDS / Lambda / ELB / ECS chart-detail series (the 6
+    get_*/_get_*_metric_series functions) now read from the local
+    metric_history table (written by Phase 1's GMD collector), not VM.
+    Lambda/ELB/ECS keep their existing automatic boto3 fallback for
+    metrics Phase 1 doesn't collect (ConcurrentExecutions, several ELB
+    fields, all of ECS) -- see apply_dashboard_charts_metric_history.py's
+    docstring for the one real gap this created (EBS burst_balance has
+    no fallback and is now permanently empty).
+  - LIST-view snapshot functions (_ec2_raw, _ebs_raw, etc. -- "every
+    resource's current value in one call") still read from VM via
+    vm_query_all. NOT yet converted -- Phase 4b, still open.
+  - S3: still boto3-only, unrelated to VM either way.
+  - EC2 StatusCheckFailed (used only by check_and_write_alerts, below)
     reads from the FREE Describe-API path (app/aws/describe_polling.py)
-    instead of CloudWatch/YACE — zero GetMetricData cost, sub-second fresh.
-
-Every VM-first function above falls back to boto3 automatically per-metric
-if VM has no data yet, so all of this is safe to ship before the
-corresponding YACE config is actually deployed — cost drops to zero for a
-given metric only once VM genuinely has fresh data for it.
+    instead of CloudWatch — zero GetMetricData cost, sub-second fresh.
 
 Two GMD helpers (unchanged, still used for the boto3 fallback paths):
   _gmd_snapshot(cw, queries)  — latest single value per metric (for list views)
@@ -33,9 +26,54 @@ Two GMD helpers (unchanged, still used for the boto3 fallback paths):
 """
 import boto3, logging, time, math
 from datetime import datetime, timedelta, timezone
-from app.clients.vm_client import vm_query, vm_query_all, vm_query_range
+from app.clients.vm_client import vm_query, vm_query_all
+from app.db import get_connection
 
 logger = logging.getLogger(__name__)
+
+
+def _metric_history_query_range(resource_type, identifier, db_metric_name,
+                                 start_dt, end_dt, match_field="resource_id"):
+    """
+    Drop-in replacement for vm_client.vm_query_range's role in the 6
+    chart-series functions below. Reads app/collector/metrics/runner.py's
+    (Phase 1) local metric_history table instead of VictoriaMetrics.
+    Returns the SAME shape vm_query_range did:
+      [{"t": iso_timestamp, "v": rounded_float}, ...] oldest -> newest.
+    Returns [] on no matching resource, no data in range, or any error --
+    same never-raises, degrade-to-empty contract vm_query_range already
+    had. match_field is always one of the two literal strings this file
+    passes in below ("resource_id" or "name"), never user input.
+    """
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                f"SELECT id FROM resources WHERE resource_type = %s AND {match_field} = %s LIMIT 1",
+                (resource_type, identifier),
+            )
+            row = cur.fetchone()
+            if not row:
+                return []
+            cur.execute(
+                """SELECT metric_value, metric_timestamp FROM metric_history
+                   WHERE resource_id = %s AND metric_name = %s
+                         AND metric_timestamp BETWEEN %s AND %s
+                   ORDER BY metric_timestamp""",
+                (row["id"], db_metric_name, start_dt, end_dt),
+            )
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+            conn.close()
+        return [
+            {"t": r["metric_timestamp"].isoformat(), "v": round(float(r["metric_value"]), 2)}
+            for r in rows if r["metric_value"] is not None
+        ]
+    except Exception as e:
+        logger.warning(f"metric_history query_range failed [{resource_type}/{identifier}/{db_metric_name}]: {e}")
+        return []
 
 _cache: dict = {}
 _CACHE_TTL   = 60
@@ -1141,12 +1179,8 @@ def get_ec2_metric_series(instance_id, region=None, hours=6) -> dict:
         period = _smart_period(hours)
         dim    = f'dimension_InstanceId="{instance_id}"'
 
-        def s(yace_metric):
-            return vm_query_range(
-                f'{yace_metric}{{{dim}}}',
-                start=int(start.timestamp()), end=int(end.timestamp()),
-                step=f"{period}s",
-            )
+        def s(db_metric_name):
+            return _metric_history_query_range("ec2", instance_id, db_metric_name, start, end)
 
         cwagent_installed = _ec2_cwagent_installed(instance_id, region)
 
@@ -1183,11 +1217,11 @@ def get_ec2_metric_series(instance_id, region=None, hours=6) -> dict:
 
         return {
             "instance_id":       instance_id,
-            "cpu":               s("aws_ec2_cpuutilization_average"),
-            "network_in":        s("aws_ec2_network_in_average"),
-            "network_out":       s("aws_ec2_network_out_average"),
-            "disk_read":         s("aws_ec2_disk_read_bytes_sum"),
-            "disk_write":        s("aws_ec2_disk_write_bytes_sum"),
+            "cpu":               s("cpuutilization"),
+            "network_in":        s("networkin"),
+            "network_out":       s("networkout"),
+            "disk_read":         s("diskreadbytes"),
+            "disk_write":        s("diskwritebytes"),
             "cwagent_installed": cwagent_installed,
             "mem_utilization":   mem_utilization,
             "disk_used_percent": disk_used_percent,
@@ -1210,20 +1244,23 @@ def _get_ebs_metric_series(volume_id, region=None, hours=6) -> dict:
         period = _smart_period(hours)
         dim    = f'dimension_VolumeId="{volume_id}"'
 
-        def s(yace_metric):
-            return vm_query_range(
-                f'{yace_metric}{{{dim}}}',
-                start=int(start.timestamp()), end=int(end.timestamp()),
-                step=f"{period}s",
-            )
+        def s(db_metric_name):
+            return _metric_history_query_range("ebs", volume_id, db_metric_name, start, end)
         return {
             "volume_id":    volume_id,
-            "read_ops":     s("aws_ebs_volume_read_ops_average"),
-            "write_ops":    s("aws_ebs_volume_write_ops_average"),
-            "read_bytes":   s("aws_ebs_volume_read_bytes_average"),
-            "write_bytes":  s("aws_ebs_volume_write_bytes_average"),
-            "queue_length": s("aws_ebs_volume_queue_length_average"),
-            "burst_balance": s("aws_ebs_burst_balance_average"),
+            "read_ops":     s("volumereadops"),
+            "write_ops":    s("volumewriteops"),
+            "read_bytes":   s("volumereadbytes"),
+            "write_bytes":  s("volumewritebytes"),
+            "queue_length": s("volumequeuelength"),
+            # burst_balance: Phase 1's GMD collector deliberately dropped
+            # BurstBalance ("gp3 irrelevant" per its own triage note), so
+            # metric_history never has this metric_name and this call
+            # always returns []. Unlike the other 5 functions in this
+            # file, this one has no boto3 fallback -- this chart series
+            # is now PERMANENTLY EMPTY. See apply_dashboard_charts_metric_history.py's
+            # docstring: a known, documented trade, not fixed here.
+            "burst_balance": s("volumeburstbalance"),
             "period_hours": hours,
             "period_secs":  period,
         }
@@ -1258,19 +1295,21 @@ def _get_lambda_metric_series_raw(function_name, region=None, hours=6) -> dict:
         period = _smart_period(hours)
         dim    = f'dimension_FunctionName="{function_name}"'
 
-        def vm_series(yace_metric):
-            return vm_query_range(
-                f'{yace_metric}{{{dim}}}',
-                start=int(start.timestamp()), end=int(end.timestamp()),
-                step=f"{period}s",
-            )
+        def vm_series(db_metric_name):
+            return _metric_history_query_range("lambda", function_name, db_metric_name,
+                                                start, end, match_field="name")
 
         result = {
-            "invocations": vm_series("aws_lambda_invocations_sum"),
-            "errors":      vm_series("aws_lambda_errors_sum"),
-            "duration":    vm_series("aws_lambda_duration_average"),
-            "throttles":   vm_series("aws_lambda_throttles_sum"),
-            "concurrent":  vm_series("aws_lambda_concurrent_executions_average"),
+            "invocations": vm_series("invocations"),
+            "errors":      vm_series("errors"),
+            "duration":    vm_series("duration"),
+            # concurrent: Phase 1's GMD collector never collects
+            # ConcurrentExecutions -- metric_history never has it, so this
+            # always returns [] and correctly falls through to the boto3
+            # fallback below every time (safe: this function already has
+            # per-metric fallback logic, unlike EBS burst_balance).
+            "concurrent":  vm_series("concurrentexecutions"),
+            "throttles":   vm_series("throttles"),
         }
 
         missing = [k for k, v in result.items() if not v]
@@ -1315,22 +1354,18 @@ def _get_rds_metric_series(db_id, region=None, hours=6) -> dict:
         period = _smart_period(hours)
         dim    = f'dimension_DBInstanceIdentifier="{db_id}"'
 
-        def s(yace_metric):
-            return vm_query_range(
-                f'{yace_metric}{{{dim}}}',
-                start=int(start.timestamp()), end=int(end.timestamp()),
-                step=f"{period}s",
-            )
+        def s(db_metric_name):
+            return _metric_history_query_range("rds", db_id, db_metric_name, start, end)
         return {
             "db_id":           db_id,
-            "cpu":             s("aws_rds_cpuutilization_average"),
-            "free_storage":    s("aws_rds_free_storage_space_average"),
-            "db_connections":  s("aws_rds_database_connections_average"),
-            "read_iops":       s("aws_rds_read_iops_average"),
-            "write_iops":      s("aws_rds_write_iops_average"),
-            "read_latency":    s("aws_rds_read_latency_average"),
-            "write_latency":   s("aws_rds_write_latency_average"),
-            "freeable_memory": s("aws_rds_freeable_memory_average"),
+            "cpu":             s("cpuutilization"),
+            "free_storage":    s("freestorage"),
+            "db_connections":  s("dbconnections"),
+            "read_iops":       s("readiops"),
+            "write_iops":      s("writeiops"),
+            "read_latency":    s("readlatency"),
+            "write_latency":   s("writelatency"),
+            "freeable_memory": s("freeablememory"),
             "period_hours":    hours,
             "period_secs":     period,
         }
@@ -1373,23 +1408,34 @@ def _get_elb_metric_series(lb_name: str, region=None, hours=6) -> dict:
         period = _smart_period(hours)
         dim    = f'dimension_LoadBalancer="{lb_dim}"'
 
-        def vm_series(yace_metric):
-            return vm_query_range(
-                f'{yace_metric}{{{dim}}}',
-                start=int(start.timestamp()), end=int(end.timestamp()),
-                step=f"{period}s",
-            )
+        # Match on the ORIGINAL bare lb_name param (== resources.name),
+        # NOT lb_dim (the ARN-suffix computed above for the CloudWatch
+        # fallback dimension) -- resource_discovery stores resources.name
+        # as the bare LoadBalancerName, confirmed against
+        # app/collector/discovery/runner.py's _discover_elb().
+        def vm_series(db_metric_name):
+            return _metric_history_query_range("elb", lb_name, db_metric_name,
+                                                start, end, match_field="name")
 
+        # requests/errors_5xx/latency/healthy_hosts: Phase 1's GMD collector
+        # covers these (ELB_METRICS). The other 5 keys were deliberately
+        # excluded from Phase 1 (4XX/ELB-5XX/UnHealthyHostCount dropped as
+        # "client noise"/"redundant" per its own triage note;
+        # ActiveConnectionCount/NewConnectionCount were never in the YACE
+        # config either) -- metric_history never has them, so they always
+        # return [] and correctly fall through to the boto3 fallback below
+        # every time. Safe: this function already had per-metric fallback
+        # logic for exactly this situation.
         result = {
-            "requests":           vm_series("aws_applicationelb_request_count_sum"),
-            "errors_5xx":         vm_series("aws_applicationelb_httpcode_target_5_xx_count_sum"),
-            "errors_4xx":         vm_series("aws_applicationelb_httpcode_target_4_xx_count_sum"),
-            "errors_elb_5xx":     vm_series("aws_applicationelb_httpcode_elb_5_xx_count_sum"),
-            "latency":            vm_series("aws_applicationelb_target_response_time_average"),
-            "healthy_hosts":      vm_series("aws_applicationelb_healthy_host_count_average"),
-            "unhealthy_hosts":    vm_series("aws_applicationelb_un_healthy_host_count_average"),
-            "active_connections": vm_series("aws_applicationelb_active_connection_count_average"),
-            "new_connections":    vm_series("aws_applicationelb_new_connection_count_sum"),
+            "requests":           vm_series("requestcount"),
+            "errors_5xx":         vm_series("errors5xx"),
+            "errors_4xx":         vm_series("errors4xx"),
+            "errors_elb_5xx":     vm_series("errorselb5xx"),
+            "latency":            vm_series("responselatency"),
+            "healthy_hosts":      vm_series("healthyhosts"),
+            "unhealthy_hosts":    vm_series("unhealthyhosts"),
+            "active_connections": vm_series("activeconnections"),
+            "new_connections":    vm_series("newconnections"),
         }
 
         missing = [k for k, v in result.items() if not v]
@@ -1458,15 +1504,22 @@ def _get_ecs_metric_series(cluster_name: str, service_name: str = None,
         if service_name:
             dim += f',dimension_ServiceName="{service_name}"'
 
-        def vm_series(yace_metric):
-            return vm_query_range(
-                f'{yace_metric}{{{dim}}}',
-                start=int(start.timestamp()), end=int(end.timestamp()),
-                step=f"{period}s",
-            )
+        # Match on the bare cluster_name param (== resources.name), confirmed
+        # against app/collector/discovery/runner.py's _discover_ecs().
+        def vm_series(db_metric_name):
+            return _metric_history_query_range("ecs", cluster_name, db_metric_name,
+                                                start, end, match_field="name")
 
-        cpu = vm_series("aws_ecs_cpuutilization_average")
-        mem = vm_series("aws_ecs_memory_utilization_average")
+        # AWS/ECS CPUUtilization/MemoryUtilization are EXCLUDED from Phase
+        # 1's GMD collector entirely (its own docstring: "AWS/ECS basic
+        # monitoring is FREE (no API cost)" -- deliberately left on boto3).
+        # metric_history never has these, so both calls always return []
+        # and this always falls through to the boto3 fallback below -- a
+        # behavior-preserving no-op change (this chart was already
+        # effectively boto3-only in practice, same as the comments above
+        # already implied before VM was ever confirmed to have this data).
+        cpu = vm_series("cpuutilization")
+        mem = vm_series("memoryutilization")
 
         # boto3 fallback for AWS/ECS if VM has nothing yet (not deployed /
         # not scraped yet) — same safety pattern as _get_elb_metric_series.
