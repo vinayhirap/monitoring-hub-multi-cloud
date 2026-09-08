@@ -167,6 +167,13 @@ run_migration scripts/seed_metric_catalog.py \
 run_migration apply_drop_dead_tables.py \
     "006 (now actually executed): drop metric_configs/metric_definitions/enabled_metrics/alert_rules/dashboards/dashboard_panels/account_permissions/user_accounts/user_roles/roles -- confirmed unreferenced by app/ or frontend/src/, refuses to drop any table with rows"
 
+run_migration apply_direct_gmd_metrics_revival.py \
+    "Phase 1 of removing VictoriaMetrics: revive direct AWS GetMetricData collection, create metric_history table"
+run_migration apply_azure_direct_metrics_fetch.py \
+    "Phase 2 of removing VictoriaMetrics: direct Azure Monitor fetch (needs Phase 1's metric_history table)"
+run_migration apply_gcp_direct_metrics_fetch.py \
+    "Phase 3 of removing VictoriaMetrics: direct GCP Cloud Monitoring fetch + compute_instance numeric-ID resource-matching fix"
+
 echo "--- db/migrations/*.sql tracking (migrate.py) ---"
 # This is the permanent fix for the exact incident that prompted writing
 # migrate.py: 014_user_email_column.sql shipped in the repo, git pull
