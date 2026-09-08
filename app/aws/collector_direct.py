@@ -1613,6 +1613,40 @@ def _get_ecs_metric_series(cluster_name: str, service_name: str = None,
 
 # ── check_and_write_alerts (SPLIT: ec2/ebs/rds via VM, lambda via GMD) ──
 
+def _account_metric_snapshot(account_id, resource_type, db_metric_name, key_field="resource_id"):
+    """
+    Reads the `metrics` last-value cache for every resource of one type
+    in one account, keyed by either resource_id (bare identifier --
+    ec2/ebs/rds) or name (bare name -- elb/lambda), matching whichever
+    identifier check_and_write_alerts()'s SERVICE_RESOURCES already uses
+    per service. Scoped to account_id, unlike Phase 4b's
+    _metric_snapshot_query_all (that one didn't need account-scoping;
+    this one, being explicitly per-account already, should stay that
+    way). Returns {} on any error or no data -- never raises. See
+    apply_check_thresholds_local_metrics.py (Phase 5).
+    """
+    out = {}
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                f"""SELECT r.{key_field} AS key_val, m.metric_value
+                    FROM metrics m JOIN resources r ON r.id = m.resource_id
+                    WHERE r.aws_account_id = %s AND r.resource_type = %s AND m.metric_name = %s""",
+                (account_id, resource_type, db_metric_name),
+            )
+            for row in cur.fetchall():
+                if row["metric_value"] is not None:
+                    out[row["key_val"]] = float(row["metric_value"])
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        logger.warning(f"account metric snapshot failed [{resource_type}/{db_metric_name}]: {e}")
+    return out
+
+
 def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> list:
     """
     Evaluates thresholds against current data.
@@ -1648,50 +1682,63 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> li
         "alb": "AWS/ApplicationELB",
     }
 
-    # svc -> dimension label YACE uses for this resource type
-    VM_DIM_LABEL = {
-        "ec2": "dimension_InstanceId",
-        "ebs": "dimension_VolumeId",
-        "rds": "dimension_DBInstanceIdentifier",
-        "alb": "dimension_LoadBalancer",   # NEW
+    # svc -> resources.name (bare) vs resources.resource_id (bare) --
+    # ec2/ebs/rds resource_id IS the bare identifier; elb/lambda's
+    # resource_id is a full ARN, so those match on name instead. Same
+    # distinction Phase 4a/4b already confirmed against
+    # app/collector/discovery/runner.py.
+    LOCAL_KEY_FIELD = {
+        "ec2": "resource_id", "ebs": "resource_id", "rds": "resource_id",
+        "alb": "name",
     }
-    # Explicit map, NOT a generic snake_case conversion — YACE special-cases
-    # acronyms (CPUUtilization -> cpuutilization, not c_p_u_utilization).
-    # Extend this table if you threshold on new metrics that YACE scrapes.
-    VM_METRIC_STUB = {
-        ("ec2", "CPUUtilization"):      "aws_ec2_cpuutilization",
-        ("ec2", "NetworkIn"):           "aws_ec2_network_in",       # confirmed live in VM -- Aug 2026
-        ("ec2", "NetworkOut"):          "aws_ec2_network_out",      # confirmed live in VM -- Aug 2026
-        # Free Describe-API path (fix #4, app/aws/describe_polling.py) —
-        # NOT CloudWatch/YACE. Sub-second-fresh, zero GetMetricData cost,
-        # replaces the old aws_ec2_status_check_failed (YACE/CloudWatch) stub.
-        ("ec2", "StatusCheckFailed"):   "aws_ec2_status_check_failed_describe",
+    # metric_catalog's service key for ALB metrics is "alb" (matches
+    # SERVICE_RESOURCES/NAMESPACE_MAP above, pre-existing), but
+    # discovery/runner.py stores ALB resources under resource_type='elb'
+    # -- confirmed, not assumed. Needed only for the local DB lookup;
+    # CloudWatch/GMD calls elsewhere in this function never used
+    # resources.resource_type at all, so this mapping is new, not a fix
+    # to something that was broken before.
+    LOCAL_RESOURCE_TYPE = {"alb": "elb"}
 
-        ("ebs", "VolumeQueueLength"):   "aws_ebs_volume_queue_length",
-        ("ebs", "BurstBalance"):        "aws_ebs_burst_balance",
-        ("ebs", "VolumeReadOps"):       "aws_ebs_volume_read_ops",      # NEW — confirmed live in VM
-        ("ebs", "VolumeWriteOps"):      "aws_ebs_volume_write_ops",     # NEW — confirmed live in VM
-        ("ebs", "VolumeReadBytes"):     "aws_ebs_volume_read_bytes",    # NEW — confirmed live in VM
-        ("ebs", "VolumeWriteBytes"):    "aws_ebs_volume_write_bytes",   # NEW — confirmed live in VM
+    # db_metric_name strings below are copied verbatim from
+    # app/collector/metrics/runner.py's EC2_METRICS_CRITICAL/LOW,
+    # EBS_METRICS, RDS_METRICS, ELB_METRICS tuples -- i.e. exactly what
+    # Phase 1's GMD collector actually writes into the `metrics` table,
+    # not a fresh guess at a naming convention. ec2 StatusCheckFailed is
+    # DELIBERATELY NOT here -- see apply_check_thresholds_local_metrics.py's
+    # docstring: describe_polling.py is a separate, still-live VM writer
+    # for that one metric specifically, untouched by this fix.
+    # EBS BurstBalance and ALB HTTPCode_Target_4XX_Count are ALSO
+    # deliberately absent -- Phase 1 never collects either, so leaving
+    # them out of this dict means they correctly fall through to the
+    # existing GMD/boto3 fallback branch below instead of ever being
+    # looked up here.
+    LOCAL_METRIC_STUB = {
+        ("ec2", "CPUUtilization"):  "cpuutilization",
+        ("ec2", "NetworkIn"):       "networkin",
+        ("ec2", "NetworkOut"):      "networkout",
+        ("ec2", "DiskReadBytes"):   "diskreadbytes",
+        ("ec2", "DiskWriteBytes"):  "diskwritebytes",
 
-        ("rds", "CPUUtilization"):      "aws_rds_cpuutilization",
-        ("rds", "FreeStorageSpace"):    "aws_rds_free_storage_space",
+        ("ebs", "VolumeQueueLength"): "volumequeuelength",
+        ("ebs", "VolumeReadOps"):     "volumereadops",
+        ("ebs", "VolumeWriteOps"):    "volumewriteops",
+        ("ebs", "VolumeReadBytes"):   "volumereadbytes",
+        ("ebs", "VolumeWriteBytes"):  "volumewritebytes",
 
-        # NEW — all 6 confirmed present in VM's __name__ label list
-        ("alb", "RequestCount"):              "aws_applicationelb_request_count",
-        ("alb", "HTTPCode_Target_5XX_Count"): "aws_applicationelb_httpcode_target_5_xx_count",
-        ("alb", "HTTPCode_Target_4XX_Count"): "aws_applicationelb_httpcode_target_4_xx_count",
-        ("alb", "TargetResponseTime"):        "aws_applicationelb_target_response_time",
-        ("alb", "HealthyHostCount"):          "aws_applicationelb_healthy_host_count",
-        ("alb", "UnHealthyHostCount"):        "aws_applicationelb_un_healthy_host_count",
+        ("rds", "CPUUtilization"):   "cpuutilization",
+        ("rds", "FreeStorageSpace"): "freestorage",
+
+        ("alb", "RequestCount"):              "requestcount",
+        ("alb", "HTTPCode_Target_5XX_Count"): "errors5xx",
+        ("alb", "TargetResponseTime"):        "responselatency",
+        ("alb", "HealthyHostCount"):          "healthyhosts",
     }
-    # Metrics pushed directly by describe_polling.py are raw gauges (no
-    # Average/Sum/Maximum suffix) — skip the generic stat-suffix step for them.
-    VM_NO_SUFFIX = {"aws_ec2_status_check_failed_describe"}
-    STAT_SUFFIX = {"Average": "average", "Sum": "sum", "Maximum": "maximum"}
-    vm_lookups  = []   # (t_idx, resource_id, promql)
-    gmd_queries = []
-    qid_map     = {}
+
+    local_lookups  = []   # (t_idx, resource_id, value_or_None)
+    gmd_queries    = []
+    qid_map        = {}
+    snapshot_cache = {}   # (resource_type, db_metric_name, key_field) -> {key: value}, fetched once per unique combo
 
     for t_idx, t in enumerate(thresholds):
         svc       = (t.get("service") or t.get("resource_type") or "").lower()
@@ -1699,13 +1746,19 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> li
         metric    = t["metric_name"]
         stat      = t.get("statistic") or "Average"
         resources = SERVICE_RESOURCES.get(svc, []) or [("account", [])]
-        stub      = VM_METRIC_STUB.get((svc, metric))
+        stub      = LOCAL_METRIC_STUB.get((svc, metric))
 
-        if svc in VM_DIM_LABEL and stub:
-            dim_label   = VM_DIM_LABEL[svc]
-            yace_metric = stub if stub in VM_NO_SUFFIX else f"{stub}_{STAT_SUFFIX.get(stat, 'average')}"
+        if stub:
+            key_field     = LOCAL_KEY_FIELD.get(svc, "resource_id")
+            resource_type = LOCAL_RESOURCE_TYPE.get(svc, svc)
+            cache_key     = (resource_type, stub, key_field)
+            if cache_key not in snapshot_cache:
+                snapshot_cache[cache_key] = _account_metric_snapshot(
+                    account_id, resource_type, stub, key_field
+                )
+            snap = snapshot_cache[cache_key]
             for resource_id, dims in resources:
-                vm_lookups.append((t_idx, resource_id, f'{yace_metric}{{{dim_label}="{resource_id}"}}'))
+                local_lookups.append((t_idx, resource_id, snap.get(resource_id)))
         else:
             for resource_id, dims in resources:
                 qid = _safe_qid(f"t{t_idx}__{resource_id}")
@@ -1714,8 +1767,7 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> li
 
     all_vals = {}  # (t_idx, resource_id) -> value
 
-    for t_idx, resource_id, promql in vm_lookups:
-        val = vm_query(promql)
+    for t_idx, resource_id, val in local_lookups:
         if val is not None:
             all_vals[(t_idx, resource_id)] = val
 
