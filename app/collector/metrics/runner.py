@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from app.db import get_connection
 from app.aws.sts import assume_role
-from app.collector.metrics_writer import write_metric
+from app.collector.metrics_writer import write_metric, write_metric_history_batch
 import boto3
 
 logger = logging.getLogger(__name__)
@@ -143,13 +143,15 @@ def _build_queries(resources, metric_defs):
 
 
 def _execute_gmd(cw, queries, id_map, minutes=5):
-    """Execute one GMD call, write results. Returns datapoint count."""
+    """Execute one GMD call, write results (latest value + full history).
+    Returns datapoint count."""
     if not queries:
         return 0
 
     end   = datetime.utcnow()
     start = end - timedelta(minutes=minutes)
     count = 0
+    history_rows = []
 
     try:
         resp = cw.get_metric_data(
@@ -164,6 +166,7 @@ def _execute_gmd(cw, queries, id_map, minutes=5):
 
     for result in resp.get("MetricDataResults", []):
         values = result.get("Values", [])
+        timestamps = result.get("Timestamps", [])
         if not values:
             continue
         resource_db_id, db_name = id_map.get(result["Id"], (None, None))
@@ -171,6 +174,13 @@ def _execute_gmd(cw, queries, id_map, minutes=5):
             continue
         write_metric(resource_db_id, db_name, values[0])  # values[0] = most recent
         count += 1
+        # Full history -- every returned datapoint, not just the latest.
+        # Timestamps/Values are parallel lists per boto3's own contract.
+        for ts, val in zip(timestamps, values):
+            history_rows.append((resource_db_id, db_name, val, ts))
+
+    if history_rows:
+        write_metric_history_batch(history_rows)
 
     return count
 

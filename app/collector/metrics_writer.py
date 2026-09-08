@@ -93,3 +93,70 @@ def write_metrics_batch(datapoints: list):
     finally:
         cursor.close()
         conn.close()
+
+
+def write_metric_history_batch(datapoints: list):
+    """
+    Inserts raw time-series datapoints into metric_history -- the local
+    replacement for VictoriaMetrics' range-query/graphing role, now that
+    AWS metrics are fetched via direct GetMetricData calls instead of
+    VM/YACE (see apply_direct_gmd_metrics_revival.py). Every call ADDS
+    rows -- this is genuine history, unlike write_metrics_batch() above
+    which upserts a single latest value.
+
+    datapoints: list of (resource_db_id, metric_name, value, timestamp) tuples.
+    """
+    if not datapoints:
+        return
+
+    conn   = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.executemany("""
+            INSERT INTO metric_history
+                (resource_id, metric_name, metric_value, metric_timestamp)
+            VALUES (%s, %s, %s, %s)
+        """, [
+            (r_id, name, round(float(val), 6), ts)
+            for r_id, name, val, ts in datapoints
+            if r_id is not None and val is not None
+        ])
+        conn.commit()
+        logger.debug(f"Wrote {cursor.rowcount} history datapoints")
+
+    except Exception as e:
+        logger.error(f"metric_history batch write error: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def prune_metric_history(retain_days: int = 7) -> int:
+    """
+    Deletes metric_history rows older than retain_days. Called
+    periodically (see scheduler.py's low tier) to keep this table
+    bounded -- unlike the `metrics` last-value cache (which never grows
+    past one row per resource/metric pair), this table accumulates a new
+    row every collection cycle and needs active pruning.
+    """
+    conn   = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM metric_history WHERE metric_timestamp < DATE_SUB(NOW(), INTERVAL %s DAY)",
+            (retain_days,)
+        )
+        deleted = cursor.rowcount
+        conn.commit()
+        if deleted:
+            logger.info(f"metric_history: pruned {deleted} row(s) older than {retain_days} days")
+        return deleted
+    except Exception as e:
+        logger.error(f"metric_history prune error: {e}")
+        conn.rollback()
+        return 0
+    finally:
+        cursor.close()
+        conn.close()

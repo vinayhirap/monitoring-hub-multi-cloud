@@ -51,16 +51,20 @@ def run_once(tier="standard"):
     from app.collector.metrics.runner  import run_metrics_collection
     from app.collector.alert_evaluator import evaluate_alerts
     from app.collector.metrics_vm_sync   import sync_metrics_from_vm
+    from app.collector.metrics_writer  import prune_metric_history
 
     accounts = _get_active_accounts()
     if not accounts:
         logger.warning("No active accounts")
         return
 
-    # TEMPORARILY DISABLED — migrating to VM/YACE, no boto3 GMD calls.
-    # Re-enable only if you decide to roll back the VM migration.
-    # run_metrics_collection(accounts, tier=tier)
-    logger.info(f"[{tier}] GMD collection skipped — VM/YACE migration in progress")
+    # Re-enabled (see apply_direct_gmd_metrics_revival.py) -- this was
+    # disabled, not deleted, during the VM/YACE cost-avoidance migration.
+    # AWS billing for GetMetricData applies again; accepted deliberately.
+    run_metrics_collection(accounts, tier=tier)
+
+    if tier == "low":
+        prune_metric_history()
 
     # Evaluate alerts after every standard cycle
     if tier == "standard":

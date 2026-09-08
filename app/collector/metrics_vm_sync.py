@@ -220,43 +220,47 @@ def _sync_azure_gcp_metrics(rows) -> tuple[list, dict, int]:
 
 def sync_metrics_from_vm() -> int:
     """
-    Populates `metrics` from VM for every enabled threshold's resources,
-    across ALL THREE providers. Returns the number of datapoints written.
-    Zero AWS/Azure/GCP API calls -- purely a VM read + MySQL write, same
-    as before this fix; the fix is routing Azure/GCP rows through their
-    own working query convention instead of the AWS-only one they were
-    silently falling through before (see this file's module-level
-    docstring, and fix_azure_gcp_alert_evaluation_gap.py, for the full
-    story on why this was needed).
+    Populates `metrics` from VM for Azure/GCP resources with an enabled
+    threshold. Returns the number of datapoints written.
+
+    AWS is intentionally NOT synced from VM here anymore (see
+    apply_direct_gmd_metrics_revival.py, Phase 1 of removing
+    VictoriaMetrics): app/collector/metrics/runner.py's GetMetricData
+    collector now writes AWS's last-value cache directly, and runs
+    BEFORE this function in every tier cycle (see scheduler.py). If this
+    function also synced AWS from VM afterward, it would immediately
+    overwrite those fresh direct values with VM's separately-scraped
+    (and potentially stale or simply different) data on every single
+    cycle -- a real correctness bug, not just redundant work. Azure/GCP
+    are unaffected and still sync from VM exactly as before, until
+    Phases 2/3 replace that too.
     """
     rows = _fetch_enabled_threshold_targets()
     if not rows:
         logger.info("VM metrics sync: no enabled thresholds -- nothing to do")
         return 0
 
-    aws_rows = [r for r in rows if (r.get("provider") or "aws") == "aws"]
     other_rows = [r for r in rows if (r.get("provider") or "aws") != "aws"]
 
-    aws_datapoints, aws_skipped, aws_matched = _sync_aws_metrics(aws_rows)
     other_datapoints, other_skipped, other_matched = _sync_azure_gcp_metrics(other_rows)
 
-    datapoints = aws_datapoints + other_datapoints
-    matched = aws_matched + other_matched
+    datapoints = other_datapoints
+    matched = other_matched
 
     write_metrics_batch(datapoints)
 
-    total_skipped = sum(aws_skipped.values()) + sum(other_skipped.values())
+    total_skipped = sum(other_skipped.values())
     if total_skipped:
         detail_parts = [
-            f"{svc}/{metric} x{n}" for (svc, metric), n in sorted(aws_skipped.items())
-        ] + [
             f"{prov}:{svc}/{metric} x{n}" for (prov, svc, metric), n in sorted(other_skipped.items())
         ]
         logger.info(
-            f"VM metrics sync: {matched} written, {total_skipped} skipped "
-            f"(no VM series yet) -- {', '.join(detail_parts)}"
+            f"VM metrics sync (azure/gcp only -- AWS now handled by direct GMD): "
+            f"{matched} written, {total_skipped} skipped (no VM series yet) -- "
+            f"{', '.join(detail_parts)}"
         )
     else:
-        logger.info(f"VM metrics sync: {matched} written, 0 skipped")
+        logger.info(f"VM metrics sync (azure/gcp only -- AWS now handled by direct GMD): "
+                     f"{matched} written, 0 skipped")
 
     return matched
