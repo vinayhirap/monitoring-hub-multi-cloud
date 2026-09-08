@@ -30,7 +30,10 @@ GROUP HIERARCHY (L1 / L2 / L3)
   PLUS its L2 parent's PLUS its L1 grandparent's -- ADDITIVE (union),
   not restrictive (not an SCP-style narrowing). This mirrors how
   AWS IAM Identity Center permission sets attached at different OU
-  levels all apply to a principal beneath them.
+  levels all apply to a principal beneath them, and matches the
+  "tiered support" mental model (L1/L2/L3) this was built for: an L3
+  on-call engineer should see everything their L2 team and L1 org see,
+  plus whatever extra the L3 tier itself was granted -- never less.
 
   Groups are a scope container ONLY. Membership never changes a
   user's role (admin/editor/viewer) -- role is always assigned
@@ -110,7 +113,7 @@ def _parse_json_list(value):
 def get_group(conn, group_id: int) -> Optional[dict]:
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
-        "SELECT id, name, level, parent_group_id, description, created_by "
+        "SELECT id, name, level, parent_group_id, description, created_by, created_at "
         "FROM org_groups WHERE id = %s",
         (group_id,),
     )
