@@ -28,8 +28,7 @@ def _require_db_password() -> str:
     pw = os.getenv("DB_PASSWORD")
     if not pw:
         raise RuntimeError(
-            "DB_PASSWORD is not set. Set it in .env (and .env.production "
-            "on the server) -- there is no default."
+            "DB_PASSWORD is not set. Set it in .env -- there is no default."
         )
     return pw
 
