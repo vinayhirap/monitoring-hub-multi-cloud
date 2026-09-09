@@ -9,14 +9,32 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
 # How old a `metrics` row can be before _metrics_with_data_for_account()
-# stops counting it as "this metric has data" -- deliberately generous
-# (well beyond the slowest normal collection tier, 15 minutes) so a
-# brief scheduler restart never falsely hides a metric that's still
-# genuinely being collected. See that function's docstring for the real
-# bug this closes (a metric dropped from collection entirely still
-# showing as "has data" forever, because `metrics` has no equivalent of
-# metric_history's prune_metric_history()).
-_STALE_DATA_CUTOFF_MINUTES = 60
+# stops counting it as "this metric has data" -- deliberately generous.
+#
+# CORRECTED (apply_fix_stale_cutoff_too_aggressive.py): originally set to
+# 60 minutes, which caused a real regression -- confirmed live: ALB's
+# HTTPCode_Target_5XX_Count disappeared from Metric Thresholds within
+# hours of shipping, despite being correctly, actively collected. Root
+# cause: this is a Sum-type, EVENT-DRIVEN CloudWatch metric -- AWS only
+# publishes a datapoint for it when a 5xx error actually happens.  Zero
+# 5xx errors for an hour is a GOOD sign (a healthy load balancer), not
+# evidence the collector stopped, but a 60-minute cutoff couldn't tell
+# the difference between "genuinely abandoned metric" (the BurstBalance
+# case this was built for) and "actively collected, currently just has
+# nothing to report" (this case). 60 minutes is far too short a window
+# for any event/error-count metric on a quiet-but-healthy resource.
+#
+# Widened to match metric_history's OWN existing retention window (7
+# days, see prune_metric_history() in app/collector/metrics_writer.py)
+# instead of picking a new arbitrary number -- this app already treats
+# 7 days as "how long data stays relevant" elsewhere, so reusing it here
+# is a principled choice, not a guess. A metric permanently dropped from
+# collection (like BurstBalance) will reliably exceed even a 7-day
+# window eventually, since nothing will EVER refresh it again -- while
+# an event metric would need to go a full week with zero occurrences to
+# be wrongly hidden, a much rarer, more defensible edge case than an
+# hour.
+_STALE_DATA_CUTOFF_MINUTES = 7 * 24 * 60  # 10080 -- 7 days
 
 # ALB/NLB resource_type normalization now lives in app/threshold_defaults.py
 # (normalize_threshold_resource_type) so every place that writes
