@@ -140,6 +140,12 @@ DEFAULT_THRESHOLDS = {
     # PascalCase 'MemoryUtilization' key above used by ECS/other services)
     # -- see apply_add_cwagent_mem_threshold.py.
     'mem_used_percent': (80, 90, '>'),
+    # Matches the EC2 chart's own existing threshold indicator for this
+    # metric (35.5% shown as healthy in an earlier screenshot) --
+    # disk filling up is generally a slower-moving, later-warning signal
+    # than memory, so a slightly higher bar is reasonable. See
+    # apply_add_cwagent_disk_threshold.py.
+    'disk_used_percent': (80, 90, '>'),
     'MetadataNoToken': (1, 5, '>'),
     'NetworkBytesIn': (1000000, 5000000, '>'),
     'NetworkBytesOut': (1000000, 5000000, '>'),

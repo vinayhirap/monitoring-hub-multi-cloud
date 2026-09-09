@@ -301,6 +301,77 @@ def _collect_ec2_cwagent_mem(cw, resources):
     n = _execute_gmd(cw, queries, id_map, minutes=16)
     logger.info(f"    EC2 CWAgent mem: {n} datapoints / {len(cwagent_map)} of {len(resources)} instances")
 
+
+def _ec2_instances_with_cwagent_disk_dims(cw, resources):
+    """
+    {resource: full_dimension_list} for every EC2 instance that has
+    actually published disk_used_percent to CWAgent -- one metric PER
+    MOUNT POINT (path/device/fstype dimensions), a meaningfully
+    different shape than mem_used_percent's single InstanceId-only (or
+    close to it) series. When an instance reports multiple mount
+    points, prefers the root filesystem ("/" on Linux, "C:" on Windows)
+    since that's what "disk space utilized" means to someone glancing
+    at a single number on the dashboard -- exactly matching
+    collector_direct.py's _ec2_cwagent_dimensions(), the function
+    already powering the working live chart for this same metric, so
+    the scheduled threshold path and the on-demand chart agree on which
+    mount point "the" disk utilization number means for a given
+    instance. Falls back to whichever mount point CloudWatch happens to
+    return first if there's no root/C: mount reporting.
+    """
+    result = {}
+    for r in resources:
+        try:
+            resp = cw.list_metrics(
+                Namespace="CWAgent",
+                MetricName="disk_used_percent",
+                Dimensions=[{"Name": "InstanceId", "Value": r["resource_id"]}],
+            )
+            metrics = resp.get("Metrics", [])
+            if not metrics:
+                continue
+            chosen = None
+            for m in metrics:
+                dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
+                if dims.get("path") in ("/", "C:"):
+                    chosen = m["Dimensions"]
+                    break
+            if chosen is None:
+                chosen = metrics[0]["Dimensions"]
+            result[r["resource_id"]] = (r, chosen)
+        except Exception as e:
+            logger.warning(f"CWAgent disk presence check [{r['resource_id']}]: {e}")
+    return result
+
+
+def _collect_ec2_cwagent_disk(cw, resources):
+    cwagent_map = _ec2_instances_with_cwagent_disk_dims(cw, resources)
+    if not cwagent_map:
+        logger.info(f"    EC2 CWAgent disk: 0/{len(resources)} instances have CWAgent reporting")
+        return
+
+    queries = []
+    id_map = {}
+    for i, (resource, dims) in enumerate(cwagent_map.values()):
+        qid = f"cwdisk{i}"
+        queries.append({
+            "Id": qid,
+            "MetricStat": {
+                "Metric": {
+                    "Namespace": "CWAgent",
+                    "MetricName": "disk_used_percent",
+                    "Dimensions": dims,  # full, DISCOVERED set, root-fs-preferred
+                },
+                "Period": 60,
+                "Stat": "Average",
+            },
+            "ReturnData": True,
+        })
+        id_map[qid] = (resource["id"], "disk_used_percent")
+
+    n = _execute_gmd(cw, queries, id_map, minutes=16)
+    logger.info(f"    EC2 CWAgent disk: {n} datapoints / {len(cwagent_map)} of {len(resources)} instances")
+
 def _collect_ebs(cw, resources):
     n = _run_gmd(cw, resources, EBS_METRICS, minutes=6)
     logger.info(f"    EBS: {n} datapoints / {len(resources)} volumes")
@@ -391,6 +462,7 @@ def _collect_account(account, tier="standard"):
             if tier == "low":
                 tasks.append((cw, resources, "ec2_low"))
                 tasks.append((cw, resources, "ec2_cwagent_mem"))
+                tasks.append((cw, resources, "ec2_cwagent_disk"))
 
         elif resource_type == "ebs":
             if tier in ("standard", "low"):
@@ -410,14 +482,15 @@ def _collect_account(account, tier="standard"):
                 tasks.append((cw, resources, "lambda_low"))
 
     _DISPATCH = {
-        "ec2_critical":    _collect_ec2_critical,
-        "ec2_low":         _collect_ec2_low,
-        "ec2_cwagent_mem": _collect_ec2_cwagent_mem,
-        "ebs":             _collect_ebs,
-        "rds":             _collect_rds,
-        "elb":             _collect_elb,
-        "lambda_standard": _collect_lambda_standard,
-        "lambda_low":      _collect_lambda_low,
+        "ec2_critical":     _collect_ec2_critical,
+        "ec2_low":          _collect_ec2_low,
+        "ec2_cwagent_mem":  _collect_ec2_cwagent_mem,
+        "ec2_cwagent_disk": _collect_ec2_cwagent_disk,
+        "ebs":              _collect_ebs,
+        "rds":              _collect_rds,
+        "elb":              _collect_elb,
+        "lambda_standard":  _collect_lambda_standard,
+        "lambda_low":       _collect_lambda_low,
     }
 
     def _run(task_cw, task_res, task_type):

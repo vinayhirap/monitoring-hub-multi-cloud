@@ -55,6 +55,16 @@ CURATED = {
         # with the official platform naming, matching this session's
         # broader naming-consistency work. See apply_add_cwagent_mem_threshold.py.
         ("mem_used_percent",   "Percent", "Average", False, "Memory utilization (requires CloudWatch Agent)"),
+        # disk_used_percent: same rationale as mem_used_percent above
+        # (CWAgent-published, opt-in, snake_case official name) -- but
+        # published PER MOUNT POINT (multiple series per instance if
+        # more than one is monitored). The scheduled collector prefers
+        # the root filesystem ("/" / "C:") when multiple exist, matching
+        # what the Services page chart already does for the same reason
+        # -- "disk space utilized" as a single dashboard number means
+        # the root volume to anyone glancing at it. See
+        # apply_add_cwagent_disk_threshold.py.
+        ("disk_used_percent",  "Percent", "Average", False, "Disk space utilized, root filesystem (requires CloudWatch Agent)"),
     ]),
     "ebs": ("Amazon EBS", "AWS/EBS", "core", [
         ("VolumeReadOps",       "Count",   "Average", True,  "Read operations/sec"),
