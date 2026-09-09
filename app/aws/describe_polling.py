@@ -37,7 +37,8 @@ import logging
 import requests
 
 from app.db import get_connection
-from app.collector.metrics_writer import write_metrics_batch
+from datetime import datetime
+from app.collector.metrics_writer import write_metrics_batch, write_metric_history_batch
 from app.aws.collector_direct import get_session
 from app.clients.vm_client import VM_URL
 
@@ -232,14 +233,29 @@ def poll_alb_target_health() -> int:
             if lb_totals:
                 resource_ids_by_arn = _elb_resource_db_ids_by_arn(account_db_id)
                 local_rows = []
+                history_rows = []
+                now = datetime.utcnow()
                 for lb_arn, (healthy_sum, unhealthy_sum) in lb_totals.items():
                     resource_db_id = resource_ids_by_arn.get(lb_arn)
                     if resource_db_id is None:
                         continue
                     local_rows.append((resource_db_id, "healthyhosts_describe", float(healthy_sum)))
                     local_rows.append((resource_db_id, "unhealthyhosts_describe", float(unhealthy_sum)))
+                    # Bug fix (apply_fix_alb_healthy_hosts_history.py):
+                    # write_metrics_batch() alone only updates the `metrics`
+                    # last-value cache -- the Services page chart reads from
+                    # `metric_history` instead (_metric_history_query_range),
+                    # which never received these rows before this fix, so
+                    # the chart kept showing "No data" despite the DB write
+                    # being genuinely correct. This is a real dual-write, not
+                    # a replacement -- `metrics` still gets updated the same
+                    # way for alert-checking.
+                    history_rows.append((resource_db_id, "healthyhosts_describe", float(healthy_sum), now))
+                    history_rows.append((resource_db_id, "unhealthyhosts_describe", float(unhealthy_sum), now))
                 if local_rows:
                     write_metrics_batch(local_rows)
+                if history_rows:
+                    write_metric_history_batch(history_rows)
         except Exception as e:
             logger.warning(f"describe_polling: ALB health [{region}, account {account_db_id}]: {e}")
     return total
