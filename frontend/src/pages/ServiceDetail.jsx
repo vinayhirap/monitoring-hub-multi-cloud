@@ -152,6 +152,7 @@ export default function ServiceDetail() {
   const [sortKey,    setSortKey]    = useState("name");
   const [timeRange,  setTimeRange]  = useState(6);
   const [activeAlerts, setActiveAlerts] = useState([]);
+  const [thresholdMap, setThresholdMap] = useState({});
   const notImplRef  = useRef(false);
   const selectedRef = useRef(null);
   const autoSelectedRef = useRef(null);
@@ -165,7 +166,34 @@ fetchAccount(id).then(setAccount).catch(err => {
       .then(r => r.ok ? r.json() : [])
       .then(a => setActiveAlerts((Array.isArray(a) ? a : []).filter(x => (x.status||"").toLowerCase() === "active")))
       .catch(() => {});
+    // Real, currently-configured thresholds for this account -- charts
+    // used to draw a hardcoded, unrelated example number as the dashed
+    // reference line (e.g. always "85" for CPUUtilization no matter
+    // what Settings -> Metric Thresholds actually has configured for
+    // this account). include_no_data=true because a chart-page visitor
+    // benefits from seeing a configured-but-not-yet-collecting threshold
+    // just as much as an actively-firing one -- the "hide no data"
+    // filter is specifically for decluttering the Settings list, not
+    // relevant here. See apply_fix_hardcoded_chart_thresholds.py.
+    fetch(`/api/settings/thresholds?account_id=${id}&include_no_data=true`)
+      .then(r => r.ok ? r.json() : { thresholds: [] })
+      .then(data => {
+        const map = {};
+        (data.thresholds || []).forEach(t => {
+          if (t.metric_name) map[`${t.resource_type}:${t.metric_name}`] = t.warning_value;
+        });
+        setThresholdMap(map);
+      })
+      .catch(() => {});
   }, [id]);
+
+  // Looks up the REAL warning threshold configured in Settings for this
+  // exact (resourceType, metricName) pair -- returns undefined if none
+  // is configured, which MetricChart already correctly renders as "no
+  // dashed line" rather than a misleading default.
+  function getThreshold(resourceType, metricName) {
+    return thresholdMap[`${resourceType}:${metricName}`];
+  }
 
   const loadRows = useCallback(async () => {
     if (notImplRef.current) return;
@@ -923,7 +951,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
           <div className="charts-grid">
             {service === "EC2" && (
               <div className="chart-full">
-                <MetricChart title="CPUUtilization" data={metrics.cpu} color="#2bb3ac" unit="%" threshold={85} thresholdLabel="alert threshold" timeRange={rangLabel} />
+                <MetricChart title="CPUUtilization" data={metrics.cpu} color="#2bb3ac" unit="%" threshold={getThreshold("ec2", "CPUUtilization")} thresholdLabel="alert threshold" timeRange={rangLabel} />
               </div>
             )}
             {service === "EC2" && <>
@@ -937,8 +965,8 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
                   data") when it isn't installed/reporting for this
                   instance — see cwagent_installed in get_ec2_metric_series. */}
               {metrics.cwagent_installed && <>
-                <MetricChart title="Memory Utilization %"  data={metrics.mem_utilization}   color="#7c6ee0" unit="%" threshold={90} timeRange={rangLabel} />
-                <MetricChart title="Disk Space Utilized %" data={metrics.disk_used_percent} color="#fbbf24" unit="%" threshold={90} timeRange={rangLabel} />
+                <MetricChart title="mem_used_percent"  data={metrics.mem_utilization}   color="#7c6ee0" unit="%" threshold={getThreshold("ec2", "mem_used_percent")} timeRange={rangLabel} />
+                <MetricChart title="disk_used_percent" data={metrics.disk_used_percent} color="#fbbf24" unit="%" threshold={getThreshold("ec2", "disk_used_percent")} timeRange={rangLabel} />
               </>}
             </>}
 
@@ -947,15 +975,15 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
               <MetricChart title="VolumeWriteOps"     data={metrics.write_ops}     color="#7c6ee0" unit=" ops" timeRange={rangLabel} />
               <MetricChart title="VolumeReadBytes"      data={metrics.read_bytes}    color="#22c55e" unit="B"    timeRange={rangLabel} />
               <MetricChart title="VolumeWriteBytes"     data={metrics.write_bytes}   color="#fbbf24" unit="B"    timeRange={rangLabel} />
-              <MetricChart title="VolumeQueueLength"    data={metrics.queue_length}  color="#ef4444" unit=""     threshold={5} timeRange={rangLabel} />
-              <MetricChart title="BurstBalance" data={metrics.burst_balance} color="#2bb3ac" unit="%"    threshold={20} timeRange={rangLabel} />
+              <MetricChart title="VolumeQueueLength"    data={metrics.queue_length}  color="#ef4444" unit=""     threshold={getThreshold("ebs", "VolumeQueueLength")} timeRange={rangLabel} />
+              <MetricChart title="BurstBalance" data={metrics.burst_balance} color="#2bb3ac" unit="%"    threshold={getThreshold("ebs", "BurstBalance")} timeRange={rangLabel} />
             </>}
 
             {service === "Lambda" && <>
               <MetricChart title="Invocations"     data={metrics.invocations} color="#22c55e" unit=""   timeRange={rangLabel} />
-              <MetricChart title="Errors"          data={metrics.errors}      color="#ef4444" unit=""   threshold={5} timeRange={rangLabel} />
+              <MetricChart title="Errors"          data={metrics.errors}      color="#ef4444" unit=""   threshold={getThreshold("lambda", "Errors")} timeRange={rangLabel} />
               <div className="chart-full">
-                <MetricChart title="Duration" data={metrics.duration}    color="#2bb3ac" unit="ms" threshold={8000} timeRange={rangLabel} />
+                <MetricChart title="Duration" data={metrics.duration}    color="#2bb3ac" unit="ms" threshold={getThreshold("lambda", "Duration")} timeRange={rangLabel} />
               </div>
               <MetricChart title="Throttles"       data={metrics.throttles}   color="#f59e0b" unit=""   timeRange={rangLabel} />
               <MetricChart title="ConcurrentExecutions" data={metrics.concurrent}  color="#7c6ee0" unit=""   timeRange={rangLabel} />
@@ -963,14 +991,14 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
 
             {service === "RDS" && <>
               <div className="chart-full">
-                <MetricChart title="CPUUtilization" data={metrics.cpu} color="#2bb3ac" unit="%" threshold={85} timeRange={rangLabel} />
+                <MetricChart title="CPUUtilization" data={metrics.cpu} color="#2bb3ac" unit="%" threshold={getThreshold("rds", "CPUUtilization")} timeRange={rangLabel} />
               </div>
               <MetricChart title="DatabaseConnections"  data={metrics.db_connections}  color="#7c6ee0" unit=""    timeRange={rangLabel} />
               <MetricChart title="FreeableMemory"     data={metrics.freeable_memory} color="#f472b6" unit="B"   timeRange={rangLabel} />
               <MetricChart title="ReadIOPS"       data={metrics.read_iops}       color="#22c55e" unit=" ops" timeRange={rangLabel} />
               <MetricChart title="WriteIOPS"      data={metrics.write_iops}      color="#fbbf24" unit=" ops" timeRange={rangLabel} />
-              <MetricChart title="ReadLatency"    data={metrics.read_latency}    color="#38bdf8" unit="s"   threshold={0.02} timeRange={rangLabel} />
-              <MetricChart title="WriteLatency"   data={metrics.write_latency}   color="#e879f9" unit="s"   threshold={0.02} timeRange={rangLabel} />
+              <MetricChart title="ReadLatency"    data={metrics.read_latency}    color="#38bdf8" unit="s"   threshold={getThreshold("rds", "ReadLatency")} timeRange={rangLabel} />
+              <MetricChart title="WriteLatency"   data={metrics.write_latency}   color="#e879f9" unit="s"   threshold={getThreshold("rds", "WriteLatency")} timeRange={rangLabel} />
             </>}
 
             {service === "S3" && <>
@@ -984,7 +1012,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
               <MetricChart title="GET Requests"          data={metrics?.get_requests  || []} color="#7c6ee0" unit=""  timeRange={rangLabel} />
               <MetricChart title="PUT Requests"          data={metrics?.put_requests  || []} color="#38bdf8" unit=""  timeRange={rangLabel} />
               <MetricChart title="4XX Errors"            data={metrics?.errors_4xx    || []} color="#f59e0b" unit=""  timeRange={rangLabel} />
-              <MetricChart title="5XX Errors"            data={metrics?.errors_5xx    || []} color="#ef4444" unit=""  threshold={5} timeRange={rangLabel} />
+              <MetricChart title="5XX Errors"            data={metrics?.errors_5xx    || []} color="#ef4444" unit="" timeRange={rangLabel} />
               <MetricChart title="Bytes Downloaded"      data={metrics?.bytes_download|| []} color="#f472b6" unit="B" timeRange={rangLabel} />
             </>}
 
@@ -992,24 +1020,24 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
               <div className="chart-full">
                 <MetricChart title="RequestCount"           data={metrics?.requests           || []} color="#2bb3ac" unit=""  timeRange={rangLabel} />
               </div>
-              <MetricChart title="HTTPCode_Target_5XX_Count"       data={metrics?.errors_5xx         || []} color="#ef4444" unit=""  threshold={20} timeRange={rangLabel} />
-              <MetricChart title="HTTPCode_Target_4XX_Count"       data={metrics?.errors_4xx         || []} color="#f59e0b" unit=""  threshold={50} timeRange={rangLabel} />
-              <MetricChart title="HTTPCode_ELB_5XX_Count"          data={metrics?.errors_elb_5xx     || []} color="#f472b6" unit=""  threshold={5}  timeRange={rangLabel} />
+              <MetricChart title="HTTPCode_Target_5XX_Count"       data={metrics?.errors_5xx         || []} color="#ef4444" unit=""  threshold={getThreshold("elb", "HTTPCode_Target_5XX_Count")} timeRange={rangLabel} />
+              <MetricChart title="HTTPCode_Target_4XX_Count"       data={metrics?.errors_4xx         || []} color="#f59e0b" unit=""  threshold={getThreshold("elb", "HTTPCode_Target_4XX_Count")} timeRange={rangLabel} />
+              <MetricChart title="HTTPCode_ELB_5XX_Count"          data={metrics?.errors_elb_5xx     || []} color="#f472b6" unit=""  threshold={getThreshold("elb", "HTTPCode_ELB_5XX_Count")}  timeRange={rangLabel} />
               <div className="chart-full">
-                <MetricChart title="TargetResponseTime" data={metrics?.latency           || []} color="#fbbf24" unit="s" threshold={0.5} timeRange={rangLabel} />
+                <MetricChart title="TargetResponseTime" data={metrics?.latency           || []} color="#fbbf24" unit="s" threshold={getThreshold("elb", "TargetResponseTime")} timeRange={rangLabel} />
               </div>
               <MetricChart title="HealthyHostCount"             data={metrics?.healthy_hosts      || []} color="#22c55e" unit=""  timeRange={rangLabel} />
-              <MetricChart title="UnHealthyHostCount"           data={metrics?.unhealthy_hosts    || []} color="#ef4444" unit=""  threshold={1} timeRange={rangLabel} />
+              <MetricChart title="UnHealthyHostCount"           data={metrics?.unhealthy_hosts    || []} color="#ef4444" unit=""  threshold={getThreshold("elb", "UnHealthyHostCount")} timeRange={rangLabel} />
               <MetricChart title="ActiveConnectionCount"        data={metrics?.active_connections || []} color="#7c6ee0" unit=""  timeRange={rangLabel} />
               <MetricChart title="NewConnectionCount"           data={metrics?.new_connections    || []} color="#38bdf8" unit=""  timeRange={rangLabel} />
             </>}
 
             {service === "ECS" && <>
               <div className="chart-full">
-                <MetricChart title="CPUUtilization"    data={metrics?.cpu_utilization    || []} color="#34d399" unit="%" threshold={85} timeRange={rangLabel} />
+                <MetricChart title="CPUUtilization"    data={metrics?.cpu_utilization    || []} color="#34d399" unit="%" threshold={getThreshold("ecs", "CPUUtilization")} timeRange={rangLabel} />
               </div>
               <div className="chart-full">
-                <MetricChart title="MemoryUtilization" data={metrics?.mem_utilization    || []} color="#7c6ee0" unit="%" threshold={85} timeRange={rangLabel} />
+                <MetricChart title="MemoryUtilization" data={metrics?.mem_utilization    || []} color="#7c6ee0" unit="%" threshold={getThreshold("ecs", "MemoryUtilization")} timeRange={rangLabel} />
               </div>
               <MetricChart title="RunningTaskCount"          data={metrics?.running_task_count || []} color="#22c55e" unit=""  timeRange={rangLabel} />
               <MetricChart title="PendingTaskCount"          data={metrics?.pending_task_count || []} color="#f59e0b" unit=""  timeRange={rangLabel} />
