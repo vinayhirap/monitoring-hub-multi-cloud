@@ -44,6 +44,17 @@ CURATED = {
         ("EBSReadBytes",       "Bytes",   "Sum",     False, "EBS bytes read"),
         ("EBSWriteBytes",      "Bytes",   "Sum",     False, "EBS bytes written"),
         ("MetadataNoToken",    "Count",   "Sum",     False, "IMDSv1 requests (no token) — security signal"),
+        # CWAgent-published, not standard EC2 namespace -- only present
+        # for instances with the CloudWatch Agent actually installed and
+        # reporting (see collector_direct.py's _ec2_cwagent_installed).
+        # is_default=False deliberately -- unlike CPUUtilization/etc,
+        # which apply to every instance, this is opt-in since it doesn't
+        # exist at all for instances without the agent. metric_name uses
+        # CWAgent's own literal published name (snake_case, not the
+        # PascalCase convention of standard EC2 metrics) for consistency
+        # with the official platform naming, matching this session's
+        # broader naming-consistency work. See apply_add_cwagent_mem_threshold.py.
+        ("mem_used_percent",   "Percent", "Average", False, "Memory utilization (requires CloudWatch Agent)"),
     ]),
     "ebs": ("Amazon EBS", "AWS/EBS", "core", [
         ("VolumeReadOps",       "Count",   "Average", True,  "Read operations/sec"),

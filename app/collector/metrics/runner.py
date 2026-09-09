@@ -222,6 +222,54 @@ def _collect_ec2_low(cw, resources):
     n = _run_gmd(cw, resources, EC2_METRICS_LOW, minutes=16)
     logger.info(f"    EC2 low: {n} datapoints / {len(resources)} instances")
 
+# CWAgent's mem_used_percent is dimensioned by InstanceId alone (unlike
+# disk_used_percent, which also carries path/device/fstype and needs
+# per-instance dimension discovery -- deliberately NOT added here, see
+# apply_add_cwagent_mem_threshold.py for why disk is a separate,
+# larger follow-up rather than bundled in). Because the dimension shape
+# matches EC2's own convention, _run_gmd/_build_queries work for it
+# unmodified -- only the namespace differs (CWAgent, not AWS/EC2).
+CWAGENT_MEM_METRICS = [
+    ("mem_used_percent", "mem_used_percent", "Average", "CWAgent"),
+]
+
+
+def _ec2_instances_with_cwagent_mem(cw, resources):
+    """
+    Filter to only the EC2 instances that have actually published
+    mem_used_percent to CWAgent -- a free ListMetrics call per instance,
+    unlike GetMetricData. Most instances won't have the CloudWatch Agent
+    installed at all, so querying GetMetricData unconditionally for all
+    of them would mostly return empty and waste real API cost for
+    nothing. Mirrors collector_direct.py's _ec2_cwagent_installed()
+    check, but using this account's own assumed-role session (that
+    function's bare boto3.client() is a separate, pre-existing thing --
+    not touched here) since this runs across every customer account,
+    not just wherever this process happens to have default credentials.
+    """
+    present = []
+    for r in resources:
+        try:
+            resp = cw.list_metrics(
+                Namespace="CWAgent",
+                MetricName="mem_used_percent",
+                Dimensions=[{"Name": "InstanceId", "Value": r["resource_id"]}],
+            )
+            if resp.get("Metrics"):
+                present.append(r)
+        except Exception as e:
+            logger.warning(f"CWAgent presence check [{r['resource_id']}]: {e}")
+    return present
+
+
+def _collect_ec2_cwagent_mem(cw, resources):
+    cwagent_resources = _ec2_instances_with_cwagent_mem(cw, resources)
+    if not cwagent_resources:
+        logger.info(f"    EC2 CWAgent mem: 0/{len(resources)} instances have CWAgent reporting")
+        return
+    n = _run_gmd(cw, cwagent_resources, CWAGENT_MEM_METRICS, minutes=16)
+    logger.info(f"    EC2 CWAgent mem: {n} datapoints / {len(cwagent_resources)} of {len(resources)} instances")
+
 def _collect_ebs(cw, resources):
     n = _run_gmd(cw, resources, EBS_METRICS, minutes=6)
     logger.info(f"    EBS: {n} datapoints / {len(resources)} volumes")
@@ -311,6 +359,7 @@ def _collect_account(account, tier="standard"):
                 tasks.append((cw, resources, "ec2_critical"))
             if tier == "low":
                 tasks.append((cw, resources, "ec2_low"))
+                tasks.append((cw, resources, "ec2_cwagent_mem"))
 
         elif resource_type == "ebs":
             if tier in ("standard", "low"):
@@ -332,6 +381,7 @@ def _collect_account(account, tier="standard"):
     _DISPATCH = {
         "ec2_critical":    _collect_ec2_critical,
         "ec2_low":         _collect_ec2_low,
+        "ec2_cwagent_mem": _collect_ec2_cwagent_mem,
         "ebs":             _collect_ebs,
         "rds":             _collect_rds,
         "elb":             _collect_elb,
