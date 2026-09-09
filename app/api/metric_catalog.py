@@ -229,7 +229,45 @@ def get_account_metrics(account_id: int, current_user: dict = Depends(require_pe
         ORDER BY mc.category = 'core' DESC, mc.category = 'extended' DESC,
                  mc.display_service, mc.metric_name
     """, (account_id, provider))
-    rows = cur.fetchall(); cur.close(); conn.close()
+    rows = cur.fetchall()
+
+    # Hide CORE-tier services this account has zero matching resources
+    # for -- e.g. "NLB" showing up as a selectable service in Metrics to
+    # Monitor even though this account has never had a Network Load
+    # Balancer, only ALBs. Both share resources.resource_type='elb' (see
+    # app/collector/discovery/runner.py), distinguished only by their ARN
+    # pattern (loadbalancer/app/ vs loadbalancer/net/), so a plain
+    # resource_type match can't tell them apart -- this checks the ARN
+    # pattern directly for that one case. Only applied to the 7 core
+    # AWS services this app actually discovers resources for
+    # (ec2/ebs/rds/lambda/alb/nlb/ecs); EXTENDED-tier services are left
+    # alone deliberately -- this app has no discovery for them at all, so
+    # "zero resources found" would be true for literally all of them,
+    # and hiding the whole extended tier would remove the ability to
+    # pre-select metrics before a resource is even provisioned, a
+    # legitimate use of this page. See apply_metrics_to_monitor_cleanup.py.
+    present_core_services = None
+    if provider == "aws":
+        cur.execute("""
+            SELECT resource_type, resource_id FROM resources WHERE aws_account_id = %s
+        """, (account_id,))
+        resource_rows = cur.fetchall()
+        present_core_services = set()
+        for rr in resource_rows:
+            rt, rid = rr["resource_type"], rr["resource_id"] or ""
+            if rt == "elb":
+                if "loadbalancer/app/" in rid:
+                    present_core_services.add("alb")
+                if "loadbalancer/net/" in rid:
+                    present_core_services.add("nlb")
+            elif rt in ("ecs", "ecs_service"):
+                present_core_services.add("ecs")
+            else:
+                present_core_services.add(rt)
+
+    cur.close(); conn.close()
+
+    _CORE_SERVICES_WITH_DISCOVERY = {"ec2", "ebs", "rds", "lambda", "alb", "nlb", "ecs"}
 
     grouped = {}
     for r in rows:
@@ -249,6 +287,24 @@ def get_account_metrics(account_id: int, current_user: dict = Depends(require_pe
             }))
         else:
             grouped[key]["directory_id"] = r["id"]
+
+    if present_core_services is not None:
+        # Only hide a core service group with zero matching resources if
+        # NOTHING in it is already enabled -- Settings -> Metrics to
+        # Monitor's Save does a full-replacement PUT of whatever this GET
+        # returns, so silently dropping a group the user had already
+        # explicitly turned on (even if its resources are gone now) would
+        # silently disable it the next time they hit Save, without them
+        # ever choosing to. Only ever hides groups nobody has touched.
+        grouped = {
+            key: g for key, g in grouped.items()
+            if not (
+                g["category"] == "core"
+                and key in _CORE_SERVICES_WITH_DISCOVERY
+                and key not in present_core_services
+                and not any(m["enabled"] for m in g["metrics"])
+            )
+        }
 
     return sorted(grouped.values(), key=lambda g: (g["category"] != "core", g["category"] != "extended", g["display_service"] or ""))
 

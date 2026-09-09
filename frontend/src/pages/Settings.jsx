@@ -438,30 +438,17 @@ export default function Settings() {
             <button className="btn-clear" onClick={resetToDefaultMetrics} disabled={metricsSaving || !accountId}>
               <RotateCcwIcon size={13}/> Reset to Recommended
             </button>
-            {/* YACE is AWS/CloudWatch-specific -- Azure/GCP use this app's own
-                push collectors instead (see app/providers/{azure,gcp}/
-                metrics_collector.py), so these downloads are meaningless
-                for them. Show for AWS or while nothing is selected yet
-                (matches the existing disabled-until-selected behavior).
-                LEGACY EXPORT, not this app's own collection mechanism --
-                see the help paragraph below. Phase 1
-                (apply_direct_gmd_metrics_revival.py) replaced YACE/VM with
-                this app's own scheduler.py tiers for AWS; these buttons
-                only remain for anyone still running an external YACE +
-                VictoriaMetrics stack for their own separate purposes. */}
-            {(!selectedAccount || selectedAccount.provider === "aws") && (
-              <>
-                <button className="btn-clear" onClick={() => handleDownloadYaceConfig("critical")} disabled={!accountId} title="Legacy YACE config export -- this app's own collection already runs on this schedule automatically, no deployment needed">
-                  <DownloadIcon size={13}/> Critical (60s)
-                </button>
-                <button className="btn-clear" onClick={() => handleDownloadYaceConfig("standard")} disabled={!accountId} title="Legacy YACE config export -- this app's own collection already runs on this schedule automatically, no deployment needed">
-                  <DownloadIcon size={13}/> Standard (300s)
-                </button>
-                <button className="btn-clear" onClick={() => handleDownloadYaceConfig("trend")} disabled={!accountId} title="Legacy YACE config export -- this app's own collection already runs on this schedule automatically, no deployment needed">
-                  <DownloadIcon size={13}/> Trend (900s)
-                </button>
-              </>
-            )}
+            {/* Legacy YACE config.yml download buttons REMOVED entirely --
+                explicit user request, not just relabeled. This app's own
+                AWS collection has used scheduler.py's built-in tiers since
+                Phase 1 (apply_direct_gmd_metrics_revival.py); nothing syncs
+                data back from an external YACE + VictoriaMetrics stack into
+                this app anymore, so offering the download here was
+                confusing regardless of how it was labeled. See
+                apply_metrics_to_monitor_cleanup.py. The backend endpoint
+                (GET /api/account-metrics/{id}/yace-config) is left in place
+                in case it's used directly by anyone with a genuine external
+                need -- only the UI entry point is removed. */}
             <button className="btn-check" onClick={saveMetricSelection} disabled={metricsSaving || !metricsDirty}>
               {metricsSaving ? "Saving…" : <span style={{display:"inline-flex",alignItems:"center",gap:6}}><SaveIcon size={13}/> Save Selection</span>}
             </button>
@@ -482,12 +469,6 @@ export default function Settings() {
                 GetMetricData calls every 2/5/15 minutes respectively, with
                 no separate infrastructure to deploy. That's what actually
                 controls GetMetricData cost and polling frequency today.
-                The config.yml downloads below are a LEGACY export for
-                anyone still running an external YACE + VictoriaMetrics
-                stack for their own purposes (e.g. feeding a separate
-                Grafana dashboard) -- deploying them has no effect on this
-                app's own collection, cost, or alerting, since nothing
-                syncs data back from VictoriaMetrics into this app anymore.
               </p>
             ) : (
               <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "0 0 10px 0" }}>
