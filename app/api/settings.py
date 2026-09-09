@@ -8,6 +8,26 @@ import datetime, json, logging
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
+# metric_catalog.service ("alb", "nlb") is the correct catalog/display
+# value and is NOT changed by this map -- but
+# app/collector/discovery/runner.py stores ALL Elastic Load Balancing v2
+# resources (both ALB and NLB; this codebase doesn't distinguish them at
+# discovery time) under resources.resource_type = "elb" uniformly.
+# alert_evaluator.py's core scheduled evaluation JOINs
+# thresholds.resource_type directly against resources.resource_type with
+# no service-name fallback (unlike check_and_write_alerts() /
+# app/aws/collector_direct.py, which already has its own separate
+# LOCAL_RESOURCE_TYPE map for this same translation -- see Phase 5,
+# apply_check_thresholds_local_metrics.py). Without this normalization,
+# ALB/NLB thresholds are silently unevaluable by the scheduled evaluator
+# forever, no matter what value they're set to. See
+# apply_fix_alb_nlb_threshold_resource_type.py for the full story.
+_THRESHOLD_RESOURCE_TYPE_ALIASES = {"alb": "elb", "nlb": "elb"}
+
+
+def _normalize_threshold_resource_type(value):
+    return _THRESHOLD_RESOURCE_TYPE_ALIASES.get(value, value)
+
 
 def _ser(obj):
     if isinstance(obj, (datetime.datetime, datetime.date)): return obj.isoformat()
@@ -38,7 +58,7 @@ def get_thresholds(account_id: int = Query(3), current_user: dict = Depends(requ
 def upsert_threshold(payload: dict = Body(...), current_user: dict = Depends(require_permission("alerts.configure"))):
     account_id     = int(payload.get("account_id", 3))
     metric_id      = payload["metric_id"]
-    resource_type  = payload.get("resource_type", "ec2")
+    resource_type  = _normalize_threshold_resource_type(payload.get("resource_type", "ec2"))
     warning_value  = float(payload["warning_value"])
     critical_value = float(payload["critical_value"])
     comparison     = payload.get("comparison", ">")
@@ -52,6 +72,7 @@ def upsert_threshold(payload: dict = Body(...), current_user: dict = Depends(req
            critical_value, comparison, evaluation_period, enabled)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
         ON DUPLICATE KEY UPDATE
+          resource_type     = VALUES(resource_type),
           warning_value     = VALUES(warning_value),
           critical_value    = VALUES(critical_value),
           comparison        = VALUES(comparison),
@@ -98,7 +119,7 @@ def seed_default_thresholds(account_id: int = Query(3), current_user: dict = Dep
                   (aws_account_id, resource_type, metric_id,
                    warning_value, critical_value, comparison, evaluation_period, enabled)
                 VALUES (%s,%s,%s,%s,%s,%s,5,1)
-            """, (account_id, m["service"], m["id"], warn, crit, comp))
+            """, (account_id, _normalize_threshold_resource_type(m["service"]), m["id"], warn, crit, comp))
             inserted += cur.rowcount
         except Exception as e:
             logger.warning(f"Seed skip {m['metric_name']}: {e}")
