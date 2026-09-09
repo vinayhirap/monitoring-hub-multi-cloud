@@ -299,6 +299,28 @@ def add_group_policy(group_id: int, payload: dict = Body(...), current_user: dic
             conn.close()
             raise HTTPException(status_code=400, detail=f"Invalid scope: {err}")
 
+    # Defense-in-depth, not a fix for a live bug: today this endpoint is
+    # reachable only by admin (groups.update is admin-only in
+    # role_permissions -- see db/migrations/015_permissions_rbac.sql),
+    # and admin's effective scope is FULL_ACCESS, so scope_within always
+    # passes for the only caller who can reach this today. Added anyway,
+    # matching the SAME redundant check app/api/admin/users.py already
+    # has for individual access_scopes grants (_validate_and_insert_scopes),
+    # so this endpoint isn't a single point of failure if groups.update
+    # is ever granted to a non-admin role in the future, or if
+    # has_permission() ever had its own bug -- the permission gate and
+    # this scope check are independent layers, same principle as
+    # users.py's own docstring ("never trust anything the client sent
+    # about its own permissions").
+    if current_user["role"] != "admin":
+        actor_scope = authz.get_effective_scope(current_user)
+        if not authz.scope_within(scopes, actor_scope):
+            conn.close()
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot grant a group access outside your own assigned scope",
+            )
+
     cursor = conn.cursor()
     inserted_ids = []
     for s in scopes:
