@@ -48,6 +48,8 @@ export default function Settings() {
   const [checkResult, setCheckResult] = useState(null);
   const [checking,    setChecking]    = useState(false);
   const [emailOn,     setEmailOn]     = useState(false);
+  const [showNoData,  setShowNoData]  = useState(false);
+  const [hiddenNoDataCount, setHiddenNoDataCount] = useState(0);
   const [email,       setEmail]       = useState("");
   const [webhook,     setWebhook]     = useState("");
 
@@ -160,14 +162,17 @@ export default function Settings() {
     if (!accountId) return;
     setLoading(true);
     try {
-      const t = await fetch(`${BASE}/api/settings/thresholds?account_id=${accountId}`).then(r => r.json());
-      setThresholds(Array.isArray(t) ? t : []);
+      const t = await fetch(
+        `${BASE}/api/settings/thresholds?account_id=${accountId}&include_no_data=${showNoData}`
+      ).then(r => r.json());
+      setThresholds(Array.isArray(t?.thresholds) ? t.thresholds : []);
+      setHiddenNoDataCount(t?.hidden_no_data_count || 0);
     } catch (e) {
       console.error("Settings load:", e);
     } finally {
       setLoading(false);
     }
-  }, [accountId]);
+  }, [accountId, showNoData]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -337,6 +342,24 @@ export default function Settings() {
             <button className="btn-clear" onClick={clearAlerts}><TrashIcon size={13}/> Clear Alerts</button>
           </div>
         </div>
+
+        {hiddenNoDataCount > 0 && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8,
+            padding: "6px 12px", fontSize: 12, color: "var(--text-muted)",
+          }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={showNoData}
+                onChange={e => setShowNoData(e.target.checked)}
+              />
+              {showNoData
+                ? `Showing ${hiddenNoDataCount} metric(s) with no data`
+                : `${hiddenNoDataCount} metric(s) hidden — never produced any data for this account`}
+            </label>
+          </div>
+        )}
 
         {/* Check result output */}
         {checkResult && (

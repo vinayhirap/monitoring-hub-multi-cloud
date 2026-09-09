@@ -1186,6 +1186,14 @@ function QuickStat({ label, value, color, mono }) { return <div className="qs-it
 
 function MetricChart({ title, data, color, unit, threshold, thresholdLabel, timeRange }) {
   const { ianaName } = useTimezone();
+  // data === null (not undefined, not []) means the backend knows this
+  // metric structurally can never have data for this resource (e.g. EBS
+  // BurstBalance -- dropped from collection with no fallback, see
+  // apply_hide_no_data_metrics.py) -- hide the card entirely instead of
+  // showing a permanent, pointless "no data" placeholder. data === []
+  // still means "might have data later, just none in this window" and
+  // keeps the existing placeholder below.
+  if (data === null) return null;
   if (!data || data.length === 0) return (
     <div className="chart-box">
       <div className="chart-title">{title}</div>

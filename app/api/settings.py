@@ -29,6 +29,29 @@ def _normalize_threshold_resource_type(value):
     return _THRESHOLD_RESOURCE_TYPE_ALIASES.get(value, value)
 
 
+def _metrics_with_data_for_account(account_id: int) -> set:
+    """
+    {(resource_type, metric_name), ...} -- every (resource_type,
+    metric_name) combination that has AT LEAST ONE row in the `metrics`
+    last-value cache for a resource belonging to this account. Used to
+    hide threshold rows for metrics that have never actually produced
+    data for this account (extended-tier metrics with no collector
+    built, a service the account has zero resources of, etc.) -- a
+    threshold on a metric that can never have a value is just clutter,
+    not something to configure. One query, not one per threshold row.
+    """
+    conn = get_connection(); cur = conn.cursor()
+    cur.execute("""
+        SELECT DISTINCT r.resource_type, m.metric_name
+        FROM metrics m
+        JOIN resources r ON r.id = m.resource_id
+        WHERE r.aws_account_id = %s
+    """, (account_id,))
+    pairs = set(cur.fetchall())
+    cur.close(); conn.close()
+    return pairs
+
+
 def _ser(obj):
     if isinstance(obj, (datetime.datetime, datetime.date)): return obj.isoformat()
     if isinstance(obj, dict):  return {k: _ser(v) for k, v in obj.items()}
@@ -37,7 +60,18 @@ def _ser(obj):
 
 
 @router.get("/thresholds")
-def get_thresholds(account_id: int = Query(3), current_user: dict = Depends(require_permission("alerts.view"))):
+def get_thresholds(
+    account_id: int = Query(3),
+    include_no_data: bool = Query(
+        False,
+        description="If false (default), thresholds for metrics that have "
+                    "never produced any data for this account are hidden -- "
+                    "not deleted, just excluded from this response. Pass "
+                    "true to see everything, e.g. for debugging why a "
+                    "metric never collects.",
+    ),
+    current_user: dict = Depends(require_permission("alerts.view")),
+):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT
@@ -51,7 +85,20 @@ def get_thresholds(account_id: int = Query(3), current_user: dict = Depends(requ
         ORDER BY mc.service, mc.metric_name
     """, (account_id,))
     rows = cur.fetchall(); cur.close(); conn.close()
-    return [_ser(r) for r in rows]
+
+    has_data_pairs = _metrics_with_data_for_account(account_id)
+    no_data_count = 0
+    out = []
+    for r in rows:
+        has_data = (r["resource_type"], r["metric_name"]) in has_data_pairs
+        r["has_data"] = has_data
+        if not has_data:
+            no_data_count += 1
+            if not include_no_data:
+                continue
+        out.append(r)
+
+    return {"thresholds": [_ser(r) for r in out], "hidden_no_data_count": no_data_count}
 
 
 @router.post("/thresholds")
