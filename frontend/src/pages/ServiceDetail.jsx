@@ -152,7 +152,6 @@ export default function ServiceDetail() {
   const [sortKey,    setSortKey]    = useState("name");
   const [timeRange,  setTimeRange]  = useState(6);
   const [activeAlerts, setActiveAlerts] = useState([]);
-  const [thresholdMap, setThresholdMap] = useState({});
   const notImplRef  = useRef(false);
   const selectedRef = useRef(null);
   const autoSelectedRef = useRef(null);
@@ -166,34 +165,7 @@ fetchAccount(id).then(setAccount).catch(err => {
       .then(r => r.ok ? r.json() : [])
       .then(a => setActiveAlerts((Array.isArray(a) ? a : []).filter(x => (x.status||"").toLowerCase() === "active")))
       .catch(() => {});
-    // Real, currently-configured thresholds for this account -- charts
-    // used to draw a hardcoded, unrelated example number as the dashed
-    // reference line (e.g. always "85" for CPUUtilization no matter
-    // what Settings -> Metric Thresholds actually has configured for
-    // this account). include_no_data=true because a chart-page visitor
-    // benefits from seeing a configured-but-not-yet-collecting threshold
-    // just as much as an actively-firing one -- the "hide no data"
-    // filter is specifically for decluttering the Settings list, not
-    // relevant here. See apply_fix_hardcoded_chart_thresholds.py.
-    fetch(`/api/settings/thresholds?account_id=${id}&include_no_data=true`)
-      .then(r => r.ok ? r.json() : { thresholds: [] })
-      .then(data => {
-        const map = {};
-        (data.thresholds || []).forEach(t => {
-          if (t.metric_name) map[`${t.resource_type}:${t.metric_name}`] = t.warning_value;
-        });
-        setThresholdMap(map);
-      })
-      .catch(() => {});
   }, [id]);
-
-  // Looks up the REAL warning threshold configured in Settings for this
-  // exact (resourceType, metricName) pair -- returns undefined if none
-  // is configured, which MetricChart already correctly renders as "no
-  // dashed line" rather than a misleading default.
-  function getThreshold(resourceType, metricName) {
-    return thresholdMap[`${resourceType}:${metricName}`];
-  }
 
   const loadRows = useCallback(async () => {
     if (notImplRef.current) return;
@@ -815,6 +787,44 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
 }
 
 function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange, onTimeRangeChange, allRows, onClose, onSelectRelated, accountId }) {
+  const [thresholdMap, setThresholdMap] = useState({});
+
+  // Real, currently-configured thresholds for this account -- charts
+  // used to draw a hardcoded, unrelated example number as the dashed
+  // reference line (e.g. always "85" for CPUUtilization no matter what
+  // Settings -> Metric Thresholds actually has configured for this
+  // account). include_no_data=true because a chart-page visitor
+  // benefits from seeing a configured-but-not-yet-collecting threshold
+  // just as much as an actively-firing one -- the "hide no data" filter
+  // is specifically for decluttering the Settings list, not relevant
+  // here. Lives in THIS component, not the parent ServiceDetail(),
+  // because that's a separate function scope -- the earlier version of
+  // this fix defined getThreshold() in the parent while every chart
+  // that needs it renders here, causing a live
+  // "ReferenceError: getThreshold is not defined". See
+  // apply_fix_getthreshold_scope.py.
+  useEffect(() => {
+    if (!accountId) return;
+    fetch(`/api/settings/thresholds?account_id=${accountId}&include_no_data=true`)
+      .then(r => r.ok ? r.json() : { thresholds: [] })
+      .then(data => {
+        const map = {};
+        (data.thresholds || []).forEach(t => {
+          if (t.metric_name) map[`${t.resource_type}:${t.metric_name}`] = t.warning_value;
+        });
+        setThresholdMap(map);
+      })
+      .catch(() => {});
+  }, [accountId]);
+
+  // Looks up the REAL warning threshold configured in Settings for this
+  // exact (resourceType, metricName) pair -- returns undefined if none
+  // is configured, which MetricChart already correctly renders as "no
+  // dashed line" rather than a misleading default.
+  function getThreshold(resourceType, metricName) {
+    return thresholdMap[`${resourceType}:${metricName}`];
+  }
+
   const name = row.name || row.service_name || row.identifier || row.function_name || row.bucket_name || row.instance_id || "Resource";
 
   const noMetricsMsg = {
