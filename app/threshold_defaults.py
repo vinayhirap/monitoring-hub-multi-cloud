@@ -136,6 +136,10 @@ DEFAULT_THRESHOLDS = {
     'Latency': (1000, 3000, '>'),
     'MatchedEvents': (1000000, 5000000, '>'),
     'MemoryUtilization': (70, 90, '>'),
+    # EC2 CWAgent's own literal metric name (snake_case, distinct from the
+    # PascalCase 'MemoryUtilization' key above used by ECS/other services)
+    # -- see apply_add_cwagent_mem_threshold.py.
+    'mem_used_percent': (80, 90, '>'),
     'MetadataNoToken': (1, 5, '>'),
     'NetworkBytesIn': (1000000, 5000000, '>'),
     'NetworkBytesOut': (1000000, 5000000, '>'),
