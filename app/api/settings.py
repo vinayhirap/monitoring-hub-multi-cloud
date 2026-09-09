@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Body, Query, Depends
 from app.db import get_connection
 from app.auth.permissions import require_permission
-from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type
+from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type, resolve_db_metric_name
 import datetime, json, logging
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ def get_thresholds(
     no_data_count = 0
     out = []
     for r in rows:
-        has_data = (r["resource_type"], (r["metric_name"] or "").lower()) in has_data_pairs
+        has_data = (r["resource_type"], resolve_db_metric_name(r["resource_type"], r["metric_name"])) in has_data_pairs
         r["has_data"] = has_data
         if not has_data:
             no_data_count += 1
