@@ -258,3 +258,62 @@ THRESHOLD_RESOURCE_TYPE_ALIASES = {"alb": "elb", "nlb": "elb"}
 
 def normalize_threshold_resource_type(value):
     return THRESHOLD_RESOURCE_TYPE_ALIASES.get(value, value)
+
+
+# Confirmed by reading app/providers/azure/metrics_collector.py and
+# app/providers/gcp/metrics_collector.py directly: both write
+# metric_catalog.metric_name into `metrics`/`metric_history` completely
+# UNCHANGED (Azure: metric.name, the SDK's own echo of the exact
+# requested catalog name; GCP: row["metric_name"], the catalog row
+# itself) -- no transform, no abbreviation, for either cloud. A simple
+# .lower() comparison on both sides always correctly matches for Azure
+# and GCP, and for MOST AWS metrics too (app/collector/metrics/runner.py
+# happens to use "cpuutilization" for "CPUUtilization", etc.).
+#
+# But AWS's db_metric_name convention is a genuinely separate,
+# hand-picked abbreviation in several cases -- confirmed by comparing
+# every entry in runner.py's EC2_METRICS_*/EBS_METRICS/RDS_METRICS/
+# ELB_METRICS/LAMBDA_METRICS_* tuples against metric_catalog's official
+# name, catalog_name.lower() != db_metric_name for these specific ones:
+#   RDS DatabaseConnections -> dbconnections (not "databaseconnections")
+#   RDS FreeStorageSpace    -> freestorage   (not "freestoragespace")
+#   ELB HTTPCode_Target_5XX_Count -> errors5xx (not the CW name, lowered)
+#   ELB TargetResponseTime  -> responselatency (not "targetresponsetime")
+#   ELB HealthyHostCount    -> healthyhosts_describe (different SOURCE
+#                              entirely -- see apply_fix_alb_healthy_hosts.py;
+#                              CloudWatch-based collection for this metric
+#                              never worked at all, describe_polling.py's
+#                              free DescribeTargetHealth path is the only
+#                              real source)
+#   ELB UnHealthyHostCount  -> unhealthyhosts_describe (same as above)
+# A blind catalog_name.lower() guess is WRONG for exactly these 6 --
+# without this override, has_data-style checks would incorrectly treat
+# metrics that genuinely have real, actively-collected data as if they
+# never produced anything. This map is checked FIRST; anything not
+# listed here (which covers the rest of AWS plus all of Azure/GCP)
+# correctly falls back to the plain .lower() comparison.
+AWS_METRIC_NAME_TO_DB_NAME = {
+    ("rds", "DatabaseConnections"): "dbconnections",
+    ("rds", "FreeStorageSpace"): "freestorage",
+    ("elb", "HTTPCode_Target_5XX_Count"): "errors5xx",
+    ("elb", "TargetResponseTime"): "responselatency",
+    ("elb", "HealthyHostCount"): "healthyhosts_describe",
+    ("elb", "UnHealthyHostCount"): "unhealthyhosts_describe",
+}
+
+
+def resolve_db_metric_name(resource_type, catalog_metric_name):
+    """
+    The single source of truth for "given a metric_catalog metric_name
+    and its resource_type, what string actually appears in
+    metrics.metric_name / metric_history.metric_name?" -- checks the
+    explicit AWS override table first (for the handful of AWS metrics
+    where the internal abbreviation genuinely diverges from a case-fold
+    of the official name), falling back to a plain lowercase compare
+    for everything else (correct for Azure, GCP, and most of AWS, which
+    all write their metric_name consistent with a simple case-fold).
+    """
+    override = AWS_METRIC_NAME_TO_DB_NAME.get((resource_type, catalog_metric_name))
+    if override is not None:
+        return override
+    return (catalog_metric_name or "").lower()
