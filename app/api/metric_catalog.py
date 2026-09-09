@@ -615,13 +615,25 @@ def generate_yace_config(
         description="Optional: 'critical' | 'standard' | 'trend'. Omit to "
                      "get every enabled metric in one file (old behavior, "
                      "back-compat). Pass a tier to get just that tier's "
-                     "jobs, for deploying as one of the 3 separate YACE "
-                     "instances (fix #2 in the cost-optimization plan).",
+                     "jobs. LEGACY: AWS's own cost-tiering is now handled "
+                     "automatically by app/collector/scheduler.py's "
+                     "built-in intervals (see apply_direct_gmd_metrics_revival.py) "
+                     "-- this export exists only for anyone still running "
+                     "a separate external YACE + VictoriaMetrics stack.",
     ),
 ):
     """
     Builds a ready-to-use YACE (yet-another-cloudwatch-exporter) discovery
     config.yml from this account's enabled metric selection.
+
+    LEGACY: this app's own AWS metric collection no longer uses YACE or
+    VictoriaMetrics at all (see apply_direct_gmd_metrics_revival.py) --
+    app/collector/scheduler.py's Critical/Standard/Low tiers call
+    GetMetricData directly on their own schedule, automatically, with no
+    deployment required. This endpoint is kept only as an export for
+    anyone who wants a YACE-format config for their own SEPARATE
+    external monitoring stack; deploying it has no effect on this app's
+    own collection, cost, or alerting.
 
     Jobs are grouped by (namespace, interval) — NOT namespace alone — so a
     namespace with a mix of critical/standard/trend metrics (e.g. EC2

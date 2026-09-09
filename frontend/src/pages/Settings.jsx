@@ -442,16 +442,22 @@ export default function Settings() {
                 push collectors instead (see app/providers/{azure,gcp}/
                 metrics_collector.py), so these downloads are meaningless
                 for them. Show for AWS or while nothing is selected yet
-                (matches the existing disabled-until-selected behavior). */}
+                (matches the existing disabled-until-selected behavior).
+                LEGACY EXPORT, not this app's own collection mechanism --
+                see the help paragraph below. Phase 1
+                (apply_direct_gmd_metrics_revival.py) replaced YACE/VM with
+                this app's own scheduler.py tiers for AWS; these buttons
+                only remain for anyone still running an external YACE +
+                VictoriaMetrics stack for their own separate purposes. */}
             {(!selectedAccount || selectedAccount.provider === "aws") && (
               <>
-                <button className="btn-clear" onClick={() => handleDownloadYaceConfig("critical")} disabled={!accountId} title="60s poll — run as its own YACE instance">
+                <button className="btn-clear" onClick={() => handleDownloadYaceConfig("critical")} disabled={!accountId} title="Legacy YACE config export -- this app's own collection already runs on this schedule automatically, no deployment needed">
                   <DownloadIcon size={13}/> Critical (60s)
                 </button>
-                <button className="btn-clear" onClick={() => handleDownloadYaceConfig("standard")} disabled={!accountId} title="300s poll — run as its own YACE instance">
+                <button className="btn-clear" onClick={() => handleDownloadYaceConfig("standard")} disabled={!accountId} title="Legacy YACE config export -- this app's own collection already runs on this schedule automatically, no deployment needed">
                   <DownloadIcon size={13}/> Standard (300s)
                 </button>
-                <button className="btn-clear" onClick={() => handleDownloadYaceConfig("trend")} disabled={!accountId} title="900s poll — run as its own YACE instance">
+                <button className="btn-clear" onClick={() => handleDownloadYaceConfig("trend")} disabled={!accountId} title="Legacy YACE config export -- this app's own collection already runs on this schedule automatically, no deployment needed">
                   <DownloadIcon size={13}/> Trend (900s)
                 </button>
               </>
@@ -470,12 +476,18 @@ export default function Settings() {
           <div style={{ padding: "12px 20px 20px" }}>
             {(!selectedAccount || selectedAccount.provider === "aws") ? (
               <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "0 0 10px 0" }}>
-                Each tier button generates a separate config.yml for that polling speed — deploy all three as
-                separate YACE instances on this account/region's monitoring server (Critical/60s, Standard/300s,
-                Trend/900s), each started with the matching <code>--scraping-interval</code> flag. This
-                is what actually saves GetMetricData cost: one YACE process only has one global scrape interval,
-                so splitting by tier is required for tiering to affect AWS call volume, not just query windows.
-                Nothing is pushed automatically.
+                AWS metrics for this account are collected automatically by
+                this app's own scheduler (app/collector/scheduler.py) --
+                Critical/Standard/Low tiers run built-in, direct
+                GetMetricData calls every 2/5/15 minutes respectively, with
+                no separate infrastructure to deploy. That's what actually
+                controls GetMetricData cost and polling frequency today.
+                The config.yml downloads below are a LEGACY export for
+                anyone still running an external YACE + VictoriaMetrics
+                stack for their own purposes (e.g. feeding a separate
+                Grafana dashboard) -- deploying them has no effect on this
+                app's own collection, cost, or alerting, since nothing
+                syncs data back from VictoriaMetrics into this app anymore.
               </p>
             ) : (
               <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "0 0 10px 0" }}>
