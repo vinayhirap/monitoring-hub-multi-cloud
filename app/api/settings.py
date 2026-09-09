@@ -98,7 +98,7 @@ def get_thresholds(
 def upsert_threshold(payload: dict = Body(...), current_user: dict = Depends(require_permission("alerts.configure"))):
     account_id     = int(payload.get("account_id", 3))
     metric_id      = payload["metric_id"]
-    resource_type  = _normalize_threshold_resource_type(payload.get("resource_type", "ec2"))
+    resource_type  = normalize_threshold_resource_type(payload.get("resource_type", "ec2"))
     warning_value  = float(payload["warning_value"])
     critical_value = float(payload["critical_value"])
     comparison     = payload.get("comparison", ">")
@@ -159,7 +159,7 @@ def seed_default_thresholds(account_id: int = Query(3), current_user: dict = Dep
                   (aws_account_id, resource_type, metric_id,
                    warning_value, critical_value, comparison, evaluation_period, enabled)
                 VALUES (%s,%s,%s,%s,%s,%s,5,1)
-            """, (account_id, _normalize_threshold_resource_type(m["service"]), m["id"], warn, crit, comp))
+            """, (account_id, normalize_threshold_resource_type(m["service"]), m["id"], warn, crit, comp))
             inserted += cur.rowcount
         except Exception as e:
             logger.warning(f"Seed skip {m['metric_name']}: {e}")
