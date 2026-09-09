@@ -70,8 +70,10 @@ def _required_cycles(evaluation_period_minutes):
 
 def _auto_resolve_stale_alerts(cursor):
     """
-    Auto-resolves alerts in exactly two SAFE cases, both meaning the thing
-    being alerted on no longer exists at all -- not just "quiet":
+    Auto-resolves alerts in exactly three SAFE cases, all meaning the
+    thing being alerted on either no longer exists, or is in a
+    definitively-known state that cannot possibly still be breaching --
+    never just "quiet":
 
       1. The account was removed/deactivated (unchanged from before).
       2. The specific resource has no matching row in `resources` at all
@@ -81,13 +83,22 @@ def _auto_resolve_stale_alerts(cursor):
          can never receive a fresh metric again because nothing writes
          for a resource_id discovery doesn't know about) without touching
          alerts for resources that are simply between metric readings.
+      3. The resource is an EC2 instance whose instance_state (tracked by
+         discovery/runner.py from AWS's own DescribeInstances state, not
+         inferred from silence) is 'stopped' or 'terminated'. A stopped
+         instance cannot generate real CPU/network/disk traffic -- this
+         is a definitive fact, not an absence-of-data guess, so it's the
+         same category as cases 1/2, not a return to the reverted
+         "silence = resolved" heuristic. Deliberately excludes transitional
+         states (stopping/shutting-down/pending) -- see
+         apply_fix_stale_alerts_for_stopped_instances.py for why.
 
     Deliberately does NOT resolve purely because metrics stopped flowing
-    for a still-discovered, still-active resource (collector down,
+    for a still-discovered, still-RUNNING resource (collector down,
     VictoriaMetrics outage, network blip). That was tried once already
     and reverted -- see db/migrations/008_revert_falsely_resolved_alerts.sql.
-    "No data" for an existing resource is surfaced as staleness by the API
-    (last_seen_at), not auto-resolved.
+    "No data" for an existing, still-running resource is surfaced as
+    staleness by the API (last_seen_at), not auto-resolved.
     """
     cursor.execute("""
         UPDATE alerts a
@@ -121,8 +132,31 @@ def _auto_resolve_stale_alerts(cursor):
             WHERE id IN ({fmt})
         """, orphaned_ids)
 
-    total = account_removed + len(orphaned_ids)
-    return total, account_removed, len(orphaned_ids)
+    # Case 3: EC2 instance definitively stopped/terminated -- cannot
+    # possibly still be breaching a live metric. See this script's
+    # docstring for why this is safe and NOT the reverted "silence =
+    # resolved" heuristic (instance_state is a known fact from AWS's own
+    # DescribeInstances response, not inferred from absent data).
+    cursor.execute("""
+        SELECT a.id
+        FROM alerts a
+        JOIN resources r
+            ON r.resource_id = a.resource_id
+           AND r.resource_type = 'ec2'
+           AND r.instance_state IN ('stopped', 'terminated')
+        WHERE a.status = 'active'
+    """)
+    stopped_ids = [row["id"] for row in cursor.fetchall()]
+    if stopped_ids:
+        fmt = ",".join(["%s"] * len(stopped_ids))
+        cursor.execute(f"""
+            UPDATE alerts
+            SET status = 'resolved', resolved_at = NOW(), last_seen_at = NOW()
+            WHERE id IN ({fmt})
+        """, stopped_ids)
+
+    total = account_removed + len(orphaned_ids) + len(stopped_ids)
+    return total, account_removed, len(orphaned_ids), len(stopped_ids)
 
 
 def _touch_pending(cursor, resource_id, metric_name, severity, environment,
@@ -186,12 +220,13 @@ def _evaluate_alerts_body(conn, cursor):
     used to leak the connection every time that happened, which is
     what exhausted the pool and took the dashboard offline for hours.
     """
-    stale_total, stale_accounts, stale_orphans = _auto_resolve_stale_alerts(cursor)
+    stale_total, stale_accounts, stale_orphans, stale_stopped = _auto_resolve_stale_alerts(cursor)
     conn.commit()
     if stale_total:
         logger.info(
             f"Auto-resolved {stale_total} stale alert(s) "
-            f"({stale_accounts} account removed, {stale_orphans} orphaned resource_id)"
+            f"({stale_accounts} account removed, {stale_orphans} orphaned resource_id, "
+            f"{stale_stopped} stopped/terminated EC2 instance)"
         )
         try:
             publish_alert_resolved(alert_id=None, account_id=None, bulk=True)
