@@ -12,8 +12,15 @@ Metrics:  Trimmed per triage:
           - EBS:    ReadOps, WriteOps, ReadBytes, WriteBytes, QueueLength
                     (BurstBalance DROPPED — gp3 irrelevant)
           - RDS:    All 8 kept — revenue-critical
-          - ELB:    RequestCount, 5XX, TargetResponseTime, HealthyHostCount
-                    (4XX DROPPED — client noise; UnHealthyHostCount DROPPED — redundant)
+          - ELB:    RequestCount, 5XX, TargetResponseTime
+                    (4XX DROPPED — client noise. HealthyHostCount /
+                    UnHealthyHostCount REMOVED entirely, not just
+                    trimmed — confirmed against AWS's own docs that both
+                    require a TargetGroup dimension this collector never
+                    supplied, so they never returned data via this path;
+                    both are now sourced from app/aws/describe_polling.py's
+                    free DescribeTargetHealth-based aggregation instead.
+                    See apply_fix_alb_healthy_hosts.py.)
           - Lambda: Errors, Duration (standard); Invocations, Throttles (low)
           - ECS:    Removed from paid GMD calls (AWS/ECS basic = free)
 
@@ -66,11 +73,17 @@ RDS_METRICS = [
 
 ELB_METRICS = [
     # 4XX DROPPED — mostly client noise
-    # UnHealthyHostCount DROPPED — redundant with HealthyHostCount
+    # HealthyHostCount / UnHealthyHostCount REMOVED (apply_fix_alb_healthy_hosts.py) --
+    # confirmed against AWS's own docs that these require BOTH
+    # LoadBalancer AND TargetGroup dimensions; this collector only ever
+    # supplied LoadBalancer, so this GetMetricData call has NEVER once
+    # returned data for either metric -- pure wasted CloudWatch cost.
+    # Both are now correctly sourced from describe_polling.py's free
+    # DescribeTargetHealth-based aggregation instead (see
+    # app/aws/describe_polling.py's poll_alb_target_health()).
     ("RequestCount",              "requestcount",    "Sum",     "AWS/ApplicationELB"),
     ("HTTPCode_Target_5XX_Count", "errors5xx",       "Sum",     "AWS/ApplicationELB"),
     ("TargetResponseTime",        "responselatency", "Average", "AWS/ApplicationELB"),
-    ("HealthyHostCount",          "healthyhosts",    "Average", "AWS/ApplicationELB"),
 ]
 
 LAMBDA_METRICS_STANDARD = [
