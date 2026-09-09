@@ -1300,13 +1300,15 @@ def _get_ebs_metric_series(volume_id, region=None, hours=6) -> dict:
             "write_bytes":  s("volumewritebytes"),
             "queue_length": s("volumequeuelength"),
             # burst_balance: Phase 1's GMD collector deliberately dropped
-            # BurstBalance ("gp3 irrelevant" per its own triage note), so
-            # metric_history never has this metric_name and this call
-            # always returns []. Unlike the other 5 functions in this
-            # file, this one has no boto3 fallback -- this chart series
-            # is now PERMANENTLY EMPTY. See apply_dashboard_charts_metric_history.py's
-            # docstring: a known, documented trade, not fixed here.
-            "burst_balance": s("volumeburstbalance"),
+            # BurstBalance ("gp3 irrelevant" per its own triage note), and
+            # unlike the other 5 fields here, this one has NO boto3
+            # fallback -- it can structurally never have data, not just
+            # "none in this time window". Explicit None (not an empty
+            # list from a query that will always return nothing) tells
+            # the frontend to hide this chart card entirely instead of
+            # showing a permanent, pointless "no data" placeholder. See
+            # apply_hide_no_data_metrics.py.
+            "burst_balance": None,
             "period_hours": hours,
             "period_secs":  period,
         }
