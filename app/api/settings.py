@@ -8,6 +8,16 @@ import datetime, json, logging
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
+# How old a `metrics` row can be before _metrics_with_data_for_account()
+# stops counting it as "this metric has data" -- deliberately generous
+# (well beyond the slowest normal collection tier, 15 minutes) so a
+# brief scheduler restart never falsely hides a metric that's still
+# genuinely being collected. See that function's docstring for the real
+# bug this closes (a metric dropped from collection entirely still
+# showing as "has data" forever, because `metrics` has no equivalent of
+# metric_history's prune_metric_history()).
+_STALE_DATA_CUTOFF_MINUTES = 60
+
 # ALB/NLB resource_type normalization now lives in app/threshold_defaults.py
 # (normalize_threshold_resource_type) so every place that writes
 # thresholds.resource_type -- this file's two call sites AND
@@ -19,8 +29,8 @@ router = APIRouter(prefix="/api/settings", tags=["Settings"])
 def _metrics_with_data_for_account(account_id: int) -> set:
     """
     {(resource_type, metric_name_lower), ...} -- every (resource_type,
-    metric_name) combination that has AT LEAST ONE row in the `metrics`
-    last-value cache for a resource belonging to this account.
+    metric_name) combination that has at least one RECENT row in the
+    `metrics` last-value cache for a resource belonging to this account.
     metric_name is lowercased here because metric_catalog.metric_name
     stores CloudWatch-style names ("CPUUtilization") while
     app/collector/metrics/runner.py's write_metric() writes its own
@@ -32,6 +42,20 @@ def _metrics_with_data_for_account(account_id: int) -> set:
     despite this because MySQL's default collation is case-insensitive;
     this is a plain Python set membership check, which is not.) Callers
     must also .lower() the metric_name they're checking against this set.
+
+    RECENT, not just present: `metrics` is a last-value cache with NO
+    equivalent of metric_history's prune_metric_history() -- a row
+    written once, ever, sits there forever even after whatever collected
+    it stops running entirely. Confirmed live: EBS BurstBalance (dropped
+    from collection entirely by Phase 1, see
+    apply_dashboard_charts_metric_history.py) still had a row from ~20
+    hours before this fix, permanently making has_data report a false
+    positive with no way for it to ever self-correct. _STALE_DATA_CUTOFF
+    below is deliberately generous (well beyond the slowest normal
+    collection tier, 15 minutes) so a brief scheduler restart or hiccup
+    never falsely hides a metric that's still genuinely being collected
+    -- it's tuned to catch abandoned metrics measured in hours/days, not
+    to be a tight liveness check.
     """
     conn = get_connection(); cur = conn.cursor()
     cur.execute("""
@@ -39,7 +63,8 @@ def _metrics_with_data_for_account(account_id: int) -> set:
         FROM metrics m
         JOIN resources r ON r.id = m.resource_id
         WHERE r.aws_account_id = %s
-    """, (account_id,))
+          AND m.metric_timestamp >= DATE_SUB(NOW(), INTERVAL %s MINUTE)
+    """, (account_id, _STALE_DATA_CUTOFF_MINUTES))
     pairs = {(resource_type, metric_name.lower()) for resource_type, metric_name in cur.fetchall()}
     cur.close(); conn.close()
     return pairs
