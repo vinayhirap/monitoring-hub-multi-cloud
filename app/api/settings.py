@@ -2,43 +2,36 @@
 from fastapi import APIRouter, Body, Query, Depends
 from app.db import get_connection
 from app.auth.permissions import require_permission
-from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD
+from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type
 import datetime, json, logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
-# metric_catalog.service ("alb", "nlb") is the correct catalog/display
-# value and is NOT changed by this map -- but
-# app/collector/discovery/runner.py stores ALL Elastic Load Balancing v2
-# resources (both ALB and NLB; this codebase doesn't distinguish them at
-# discovery time) under resources.resource_type = "elb" uniformly.
-# alert_evaluator.py's core scheduled evaluation JOINs
-# thresholds.resource_type directly against resources.resource_type with
-# no service-name fallback (unlike check_and_write_alerts() /
-# app/aws/collector_direct.py, which already has its own separate
-# LOCAL_RESOURCE_TYPE map for this same translation -- see Phase 5,
-# apply_check_thresholds_local_metrics.py). Without this normalization,
-# ALB/NLB thresholds are silently unevaluable by the scheduled evaluator
-# forever, no matter what value they're set to. See
-# apply_fix_alb_nlb_threshold_resource_type.py for the full story.
-_THRESHOLD_RESOURCE_TYPE_ALIASES = {"alb": "elb", "nlb": "elb"}
-
-
-def _normalize_threshold_resource_type(value):
-    return _THRESHOLD_RESOURCE_TYPE_ALIASES.get(value, value)
-
+# ALB/NLB resource_type normalization now lives in app/threshold_defaults.py
+# (normalize_threshold_resource_type) so every place that writes
+# thresholds.resource_type -- this file's two call sites AND
+# app/api/metric_catalog.py's separate _sync_thresholds_for_selection(),
+# which the original fix here missed entirely -- shares one definition
+# instead of drifting copies. See
+# apply_fix_threshold_resource_type_everywhere.py for why this moved.
 
 def _metrics_with_data_for_account(account_id: int) -> set:
     """
-    {(resource_type, metric_name), ...} -- every (resource_type,
+    {(resource_type, metric_name_lower), ...} -- every (resource_type,
     metric_name) combination that has AT LEAST ONE row in the `metrics`
-    last-value cache for a resource belonging to this account. Used to
-    hide threshold rows for metrics that have never actually produced
-    data for this account (extended-tier metrics with no collector
-    built, a service the account has zero resources of, etc.) -- a
-    threshold on a metric that can never have a value is just clutter,
-    not something to configure. One query, not one per threshold row.
+    last-value cache for a resource belonging to this account.
+    metric_name is lowercased here because metric_catalog.metric_name
+    stores CloudWatch-style names ("CPUUtilization") while
+    app/collector/metrics/runner.py's write_metric() writes its own
+    lowercase db_metric_name convention ("cpuutilization") into `metrics`
+    -- comparing them as plain Python strings without normalizing case
+    would incorrectly treat every AWS metric as having no data, since
+    the two sides never match by construction. (SQL comparisons
+    elsewhere in this app, e.g. alert_evaluator.py's JOIN, happen to work
+    despite this because MySQL's default collation is case-insensitive;
+    this is a plain Python set membership check, which is not.) Callers
+    must also .lower() the metric_name they're checking against this set.
     """
     conn = get_connection(); cur = conn.cursor()
     cur.execute("""
@@ -47,7 +40,7 @@ def _metrics_with_data_for_account(account_id: int) -> set:
         JOIN resources r ON r.id = m.resource_id
         WHERE r.aws_account_id = %s
     """, (account_id,))
-    pairs = set(cur.fetchall())
+    pairs = {(resource_type, metric_name.lower()) for resource_type, metric_name in cur.fetchall()}
     cur.close(); conn.close()
     return pairs
 
@@ -90,7 +83,7 @@ def get_thresholds(
     no_data_count = 0
     out = []
     for r in rows:
-        has_data = (r["resource_type"], r["metric_name"]) in has_data_pairs
+        has_data = (r["resource_type"], (r["metric_name"] or "").lower()) in has_data_pairs
         r["has_data"] = has_data
         if not has_data:
             no_data_count += 1

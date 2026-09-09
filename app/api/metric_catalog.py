@@ -14,7 +14,7 @@ CloudWatch metric catalog + per-account metric selection.
 from fastapi import APIRouter, HTTPException, Body, Query, Response, Depends
 from app.db import get_connection
 from app.auth.permissions import require_permission
-from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD
+from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type
 import datetime
 import json
 import logging
@@ -295,7 +295,7 @@ def _sync_thresholds_for_selection(cur, account_id: int, enabled_ids: set, disab
                       (aws_account_id, resource_type, metric_id,
                        warning_value, critical_value, comparison, evaluation_period, enabled)
                     VALUES (%s,%s,%s,%s,%s,%s,5,1)
-                """, (account_id, service, mid, warn, crit, comp))
+                """, (account_id, normalize_threshold_resource_type(service), mid, warn, crit, comp))
 
         to_reenable = enabled_ids & existing
         if to_reenable:
