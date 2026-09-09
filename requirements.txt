@@ -73,3 +73,9 @@ google-cloud-asset>=3,<4
 
 # Credential encryption-at-rest (Azure client secret / GCP SA key JSON)
 cryptography>=42,<44
+
+# Testing (tests/ -- this repo's first test suite, see add_test_suite.py).
+# Small and harmless to have installed in production; not worth splitting
+# into a separate requirements-dev.txt when only one file is wired into
+# setup.sh/deploy.sh/update.sh's pip install step.
+pytest>=8,<9
