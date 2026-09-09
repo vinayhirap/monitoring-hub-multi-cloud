@@ -230,3 +230,31 @@ DEFAULT_THRESHOLDS = {
 # Used when a metric_name has no explicit entry above (e.g. a "directory"
 # metric discovered live via ListMetrics that isn't in the curated catalog).
 FALLBACK_THRESHOLD = (1000000, 5000000, ">")
+
+# metric_catalog.service ("alb", "nlb") is the correct catalog/display value
+# for those two ALB/NLB metric_catalog entries -- this map is NOT about
+# changing that. It exists because app/collector/discovery/runner.py stores
+# ALL Elastic Load Balancing v2 resources (both ALB and NLB; this codebase
+# doesn't distinguish them at discovery time) under resources.resource_type
+# = "elb" uniformly, while thresholds.resource_type needs to match THAT
+# value for app/collector/alert_evaluator.py's scheduled JOIN
+# (`t.resource_type = r.resource_type`) to ever succeed -- it has no
+# service-name fallback, unlike check_and_write_alerts()'s own separate
+# LOCAL_RESOURCE_TYPE map for the same translation.
+#
+# Lives HERE, not duplicated in settings.py/metric_catalog.py separately,
+# for the exact reason this module's own docstring already states above:
+# so the various places that write thresholds.resource_type can never
+# drift apart. Originally fixed only in app/api/settings.py
+# (apply_fix_alb_nlb_threshold_resource_type.py) -- that missed
+# app/api/metric_catalog.py's OWN separate INSERT INTO thresholds in
+# _sync_thresholds_for_selection(), which onboarding auto-detect, "Apply
+# Default Template", and every Settings -> Metrics to Monitor checkbox
+# change all funnel through. Moved here and both call sites updated to
+# use it, closing that gap for good. See
+# apply_fix_threshold_resource_type_everywhere.py.
+THRESHOLD_RESOURCE_TYPE_ALIASES = {"alb": "elb", "nlb": "elb"}
+
+
+def normalize_threshold_resource_type(value):
+    return THRESHOLD_RESOURCE_TYPE_ALIASES.get(value, value)
