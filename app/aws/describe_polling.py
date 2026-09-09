@@ -133,7 +133,14 @@ def poll_ec2_status() -> int:
 
 
 def _get_target_groups_by_region():
-    """{(account_db_id, role_arn, external_id, region): [tg_arn, ...]}"""
+    """
+    {(account_db_id, role_arn, external_id, region): [(tg_arn, [lb_arn, ...]), ...]}
+    LoadBalancerArns is captured now (describe_target_groups already
+    returns it -- it was just being discarded before) so
+    poll_alb_target_health() can aggregate healthy/unhealthy counts up
+    to the load-balancer level, not just per target group. See
+    apply_fix_alb_healthy_hosts.py.
+    """
     conn = get_connection()
     cur = conn.cursor(dictionary=True)
     try:
@@ -154,12 +161,25 @@ def _get_target_groups_by_region():
             session = _session_for(a["role_arn"], a["external_id"], region)
             elbv2 = session.client("elbv2", region_name=region)
             tgs = elbv2.describe_target_groups().get("TargetGroups", [])
-            arns = [tg["TargetGroupArn"] for tg in tgs]
-            if arns:
-                grouped[(a["account_db_id"], a["role_arn"], a["external_id"], region)] = arns
+            pairs = [(tg["TargetGroupArn"], tg.get("LoadBalancerArns") or []) for tg in tgs]
+            if pairs:
+                grouped[(a["account_db_id"], a["role_arn"], a["external_id"], region)] = pairs
         except Exception as e:
             logger.warning(f"describe_polling: list target groups [{region}]: {e}")
     return grouped
+
+
+def _elb_resource_db_ids_by_arn(account_db_id):
+    """{lb_arn: resource_db_id} for this account's discovered load balancers."""
+    conn = get_connection(); cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT id, resource_id FROM resources
+            WHERE aws_account_id = %s AND resource_type = 'elb'
+        """, (account_db_id,))
+        return {row["resource_id"]: row["id"] for row in cur.fetchall()}
+    finally:
+        cur.close(); conn.close()
 
 
 def poll_alb_target_health() -> int:
@@ -167,15 +187,27 @@ def poll_alb_target_health() -> int:
     DescribeTargetHealth for every target group across all active accounts —
     free, not CloudWatch-billed, sub-second-fresh. Returns count of target
     groups polled.
+
+    ALSO writes healthy/unhealthy counts into the local `metrics` table,
+    aggregated PER LOAD BALANCER (summed across every target group
+    attached to that LB) -- this is the only working source for these
+    two metrics in this entire app. CloudWatch's HealthyHostCount/
+    UnHealthyHostCount require BOTH LoadBalancer and TargetGroup
+    dimensions together; neither Phase 1's collector nor its boto3
+    fallback ever supplied TargetGroup, so those paths have never once
+    returned data. See apply_fix_alb_healthy_hosts.py. VM push is
+    unchanged (still per-target-group, for any external Grafana
+    consumer -- this is a dual-write, not a replacement).
     """
     total = 0
-    for (account_db_id, role_arn, external_id, region), tg_arns in _get_target_groups_by_region().items():
+    for (account_db_id, role_arn, external_id, region), tg_pairs in _get_target_groups_by_region().items():
         try:
             session = _session_for(role_arn, external_id, region)
             elbv2 = session.client("elbv2", region_name=region)
             ts = int(time.time() * 1000)
             lines = []
-            for tg_arn in tg_arns:
+            lb_totals = {}  # lb_arn -> [healthy, unhealthy]
+            for tg_arn, lb_arns in tg_pairs:
                 try:
                     health = elbv2.describe_target_health(TargetGroupArn=tg_arn)
                 except Exception:
@@ -191,7 +223,23 @@ def poll_alb_target_health() -> int:
                     f'aws_alb_unhealthy_host_count_describe{{dimension_TargetGroup="{tg_id}",dimension_AccountId="{account_db_id}"}} {unhealthy} {ts}'
                 )
                 total += 1
+                for lb_arn in lb_arns:
+                    acc = lb_totals.setdefault(lb_arn, [0, 0])
+                    acc[0] += healthy
+                    acc[1] += unhealthy
             _push_to_vm(lines)
+
+            if lb_totals:
+                resource_ids_by_arn = _elb_resource_db_ids_by_arn(account_db_id)
+                local_rows = []
+                for lb_arn, (healthy_sum, unhealthy_sum) in lb_totals.items():
+                    resource_db_id = resource_ids_by_arn.get(lb_arn)
+                    if resource_db_id is None:
+                        continue
+                    local_rows.append((resource_db_id, "healthyhosts_describe", float(healthy_sum)))
+                    local_rows.append((resource_db_id, "unhealthyhosts_describe", float(unhealthy_sum)))
+                if local_rows:
+                    write_metrics_batch(local_rows)
         except Exception as e:
             logger.warning(f"describe_polling: ALB health [{region}, account {account_db_id}]: {e}")
     return total

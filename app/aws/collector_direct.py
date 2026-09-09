@@ -1480,8 +1480,17 @@ def _get_elb_metric_series(lb_name: str, region=None, hours=6) -> dict:
             "errors_4xx":         vm_series("errors4xx"),
             "errors_elb_5xx":     vm_series("errorselb5xx"),
             "latency":            vm_series("responselatency"),
-            "healthy_hosts":      vm_series("healthyhosts"),
-            "unhealthy_hosts":    vm_series("unhealthyhosts"),
+            # healthyhosts/unhealthyhosts (the plain names) NEVER had data via
+            # ANY path -- confirmed against AWS's own docs: CloudWatch's
+            # HealthyHostCount/UnHealthyHostCount require BOTH LoadBalancer
+            # AND TargetGroup dimensions, which this app's CloudWatch-based
+            # collection and its boto3 fallback never supplied. Now reads
+            # from describe_polling.py's DescribeTargetHealth-based
+            # aggregation instead (no CloudWatch dimension problem at all,
+            # since it's not a CloudWatch call). See
+            # apply_fix_alb_healthy_hosts.py.
+            "healthy_hosts":      _metric_history_query_range("elb", lb_name, "healthyhosts_describe", start, end, match_field="name"),
+            "unhealthy_hosts":    _metric_history_query_range("elb", lb_name, "unhealthyhosts_describe", start, end, match_field="name"),
             "active_connections": vm_series("activeconnections"),
             "new_connections":    vm_series("newconnections"),
         }
@@ -1497,13 +1506,19 @@ def _get_elb_metric_series(lb_name: str, region=None, hours=6) -> dict:
                 "errors_4xx":         ("HTTPCode_Target_4XX_Count", "Sum"),
                 "errors_elb_5xx":     ("HTTPCode_ELB_5XX_Count", "Sum"),
                 "latency":            ("TargetResponseTime", "Average"),
-                "healthy_hosts":      ("HealthyHostCount", "Average"),
-                "unhealthy_hosts":    ("UnHealthyHostCount", "Average"),
+                # healthy_hosts/unhealthy_hosts deliberately NOT here --
+                # this fallback only ever supplies a LoadBalancer
+                # dimension, and CloudWatch requires TargetGroup too for
+                # these two metrics (confirmed against AWS's docs). This
+                # fallback would waste a real API call for a guaranteed
+                # empty result. See apply_fix_alb_healthy_hosts.py --
+                # these two are populated by describe_polling.py instead,
+                # never by this fallback.
                 "active_connections": ("ActiveConnectionCount", "Average"),
                 "new_connections":    ("NewConnectionCount", "Sum"),
             }
             queries = [_make_query(k, ns, fallback_map[k][0], dims, fallback_map[k][1])
-                       for k in missing]
+                       for k in missing if k in fallback_map]
             fb = _gmd_series(cw, queries, hours)
             for k in missing:
                 result[k] = fb.get(k, [])
@@ -1742,7 +1757,14 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> li
         ("alb", "RequestCount"):              "requestcount",
         ("alb", "HTTPCode_Target_5XX_Count"): "errors5xx",
         ("alb", "TargetResponseTime"):        "responselatency",
-        ("alb", "HealthyHostCount"):          "healthyhosts",
+        # Both HealthyHostCount and UnHealthyHostCount now map to
+        # describe_polling.py's DescribeTargetHealth-based aggregation --
+        # neither ever had a working CloudWatch-based source (confirmed:
+        # both require a TargetGroup dimension this app never supplied).
+        # UnHealthyHostCount is a NEW entry here -- it never had ANY
+        # local source before this fix. See apply_fix_alb_healthy_hosts.py.
+        ("alb", "HealthyHostCount"):          "healthyhosts_describe",
+        ("alb", "UnHealthyHostCount"):        "unhealthyhosts_describe",
     }
 
     local_lookups  = []   # (t_idx, resource_id, value_or_None)
