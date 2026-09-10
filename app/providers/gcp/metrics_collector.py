@@ -33,8 +33,11 @@ the EXACT resource_id string discovery.py builds for that service, or --
 for compute_instance only, since Cloud Monitoring's gce_instance type
 gives a numeric ID with no name -- look up the numeric ID discovery.py
 now also persists into resources.tags (see apply_gcp_direct_metrics_fetch.py).
-Services with no resolver (the "extended" tier) are skipped and counted,
-not guessed at.
+Services with no resolver are skipped and counted, not guessed at. As
+of app/providers/gcp/metrics_extended.py, that's down to 2 of the 12
+extended-tier services (gke_node, gce_persistent_disk) plus 2 of
+bigquery_project's 4 metrics -- see that module's docstring for why
+each is a genuine resource-modeling gap rather than a missing lookup.
 """
 import logging
 import time
@@ -119,6 +122,15 @@ _RESOLVERS = {
     "cloudsql_instance": _resolve_cloudsql_instance,
     "cloud_run_service": _resolve_cloud_run_service,
 }
+
+# Extended-tier resolvers (gke_cluster, cloudfunctions_function,
+# pubsub_topic, pubsub_subscription, cloud_lb, redis_instance,
+# bigquery_project, spanner_instance, firestore_database, nat_gateway)
+# -- see app/providers/gcp/metrics_extended.py for the confidence
+# breakdown, including the 2 of 12 extended services (gke_node,
+# gce_persistent_disk) deliberately left unresolved there.
+from app.providers.gcp.metrics_extended import EXTENDED_RESOLVERS
+_RESOLVERS.update(EXTENDED_RESOLVERS)
 
 
 def _enabled_gcp_metrics(cur, account_id: int):
