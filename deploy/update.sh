@@ -173,6 +173,8 @@ run_migration apply_azure_direct_metrics_fetch.py \
     "Phase 2 of removing VictoriaMetrics: direct Azure Monitor fetch (needs Phase 1's metric_history table)"
 run_migration apply_gcp_direct_metrics_fetch.py \
     "Phase 3 of removing VictoriaMetrics: direct GCP Cloud Monitoring fetch + compute_instance numeric-ID resource-matching fix"
+run_migration apply_fix_alb_nlb_threshold_resource_type.py \
+    "ALB/NLB thresholds.resource_type data backfill -- one-time cleanup for any pre-existing 'alb'/'nlb' rows (should be 'elb', matching resources.resource_type) left over from before this fix existed. The code portion is already in main and this script correctly no-ops on it; only the backfill UPDATE actually matters here, and it runs unconditionally every time regardless of whether the code patch was already applied."
 
 echo "--- db/migrations/*.sql tracking (migrate.py) ---"
 # This is the permanent fix for the exact incident that prompted writing

@@ -322,18 +322,41 @@ def main():
     print(f"Repo root: {repo_root}")
     print(f"Mode: {'APPLY (making real changes)' if apply_ else 'DRY-RUN (no changes will be made)'}")
 
-    content, note = prepare_patch(
-        path, "app/api/settings.py",
-        [
-            (SETTINGS_IMPORT_OLD, SETTINGS_IMPORT_NEW),
-            (UPSERT_OLD, UPSERT_NEW),
-            (SEED_OLD, SEED_NEW),
-        ],
-        "_THRESHOLD_RESOURCE_TYPE_ALIASES",
-    )
-    print(f"\nFile patch plan:\n  {note}")
-
+    # CORRECTED: this script is meant to be safely re-runnable forever
+    # (deploy/update.sh calls it on every deploy, on every server, for
+    # exactly this reason -- the one-time data backfill below needs to
+    # run on ANY server that might still have pre-existing bad
+    # 'alb'/'nlb' rows, regardless of how far its code has moved on).
+    # It was NOT actually safe: main() called prepare_patch() (which
+    # matches exact literal text in settings.py) BEFORE the backfill,
+    # and later work (apply_fix_threshold_resource_type_everywhere.py)
+    # moved this normalization logic out of settings.py entirely --
+    # meaning prepare_patch() now hard-ABORTS via die()/sys.exit(1) on
+    # current main, and the backfill after it never even runs. Running
+    # this from update.sh on a fully-updated server would have silently
+    # skipped the one thing it actually needed to do. Fixed by running
+    # the backfill FIRST and unconditionally, and treating a
+    # prepare_patch() mismatch as "the code has moved on, nothing to
+    # patch here anymore" instead of a fatal error.
     backfill_existing_rows(dry_run=not apply_)
+
+    try:
+        content, note = prepare_patch(
+            path, "app/api/settings.py",
+            [
+                (SETTINGS_IMPORT_OLD, SETTINGS_IMPORT_NEW),
+                (UPSERT_OLD, UPSERT_NEW),
+                (SEED_OLD, SEED_NEW),
+            ],
+            "_THRESHOLD_RESOURCE_TYPE_ALIASES",
+        )
+    except SystemExit:
+        print("\napp/api/settings.py: code has moved on since this script was written "
+              "(the normalization logic now lives elsewhere, e.g. app/threshold_defaults.py) "
+              "-- nothing to patch here anymore. The backfill above is what actually matters "
+              "on repeat runs; this is expected, not an error.")
+        return
+    print(f"\nFile patch plan:\n  {note}")
 
     if content is None:
         print("\nNothing to patch in app/api/settings.py (already applied).")
