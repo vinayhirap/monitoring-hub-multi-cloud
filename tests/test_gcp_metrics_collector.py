@@ -79,6 +79,15 @@ def _stub_common():
     install_stub("app.collector.metrics_writer",
                  write_metrics_batch=lambda rows: None,
                  write_metric_history_batch=lambda rows: None)
+    # metrics_collector.py imports EXTENDED_RESOLVERS from this submodule at
+    # module level (added by a later change than this test file -- the
+    # isolated loader's fake "app" package tree doesn't resolve real
+    # submodule imports, so this was raising ImportError on every test in
+    # this file until stubbed). Empty dict keeps these tests scoped to the
+    # 4 core resolvers only, matching test_extended_tier_service_has_no_resolver's
+    # existing assertion of exactly {"compute_instance","gcs_bucket",
+    # "cloudsql_instance","cloud_run_service"}.
+    install_stub("app.providers.gcp.metrics_extended", EXTENDED_RESOLVERS={})
 
 
 def _load_collector():
