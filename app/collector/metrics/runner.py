@@ -25,7 +25,15 @@ Metrics:  Trimmed per triage:
                     min) -- removed as a duplicate read of the same
                     5-min-resolution data. See metric_audit.md §8.
                     (BurstBalance DROPPED — gp3 irrelevant)
-          - RDS:    All 8 kept — revenue-critical
+          - RDS:    All 8 kept — revenue-critical, CRITICAL TIER ONLY (2
+                    min). Previously had no tier gate at all ("always"),
+                    meaning it was redundantly re-polled whenever standard/
+                    low coincided with critical's own always-running loop
+                    -- same duplicate-call bug as EC2/ELB/EBS above, just
+                    never gated to begin with. Critical tier's ~2-min
+                    cadence alone already matches RDS's real 1-min publish
+                    rate well; gating removes the redundant extra calls
+                    without losing any freshness.
           - ELB:    RequestCount, 5XX, TargetResponseTime -- CRITICAL TIER
                     ONLY (2 min), same duplicate-call fix as EC2 above.
                     (4XX DROPPED — client noise. HealthyHostCount /
@@ -553,7 +561,26 @@ def _collect_account(account, tier="standard"):
                 tasks.append((cw, resources, "ebs"))
 
         elif resource_type == "rds":
-            tasks.append((cw, resources, "rds"))  # always — revenue-critical
+            # RDS publishes at 1-min resolution (AWS-confirmed, free,
+            # automatic -- no basic/detailed distinction like EC2). This
+            # had NO tier gate at all until now ("always — revenue-
+            # critical") -- since "critical" already runs every ~2 min
+            # unconditionally (scheduler.py's run_loop calls it every
+            # iteration, no interval check), that alone already gives RDS
+            # continuous, well-matched coverage against its real 1-min
+            # publish rate. The missing gate meant RDS was re-polled AGAIN,
+            # redundantly, in any cycle where "standard" (5 min) or "low"
+            # (15 min) happened to also fire in that same loop iteration --
+            # the identical duplicate-call pattern already fixed for ALB/
+            # EBS/EC2 above, just never gated to begin with. Gated to
+            # "critical" only now; revenue-critical priority is preserved
+            # (still the fastest tier, still every cycle that tier runs),
+            # the redundant extra calls on coincident standard/low cycles
+            # are not. See monitoring-hub-metric-audit.md §8, scheduler.py's
+            # module docstring (previously flagged this as a known,
+            # unfixed issue -- now fixed).
+            if tier == "critical":
+                tasks.append((cw, resources, "rds"))
 
         elif resource_type == "elb":
             # ALB metrics (1-min resolution) — "critical" tier's 2-min

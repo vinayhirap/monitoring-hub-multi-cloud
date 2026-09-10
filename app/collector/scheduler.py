@@ -3,8 +3,7 @@
 Tiered scheduler — Phase 2 implementation.
 
   critical  — every 2 min  : RDS, ELB
-  standard  — every 5 min  : RDS (still, every cycle) + EC2 CPU/Network +
-                              EBS + Lambda Errors
+  standard  — every 5 min  : EC2 CPU/Network + EBS + Lambda Errors
   low       — every 15 min : EC2 Disk, EC2 CWAgent mem/disk, Lambda
                               Invocations, extended-tier services
 
@@ -31,13 +30,16 @@ issue (EBS publishes at 5-min resolution; the 15-min "low" re-poll could
 only ever re-return data "standard" had already fetched); EBS is
 dispatched on tier == "standard" only.
 
-Known remaining issue, NOT fixed here (flagged, not acted on without a
-decision): RDS's dispatch in metrics/runner.py has no tier gate at all
-(`elif resource_type == "rds": tasks.append(...)`, unconditional) --
-since "critical" already runs every ~2 min unconditionally, RDS is
-re-polled AGAIN, redundantly, in any cycle where "standard" or "low"
-also coincide. Same class of bug as the ALB/EBS fixes above, just never
-gated to begin with.
+Fixed (2026-09-10, closing the item this docstring previously flagged as
+known-but-unfixed): RDS's dispatch in metrics/runner.py had no tier gate
+at all (`elif resource_type == "rds": tasks.append(...)`, unconditional)
+-- since "critical" already runs every ~2 min unconditionally, RDS was
+re-polled AGAIN, redundantly, in any cycle where "standard" or "low" also
+coincided. Same class of bug as the ALB/EBS fixes above, just never
+gated to begin with. Now gated to tier == "critical" only -- critical's
+own ~2-min cadence already matches RDS's real 1-min publish rate well,
+so revenue-critical coverage is unchanged; only the redundant extra
+calls on coincident standard/low cycles are gone.
 
 Alerts evaluated after every standard cycle.
 Discovery runs every 15 min (aligned with low tier).
