@@ -70,6 +70,20 @@ def _discover_ec2(session, account, region, cursor):
                     name = tags.get("Name", iid)
                     state = inst["State"]["Name"]
 
+                    # CloudWatch detailed-monitoring status ("enabled" = 1-min
+                    # publication, "disabled"/"pending" = 5-min basic) --
+                    # describe_instances already returns this on every page,
+                    # zero extra API cost to capture. Needed because the
+                    # metrics collector polls EC2 CPU/Network on a 2-min
+                    # "critical" cadence for every instance uniformly, with
+                    # no prior visibility into whether a given instance is
+                    # actually publishing at 1-min (detailed) or 5-min
+                    # (basic) resolution -- see monitoring-hub-metric-audit.md
+                    # §8 flaw #5 and §10 item #7. Stored in tags (no schema
+                    # migration) as this app already does for similar
+                    # per-resource metadata (parent_ec2, _gcp_numeric_id, etc).
+                    tags["_cw_monitoring_state"] = inst.get("Monitoring", {}).get("State", "unknown")
+
                     _upsert_resource(cursor, account["id"], "ec2", iid, name, tags, region)
 
                     # Update instance state
