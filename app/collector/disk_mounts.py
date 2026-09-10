@@ -52,15 +52,19 @@ left as a documented follow-up rather than attempted here.
 CONFIDENCE: the metric_catalog unique key (namespace, metric_name) is
 confirmed from db/migrations/003_metric_catalog_full.sql. The
 account_metric_selections unique key (aws_account_id, metric_id) is
-confirmed from its CREATE TABLE. The thresholds table's exact unique
-key was NOT directly confirmed (no CREATE TABLE for it was found in
-this environment) -- ensure_disk_mount_metric_registered() therefore
-does a SELECT-before-INSERT check for thresholds rather than relying on
-ON DUPLICATE KEY / INSERT IGNORE catching a possible duplicate, so it
-stays correct (no duplicate threshold rows) regardless of what that
-table's real unique key turns out to be. Not yet verified against a
-live account with multiple real mount points -- no AWS credentials
-available in this environment.
+confirmed from its CREATE TABLE. The thresholds table's unique keys
+are now confirmed too, from an actual mysqldump
+(db/backups/pre_alert_hardening_20260825_104729.sql): `uniq_threshold`
+(aws_account_id, resource_type, metric_id) AND a SEPARATE
+`uniq_acc_metric` (aws_account_id, metric_id) -- i.e. at most one
+threshold row per (account, metric_id) regardless of resource_type.
+ensure_disk_mount_metric_registered() still does a SELECT-before-INSERT
+check rather than relying on ON DUPLICATE KEY / INSERT IGNORE, which
+remains correct (and arguably clearer) under either key. Not yet
+verified against a live account with multiple real mount points -- no
+AWS credentials available in this environment. Mount-noise filtering
+(pseudo/ephemeral filesystems like snap loopbacks) WAS confirmed
+against a live account -- see apply_cleanup_disk_mount_noise.py.
 """
 import logging
 import re
@@ -72,6 +76,40 @@ logger = logging.getLogger(__name__)
 
 ROOT_PATHS = ("/", "C:")
 BASE_METRIC_NAME = "disk_used_percent"
+
+# Pseudo/ephemeral filesystems that CWAgent will happily report
+# disk_used_percent for alongside real mounts, but which are never a
+# genuine "is this disk filling up" concern -- worst offender: snap's
+# squashfs loopback mounts are READ-ONLY images sized exactly to their
+# content, so they permanently report ~100% used. Registering one as a
+# tracked metric means its threshold card fires CRITICAL the moment
+# it's first collected, for something that was never actionable.
+# Confirmed live: a real account's CWAgent reported 45 such mounts
+# (every /snap/*/<rev>, /run, /run/lock, /run/user/<uid>,
+# /run/snapd/ns, /dev, /dev/shm, /boot/efi) alongside its one real
+# root mount -- see chat history for the full list.
+IGNORED_FSTYPES = {
+    "squashfs", "tmpfs", "devtmpfs", "overlay", "proc", "sysfs",
+    "cgroup", "cgroup2", "devpts", "mqueue", "tracefs", "debugfs",
+    "securityfs", "pstore", "bpf", "autofs", "nsfs", "binfmt_misc",
+    "hugetlbfs", "fusectl", "configfs", "efivarfs",
+}
+# Secondary, independent check on the path itself -- kept in addition
+# to the fstype check (not instead of it) because CWAgent's dimension
+# set is config-dependent and an older/misconfigured agent could omit
+# `fstype` entirely; path-prefix matching still catches the common
+# cases in that situation. NOT applied to ROOT_PATHS, which are always
+# treated as real regardless of what either check says.
+IGNORED_PATH_PREFIXES = ("/snap/", "/var/snap/", "/run", "/dev", "/proc", "/sys", "/boot/efi")
+
+
+def _is_real_mount(path: str, dims: dict) -> bool:
+    fstype = (dims.get("fstype") or "").lower()
+    if fstype in IGNORED_FSTYPES:
+        return False
+    if any(path == p or path.startswith(p) for p in IGNORED_PATH_PREFIXES):
+        return False
+    return True
 
 
 def slugify_mount_path(path: str) -> str:
@@ -93,9 +131,14 @@ def metric_name_for_mount(path: str) -> str:
 def all_cwagent_disk_dims(cw, instance_id):
     """
     Returns [(dimensions, path, metric_name), ...] for EVERY mount point
-    CWAgent has published disk_used_percent under for this instance --
-    the full set, not just a single root-preferred pick. Empty list if
-    CWAgent isn't reporting disk_used_percent at all for this instance.
+    CWAgent has published disk_used_percent under for this instance
+    that's a genuine, actionable mount -- pseudo/ephemeral filesystems
+    (snap loopbacks, tmpfs, /proc, /sys, etc. -- see _is_real_mount())
+    are filtered out before registration, since those would otherwise
+    get treated as real disk-space metrics and could fire permanently-
+    stuck thresholds. Root is always included regardless of fstype.
+    Empty list if CWAgent isn't reporting disk_used_percent at all for
+    this instance.
     """
     try:
         resp = cw.list_metrics(
@@ -109,13 +152,19 @@ def all_cwagent_disk_dims(cw, instance_id):
 
     out = []
     seen_paths = set()
+    skipped = []
     for m in metrics:
         dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
         path = dims.get("path") or "/"
         if path in seen_paths:
             continue  # CWAgent can report the same path under >1 device/fstype combo
         seen_paths.add(path)
+        if path not in ROOT_PATHS and not _is_real_mount(path, dims):
+            skipped.append(path)
+            continue
         out.append((m["Dimensions"], path, metric_name_for_mount(path)))
+    if skipped:
+        logger.info(f"disk_mounts: skipped {len(skipped)} pseudo/ephemeral mount(s) for {instance_id}: {sorted(skipped)}")
     return out
 
 
