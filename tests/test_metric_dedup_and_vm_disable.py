@@ -104,49 +104,60 @@ def _load_runner_and_record_tasks(tier):
     return fired
 
 
-def test_critical_tier_fires_elb_but_not_ec2_critical_or_ebs():
-    """ELB (1-min publish) stays on the fast 2-min tier. EC2 CPU/Network
-    moved OFF critical entirely on 2026-09-10 after live DEV data showed
-    a 100%-basic-monitoring fleet was wasting ~60% of 2-min polls -- see
-    scheduler.py's module docstring and metrics/runner.py's
-    _log_monitoring_mode_mismatch()."""
+def test_critical_tier_fires_elb_and_rds_but_not_ec2_critical_or_ebs():
+    """ELB (1-min publish) and RDS (1-min publish, revenue-critical) both
+    stay on the fast 2-min tier. EC2 CPU/Network moved OFF critical
+    entirely on 2026-09-10 after live DEV data showed a 100%-basic-
+    monitoring fleet was wasting ~60% of 2-min polls -- see scheduler.py's
+    module docstring and metrics/runner.py's _log_monitoring_mode_mismatch().
+    RDS itself was gated to critical-only in this same fix series -- it
+    previously had no tier gate at all and was redundantly re-polled
+    whenever standard/low coincided with critical's always-running loop."""
     fired = _load_runner_and_record_tasks("critical")
     assert "_collect_elb" in fired
-    assert "_collect_rds" in fired  # RDS runs on every tier -- revenue-critical
+    assert "_collect_rds" in fired
     assert "_collect_ec2_critical" not in fired
     assert "_collect_ebs" not in fired
     assert "_collect_ec2_low" not in fired
     assert "_collect_lambda_standard" not in fired
 
 
-def test_standard_tier_fires_ebs_rds_and_ec2_critical_but_not_elb():
-    """Covers two fixes: (1) the original dedup bug -- "standard" no
+def test_standard_tier_fires_ebs_and_ec2_critical_but_not_elb_or_rds():
+    """Covers three fixes: (1) the original dedup bug -- "standard" no
     longer re-triggers "elb" (dispatch was `tier in
     ("critical","standard")`), which used to duplicate a GetMetricData
     call the "critical" tier's own independent 2-min loop had already
     just made; (2) the 2026-09-10 EC2 tier move -- ec2_critical (CPU/
     Network) now belongs to "standard" (5 min), matching AWS basic
-    monitoring's real publish cadence for this fleet, confirmed live."""
+    monitoring's real publish cadence for this fleet, confirmed live;
+    (3) RDS is now gated to "critical" only (previously had NO tier gate
+    at all, so it fired here too whenever standard coincided with
+    critical's always-running loop -- a redundant, un-gated duplicate
+    call the same as ALB/EBS/EC2 had, just never caught until now)."""
     fired = _load_runner_and_record_tasks("standard")
     assert "_collect_ebs" in fired
-    assert "_collect_rds" in fired
     assert "_collect_lambda_standard" in fired
     assert "_collect_ec2_critical" in fired, \
         "standard tier must poll EC2 CPU/Network -- it moved here from critical on 2026-09-10"
     assert "_collect_elb" not in fired, \
         "standard tier must not re-poll ALB -- critical tier already covers it"
+    assert "_collect_rds" not in fired, \
+        "standard tier must not re-poll RDS -- critical tier already covers it, and RDS is now gated"
 
 
-def test_low_tier_fires_ec2_low_and_cwagent_but_not_ebs():
-    """The other half of the fix: "low" previously also re-triggered ebs
-    (dispatch was `tier in ("standard","low")`), duplicating a read of
-    EBS's 5-min-resolution data that "standard" had already just fetched."""
+def test_low_tier_fires_ec2_low_and_cwagent_but_not_ebs_or_rds():
+    """The other half of the original dedup fix: "low" previously also
+    re-triggered ebs (dispatch was `tier in ("standard","low")`),
+    duplicating a read of EBS's 5-min-resolution data that "standard" had
+    already just fetched. RDS is now also confirmed absent here for the
+    same reason as the standard-tier test above."""
     fired = _load_runner_and_record_tasks("low")
     assert "_collect_ec2_low" in fired
     assert "_collect_ec2_cwagent_mem" in fired
     assert "_collect_ec2_cwagent_disk" in fired
     assert "_collect_lambda_low" in fired
-    assert "_collect_rds" in fired
+    assert "_collect_rds" not in fired, \
+        "low tier must not re-poll RDS -- critical tier already covers it, and RDS is now gated"
     assert "_collect_ebs" not in fired, \
         "low tier must not re-poll EBS -- standard tier already covers its 5-min-resolution data"
 
