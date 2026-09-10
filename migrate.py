@@ -55,6 +55,7 @@ Usage:
 """
 import argparse
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -180,6 +181,31 @@ def cmd_baseline(conn, filenames):
         print("\nNothing to baseline.")
 
 
+def _split_sql_statements(sql: str) -> list[str]:
+    """
+    Split a .sql file's contents into individually-executable statements.
+
+    Exists because cursor.execute(sql, multi=True) -- this project's
+    original approach for running a multi-statement migration file in one
+    call -- isn't supported by every mysql-connector-python cursor
+    implementation (confirmed broken on prod, 2026-09-10:
+    "MySQLCursor.execute() got an unexpected keyword argument 'multi'").
+    No migration with more than one statement had ever actually run
+    through cmd_apply before that -- 013/017 etc. were all baselined, not
+    applied, so this was latent rather than fixed.
+
+    Strips '--' line comments, then splits on ';'. Safe for every
+    migration currently in this repo (checked by hand): none use ';'
+    inside a string literal, including the SET @sql := IF(...); PREPARE
+    stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt; dynamic-SQL
+    pattern in 004/012 -- MySQL user-defined variables like @sql are
+    session-scoped, not statement-scoped, so they persist correctly
+    across separate execute() calls on the same connection/cursor.
+    """
+    no_comments = re.sub(r"--[^\n]*", "", sql)
+    return [s.strip() for s in no_comments.split(";") if s.strip()]
+
+
 def cmd_apply(conn, filename):
     ensure_tracking_table(conn)
     applied = get_applied(conn)
@@ -193,20 +219,24 @@ def cmd_apply(conn, filename):
     if not path.exists():
         raise MigrateError(f"No such file: {path}")
 
-    sql = path.read_text(encoding="utf-8")
+    # utf-8-sig (not utf-8) so a leading UTF-8 BOM -- present in
+    # 004_metrics_last_value_only.sql -- doesn't survive into the first
+    # split statement as a stray, invalid one-character "statement".
+    sql = path.read_text(encoding="utf-8-sig")
     print(f"Applying {filename} ...")
     print("-" * 60)
     print(sql.strip())
     print("-" * 60)
 
+    statements = _split_sql_statements(sql)
+
     cursor = conn.cursor()
     try:
         # MySQL DDL auto-commits per statement regardless of transaction
         # state, so this isn't atomic for multi-statement DDL files --
-        # but the connector still needs multi=True to run more than one
-        # statement per .sql file at all.
-        for _ in cursor.execute(sql, multi=True):
-            pass
+        # true before this fix too, unchanged here.
+        for stmt in statements:
+            cursor.execute(stmt)
         cursor.execute(
             "INSERT INTO schema_migrations (filename, applied_via) VALUES (%s, 'script')",
             (filename,),
