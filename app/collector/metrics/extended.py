@@ -78,6 +78,7 @@ _SIMPLE_DIM_NAME = {
     "msk":                "Cluster Name",  # literal space -- see extended.py docstring
     "transitgateway":     "TransitGateway",
     "vpn":                "VpnId",
+    "ecs":                "ClusterName",
 }
 
 # Services needing a second, static dimension beyond resource_id -- read
@@ -97,7 +98,14 @@ def _build_dimensions(resource):
     dim_name = _SIMPLE_DIM_NAME.get(rt)
     if not dim_name:
         return None
-    dims = [{"Name": dim_name, "Value": resource["resource_id"]}]
+    # ECS is the one service here whose resources.resource_id is a full
+    # ARN (discovery/runner.py's _discover_ecs stores c["clusterArn"]),
+    # not a bare name -- every other _SIMPLE_DIM_NAME service's
+    # resource_id already IS the correct dimension value directly. The
+    # bare cluster name CloudWatch's ClusterName dimension actually needs
+    # is in resources.name instead (same row, stored separately).
+    dim_value = resource["name"] if rt == "ecs" else resource["resource_id"]
+    dims = [{"Name": dim_name, "Value": dim_value}]
     tags = resource.get("tags") or {}
     extra = tags.get("cw_extra_dims") if isinstance(tags, dict) else None
     if extra:

@@ -138,7 +138,7 @@ CURATED = {
         ("FirstByteLatency",          "Milliseconds", "Average", False, "Time to first response byte"),
         ("TotalRequestLatency",       "Milliseconds", "Average", False, "End-to-end request latency"),
     ]),
-    "ecs": ("Amazon ECS", "AWS/ECS", "core", [
+    "ecs": ("Amazon ECS", "AWS/ECS", "extended", [
         ("CPUUtilization",     "Percent", "Average", True,  "% of task/service CPU reservation used"),
         ("MemoryUtilization",  "Percent", "Average", True,  "% of task/service memory reservation used"),
         ("RunningTaskCount",   "Count",   "Average", False, "Tasks currently running (Container Insights)"),
