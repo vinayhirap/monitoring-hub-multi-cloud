@@ -8,11 +8,17 @@ Cost:     Same $0.01/1k metric requests — benefit is fewer TCP connections
 Filter:   Only running EC2 (instance_state = 'running') — skips stopped.
           ECS metrics excluded — AWS/ECS basic monitoring is FREE (no API cost).
 Metrics:  Trimmed per triage:
-          - EC2:    CPU, NetworkIn, NetworkOut -- CRITICAL TIER ONLY (2 min).
-                    Was also re-triggered on "standard" (5 min) -- removed;
-                    that was a duplicate GetMetricData call against data
-                    critical tier had just fetched moments before. See
-                    monitoring-hub-metric-audit.md §8. DiskRead/Write (low).
+          - EC2:    CPU, NetworkIn, NetworkOut -- STANDARD TIER ONLY (5 min).
+                    Was critical tier (2 min) until 2026-09-10: live DEV
+                    data showed this account's EC2 fleet is 100% on AWS
+                    basic monitoring (5-min publish, free), so a 2-min poll
+                    could only re-return an already-seen datapoint on ~60%
+                    of calls -- moved to match AWS's real publication
+                    cadence, a deliberate decision after confirming the
+                    fleet's actual monitoring mode (not a blind default;
+                    see _log_monitoring_mode_mismatch()'s docstring for the
+                    detailed-monitoring case this doesn't apply to).
+                    DiskRead/Write (low).
           - EBS:    ReadOps, WriteOps, ReadBytes, WriteBytes, QueueLength --
                     STANDARD TIER ONLY (5-6 min), matching AWS's real 5-min
                     publication cadence. Was also re-polled on "low" (15
@@ -230,18 +236,27 @@ def _log_monitoring_mode_mismatch(resources):
     Visibility only -- does NOT change polling behavior. EC2 basic
     monitoring publishes CPUUtilization/NetworkIn/NetworkOut every 5 min
     (AWS-confirmed, free); detailed monitoring publishes every 1 min
-    (opt-in, billed separately from GetMetricData). This collector polls
-    every running instance at the same 2-min "critical" cadence regardless
-    of which mode it's in -- meaning basic-monitoring instances can only
-    return a genuinely new datapoint on ~2 of every 5 polls. This is not
-    fixed automatically here: enabling detailed monitoring changes AWS
-    billing for the customer's account and is explicitly out of scope for
-    this app to do unilaterally (monitoring-hub-metric-audit.md §10 item
-    #7) -- it's surfaced in logs so a human can decide per-account whether
-    to (a) enable detailed monitoring where 1-min visibility is genuinely
-    needed, or (b) accept 5-min effective freshness for basic-monitoring
-    instances. Relies on tags._cw_monitoring_state, populated by
-    discovery/runner.py's _discover_ec2 at zero extra API cost.
+    (opt-in, billed separately from GetMetricData).
+
+    This task runs on the "standard" (5-min) tier -- moved 2026-09-10 from
+    "critical" (2-min) after this exact log first showed a real DEV
+    account's EC2 fleet was 100% basic monitoring, meaning the old 2-min
+    poll was wasting ~60% of its GetMetricData calls on data that hadn't
+    changed. At 5-min cadence:
+      - BASIC-monitoring instances are now well-matched: no waste, no lost
+        freshness, since AWS itself has nothing newer to offer between
+        polls.
+      - DETAILED-monitoring instances (if any -- billed separately by AWS,
+        this app never enables it) are now the interesting case: AWS
+        publishes fresh data for them every 1 min, but this poll only
+        captures it every 5 -- not wasted spend, but freshness genuinely
+        available and not being used. Surfaced below so a human can decide
+        whether that's worth a faster, per-instance-aware poll later; not
+        fixed automatically (monitoring-hub-metric-audit.md §10 item #7 --
+        enabling/prioritizing around detailed monitoring is a deliberate,
+        account-owner decision, not this app's to make unilaterally).
+    Relies on tags._cw_monitoring_state, populated by discovery/runner.py's
+    _discover_ec2 at zero extra API cost.
     """
     basic = detailed = unknown = 0
     for r in resources:
@@ -258,20 +273,32 @@ def _log_monitoring_mode_mismatch(resources):
             basic += 1
         else:
             unknown += 1
-    if basic:
+    if detailed:
         logger.info(
-            f"    EC2 critical: {basic} of {len(resources)} instances on BASIC "
-            f"monitoring (5-min publish) being polled every 2 min -- up to "
-            f"~60% of these polls can only re-return an already-seen datapoint. "
-            f"{detailed} on detailed (1-min), {unknown} unknown (discovery not "
-            f"yet re-run since this check was added)."
+            f"    EC2 (standard tier): {detailed} of {len(resources)} instances on "
+            f"DETAILED monitoring (1-min publish) but polled every 5 min -- fresher "
+            f"data is available from AWS than this app is currently capturing for "
+            f"them. {basic} on basic (5-min, already well-matched), {unknown} unknown."
+        )
+    elif basic:
+        logger.info(
+            f"    EC2 (standard tier): {basic} of {len(resources)} instances on BASIC "
+            f"monitoring (5-min publish), polled every 5 min -- well-matched, no "
+            f"wasted calls. {unknown} unknown (discovery not yet re-run since this "
+            f"check was added)."
         )
 
 
 def _collect_ec2_critical(cw, resources):
     _log_monitoring_mode_mismatch(resources)
-    n = _run_gmd(cw, resources, EC2_METRICS_CRITICAL, minutes=3)
-    logger.info(f"    EC2 critical: {n} datapoints / {len(resources)} instances")
+    # minutes=6: was 3 (matched to the old 2-min "critical" cadence with a
+    # ~1-min buffer). Now on the 5-min "standard" tier, widened to match
+    # the same minutes=6 lookback every other standard-tier collector in
+    # this file (_collect_ebs, _collect_rds, _collect_elb) already uses --
+    # a ~1-min buffer against a 5-min cycle, consistent rather than a
+    # one-off value.
+    n = _run_gmd(cw, resources, EC2_METRICS_CRITICAL, minutes=6)
+    logger.info(f"    EC2 (standard tier): {n} datapoints / {len(resources)} instances")
 
 def _collect_ec2_low(cw, resources):
     n = _run_gmd(cw, resources, EC2_METRICS_LOW, minutes=16)
@@ -488,19 +515,27 @@ def _collect_account(account, tier="standard"):
         cw = session.client("cloudwatch", region_name=res_region)
 
         if resource_type == "ec2":
-            # CPU/Network (ec2_critical) run on the "critical" tier ONLY.
-            # Previously also fired on "standard" (tier in ("critical",
-            # "standard")) -- but scheduler.py's run_loop already calls
-            # run_once("critical") on its own independent 2-min cadence
-            # every cycle, so any cycle where "standard" also fires (every
-            # 5 min) was requesting this exact GetMetricData query TWICE
-            # back-to-back against a metric that hasn't changed in the
-            # seconds between the two calls -- pure duplicate CloudWatch
-            # spend. "standard" no longer re-triggers it; critical tier's
-            # own 2-min loop already provides continuous coverage.
-            # See monitoring-hub-metric-audit.md §8 flaw #1 (ALB) -- same
-            # dispatch pattern, same bug, found here during re-verification.
-            if tier == "critical":
+            # CPU/Network (ec2_critical -- name kept for minimal diff, see
+            # note below) run on the "standard" tier (5 min), not
+            # "critical" (2 min). Moved 2026-09-10 after live DEV data
+            # (the _log_monitoring_mode_mismatch check below) confirmed
+            # this account's EC2 fleet is 100% on AWS basic monitoring
+            # (5-min publish, free) -- polling it every 2 min could only
+            # ever re-return an already-seen datapoint on ~60% of calls,
+            # pure wasted GetMetricData spend with zero freshness benefit,
+            # since AWS genuinely does not have new data more often than
+            # every 5 min for these instances. Deliberate human decision,
+            # not an automatic cost-driven default (a fleet running
+            # detailed/1-min monitoring should NOT make this same move --
+            # see _log_monitoring_mode_mismatch's updated log text below,
+            # which now flags the opposite case too).
+            #
+            # Earlier fix (still true, unaffected by this change): this
+            # task previously ALSO fired on "standard" in addition to
+            # "critical" (tier in ("critical","standard")), a genuine
+            # duplicate-call bug now moot since there's only one tier
+            # gate left here.
+            if tier == "standard":
                 tasks.append((cw, resources, "ec2_critical"))
             if tier == "low":
                 tasks.append((cw, resources, "ec2_low"))
