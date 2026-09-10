@@ -192,7 +192,7 @@ def check_3_self_assume_role():
             conn.close()
             return
 
-        cursor.execute("SELECT id, role_arn FROM aws_accounts WHERE role_arn IS NOT NULL")
+        cursor.execute("SELECT id, role_arn FROM aws_accounts WHERE role_arn IS NOT NULL AND status='active'")
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -200,16 +200,34 @@ def check_3_self_assume_role():
         line(FAIL, f"Cannot query aws_accounts.role_arn: {e}")
         return
 
+    # SAME-ACCOUNT AWARENESS (fix: 2026-09-10): app/aws/sts.py's assume_role()
+    # has, since commit 22ff060 (2026-08-27), short-circuited same-account
+    # role_arns to boto3.Session() instead of a real (and doomed) AssumeRole
+    # call. A self-referential role_arn is therefore only a real problem if
+    # that fix isn't present in the code this instance is actually running.
+    same_account_fix_present = False
+    try:
+        same_account_fix_present = STS_FIX_ANCHOR in STS_FILE.read_text(encoding="utf-8")
+    except OSError:
+        pass  # can't read sts.py — fall back to treating it as unfixed (safer default)
+
     bad = [(acc_id, arn) for acc_id, arn in rows if arn and arn.rstrip("/").split("/")[-1] == own_role]
     if bad:
         for acc_id, arn in bad:
-            line(FAIL, f"aws_accounts.id={acc_id} has role_arn={arn}, which is the SAME role "
-                        f"already attached to this instance ({own_role}). A role can't assume "
-                        f"itself this way — this account's AssumeRole calls will always fail "
-                        f"AccessDenied. Point role_arn at the actual cross-account role in the "
-                        f"target AWS account instead.")
+            if same_account_fix_present:
+                line(OK, f"aws_accounts.id={acc_id} has role_arn={arn}, the same role already "
+                          f"attached to this instance ({own_role}) — this is a same-account entry, "
+                          f"not a bug. app/aws/sts.py's assume_role() short-circuits this to "
+                          f"boto3.Session() automatically (no real AssumeRole call, no ARN needed).")
+            else:
+                line(FAIL, f"aws_accounts.id={acc_id} has role_arn={arn}, which is the SAME role "
+                            f"already attached to this instance ({own_role}). A role can't assume "
+                            f"itself this way — this account's AssumeRole calls will always fail "
+                            f"AccessDenied. Point role_arn at the actual cross-account role in the "
+                            f"target AWS account instead, or apply the same-account fix "
+                            f"(see apply_same_account_role_fix_v2.py).")
     else:
-        line(OK, f"No aws_accounts rows reference this instance's own role ({own_role}).")
+        line(OK, f"No active aws_accounts rows reference this instance's own role ({own_role}).")
 
 
 def check_4_discovery_producing_resources():
