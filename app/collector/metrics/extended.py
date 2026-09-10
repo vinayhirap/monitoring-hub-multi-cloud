@@ -79,6 +79,7 @@ _SIMPLE_DIM_NAME = {
     "transitgateway":     "TransitGateway",
     "vpn":                "VpnId",
     "ecs":                "ClusterName",
+    "s3":                 "BucketName",
 }
 
 # Services needing a second, static dimension beyond resource_id -- read
@@ -91,9 +92,16 @@ _SIMPLE_DIM_NAME.update({
 })
 
 
-def _build_dimensions(resource):
+_S3_STORAGE_METRICS = {"BucketSizeBytes", "NumberOfObjects"}
+_S3_REQUEST_METRICS = {"AllRequests", "4xxErrors", "5xxErrors", "FirstByteLatency", "TotalRequestLatency"}
+
+
+def _build_dimensions(resource, cw_metric_name=None):
     """resource: dict with resource_type, resource_id, tags (already
-    json.loads'd dict, or None)."""
+    json.loads'd dict, or None). cw_metric_name is only consulted for
+    s3, where different metrics in the SAME service need different
+    second dimensions -- every other service's dimensions depend only
+    on the resource, so passing/omitting it changes nothing for them."""
     rt = resource["resource_type"]
     dim_name = _SIMPLE_DIM_NAME.get(rt)
     if not dim_name:
@@ -111,6 +119,22 @@ def _build_dimensions(resource):
     if extra:
         for k, v in extra.items():
             dims.append({"Name": k, "Value": v})
+    if rt == "s3":
+        # S3's CloudWatch dimensions differ by WHICH metric is being
+        # requested, not just by resource: storage metrics (free,
+        # always published) need StorageType; request metrics need
+        # FilterId, which additionally requires a per-bucket "request
+        # metrics" filter to be manually enabled in the S3 console
+        # first -- an AWS-side prerequisite this code cannot create.
+        # "EntireBucket" is the name AWS's own console suggests by
+        # default when enabling it for the whole bucket; a bucket using
+        # a different filter name, or with request metrics never
+        # enabled at all, will show no data for these specific metrics
+        # regardless of correct dimensions.
+        if cw_metric_name in _S3_STORAGE_METRICS:
+            dims.append({"Name": "StorageType", "Value": "StandardStorage"})
+        elif cw_metric_name in _S3_REQUEST_METRICS:
+            dims.append({"Name": "FilterId", "Value": "EntireBucket"})
     return dims
 
 
@@ -137,10 +161,10 @@ def _collect_extended_service(cw, resources, service_key):
     queries = []
     id_map = {}
     for r in resources:
-        dims = _build_dimensions(r)
-        if not dims:
-            continue
         for cw_name, db_name, stat, namespace in metric_defs:
+            dims = _build_dimensions(r, cw_name)
+            if not dims:
+                continue
             qid = f"ext{len(queries)}"
             queries.append({
                 "Id": qid,

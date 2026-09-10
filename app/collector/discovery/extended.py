@@ -497,6 +497,34 @@ def _discover_route53(session, account, region, cursor):
 # ── NEEDS EXTRA CARE: multi-dimension / region-pinned services ──────
 
 @_safe
+def _discover_s3(session, account, region, cursor):
+    # Global service like CloudFront -- list_buckets() returns every
+    # bucket in the account regardless of API endpoint region, so this
+    # runs once per monitored region (redundant re-upserts across
+    # regions, but _upsert_resource is idempotent -- same precedent as
+    # _discover_cloudfront rather than adding new dispatch machinery
+    # just for this one service).
+    #
+    # Each bucket's own region must be looked up individually via
+    # get_bucket_location -- a real S3 API quirk: it returns an empty/
+    # None LocationConstraint specifically for us-east-1 (that field
+    # predates us-east-1 needing one), which must be normalized or the
+    # bucket's region would incorrectly store as "".
+    s3 = session.client("s3", region_name="us-east-1")
+    count = 0
+    for b in s3.list_buckets().get("Buckets", []):
+        bucket_name = b["Name"]
+        try:
+            loc = s3.get_bucket_location(Bucket=bucket_name).get("LocationConstraint")
+            bucket_region = loc or "us-east-1"
+        except Exception:
+            bucket_region = "us-east-1"  # best-effort -- don't drop the bucket over this
+        _upsert_resource(cursor, account["id"], "s3", bucket_name, bucket_name, {}, bucket_region)
+        count += 1
+    logger.info(f"  S3: {count} buckets in {account['account_name']}")
+
+
+@_safe
 def _discover_cloudfront(session, account, region, cursor):
     # Global service -- must call the CloudFront API in us-east-1
     # regardless of the account's default region, and CloudWatch
@@ -628,6 +656,7 @@ def _discover_globalaccelerator(session, account, region, cursor):
 # ── Dispatch ──────────────────────────────────────────────────
 
 EXTENDED_DISCOVERERS = {
+    "s3":                 _discover_s3,
     "dynamodb":           _discover_dynamodb,
     "sqs":                _discover_sqs,
     "sns":                _discover_sns,
