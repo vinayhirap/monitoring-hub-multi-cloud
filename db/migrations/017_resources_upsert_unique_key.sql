@@ -19,11 +19,28 @@
 -- growth in `resources` a real problem, so this migration is a
 -- prerequisite for that expansion rather than an optional cleanup.
 --
--- Safe to run repeatedly (IF NOT EXISTS guard). If duplicate rows already
--- exist from past discovery cycles, run the dedup step below FIRST or the
--- ADD UNIQUE KEY statement will fail with "Duplicate entry".
+-- Safe to run repeatedly (information_schema existence check, see fix
+-- note below). If duplicate rows already exist from past discovery
+-- cycles, the dedup step below runs first, or the ADD UNIQUE KEY
+-- statement would fail with "Duplicate entry".
 --
 -- Run: mysql -uroot -proot123 monitoring_hub < db/migrations/013_resources_upsert_unique_key.sql
+--
+-- Fix 2026-09-10: originally wrote step 2 as a single declarative
+-- `ADD UNIQUE KEY IF NOT EXISTS uniq_resource_identity (...)`, which
+-- failed live on DEV with "You have an error in your SQL syntax ...
+-- near 'IF NOT EXISTS'" -- ADD KEY/ADD UNIQUE KEY does not support an
+-- IF NOT EXISTS clause at all (unlike ADD COLUMN, which supports it on
+-- some MySQL versions but not others -- see 018_aws_static_key_auth.sql's
+-- own fix note for that exact confusion, hit live on prod for the same
+-- reason). Replaced with the same portable information_schema-check +
+-- dynamic-SQL pattern 018, 004, and 012 already rely on -- confirmed
+-- compatible with migrate.py's own statement splitter (see
+-- _split_sql_statements()'s docstring there). The dedup DELETE below is
+-- unchanged and already ran as a no-op on DEV (0 duplicate rows found)
+-- before the ALTER TABLE syntax error aborted the previous attempt;
+-- migrate.py's cmd_apply() rolls back on any statement failure within a
+-- file, so DEV's `resources` table was left untouched by that attempt.
 
 -- ── 1. Dedup existing rows first (keep the newest row per identity) ────
 -- Safe no-op if no duplicates exist yet.
@@ -40,6 +57,13 @@ INNER JOIN resources r2
 -- bytes for that column alone, safely under InnoDB's 3072-byte index
 -- limit even combined with the other two key columns, so no prefix
 -- index is needed here.
-ALTER TABLE resources
-    ADD UNIQUE KEY IF NOT EXISTS uniq_resource_identity
-        (aws_account_id, resource_type, resource_id);
+SET @key_exists := (
+  SELECT COUNT(*) FROM information_schema.statistics
+  WHERE table_schema = DATABASE() AND table_name = 'resources'
+    AND index_name = 'uniq_resource_identity'
+);
+SET @sql := IF(@key_exists = 0,
+  'ALTER TABLE resources ADD UNIQUE KEY uniq_resource_identity (aws_account_id, resource_type, resource_id)',
+  'SELECT "resources.uniq_resource_identity already exists, skipping"'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
