@@ -161,6 +161,116 @@ def test_point_value_extracts_scalar():
     assert mod._point_value(_FakePoint(72.5, datetime(2026, 1, 1))) == 72.5
 
 
+class _AccountLevelCursor:
+    """
+    Routes BOTH queries collect_account_metrics() issues against a real
+    cursor: _enabled_gcp_metrics's "FROM metric_catalog" (returns the
+    fixed `enabled` rows) and _build_resource_maps's per-service
+    "FROM resources" (returns resources_by_service.get(service, [])).
+    Needed (over the simpler _RoutingCursor above) because this test
+    drives the whole collect_account_metrics() function, not just a
+    bare _resolve_* call.
+    """
+    def __init__(self, enabled_rows, resources_by_service):
+        self.enabled_rows = enabled_rows
+        self.resources_by_service = resources_by_service
+        self._next = []
+
+    def execute(self, sql, params=None):
+        normalized = " ".join(sql.split())
+        if "FROM metric_catalog" in normalized:
+            self._next = self.enabled_rows
+        elif "FROM resources" in normalized:
+            service = params[1]
+            self._next = self.resources_by_service.get(service, [])
+        else:
+            self._next = []
+
+    def fetchall(self):
+        return self._next
+
+    def close(self):
+        pass
+
+
+class _AccountLevelConn:
+    def __init__(self, enabled_rows, resources_by_service):
+        self.enabled_rows = enabled_rows
+        self.resources_by_service = resources_by_service
+
+    def cursor(self, dictionary=True):
+        return _AccountLevelCursor(self.enabled_rows, self.resources_by_service)
+
+    def close(self):
+        pass
+
+
+class _FakeMetricServiceClient:
+    """Records every filter it's called with; never returns real series
+    (empty iterable is enough -- these tests only assert on CALLS made,
+    not on downstream row-writing)."""
+    calls = []
+
+    def __init__(self, credentials=None):
+        pass
+
+    def list_time_series(self, request):
+        _FakeMetricServiceClient.calls.append(request["filter"])
+        return []
+
+
+def _stub_monitoring_v3_for_client_test():
+    class _View:
+        FULL = "FULL"
+
+    class _ListTimeSeriesRequest:
+        TimeSeriesView = _View
+
+    install_stub(
+        "google.cloud.monitoring_v3",
+        MetricServiceClient=_FakeMetricServiceClient,
+        TimeInterval=lambda d: d,
+        ListTimeSeriesRequest=_ListTimeSeriesRequest,
+    )
+    install_stub("google.oauth2.service_account", Credentials=_FakeCredsCls())
+    install_stub("app.collector.metrics_writer",
+                 write_metrics_batch=lambda rows: None,
+                 write_metric_history_batch=lambda rows: None)
+    install_stub("app.providers.gcp.metrics_extended", EXTENDED_RESOLVERS={})
+
+
+def test_zero_resource_service_skips_list_time_series_call():
+    """
+    The fix this test guards: collect_account_metrics() must NOT call
+    the paid list_time_series() for a (metric_type, service) pair when
+    this account has zero resources of that service -- the call can
+    only ever return series that fail to match anyone afterward. Mirrors
+    Azure's existing "if not resources: continue" and AWS's
+    grouped-from-DB-rows dispatch (see this file's module docstring).
+    Two enabled metrics: compute_instance (0 resources -- must be
+    skipped, zero calls) and gcs_bucket (1 resource -- must fire).
+    """
+    _FakeMetricServiceClient.calls = []
+    enabled_rows = [
+        {"namespace": "compute.googleapis.com", "service": "compute_instance", "metric_name": "cpu/utilization"},
+        {"namespace": "storage.googleapis.com", "service": "gcs_bucket", "metric_name": "storage/object_count"},
+    ]
+    resources_by_service = {
+        "gcs_bucket": [{"id": 301, "resource_id": "projects/p/buckets/my-bucket", "tags": None}],
+        # compute_instance: deliberately absent -> zero resources
+    }
+    install_stub("app.db", get_connection=lambda: _AccountLevelConn(enabled_rows, resources_by_service))
+    install_stub("app.credentials", load_credential=lambda a: json.dumps({"type": "service_account"}))
+    _stub_monitoring_v3_for_client_test()
+
+    mod = _load_collector()
+    result = mod.collect_account_metrics({"id": 1, "project_id": "p"})
+
+    assert _FakeMetricServiceClient.calls == ["metric.type = \"storage.googleapis.com/storage/object_count\""]
+    assert result["metric_types_queried"] == 2  # both counted, only 1 actually called
+    assert not result["errors"]
+
+
 def test_extended_tier_service_has_no_resolver():
     """
     Services this app's discovery.py doesn't collect (GKE, Pub/Sub, etc.)

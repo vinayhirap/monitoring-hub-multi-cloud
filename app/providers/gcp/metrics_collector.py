@@ -53,6 +53,21 @@ those 3 are now skipped by name in collect_account_metrics() before the
 API call, rather than queried and discarded after -- see that function's
 _BIGQUERY_PROJECT_UNRESOLVABLE_METRICS guard and
 monitoring-hub-metric-audit.md §8/§10 for why.
+
+Resource-presence gate: same idea as _BIGQUERY_PROJECT_UNRESOLVABLE_METRICS
+above, generalized to every service. resource_id_maps/numeric_id_map are
+built ONCE per account before this loop (see _build_resource_maps), so
+collect_account_metrics() now checks -- per (metric_type, service) --
+whether this account actually has any resources of that service BEFORE
+calling list_time_series(), not after. Previously the call fired
+regardless, and a zero-resource account (or a resolver-service pair no
+one enabled yet) paid for series that were always going to end up
+`unmatched` a few lines down. AWS (grouped-by-DB-row, see
+metrics/runner.py::_get_resources_for_account) and Azure (`if not
+resources: continue` in this package's Azure counterpart) already did
+this; this was the one provider still missing it. See
+monitoring-hub-metric-audit.md §8 flaw #2 for the AWS/Azure precedent
+this closes the gap with.
 """
 import logging
 import time
@@ -302,6 +317,25 @@ def collect_account_metrics(account: dict, categories=None) -> dict:
             )
             continue
 
+        # Resource-presence gate -- mirrors Azure's "if not resources:
+        # continue" (this file's own docstring flags this as the one gap
+        # AWS/Azure already close: list_time_series() is fleet-wide and
+        # billed per series RETURNED, so calling it when this account has
+        # zero resources of `service` can only ever return series that
+        # then fail to match anyone in resource_id_map/numeric_id_map --
+        # a paid call for a guaranteed-unmatched result. compute_instance
+        # matches via numeric_id_map only (see _resolve_compute_instance);
+        # every other resolver matches via resource_id_map -- check
+        # whichever one this service's resolver actually uses.
+        resource_id_map = resource_id_maps.get(service, {})
+        has_resources = bool(numeric_id_map) if service == "compute_instance" else bool(resource_id_map)
+        if not has_resources:
+            logger.info(
+                f"{metric_type}: skipped -- zero '{service}' resources for this "
+                f"account, avoids a paid list_time_series call with nothing to match"
+            )
+            continue
+
         try:
             time_series = client.list_time_series(
                 request={
@@ -325,7 +359,6 @@ def collect_account_metrics(account: dict, categories=None) -> dict:
         metrics_rows = []
         history_rows = []
         unmatched = 0
-        resource_id_map = resource_id_maps.get(service, {})
         try:
             for ts in time_series:
                 if not ts.points:
