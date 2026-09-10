@@ -10,10 +10,20 @@ labels are numeric-ID-only; this app's resources.resource_id is name-based
 -- they never matched, so GCP Compute alerts likely never fired even
 after the earlier fix_azure_gcp_alert_evaluation_gap.py).
 
-Cost note (different from AWS, same as Azure): Cloud Monitoring's
-ListTimeSeries read API for GCP-provided ("system") metrics is free --
-there is no CloudWatch-GetMetricData-style per-call billing to avoid
-here.
+Cost note (different from AWS, same shape as Azure at small scale, but
+NOT identical): Cloud Monitoring's ListTimeSeries read API bills per
+TIME SERIES RETURNED as of Google's Oct 2, 2025 pricing change ($0.50 per
+million series returned, first 1,000,000/billing-account/month free) --
+NOT per API call the way it used to, and there is no CloudWatch-
+GetMetricData-style per-call billing either way. Because list_time_series()
+below is fleet-wide per metric type (one call returns that metric for
+every matching resource), call COUNT stays flat as the fleet grows, but
+series-returned VOLUME (the thing now billed) scales directly with
+(enabled metric types) x (resources of that type). Small deployments stay
+comfortably inside the free 1M-series allotment; see
+monitoring-hub-metric-audit.md §3.3 for the worked math and why this is
+tiered core/extended in multicloud_scheduler.py rather than treated as
+unconditionally free.
 
 Efficiency: unlike Azure (batched by resource, capped at 50/call) or AWS
 CloudWatch (one call per metric per resource without YACE), GCP's
@@ -34,10 +44,15 @@ for compute_instance only, since Cloud Monitoring's gce_instance type
 gives a numeric ID with no name -- look up the numeric ID discovery.py
 now also persists into resources.tags (see apply_gcp_direct_metrics_fetch.py).
 Services with no resolver are skipped and counted, not guessed at. As
-of app/providers/gcp/metrics_extended.py, that's down to 2 of the 12
-extended-tier services (gke_node, gce_persistent_disk) plus 2 of
-bigquery_project's 4 metrics -- see that module's docstring for why
-each is a genuine resource-modeling gap rather than a missing lookup.
+of app/providers/gcp/metrics_extended.py, that's 2 of the 12
+extended-tier services (gke_node, gce_persistent_disk) -- fully
+unresolved, never queried at all -- plus 3 of bigquery_project's 4
+metrics, which DO have a working resolver but can never match a
+resources row for those 3 specific metric names (no dataset_id label);
+those 3 are now skipped by name in collect_account_metrics() before the
+API call, rather than queried and discarded after -- see that function's
+_BIGQUERY_PROJECT_UNRESOLVABLE_METRICS guard and
+monitoring-hub-metric-audit.md §8/§10 for why.
 """
 import logging
 import time
@@ -132,16 +147,41 @@ _RESOLVERS = {
 from app.providers.gcp.metrics_extended import EXTENDED_RESOLVERS
 _RESOLVERS.update(EXTENDED_RESOLVERS)
 
+# bigquery_project has a real resolver (_resolve_bigquery_project) that DOES
+# work for storage/stored_bytes (carries a dataset_id label), but these
+# three account/project-scoped metric names never carry dataset_id at all --
+# see that function's own comment in metrics_extended.py -- so they can
+# never resolve to a resources row no matter how many times they're polled.
+# Without this guard, list_time_series() is still called and billed/counted
+# for these every cycle (GCP's Oct-2025 read pricing bills per time series
+# RETURNED, not per call -- monitoring-hub-metric-audit.md §3.3) and every
+# returned series is then unconditionally discarded downstream. Skipped
+# before the API call rather than after, at the same point genuinely
+# unresolvable SERVICES are already skipped a few lines below.
+_BIGQUERY_PROJECT_UNRESOLVABLE_METRICS = {
+    "query/count",
+    "query/execution_times",
+    "slots/allocated_for_project",
+}
 
-def _enabled_gcp_metrics(cur, account_id: int):
-    """[(namespace, service, metric_name), ...] for this account's enabled selection."""
-    cur.execute("""
+
+def _enabled_gcp_metrics(cur, account_id: int, categories=None):
+    """[(namespace, service, metric_name), ...] for this account's enabled
+    selection. categories: optional iterable of metric_catalog.category
+    values to restrict to -- see collect_account_metrics()'s docstring."""
+    query = """
         SELECT mc.namespace, mc.service, mc.metric_name
         FROM metric_catalog mc
         JOIN account_metric_selections ams ON ams.metric_id = mc.id
         WHERE ams.aws_account_id = %s AND ams.enabled = 1
               AND mc.provider = 'gcp' AND mc.metric_name IS NOT NULL AND mc.metric_name != ''
-    """, (account_id,))
+    """
+    params = [account_id]
+    if categories:
+        placeholders = ",".join(["%s"] * len(categories))
+        query += f" AND mc.category IN ({placeholders})"
+        params.extend(categories)
+    cur.execute(query, params)
     return cur.fetchall()
 
 
@@ -176,10 +216,25 @@ def _build_resource_maps(cur, account_id: int, services: set):
     return resource_id_maps, numeric_id_map
 
 
-def collect_account_metrics(account: dict) -> dict:
+def collect_account_metrics(account: dict, categories=None) -> dict:
     """
     account: a row from aws_accounts (dict) for one GCP account. Must have
     id, project_id, and a service-account key stored via app.credentials.
+
+    categories: optional iterable restricting collection to specific
+    metric_catalog.category values ('core','extended','directory') --
+    used by multicloud_scheduler.py to run core GCP services (Compute
+    Engine, Cloud Storage, Cloud SQL, Cloud Run) on a tighter cadence than
+    extended ones (GKE, Cloud Functions, Pub/Sub, etc). Unlike AWS, GCP's
+    read cost is billed per TIME SERIES RETURNED, not per call (GCP
+    pricing change effective Oct 2, 2025: $0.50/million series returned
+    above the first 1,000,000/billing-account/month, which are free) --
+    and unlike Azure, that meter scales directly with (metrics enabled) x
+    (resources of that type), because list_time_series() is fleet-wide per
+    metric type. Slowing extended-tier polling directly slows growth
+    toward that ceiling as more services/resources are added. See
+    monitoring-hub-metric-audit.md §3.3, §8 flaw #3, §9. None (the
+    default) preserves the original untiered behavior.
 
     Returns {"pushed": int, "metric_types_queried": int, "errors": [str, ...]}.
     Never raises -- see the Azure collector's docstring for why.
@@ -218,7 +273,7 @@ def collect_account_metrics(account: dict) -> dict:
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
-        enabled = _enabled_gcp_metrics(cur, account["id"])
+        enabled = _enabled_gcp_metrics(cur, account["id"], categories=categories)
         if not enabled:
             return result
         resource_id_maps, numeric_id_map = _build_resource_maps(
@@ -237,6 +292,13 @@ def collect_account_metrics(account: dict) -> dict:
             result["errors"].append(
                 f"{metric_type}: no resource resolver for GCP service '{service}' yet "
                 f"(extended-tier gap, not a match failure) -- skipped"
+            )
+            continue
+
+        if service == "bigquery_project" and row["metric_name"] in _BIGQUERY_PROJECT_UNRESOLVABLE_METRICS:
+            logger.info(
+                f"{metric_type}: skipped -- known-unresolvable bigquery_project "
+                f"metric (no dataset_id label, can never match a resources row)"
             )
             continue
 
@@ -312,8 +374,9 @@ def collect_account_metrics(account: dict) -> dict:
     return result
 
 
-def collect_all_gcp_accounts() -> dict:
-    """Runs collect_account_metrics() for every active GCP account. Used by the scheduler."""
+def collect_all_gcp_accounts(categories=None) -> dict:
+    """Runs collect_account_metrics() for every active GCP account. Used by the scheduler.
+    categories: see collect_account_metrics()'s docstring."""
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
@@ -326,7 +389,7 @@ def collect_all_gcp_accounts() -> dict:
 
     totals = {"accounts": len(accounts), "pushed": 0, "errors": []}
     for account in accounts:
-        r = collect_account_metrics(account)
+        r = collect_account_metrics(account, categories=categories)
         totals["pushed"] += r["pushed"]
         if r["errors"]:
             totals["errors"].append({"account_id": account["id"], "errors": r["errors"]})

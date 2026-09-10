@@ -77,22 +77,30 @@ app/collector/discovery/extended.py's AWS equivalent. Two bands:
                             attachments) -- left unresolved rather than
                             attributing a device_name to the wrong disk
                             resource.
-    - bigquery_project:    two of its four curated metrics
-                            (query/count, query/execution_times) are
+    - bigquery_project:    three of its four curated metrics
+                            (query/count, query/execution_times,
+                            slots/allocated_for_project) are
                             published against the **bigquery_project**
                             monitored resource (project_id only -- no
                             dataset_id label exists at all for these),
                             so they can never be attributed to one of
                             discovery.py's per-dataset resource rows --
                             this is a genuine mismatch between "how
-                            BigQuery reports these two metrics" and
+                            BigQuery reports these metrics" and
                             "the closest thing to a monitorable
                             BigQuery resource" (this app's own
                             per-dataset modeling choice), not a missing
-                            resolver. slots/allocated_for_project has
-                            the same problem. Only storage/stored_bytes
+                            resolver. Only storage/stored_bytes
                             (bigquery_dataset resource, HAS dataset_id)
-                            resolves.
+                            resolves. As of monitoring-hub-metric-audit.md
+                            §8/§10, these three are skipped by name in
+                            metrics_collector.py's collect_account_metrics()
+                            BEFORE the list_time_series() call (see
+                            _BIGQUERY_PROJECT_UNRESOLVABLE_METRICS there),
+                            rather than queried and discarded after --
+                            avoids paying for/counting series against
+                            GCP's per-series-returned read pricing that
+                            can never be used.
 """
 import logging
 

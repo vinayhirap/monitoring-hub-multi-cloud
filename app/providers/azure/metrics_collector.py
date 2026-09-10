@@ -17,12 +17,21 @@ pull Azure Monitor. This is that something.
 
 Cost note (different from AWS): Azure Monitor's platform-metric READ API
 (what MetricsClient.query_resources calls) is NOT billed per-call the way
-AWS CloudWatch GetMetricData is -- platform metrics are included at no
-extra charge. The aggressive GMD-avoidance work done in V4 doesn't apply
-here the same way; polling on a short interval isn't a cost problem for
-Azure the way it was for AWS. (Custom/non-platform Azure metrics and very
-high query volume can still incur charges -- this collector only touches
-platform metrics from CURATED, which are free reads.)
+AWS CloudWatch GetMetricData is, up to a real ceiling: Microsoft's own
+pricing page lists platform-metric queries as free for the first
+1,000,000 API calls/month/billing account, billed per 1,000 calls above
+that (Microsoft-confirmed; exact above-ceiling rate not independently
+re-verified here -- check the live Azure Monitor pricing page). At this
+app's likely scale (dozens-to-low-hundreds of calls/day across enabled
+services) that ceiling isn't close to being hit, so "free in practice"
+still holds -- but it is not unconditionally free the way platform-metric
+*ingestion* is, and the core/extended split in multicloud_scheduler.py
+exists partly to keep it that way as more services get enabled. See
+monitoring-hub-metric-audit.md §3.2. The aggressive GMD-avoidance work
+done in V4 doesn't apply here the same way; polling on a short interval
+isn't a *current* cost problem for Azure the way it was for AWS. (Custom/
+non-platform Azure metrics and very high query volume can still incur
+charges -- this collector only touches platform metrics from CURATED.)
 
 Batching: MetricsClient.query_resources() accepts up to 50 resource IDs
 per call for one metric_namespace + a list of metric_names in a single
@@ -42,15 +51,27 @@ logger = logging.getLogger(__name__)
 _BATCH_SIZE = 50  # Azure Monitor Metrics Batch API hard limit per call
 
 
-def _enabled_azure_metrics(cur, account_id: int):
-    """{(namespace, service): {metric_name, ...}} for this account's enabled selection."""
-    cur.execute("""
+def _enabled_azure_metrics(cur, account_id: int, categories=None):
+    """{(namespace, service): {metric_name, ...}} for this account's enabled
+    selection. categories: optional iterable of metric_catalog.category
+    values ('core','extended','directory') to restrict to -- see
+    collect_account_metrics()'s docstring for why this exists. None (the
+    default) preserves the original behavior of collecting every enabled
+    metric regardless of category, for callers that don't opt into tiering.
+    """
+    query = """
         SELECT mc.namespace, mc.service, mc.metric_name
         FROM metric_catalog mc
         JOIN account_metric_selections ams ON ams.metric_id = mc.id
         WHERE ams.aws_account_id = %s AND ams.enabled = 1
               AND mc.provider = 'azure' AND mc.metric_name IS NOT NULL AND mc.metric_name != ''
-    """, (account_id,))
+    """
+    params = [account_id]
+    if categories:
+        placeholders = ",".join(["%s"] * len(categories))
+        query += f" AND mc.category IN ({placeholders})"
+        params.extend(categories)
+    cur.execute(query, params)
     grouped = {}
     for row in cur.fetchall():
         key = (row["namespace"], row["service"])
@@ -58,10 +79,26 @@ def _enabled_azure_metrics(cur, account_id: int):
     return grouped
 
 
-def collect_account_metrics(account: dict) -> dict:
+def collect_account_metrics(account: dict, categories=None) -> dict:
     """
     account: a row from aws_accounts (dict) for one Azure account. Must have
     id, tenant_id, client_id, subscription_id, default_region.
+
+    categories: optional iterable restricting collection to specific
+    metric_catalog.category values ('core', 'extended', 'directory') --
+    used by multicloud_scheduler.py to run core/critical Azure services
+    (VM, Storage Account, SQL Database, App Service) on a tighter cadence
+    than extended ones (VMSS, AKS, Cosmos DB, Redis, etc.), the same
+    priority-based tiering principle AWS's scheduler.py already applies,
+    adapted to Azure's actual cost shape rather than copied verbatim --
+    Azure platform-metric reads are free up to 1,000,000 API calls/month/
+    billing account (Microsoft-confirmed), so this tiering isn't chasing a
+    per-call bill the way AWS's is; it exists to keep call volume away from
+    that ceiling as more extended services are enabled, and to avoid
+    polling latency-insensitive services (Key Vault, VPN Gateway trend
+    metrics) as often as latency-sensitive ones (VM CPU) for no freshness
+    benefit. See monitoring-hub-metric-audit.md §8 flaw #3, §9. None (the
+    default) preserves the original untiered behavior.
 
     Returns {"pushed": int, "resources_queried": int, "errors": [str, ...]}.
     Never raises -- collection failures for one account/service shouldn't
@@ -99,7 +136,7 @@ def collect_account_metrics(account: dict) -> dict:
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
-        by_service = _enabled_azure_metrics(cur, account["id"])
+        by_service = _enabled_azure_metrics(cur, account["id"], categories=categories)
         if not by_service:
             return result
 
@@ -174,8 +211,9 @@ def collect_account_metrics(account: dict) -> dict:
     return result
 
 
-def collect_all_azure_accounts() -> dict:
-    """Runs collect_account_metrics() for every active Azure account. Used by the scheduler."""
+def collect_all_azure_accounts(categories=None) -> dict:
+    """Runs collect_account_metrics() for every active Azure account. Used by the scheduler.
+    categories: see collect_account_metrics()'s docstring."""
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
@@ -188,7 +226,7 @@ def collect_all_azure_accounts() -> dict:
 
     totals = {"accounts": len(accounts), "pushed": 0, "errors": []}
     for account in accounts:
-        r = collect_account_metrics(account)
+        r = collect_account_metrics(account, categories=categories)
         totals["pushed"] += r["pushed"]
         if r["errors"]:
             totals["errors"].append({"account_id": account["id"], "errors": r["errors"]})
