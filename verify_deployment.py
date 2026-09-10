@@ -36,6 +36,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 try:
     from dotenv import load_dotenv
@@ -51,6 +52,13 @@ DB_USER = os.getenv("DB_USER", "root")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "root123")
 DB_NAME = os.getenv("DB_NAME", "monitoring_hub")
 VM_URL = os.getenv("VM_URL", "http://3.109.181.40")
+
+# Used by check_3_self_assume_role() to confirm the same-account
+# AssumeRole short-circuit (commit 22ff060, 2026-08-27) is actually
+# present in this checkout before relaxing a self-referential role_arn
+# from FAIL to OK.
+STS_FILE = Path(__file__).resolve().parent / "app" / "aws" / "sts.py"
+STS_FIX_ANCHOR = "No STS call is actually needed"
 
 TIMEOUT = 5
 
