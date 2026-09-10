@@ -94,6 +94,9 @@ def get_account(account_id: int, current_user: dict = Depends(require_permission
 
 
 def _add_aws_account(payload: dict) -> tuple[int, str, str]:
+    import json as _json
+    from app.credentials import save_credential, new_credential_ref
+
     account_name = (payload.get("account_name") or "").strip()
     account_id   = (payload.get("account_id")   or "").strip()
     region       = (payload.get("default_region") or "").strip()
@@ -114,22 +117,38 @@ def _add_aws_account(payload: dict) -> tuple[int, str, str]:
     if role_arn.lower() in ["n/a", "none", "na", ""]:
         role_arn = ""
 
+    # Static access key/secret key -- an alternative to AssumeRole for
+    # accounts where a cross-account trust policy isn't wanted (e.g. a
+    # dedicated ReadOnlyAccess IAM user in the target account instead).
+    # frontend's AccountOnboarding.jsx (auth_method="access_keys") sends
+    # these; role_arn/external_id are sent empty in that mode and vice
+    # versa, so presence of both keys is the signal, not a separate flag.
+    access_key = (payload.get("access_key") or "").strip()
+    secret_key = (payload.get("secret_key") or "").strip()
+    auth_mode  = "static_keys" if (access_key and secret_key) else "assume_role"
+    if auth_mode == "static_keys":
+        role_arn = ""  # keys and role_arn are mutually exclusive for a given account
+
     conn   = get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute("""
             INSERT INTO aws_accounts
-              (account_name, account_id, provider, role_arn, external_id,
+              (account_name, account_id, provider, role_arn, auth_mode, external_id,
                default_region, status, description, owner_team, environment)
-            VALUES (%s, %s, 'aws', %s, %s, %s, 'active', %s, %s, %s)
+            VALUES (%s, %s, 'aws', %s, %s, %s, %s, 'active', %s, %s, %s)
             ON DUPLICATE KEY UPDATE
               account_name   = VALUES(account_name),
+              role_arn       = VALUES(role_arn),
+              auth_mode      = VALUES(auth_mode),
+              external_id    = VALUES(external_id),
               default_region = VALUES(default_region),
               status         = 'active',
               description    = VALUES(description),
               owner_team     = VALUES(owner_team),
               environment    = VALUES(environment)
-        """, (account_name, account_id, role_arn, external_id, region, description, owner_team, environment))
+        """, (account_name, account_id, role_arn, auth_mode, external_id,
+              region, description, owner_team, environment))
         conn.commit()
         if cursor.lastrowid:
             new_id = cursor.lastrowid
@@ -141,6 +160,17 @@ def _add_aws_account(payload: dict) -> tuple[int, str, str]:
     finally:
         cursor.close()
         conn.close()
+
+    if auth_mode == "static_keys":
+        ref = new_credential_ref()
+        save_credential(new_id, "aws", _json.dumps({
+            "access_key_id": access_key,
+            "secret_access_key": secret_key,
+        }), ref)
+        conn = get_connection(); cursor = conn.cursor()
+        cursor.execute("UPDATE aws_accounts SET credential_ref = %s WHERE id = %s", (ref, new_id))
+        conn.commit(); cursor.close(); conn.close()
+
     return new_id, account_name, "aws"
 
 
@@ -312,20 +342,27 @@ def add_account(payload: dict = Body(...), current_user: dict = Depends(require_
         elif provider_name == "aws":
             from app.api.metric_catalog import enable_metrics_for_services
             from app.aws.resource_discovery import discover_all_service_keys
-            from app.aws.sts import assume_role
-            import boto3 as _boto3
+            from app.aws.sts import get_boto3_session
 
             role_arn = (payload.get("role_arn") or payload.get("iam_role_arn") or "").strip()
             if role_arn.lower() in ("n/a", "none", "na"):
                 role_arn = ""
             region = (payload.get("default_region") or "ap-south-1").split(" ")[0]
 
+            # Same signal _add_aws_account() used to decide auth_mode and
+            # (if static_keys) already wrote the credential for new_id via
+            # save_credential -- get_boto3_session's static_keys branch
+            # reads it straight back via load_credential(new_id) below.
+            access_key = (payload.get("access_key") or "").strip()
+            secret_key = (payload.get("secret_key") or "").strip()
+            auth_mode  = "static_keys" if (access_key and secret_key) else "assume_role"
+
             detected = set()
             try:
-                # Same-account monitoring (no cross-account role) uses the
-                # server's own credentials, same fallback discovery/runner.py
-                # already relies on for that case.
-                session = assume_role(role_arn, payload.get("external_id")) if role_arn else _boto3.Session()
+                session = get_boto3_session({
+                    "id": new_id, "auth_mode": auth_mode,
+                    "role_arn": role_arn, "external_id": payload.get("external_id"),
+                })
                 detected = discover_all_service_keys(session, region)
             except Exception as e:
                 logger.warning(f"Onboarding auto-detection failed, falling back to template: {e}")
@@ -492,21 +529,36 @@ def get_account_console_url(
 
 @router.post("/test-role")
 def test_role(payload: dict = Body(...), current_user: dict = Depends(require_permission("accounts.onboard"))):
-    role_arn = (payload.get("role_arn") or "").strip()
-    ext_id   = (payload.get("external_id") or "").strip()
-
-    if not role_arn or not role_arn.startswith("arn:aws:"):
-        raise HTTPException(status_code=400, detail="Valid IAM Role ARN required")
+    role_arn   = (payload.get("role_arn") or "").strip()
+    ext_id     = (payload.get("external_id") or "").strip()
+    access_key = (payload.get("access_key") or "").strip()
+    secret_key = (payload.get("secret_key") or "").strip()
 
     region = (payload.get("region") or payload.get("default_region") or "ap-south-1").strip()
 
-    try:
-        from app.aws.sts import assume_role
-        session  = assume_role(role_arn, ext_id)
-        sts      = session.client("sts")
-        identity = sts.get_caller_identity()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Role assumption failed: {str(e)}")
+    # Two mutually exclusive auth paths, matching _add_aws_account()'s
+    # signal (presence of both keys means static-key mode, regardless of
+    # whether role_arn is also present in the payload).
+    if access_key and secret_key:
+        try:
+            import boto3 as _boto3
+            session  = _boto3.Session(
+                aws_access_key_id=access_key, aws_secret_access_key=secret_key,
+            )
+            sts      = session.client("sts")
+            identity = sts.get_caller_identity()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Access key validation failed: {str(e)}")
+    else:
+        if not role_arn or not role_arn.startswith("arn:aws:"):
+            raise HTTPException(status_code=400, detail="Valid IAM Role ARN required")
+        try:
+            from app.aws.sts import assume_role
+            session  = assume_role(role_arn, ext_id)
+            sts      = session.client("sts")
+            identity = sts.get_caller_identity()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Role assumption failed: {str(e)}")
 
     # Best-effort service detection for the onboarding wizard preview
     # ("Detected: EC2, RDS, ALB — monitoring will be enabled automatically").

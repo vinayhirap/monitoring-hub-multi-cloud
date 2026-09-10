@@ -30,7 +30,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from app.db import get_connection
-from app.aws.sts import assume_role
+from app.aws.sts import get_boto3_session
 from app.collector.metrics_writer import write_metric, write_metric_history_batch
 from app.collector.disk_mounts import all_cwagent_disk_dims, ensure_disk_mount_metric_registered
 import boto3
@@ -417,8 +417,7 @@ def _collect_account(account, tier="standard"):
     logger.info(f"[{tier}] {account['account_name']}")
 
     try:
-        session = (assume_role(account["role_arn"], account.get("external_id"))
-                   if account.get("role_arn") else boto3.Session())
+        session = get_boto3_session(account)
     except Exception as e:
         logger.error(f"Session failed [{account['account_name']}]: {e}")
         return

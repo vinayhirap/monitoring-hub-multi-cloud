@@ -35,8 +35,8 @@ def _get_active_accounts():
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT id, account_name, account_id,
-                   role_arn, external_id, default_region
+            SELECT id, account_name, account_id, role_arn, auth_mode,
+                   external_id, default_region
             FROM aws_accounts
             WHERE status = 'active'
         """)

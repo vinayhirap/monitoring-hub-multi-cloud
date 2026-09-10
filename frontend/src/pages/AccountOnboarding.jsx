@@ -239,11 +239,19 @@ export default function AccountOnboarding() {
     setDetectedServices([]);
     try {
       if (provider === "aws") {
-        const r = await testRole({
-          role_arn:    form.iam_role_arn.trim(),
-          external_id: form.external_id.trim(),
-          region:      form.primary_region,
-        });
+        const r = await testRole(
+          form.auth_method === "access_keys"
+            ? {
+                access_key: form.access_key.trim(),
+                secret_key: form.secret_key.trim(),
+                region:     form.primary_region,
+              }
+            : {
+                role_arn:    form.iam_role_arn.trim(),
+                external_id: form.external_id.trim(),
+                region:      form.primary_region,
+              }
+        );
         setTestStatus("success");
         setDetectedServices(r.detected_services || []);
         setTestMsg(

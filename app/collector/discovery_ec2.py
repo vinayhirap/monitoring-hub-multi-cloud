@@ -1,14 +1,14 @@
 #app/collector/discovery_ec2.py
 from app.db import get_connection
-from app.aws.sts import assume_role
+from app.aws.sts import get_boto3_session
 import boto3
 import json
 
 def discover_ec2():
     """
-    Discover EC2 + attached resources.
-    Local dev → uses boto3.Session()
-    EC2 / Prod → uses assume_role()
+    Discover EC2 + attached resources. Session resolution (static keys,
+    cross-account AssumeRole, or same-account default) is handled by the
+    single choke point in app.aws.sts.get_boto3_session().
     """
 
     conn = get_connection()
@@ -29,17 +29,18 @@ def discover_ec2():
         print(f"Discovering EC2 in account: {account['account_name']}")
 
         # -------------------------
-        # SESSION SELECTION (CRITICAL)
+        # SESSION SELECTION
         # -------------------------
-        if account["account_id"] == "924922671984":
-            # SAME ACCOUNT (local dev)
-            session = boto3.Session()
-        else:
-            # CROSS ACCOUNT (prod-style)
-            session = assume_role(
-                account["role_arn"],
-                account.get("external_id")
-            )
+        # Previously hardcoded to check account_id == this instance's own
+        # account id -- redundant with (and could drift from) the generic
+        # same-account short-circuit already in app.aws.sts.assume_role()
+        # (fix: 22ff060), and never handled static_keys accounts at all.
+        # get_boto3_session() is the one place this logic should live.
+        try:
+            session = get_boto3_session(account)
+        except Exception as e:
+            print(f"Session failed for {account['account_name']}: {e}")
+            continue
 
         region = account.get("default_region")
         ec2 = session.client("ec2", region_name=region)

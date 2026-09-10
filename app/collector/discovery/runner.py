@@ -6,7 +6,7 @@ Called by scheduler every 15 minutes.
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.db import get_connection
-from app.aws.sts import assume_role
+from app.aws.sts import get_boto3_session
 import boto3
 import json
 
@@ -18,7 +18,7 @@ def _get_active_accounts():
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT id, account_name, account_id, role_arn,
+            SELECT id, account_name, account_id, role_arn, auth_mode,
                    external_id, default_region
             FROM aws_accounts
             WHERE status = 'active' AND provider = 'aws'
@@ -30,11 +30,10 @@ def _get_active_accounts():
 
 
 def _get_session(account):
-    """Return boto3 session — same-account uses default, cross-account uses STS."""
+    """Return boto3 session — static keys, cross-account AssumeRole, or
+    same-account default, resolved by the single choke point in sts.py."""
     try:
-        if account.get("role_arn"):
-            return assume_role(account["role_arn"], account.get("external_id"))
-        return boto3.Session()
+        return get_boto3_session(account)
     except Exception as e:
         logger.error(f"Session failed for {account['account_name']}: {e}")
         return None
