@@ -129,7 +129,7 @@ CURATED = {
         ("DeadLetterErrors",    "Count",   "Sum",     False, "Failed to write to configured DLQ"),
         ("ColdStart",           "Count",   "Sum",     False, "Cold-start init invocations (custom metric on some setups)"),
     ]),
-    "s3": ("Amazon S3", "AWS/S3", "core", [
+    "s3": ("Amazon S3", "AWS/S3", "extended", [
         ("BucketSizeBytes",           "Bytes", "Average", True,  "Total bucket size (daily storage metric)"),
         ("NumberOfObjects",           "Count", "Average", True,  "Object count (daily storage metric)"),
         ("AllRequests",               "Count", "Sum",     False, "All requests (needs request metrics enabled)"),
