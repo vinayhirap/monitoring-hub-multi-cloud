@@ -214,11 +214,32 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
         conn.commit()
         new_id = cursor.lastrowid
     except Exception as e:
+        # Ported from a local hotfix found already running on prod
+        # (35.154.149.94), never committed to git -- without this,
+        # every failed create_user (e.g. a duplicate username, the most
+        # common real-world case) leaked a pooled DB connection
+        # permanently, the same class of bug that exhausted the pool
+        # and took the dashboard offline for hours on Sep 5 2026 (see
+        # deploy/update.sh's own verification gate for that incident).
+        #
+        # rollback() before close() so an aborted INSERT never leaves a
+        # dangling transaction on a connection about to go back to
+        # (or out of) the pool. The `finally: cursor.close()` below
+        # still runs after this -- wrapped in its own try/except there
+        # specifically so that IF closing an already-closed connection's
+        # cursor ever raises anything connector-version-specific, it
+        # can never replace/mask the real HTTPException being raised
+        # here with an unrelated one.
+        conn.rollback()
+        conn.close()
         if "Duplicate" in str(e) or "1062" in str(e):
             raise HTTPException(status_code=409, detail=f"User '{username}' already exists")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        cursor.close()
+        try:
+            cursor.close()
+        except Exception:
+            pass
 
     actor_scope = authz.get_effective_scope(current_user)
     try:
