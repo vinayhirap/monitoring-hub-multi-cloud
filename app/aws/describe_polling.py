@@ -44,9 +44,20 @@ from app.clients.vm_client import VM_URL
 
 logger = logging.getLogger(__name__)
 
+# VictoriaMetrics is intentionally stopped (monitoring-hub-metric-audit.md
+# §8 flaw #4). This loop runs every 30s -- with VM stopped, every single
+# cycle was spending a real network round-trip (up to the 5s timeout below)
+# attempting and failing a POST to a dead host, purely to feed an external-
+# Grafana-compatible VM series that has no other consumer in this app (the
+# local DB write a few lines below is unaffected and is the only path the
+# app itself reads from). Disabled at the call site only -- _push_to_vm()
+# itself is untouched, per instruction, pending a later full VM-code cleanup
+# pass. Flip back to True if/when VM is intentionally restarted.
+_VM_PUSH_ENABLED = False
+
 
 def _push_to_vm(lines: list) -> None:
-    if not lines:
+    if not lines or not _VM_PUSH_ENABLED:
         return
     try:
         r = requests.post(
