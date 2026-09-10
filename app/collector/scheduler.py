@@ -2,40 +2,64 @@
 """
 Tiered scheduler — Phase 2 implementation.
 
-  critical  — every 2 min  : EC2 CPU/Network, RDS, ELB
-  standard  — every 5 min  : RDS (still, every cycle) + EBS + Lambda Errors
+  critical  — every 2 min  : RDS, ELB
+  standard  — every 5 min  : RDS (still, every cycle) + EC2 CPU/Network +
+                              EBS + Lambda Errors
   low       — every 15 min : EC2 Disk, EC2 CWAgent mem/disk, Lambda
                               Invocations, extended-tier services
 
-Note (post metric_audit.md §8/§10 fix): EC2 CPU/Network and ELB were
-previously ALSO re-triggered on the "standard" tier (dispatch condition
-was `tier in ("critical","standard")`), which meant that on every cycle
-where "standard" happened to fire (every 5 min), those metrics were
-requested via GetMetricData TWICE in immediate succession -- once by
-"critical"'s own always-running 2-min loop, once again by "standard".
-Both AWS's actual publication cadence for these metrics (EC2 basic
-monitoring: 5 min; EC2 detailed monitoring, if enabled: 1 min; ALB: 1
-min) and the fact that critical tier's independent 2-min loop already
-provides continuous coverage make the second call pure duplicate spend.
-Fixed in app/collector/metrics/runner.py -- ec2_critical and elb tasks
-now dispatch on tier == "critical" only. EBS had the same issue between
-"standard" and "low" (EBS publishes at 5-min resolution; the 15-min "low"
-re-poll could only ever re-return data "standard" had already fetched);
-EBS is now dispatched on tier == "standard" only.
+Note (post metric_audit.md §8/§10 fix, updated 2026-09-10): EC2 CPU/
+Network and ELB were previously ALSO re-triggered on the "standard" tier
+(dispatch condition was `tier in ("critical","standard")`), which meant
+that on every cycle where "standard" happened to fire (every 5 min),
+those metrics were requested via GetMetricData TWICE in immediate
+succession -- once by "critical"'s own always-running 2-min loop, once
+again by "standard". Fixed in app/collector/metrics/runner.py: elb
+dispatches on tier == "critical" only (ALB's 1-min publish cadence
+justifies the faster tier). EC2 CPU/Network was ALSO moved off critical
+entirely, not just deduplicated -- live DEV data (this app's own new
+basic-vs-detailed monitoring visibility log) confirmed the real EC2
+fleet here is 100% on AWS basic monitoring (5-min publish, free), so
+even a single, non-duplicated 2-min poll was still wasting ~60% of its
+calls on data that hadn't changed. ec2_critical (name unchanged, task
+moved) now dispatches on tier == "standard" only, matching AWS's actual
+5-min publication cadence for this fleet -- a deliberate, data-confirmed
+choice, not a blind default (a fleet on detailed/1-min monitoring should
+NOT make this same move; see _log_monitoring_mode_mismatch()'s docstring
+in metrics/runner.py). EBS had the analogous "standard"/"low" duplicate
+issue (EBS publishes at 5-min resolution; the 15-min "low" re-poll could
+only ever re-return data "standard" had already fetched); EBS is
+dispatched on tier == "standard" only.
+
+Known remaining issue, NOT fixed here (flagged, not acted on without a
+decision): RDS's dispatch in metrics/runner.py has no tier gate at all
+(`elif resource_type == "rds": tasks.append(...)`, unconditional) --
+since "critical" already runs every ~2 min unconditionally, RDS is
+re-polled AGAIN, redundantly, in any cycle where "standard" or "low"
+also coincide. Same class of bug as the ALB/EBS fixes above, just never
+gated to begin with.
 
 Alerts evaluated after every standard cycle.
 Discovery runs every 15 min (aligned with low tier).
 Partition management runs daily.
 
-Cost impact (3 accounts):
+Cost impact (3 accounts, illustrative -- see real DEV numbers below):
   Before Phase 2:        510 metrics x 288 cycles/day = $44/mo
   After Phase 2:          ~220 avg x 240 cycles/day    = ~$15/mo  (66% reduction)
-  After dedup fix (this change): removes the EC2-critical/ELB "standard"-
-  tier duplicate call (~1 in 3 cycles) and the EBS "low"-tier duplicate
-  call (~2 in 3 fifteen-minute cycles) on top of that -- exact %
-  depends on real fleet size; see monitoring-hub-metric-audit.md §3 for
-  the formula and REMAINING in the deployment report for what still
-  needs live account/resource counts to quantify precisely.
+  After dedup fix: removed the ELB "standard"-tier duplicate call (~1 in 3
+  cycles) and the EBS "low"-tier duplicate call (~2 in 3 fifteen-minute
+  cycles).
+  After EC2 tier move (this change): EC2 CPU/Network calls drop from
+  720 cycles/day (2-min) to 288 cycles/day (5-min) -- a 60% cut in calls
+  for that metric family specifically, with zero freshness loss for a
+  basic-monitoring fleet. Real DEV numbers as of 2026-09-10 (1 account,
+  "AuroGov Mumbai", confirmed via live discovery logs): 6 running EC2
+  instances (100% basic monitoring), 0 RDS, 2 ELB, 3 Lambda, plus a long
+  tail of extended-tier resources (45 S3 buckets, 102 CloudWatch Logs
+  groups, 15 KMS keys, 11 EventBridge rules, 5 ACM certs, and more) --
+  see monitoring-hub-metric-audit.md §3 for the per-metric formula this
+  plugs into; exact extended-tier call volume still needs a "low" tier
+  log check to count actually-enabled metrics per service.
 """
 import time
 import logging

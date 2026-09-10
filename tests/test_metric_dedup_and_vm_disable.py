@@ -104,28 +104,35 @@ def _load_runner_and_record_tasks(tier):
     return fired
 
 
-def test_critical_tier_fires_ec2_critical_and_elb_but_not_ebs():
+def test_critical_tier_fires_elb_but_not_ec2_critical_or_ebs():
+    """ELB (1-min publish) stays on the fast 2-min tier. EC2 CPU/Network
+    moved OFF critical entirely on 2026-09-10 after live DEV data showed
+    a 100%-basic-monitoring fleet was wasting ~60% of 2-min polls -- see
+    scheduler.py's module docstring and metrics/runner.py's
+    _log_monitoring_mode_mismatch()."""
     fired = _load_runner_and_record_tasks("critical")
-    assert "_collect_ec2_critical" in fired
     assert "_collect_elb" in fired
     assert "_collect_rds" in fired  # RDS runs on every tier -- revenue-critical
+    assert "_collect_ec2_critical" not in fired
     assert "_collect_ebs" not in fired
     assert "_collect_ec2_low" not in fired
     assert "_collect_lambda_standard" not in fired
 
 
-def test_standard_tier_fires_ebs_and_rds_but_not_ec2_critical_or_elb():
-    """The actual bug fix under test: before the fix, "standard" also
-    re-triggered ec2_critical and elb (dispatch was
-    `tier in ("critical","standard")`), duplicating a GetMetricData call
-    the "critical" tier's own independent 2-min loop had already just
-    made. Confirms that's gone."""
+def test_standard_tier_fires_ebs_rds_and_ec2_critical_but_not_elb():
+    """Covers two fixes: (1) the original dedup bug -- "standard" no
+    longer re-triggers "elb" (dispatch was `tier in
+    ("critical","standard")`), which used to duplicate a GetMetricData
+    call the "critical" tier's own independent 2-min loop had already
+    just made; (2) the 2026-09-10 EC2 tier move -- ec2_critical (CPU/
+    Network) now belongs to "standard" (5 min), matching AWS basic
+    monitoring's real publish cadence for this fleet, confirmed live."""
     fired = _load_runner_and_record_tasks("standard")
     assert "_collect_ebs" in fired
     assert "_collect_rds" in fired
     assert "_collect_lambda_standard" in fired
-    assert "_collect_ec2_critical" not in fired, \
-        "standard tier must not re-poll EC2 CPU/Network -- critical tier already covers it"
+    assert "_collect_ec2_critical" in fired, \
+        "standard tier must poll EC2 CPU/Network -- it moved here from critical on 2026-09-10"
     assert "_collect_elb" not in fired, \
         "standard tier must not re-poll ALB -- critical tier already covers it"
 
