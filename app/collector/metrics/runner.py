@@ -506,6 +506,16 @@ def _collect_account(account, tier="standard"):
             except Exception as e:
                 logger.error(f"Task error [{account['account_name']}]: {e}")
 
+    # Extended-tier services -- same "low" (15-min) cadence as EC2
+    # CWAgent mem/disk, not latency-sensitive enough for critical/
+    # standard tiers. See apply_add_extended_service_discovery.py.
+    if tier == "low":
+        try:
+            from app.collector.metrics.extended import collect_extended_for_account
+            collect_extended_for_account(session, account)
+        except Exception as e:
+            logger.error(f"Extended collection error [{account['account_name']}]: {e}")
+
     conn   = get_connection()
     cursor = conn.cursor()
     cursor.execute(

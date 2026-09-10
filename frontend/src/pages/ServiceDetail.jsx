@@ -1030,12 +1030,20 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
               <div className="chart-full">
                 <MetricChart title="Object Count"        data={metrics?.object_count  || []} color="#22c55e" unit=""  timeRange={rangLabel} />
               </div>
-              <MetricChart title="All Requests"          data={metrics?.all_requests  || []} color="#2bb3ac" unit=""  timeRange={rangLabel} />
-              <MetricChart title="GET Requests"          data={metrics?.get_requests  || []} color="#7c6ee0" unit=""  timeRange={rangLabel} />
-              <MetricChart title="PUT Requests"          data={metrics?.put_requests  || []} color="#38bdf8" unit=""  timeRange={rangLabel} />
-              <MetricChart title="4XX Errors"            data={metrics?.errors_4xx    || []} color="#f59e0b" unit=""  timeRange={rangLabel} />
-              <MetricChart title="5XX Errors"            data={metrics?.errors_5xx    || []} color="#ef4444" unit="" timeRange={rangLabel} />
-              <MetricChart title="Bytes Downloaded"      data={metrics?.bytes_download|| []} color="#f472b6" unit="B" timeRange={rangLabel} />
+              {/* Request-metric cards (AllRequests/GetRequests/PutRequests/
+                  4xxErrors/5xxErrors/BytesDownloaded) intentionally removed
+                  -- these require S3's paid, per-bucket opt-in Request
+                  Metrics configuration (PutBucketMetricsConfiguration /
+                  console "Request metrics" tab), which most accounts never
+                  enable. Without it these AWS/S3 CloudWatch series
+                  permanently return zero datapoints -- not a collection
+                  bug, confirmed against a real account's own AWS console
+                  (Storage metrics tab has real data, Request metrics tab
+                  does not). The backend (get_s3_metric_series in
+                  collector_direct.py) still computes these fields so an
+                  account that HAS enabled Request Metrics isn't blocked --
+                  just not rendered here by default. See
+                  apply_simplify_s3_charts.py. */}
             </>}
 
             {service === "ELB" && <>

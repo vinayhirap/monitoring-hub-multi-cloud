@@ -235,6 +235,14 @@ def _discover_account(account):
             _discover_elb(session, account, region, cursor)
             _discover_ecs(session, account, region, cursor)
             _discover_lambda(session, account, region, cursor)
+            # Extended-tier services (DynamoDB, SQS, SNS, CloudFront,
+            # and 29 others) -- see apply_add_extended_service_discovery.py.
+            # Each of the 33 is individually try/except-wrapped inside
+            # discover_extended_services() itself, so one missing IAM
+            # permission or unavailable service can never block the
+            # core discoverers above or any other extended service.
+            from app.collector.discovery.extended import discover_extended_services
+            discover_extended_services(session, account, region, cursor)
             cursor.execute(
                 "UPDATE aws_accounts SET last_discovered_at = NOW() WHERE id = %s",
                 (account["id"],)
