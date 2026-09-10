@@ -25,10 +25,27 @@
 --    storage path with zero changes to app/credentials.py itself: the
 --    access key ID + secret access key pair is JSON-encoded into one
 --    string and stored as the "raw" secret, same as GCP's full JSON key.
+--
+-- Fix 2026-09-10: originally wrote #1 as a single declarative
+-- `ADD COLUMN IF NOT EXISTS ... AFTER role_arn`, which failed live on
+-- prod (MySQL 8.4.11) with a syntax error right at "IF NOT EXISTS" --
+-- despite that clause being valid MySQL 8.0.29+ syntax in isolation, so
+-- the exact cause wasn't pinned down before rewriting. Rather than trust
+-- that specific clause combination against a live prod DB a second time,
+-- this uses the same portable information_schema-check + dynamic-SQL
+-- pattern this repo's own 004_metrics_last_value_only.sql and
+-- 012_alert_evaluation_hardening.sql already rely on successfully --
+-- proven to actually run here, not just valid in principle.
 
-ALTER TABLE aws_accounts
-    ADD COLUMN IF NOT EXISTS auth_mode ENUM('assume_role','static_keys')
-        NOT NULL DEFAULT 'assume_role' AFTER role_arn;
+SET @col_exists := (
+  SELECT COUNT(*) FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'aws_accounts' AND column_name = 'auth_mode'
+);
+SET @sql := IF(@col_exists = 0,
+  'ALTER TABLE aws_accounts ADD COLUMN auth_mode ENUM(''assume_role'',''static_keys'') NOT NULL DEFAULT ''assume_role'' AFTER role_arn',
+  'SELECT "aws_accounts.auth_mode already exists, skipping"'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 ALTER TABLE provider_credentials
     MODIFY COLUMN provider ENUM('aws','azure','gcp') NOT NULL;
