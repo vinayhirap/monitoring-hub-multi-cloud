@@ -66,6 +66,13 @@ class _RoutingConn:
 def _stub_and_load(conn):
     install_stub("app.db", get_connection=lambda: conn)
     install_stub("app.clients.vm_client", vm_query=lambda p: None, vm_query_all=lambda p, d: {})
+    # collector_direct.py imports all_cwagent_disk_dims from this submodule
+    # at module level -- not previously stubbed here, so every test in this
+    # file raised ModuleNotFoundError via the isolated loader's fake "app"
+    # package tree (real submodule imports don't resolve through it unless
+    # explicitly stubbed). None of these tests exercise the CWAgent-disk
+    # code path, so a stub that returns no mounts is sufficient.
+    install_stub("app.collector.disk_mounts", all_cwagent_disk_dims=lambda cw, instance_id: [])
     return load_module("app/aws/collector_direct.py")
 
 

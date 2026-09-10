@@ -40,7 +40,19 @@ class _FakeConn:
 
 def _load():
     written = []
-    install_stub("app.collector.metrics_writer", write_metrics_batch=lambda rows: written.extend(rows))
+    history_written = []
+    install_stub(
+        "app.collector.metrics_writer",
+        write_metrics_batch=lambda rows: written.extend(rows),
+        # write_metric_history_batch is imported by describe_polling.py
+        # (added by apply_fix_alb_healthy_hosts_history.py, after this test
+        # file was first written) but was never added to this stub -- the
+        # isolated module loader raised ImportError on every test in this
+        # file as a result. Stubbed now the same way write_metrics_batch
+        # already was, so imports succeed; not otherwise asserted on here
+        # since no test in this file currently checks history-row content.
+        write_metric_history_batch=lambda rows: history_written.extend(rows),
+    )
     install_stub("app.clients.vm_client", VM_URL="http://fake-vm")
     install_stub("app.aws.collector_direct", get_session=MagicMock())
     mod = load_module("app/aws/describe_polling.py")
