@@ -803,6 +803,11 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
   // that needs it renders here, causing a live
   // "ReferenceError: getThreshold is not defined". See
   // apply_fix_getthreshold_scope.py.
+  //
+  // Stores BOTH warning_value and critical_value per key -- the
+  // original version only kept warning_value, which is why charts
+  // never had a separate critical line to draw. See
+  // apply_add_warning_threshold_line.py.
   useEffect(() => {
     if (!accountId) return;
     fetch(`/api/settings/thresholds?account_id=${accountId}&include_no_data=true`)
@@ -810,17 +815,24 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
       .then(data => {
         const map = {};
         (data.thresholds || []).forEach(t => {
-          if (t.metric_name) map[`${t.resource_type}:${t.metric_name}`] = t.warning_value;
+          if (t.metric_name) {
+            map[`${t.resource_type}:${t.metric_name}`] = {
+              warning: t.warning_value,
+              critical: t.critical_value,
+            };
+          }
         });
         setThresholdMap(map);
       })
       .catch(() => {});
   }, [accountId]);
 
-  // Looks up the REAL warning threshold configured in Settings for this
-  // exact (resourceType, metricName) pair -- returns undefined if none
-  // is configured, which MetricChart already correctly renders as "no
-  // dashed line" rather than a misleading default.
+  // Looks up the REAL warning + critical thresholds configured in
+  // Settings for this exact (resourceType, metricName) pair -- returns
+  // undefined if nothing is configured for it, or { warning, critical }
+  // (either of which may itself be undefined if only one was set).
+  // MetricChart renders "no line" for whichever value is missing,
+  // rather than a misleading default.
   function getThreshold(resourceType, metricName) {
     return thresholdMap[`${resourceType}:${metricName}`];
   }
@@ -961,7 +973,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
           <div className="charts-grid">
             {service === "EC2" && (
               <div className="chart-full">
-                <MetricChart title="CPUUtilization" data={metrics.cpu} color="#2bb3ac" unit="%" threshold={getThreshold("ec2", "CPUUtilization")} thresholdLabel="alert threshold" timeRange={rangLabel} />
+                <MetricChart title="CPUUtilization" data={metrics.cpu} color="#2bb3ac" unit="%" warningThreshold={getThreshold("ec2", "CPUUtilization")?.warning} criticalThreshold={getThreshold("ec2", "CPUUtilization")?.critical} timeRange={rangLabel} />
               </div>
             )}
             {service === "EC2" && <>
@@ -975,8 +987,8 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
                   data") when it isn't installed/reporting for this
                   instance — see cwagent_installed in get_ec2_metric_series. */}
               {metrics.cwagent_installed && <>
-                <MetricChart title="mem_used_percent"  data={metrics.mem_utilization}   color="#7c6ee0" unit="%" threshold={getThreshold("ec2", "mem_used_percent")} timeRange={rangLabel} />
-                <MetricChart title="disk_used_percent" data={metrics.disk_used_percent} color="#fbbf24" unit="%" threshold={getThreshold("ec2", "disk_used_percent")} timeRange={rangLabel} />
+                <MetricChart title="mem_used_percent"  data={metrics.mem_utilization}   color="#7c6ee0" unit="%" warningThreshold={getThreshold("ec2", "mem_used_percent")?.warning} criticalThreshold={getThreshold("ec2", "mem_used_percent")?.critical} timeRange={rangLabel} />
+                <MetricChart title="disk_used_percent" data={metrics.disk_used_percent} color="#fbbf24" unit="%" warningThreshold={getThreshold("ec2", "disk_used_percent")?.warning} criticalThreshold={getThreshold("ec2", "disk_used_percent")?.critical} timeRange={rangLabel} />
               </>}
             </>}
 
@@ -985,15 +997,15 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
               <MetricChart title="VolumeWriteOps"     data={metrics.write_ops}     color="#7c6ee0" unit=" ops" timeRange={rangLabel} />
               <MetricChart title="VolumeReadBytes"      data={metrics.read_bytes}    color="#22c55e" unit="B"    timeRange={rangLabel} />
               <MetricChart title="VolumeWriteBytes"     data={metrics.write_bytes}   color="#fbbf24" unit="B"    timeRange={rangLabel} />
-              <MetricChart title="VolumeQueueLength"    data={metrics.queue_length}  color="#ef4444" unit=""     threshold={getThreshold("ebs", "VolumeQueueLength")} timeRange={rangLabel} />
-              <MetricChart title="BurstBalance" data={metrics.burst_balance} color="#2bb3ac" unit="%"    threshold={getThreshold("ebs", "BurstBalance")} timeRange={rangLabel} />
+              <MetricChart title="VolumeQueueLength"    data={metrics.queue_length}  color="#ef4444" unit=""     warningThreshold={getThreshold("ebs", "VolumeQueueLength")?.warning} criticalThreshold={getThreshold("ebs", "VolumeQueueLength")?.critical} timeRange={rangLabel} />
+              <MetricChart title="BurstBalance" data={metrics.burst_balance} color="#2bb3ac" unit="%"    warningThreshold={getThreshold("ebs", "BurstBalance")?.warning} criticalThreshold={getThreshold("ebs", "BurstBalance")?.critical} timeRange={rangLabel} />
             </>}
 
             {service === "Lambda" && <>
               <MetricChart title="Invocations"     data={metrics.invocations} color="#22c55e" unit=""   timeRange={rangLabel} />
-              <MetricChart title="Errors"          data={metrics.errors}      color="#ef4444" unit=""   threshold={getThreshold("lambda", "Errors")} timeRange={rangLabel} />
+              <MetricChart title="Errors"          data={metrics.errors}      color="#ef4444" unit=""   warningThreshold={getThreshold("lambda", "Errors")?.warning} criticalThreshold={getThreshold("lambda", "Errors")?.critical} timeRange={rangLabel} />
               <div className="chart-full">
-                <MetricChart title="Duration" data={metrics.duration}    color="#2bb3ac" unit="ms" threshold={getThreshold("lambda", "Duration")} timeRange={rangLabel} />
+                <MetricChart title="Duration" data={metrics.duration}    color="#2bb3ac" unit="ms" warningThreshold={getThreshold("lambda", "Duration")?.warning} criticalThreshold={getThreshold("lambda", "Duration")?.critical} timeRange={rangLabel} />
               </div>
               <MetricChart title="Throttles"       data={metrics.throttles}   color="#f59e0b" unit=""   timeRange={rangLabel} />
               <MetricChart title="ConcurrentExecutions" data={metrics.concurrent}  color="#7c6ee0" unit=""   timeRange={rangLabel} />
@@ -1001,14 +1013,14 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
 
             {service === "RDS" && <>
               <div className="chart-full">
-                <MetricChart title="CPUUtilization" data={metrics.cpu} color="#2bb3ac" unit="%" threshold={getThreshold("rds", "CPUUtilization")} timeRange={rangLabel} />
+                <MetricChart title="CPUUtilization" data={metrics.cpu} color="#2bb3ac" unit="%" warningThreshold={getThreshold("rds", "CPUUtilization")?.warning} criticalThreshold={getThreshold("rds", "CPUUtilization")?.critical} timeRange={rangLabel} />
               </div>
               <MetricChart title="DatabaseConnections"  data={metrics.db_connections}  color="#7c6ee0" unit=""    timeRange={rangLabel} />
               <MetricChart title="FreeableMemory"     data={metrics.freeable_memory} color="#f472b6" unit="B"   timeRange={rangLabel} />
               <MetricChart title="ReadIOPS"       data={metrics.read_iops}       color="#22c55e" unit=" ops" timeRange={rangLabel} />
               <MetricChart title="WriteIOPS"      data={metrics.write_iops}      color="#fbbf24" unit=" ops" timeRange={rangLabel} />
-              <MetricChart title="ReadLatency"    data={metrics.read_latency}    color="#38bdf8" unit="s"   threshold={getThreshold("rds", "ReadLatency")} timeRange={rangLabel} />
-              <MetricChart title="WriteLatency"   data={metrics.write_latency}   color="#e879f9" unit="s"   threshold={getThreshold("rds", "WriteLatency")} timeRange={rangLabel} />
+              <MetricChart title="ReadLatency"    data={metrics.read_latency}    color="#38bdf8" unit="s"   warningThreshold={getThreshold("rds", "ReadLatency")?.warning} criticalThreshold={getThreshold("rds", "ReadLatency")?.critical} timeRange={rangLabel} />
+              <MetricChart title="WriteLatency"   data={metrics.write_latency}   color="#e879f9" unit="s"   warningThreshold={getThreshold("rds", "WriteLatency")?.warning} criticalThreshold={getThreshold("rds", "WriteLatency")?.critical} timeRange={rangLabel} />
             </>}
 
             {service === "S3" && <>
@@ -1030,24 +1042,24 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
               <div className="chart-full">
                 <MetricChart title="RequestCount"           data={metrics?.requests           || []} color="#2bb3ac" unit=""  timeRange={rangLabel} />
               </div>
-              <MetricChart title="HTTPCode_Target_5XX_Count"       data={metrics?.errors_5xx         || []} color="#ef4444" unit=""  threshold={getThreshold("elb", "HTTPCode_Target_5XX_Count")} timeRange={rangLabel} />
-              <MetricChart title="HTTPCode_Target_4XX_Count"       data={metrics?.errors_4xx         || []} color="#f59e0b" unit=""  threshold={getThreshold("elb", "HTTPCode_Target_4XX_Count")} timeRange={rangLabel} />
-              <MetricChart title="HTTPCode_ELB_5XX_Count"          data={metrics?.errors_elb_5xx     || []} color="#f472b6" unit=""  threshold={getThreshold("elb", "HTTPCode_ELB_5XX_Count")}  timeRange={rangLabel} />
+              <MetricChart title="HTTPCode_Target_5XX_Count"       data={metrics?.errors_5xx         || []} color="#ef4444" unit=""  warningThreshold={getThreshold("elb", "HTTPCode_Target_5XX_Count")?.warning} criticalThreshold={getThreshold("elb", "HTTPCode_Target_5XX_Count")?.critical} timeRange={rangLabel} />
+              <MetricChart title="HTTPCode_Target_4XX_Count"       data={metrics?.errors_4xx         || []} color="#f59e0b" unit=""  warningThreshold={getThreshold("elb", "HTTPCode_Target_4XX_Count")?.warning} criticalThreshold={getThreshold("elb", "HTTPCode_Target_4XX_Count")?.critical} timeRange={rangLabel} />
+              <MetricChart title="HTTPCode_ELB_5XX_Count"          data={metrics?.errors_elb_5xx     || []} color="#f472b6" unit=""  warningThreshold={getThreshold("elb", "HTTPCode_ELB_5XX_Count")?.warning} criticalThreshold={getThreshold("elb", "HTTPCode_ELB_5XX_Count")?.critical}  timeRange={rangLabel} />
               <div className="chart-full">
-                <MetricChart title="TargetResponseTime" data={metrics?.latency           || []} color="#fbbf24" unit="s" threshold={getThreshold("elb", "TargetResponseTime")} timeRange={rangLabel} />
+                <MetricChart title="TargetResponseTime" data={metrics?.latency           || []} color="#fbbf24" unit="s" warningThreshold={getThreshold("elb", "TargetResponseTime")?.warning} criticalThreshold={getThreshold("elb", "TargetResponseTime")?.critical} timeRange={rangLabel} />
               </div>
               <MetricChart title="HealthyHostCount"             data={metrics?.healthy_hosts      || []} color="#22c55e" unit=""  timeRange={rangLabel} />
-              <MetricChart title="UnHealthyHostCount"           data={metrics?.unhealthy_hosts    || []} color="#ef4444" unit=""  threshold={getThreshold("elb", "UnHealthyHostCount")} timeRange={rangLabel} />
+              <MetricChart title="UnHealthyHostCount"           data={metrics?.unhealthy_hosts    || []} color="#ef4444" unit=""  warningThreshold={getThreshold("elb", "UnHealthyHostCount")?.warning} criticalThreshold={getThreshold("elb", "UnHealthyHostCount")?.critical} timeRange={rangLabel} />
               <MetricChart title="ActiveConnectionCount"        data={metrics?.active_connections || []} color="#7c6ee0" unit=""  timeRange={rangLabel} />
               <MetricChart title="NewConnectionCount"           data={metrics?.new_connections    || []} color="#38bdf8" unit=""  timeRange={rangLabel} />
             </>}
 
             {service === "ECS" && <>
               <div className="chart-full">
-                <MetricChart title="CPUUtilization"    data={metrics?.cpu_utilization    || []} color="#34d399" unit="%" threshold={getThreshold("ecs", "CPUUtilization")} timeRange={rangLabel} />
+                <MetricChart title="CPUUtilization"    data={metrics?.cpu_utilization    || []} color="#34d399" unit="%" warningThreshold={getThreshold("ecs", "CPUUtilization")?.warning} criticalThreshold={getThreshold("ecs", "CPUUtilization")?.critical} timeRange={rangLabel} />
               </div>
               <div className="chart-full">
-                <MetricChart title="MemoryUtilization" data={metrics?.mem_utilization    || []} color="#7c6ee0" unit="%" threshold={getThreshold("ecs", "MemoryUtilization")} timeRange={rangLabel} />
+                <MetricChart title="MemoryUtilization" data={metrics?.mem_utilization    || []} color="#7c6ee0" unit="%" warningThreshold={getThreshold("ecs", "MemoryUtilization")?.warning} criticalThreshold={getThreshold("ecs", "MemoryUtilization")?.critical} timeRange={rangLabel} />
               </div>
               <MetricChart title="RunningTaskCount"          data={metrics?.running_task_count || []} color="#22c55e" unit=""  timeRange={rangLabel} />
               <MetricChart title="PendingTaskCount"          data={metrics?.pending_task_count || []} color="#f59e0b" unit=""  timeRange={rangLabel} />
@@ -1222,7 +1234,7 @@ function StatusChip({ status, colorMap = {} }) { const s = (status || "").toLowe
 function CpuBar({ cpu, state }) { if (state !== "running") return <span className="mono small muted">—</span>; const pct = cpu ?? 0; const color = pct > 75 ? "#ef4444" : pct > 50 ? "#f59e0b" : "#22c55e"; return <div className="cpu-cell"><div className="cpu-bar-bg"><div className="cpu-bar-fill" style={{ width: `${Math.max(2, pct)}%`, background: color }} /></div><span className="cpu-label mono">{pct.toFixed(1)}%</span></div>; }
 function QuickStat({ label, value, color, mono }) { return <div className="qs-item"><div className="qs-label">{label}</div><div className={`qs-value ${color ? `c-${color}` : ""}${mono ? " mono" : ""}`}>{value}</div></div>; }
 
-function MetricChart({ title, data, color, unit, threshold, thresholdLabel, timeRange }) {
+function MetricChart({ title, data, color, unit, warningThreshold, criticalThreshold, timeRange }) {
   const { ianaName } = useTimezone();
   // data === null (not undefined, not []) means the backend knows this
   // metric structurally can never have data for this resource (e.g. EBS
@@ -1242,7 +1254,8 @@ function MetricChart({ title, data, color, unit, threshold, thresholdLabel, time
   const formatted = data.map(d => ({
     t: new Date(d.t).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: ianaName }),
     v: d.v,
-    ...(threshold ? { threshold } : {}),
+    ...(warningThreshold != null ? { warningThreshold } : {}),
+    ...(criticalThreshold != null ? { criticalThreshold } : {}),
   }));
   return (
     <div className="chart-box">
@@ -1259,13 +1272,17 @@ function MetricChart({ title, data, color, unit, threshold, thresholdLabel, time
             contentStyle={{ background: "#0b1220", border: "1px solid rgba(99,130,190,0.2)", borderRadius: 6, fontSize: 11 }}
             labelStyle={{ color: "#7a90b8" }}
             formatter={(value, name) => {
-              if (name === "threshold") return [`${value}${unit} (${thresholdLabel || "threshold"})`, <span style={{display:"inline-flex",alignItems:"center",gap:4}}><AlertTriangleIcon size={11} /> Alert at</span>];
+              if (name === "warningThreshold") return [`${value}${unit}`, <span style={{display:"inline-flex",alignItems:"center",gap:4}}><AlertTriangleIcon size={11} /> Warn at</span>];
+              if (name === "criticalThreshold") return [`${value}${unit}`, <span style={{display:"inline-flex",alignItems:"center",gap:4}}><AlertTriangleIcon size={11} /> Crit at</span>];
               return [`${value.toFixed(2)}${unit}`, title];
             }}
             itemStyle={{ color }}
           />
-          {threshold && (
-            <Line type="monotone" dataKey="threshold" stroke="#ef4444" strokeDasharray="4 4" dot={false} strokeWidth={1} legendType="none" />
+          {warningThreshold != null && (
+            <Line type="monotone" dataKey="warningThreshold" stroke="#f59e0b" strokeDasharray="4 4" dot={false} strokeWidth={1} legendType="none" />
+          )}
+          {criticalThreshold != null && (
+            <Line type="monotone" dataKey="criticalThreshold" stroke="#ef4444" strokeDasharray="2 3" dot={false} strokeWidth={1} legendType="none" />
           )}
           <Line type="monotone" dataKey="v" stroke={color} strokeWidth={2} dot={false} activeDot={{ r: 3, fill: color }} />
         </LineChart>
