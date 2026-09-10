@@ -155,3 +155,49 @@ def assume_role(role_arn: str, external_id: str | None = None,
         aws_secret_access_key=credentials["SecretAccessKey"],
         aws_session_token=credentials["SessionToken"],
     )
+
+
+def get_boto3_session(account: dict):
+    """
+    Single choke point for resolving a boto3 Session for a monitored AWS
+    account row. `account` must include at least "id" and "role_arn"; pass
+    "auth_mode" and "external_id" too when the caller's query selects them.
+
+    Precedence, matching migration 018_aws_static_key_auth.sql's design:
+      1. auth_mode == "static_keys" -- a per-account IAM user's long-lived
+         access key + secret key, stored Fernet-encrypted in
+         provider_credentials via app.credentials (same table/path Azure
+         and GCP already use; the pair is JSON-encoded into one string
+         since that table stores one opaque secret per account).
+      2. role_arn set -- cross-account AssumeRole via assume_role() above,
+         which itself already short-circuits to boto3.Session() when the
+         target account matches the server's own account (see the
+         SAME-ACCOUNT SHORT-CIRCUIT block in assume_role(), fix: 22ff060).
+      3. neither -- plain boto3.Session() (ambient/instance credentials).
+
+    Callers should prefer this over calling assume_role()/boto3.Session()
+    directly so static-key accounts work everywhere AssumeRole accounts
+    already do, without each call site re-implementing the branch.
+    """
+    if account.get("auth_mode") == "static_keys":
+        from app.credentials import load_credential
+        import json as _json
+
+        raw = load_credential(account["id"])
+        if not raw:
+            raise RuntimeError(
+                f"aws_accounts.id={account.get('id')} has auth_mode='static_keys' "
+                f"but no credential is stored in provider_credentials -- onboarding "
+                f"may have failed partway through, or the credential was deleted "
+                f"without resetting auth_mode."
+            )
+        creds = _json.loads(raw)
+        return boto3.Session(
+            aws_access_key_id=creds["access_key_id"],
+            aws_secret_access_key=creds["secret_access_key"],
+        )
+
+    if account.get("role_arn"):
+        return assume_role(account["role_arn"], account.get("external_id"))
+
+    return boto3.Session()
