@@ -268,7 +268,7 @@ def plan_statements(cursor):
             )
         """))
 
-    # ── 5. resources.resource_id widen (011_widen_resource_id) ────
+    # ── 5. resources.resource_id widen (016_widen_resource_id) ────
     current_type = column_type(cursor, "resources", "resource_id")
     if current_type and current_type.lower() != "varchar(512)":
         plan.append((
