@@ -8,11 +8,20 @@ Cost:     Same $0.01/1k metric requests — benefit is fewer TCP connections
 Filter:   Only running EC2 (instance_state = 'running') — skips stopped.
           ECS metrics excluded — AWS/ECS basic monitoring is FREE (no API cost).
 Metrics:  Trimmed per triage:
-          - EC2:    CPU, NetworkIn, NetworkOut (critical); DiskRead/Write (low)
-          - EBS:    ReadOps, WriteOps, ReadBytes, WriteBytes, QueueLength
+          - EC2:    CPU, NetworkIn, NetworkOut -- CRITICAL TIER ONLY (2 min).
+                    Was also re-triggered on "standard" (5 min) -- removed;
+                    that was a duplicate GetMetricData call against data
+                    critical tier had just fetched moments before. See
+                    monitoring-hub-metric-audit.md §8. DiskRead/Write (low).
+          - EBS:    ReadOps, WriteOps, ReadBytes, WriteBytes, QueueLength --
+                    STANDARD TIER ONLY (5-6 min), matching AWS's real 5-min
+                    publication cadence. Was also re-polled on "low" (15
+                    min) -- removed as a duplicate read of the same
+                    5-min-resolution data. See metric_audit.md §8.
                     (BurstBalance DROPPED — gp3 irrelevant)
           - RDS:    All 8 kept — revenue-critical
-          - ELB:    RequestCount, 5XX, TargetResponseTime
+          - ELB:    RequestCount, 5XX, TargetResponseTime -- CRITICAL TIER
+                    ONLY (2 min), same duplicate-call fix as EC2 above.
                     (4XX DROPPED — client noise. HealthyHostCount /
                     UnHealthyHostCount REMOVED entirely, not just
                     trimmed — confirmed against AWS's own docs that both
@@ -26,6 +35,7 @@ Metrics:  Trimmed per triage:
 
 Called by scheduler with tier argument — determines collection frequency.
 """
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -215,7 +225,51 @@ def _run_gmd(cw, resources, metric_defs, minutes=5, chunk_size=500):
 
 # ── Per-service collectors ────────────────────────────────────
 
+def _log_monitoring_mode_mismatch(resources):
+    """
+    Visibility only -- does NOT change polling behavior. EC2 basic
+    monitoring publishes CPUUtilization/NetworkIn/NetworkOut every 5 min
+    (AWS-confirmed, free); detailed monitoring publishes every 1 min
+    (opt-in, billed separately from GetMetricData). This collector polls
+    every running instance at the same 2-min "critical" cadence regardless
+    of which mode it's in -- meaning basic-monitoring instances can only
+    return a genuinely new datapoint on ~2 of every 5 polls. This is not
+    fixed automatically here: enabling detailed monitoring changes AWS
+    billing for the customer's account and is explicitly out of scope for
+    this app to do unilaterally (monitoring-hub-metric-audit.md §10 item
+    #7) -- it's surfaced in logs so a human can decide per-account whether
+    to (a) enable detailed monitoring where 1-min visibility is genuinely
+    needed, or (b) accept 5-min effective freshness for basic-monitoring
+    instances. Relies on tags._cw_monitoring_state, populated by
+    discovery/runner.py's _discover_ec2 at zero extra API cost.
+    """
+    basic = detailed = unknown = 0
+    for r in resources:
+        tags = r.get("tags")
+        if isinstance(tags, str):
+            try:
+                tags = json.loads(tags)
+            except (TypeError, ValueError):
+                tags = {}
+        state = (tags or {}).get("_cw_monitoring_state", "unknown")
+        if state == "enabled":
+            detailed += 1
+        elif state in ("disabled", "pending"):
+            basic += 1
+        else:
+            unknown += 1
+    if basic:
+        logger.info(
+            f"    EC2 critical: {basic} of {len(resources)} instances on BASIC "
+            f"monitoring (5-min publish) being polled every 2 min -- up to "
+            f"~60% of these polls can only re-return an already-seen datapoint. "
+            f"{detailed} on detailed (1-min), {unknown} unknown (discovery not "
+            f"yet re-run since this check was added)."
+        )
+
+
 def _collect_ec2_critical(cw, resources):
+    _log_monitoring_mode_mismatch(resources)
     n = _run_gmd(cw, resources, EC2_METRICS_CRITICAL, minutes=3)
     logger.info(f"    EC2 critical: {n} datapoints / {len(resources)} instances")
 
@@ -377,9 +431,14 @@ def _get_resources_for_account(account_id, tier):
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
 
+    # tags included (previously omitted) so the "critical" tier's EC2
+    # basic-vs-detailed monitoring visibility check (see
+    # _log_monitoring_mode_mismatch above) can read tags._cw_monitoring_state
+    # without a second query. No other caller of this function used tags
+    # before, so this is additive, not a behavior change for them.
     if tier in ("critical", "standard"):
         cursor.execute("""
-            SELECT id, resource_id, resource_type, name, region
+            SELECT id, resource_id, resource_type, name, region, tags
             FROM resources
             WHERE aws_account_id  = %s
               AND instance_state != 'terminated'
@@ -387,7 +446,7 @@ def _get_resources_for_account(account_id, tier):
         """, (account_id,))
     else:
         cursor.execute("""
-            SELECT id, resource_id, resource_type, name, region
+            SELECT id, resource_id, resource_type, name, region, tags
             FROM resources
             WHERE aws_account_id  = %s
               AND instance_state != 'terminated'
@@ -429,7 +488,19 @@ def _collect_account(account, tier="standard"):
         cw = session.client("cloudwatch", region_name=res_region)
 
         if resource_type == "ec2":
-            if tier in ("critical", "standard"):
+            # CPU/Network (ec2_critical) run on the "critical" tier ONLY.
+            # Previously also fired on "standard" (tier in ("critical",
+            # "standard")) -- but scheduler.py's run_loop already calls
+            # run_once("critical") on its own independent 2-min cadence
+            # every cycle, so any cycle where "standard" also fires (every
+            # 5 min) was requesting this exact GetMetricData query TWICE
+            # back-to-back against a metric that hasn't changed in the
+            # seconds between the two calls -- pure duplicate CloudWatch
+            # spend. "standard" no longer re-triggers it; critical tier's
+            # own 2-min loop already provides continuous coverage.
+            # See monitoring-hub-metric-audit.md §8 flaw #1 (ALB) -- same
+            # dispatch pattern, same bug, found here during re-verification.
+            if tier == "critical":
                 tasks.append((cw, resources, "ec2_critical"))
             if tier == "low":
                 tasks.append((cw, resources, "ec2_low"))
@@ -437,14 +508,24 @@ def _collect_account(account, tier="standard"):
                 tasks.append((cw, resources, "ec2_cwagent_disk"))
 
         elif resource_type == "ebs":
-            if tier in ("standard", "low"):
+            # EBS metrics publish at 5-min resolution (AWS-confirmed) --
+            # polling them again at the 15-min "low" tier on top of the
+            # 5-6 min "standard" tier could only ever re-return a
+            # datapoint standard tier already fetched. Kept on "standard"
+            # only, which already matches EBS's real publication cadence.
+            # See monitoring-hub-metric-audit.md §8 flaw #2.
+            if tier == "standard":
                 tasks.append((cw, resources, "ebs"))
 
         elif resource_type == "rds":
             tasks.append((cw, resources, "rds"))  # always — revenue-critical
 
         elif resource_type == "elb":
-            if tier in ("critical", "standard"):
+            # ALB metrics (1-min resolution) — "critical" tier's 2-min
+            # cadence already exceeds that resolution; dropped from
+            # "standard" for the same duplicate-call reason as ec2_critical
+            # above. See monitoring-hub-metric-audit.md §8 flaw #1.
+            if tier == "critical":
                 tasks.append((cw, resources, "elb"))
 
         elif resource_type == "lambda":
