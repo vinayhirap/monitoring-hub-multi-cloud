@@ -32,6 +32,7 @@ from datetime import datetime, timedelta
 from app.db import get_connection
 from app.aws.sts import assume_role
 from app.collector.metrics_writer import write_metric, write_metric_history_batch
+from app.collector.disk_mounts import all_cwagent_disk_dims, ensure_disk_mount_metric_registered
 import boto3
 
 logger = logging.getLogger(__name__)
@@ -302,75 +303,47 @@ def _collect_ec2_cwagent_mem(cw, resources):
     logger.info(f"    EC2 CWAgent mem: {n} datapoints / {len(cwagent_map)} of {len(resources)} instances")
 
 
-def _ec2_instances_with_cwagent_disk_dims(cw, resources):
+def _collect_ec2_cwagent_disk(cw, resources, account_id):
     """
-    {resource: full_dimension_list} for every EC2 instance that has
-    actually published disk_used_percent to CWAgent -- one metric PER
-    MOUNT POINT (path/device/fstype dimensions), a meaningfully
-    different shape than mem_used_percent's single InstanceId-only (or
-    close to it) series. When an instance reports multiple mount
-    points, prefers the root filesystem ("/" on Linux, "C:" on Windows)
-    since that's what "disk space utilized" means to someone glancing
-    at a single number on the dashboard -- exactly matching
-    collector_direct.py's _ec2_cwagent_dimensions(), the function
-    already powering the working live chart for this same metric, so
-    the scheduled threshold path and the on-demand chart agree on which
-    mount point "the" disk utilization number means for a given
-    instance. Falls back to whichever mount point CloudWatch happens to
-    return first if there's no root/C: mount reporting.
+    Per-mount disk collection -- supersedes the old root-only
+    _ec2_instances_with_cwagent_disk_dims()/single-series approach (see
+    app/collector/disk_mounts.py's module docstring for the full
+    design). Every mount point CWAgent reports gets its own GMD query
+    and its own metric_name (root stays `disk_used_percent`,
+    additional mounts get `disk_used_percent__<slug>`); non-root mounts
+    are registered into metric_catalog/thresholds/account_metric_selections
+    on first sight so they alert through the existing, unmodified
+    alert_evaluator join.
     """
-    result = {}
-    for r in resources:
-        try:
-            resp = cw.list_metrics(
-                Namespace="CWAgent",
-                MetricName="disk_used_percent",
-                Dimensions=[{"Name": "InstanceId", "Value": r["resource_id"]}],
-            )
-            metrics = resp.get("Metrics", [])
-            if not metrics:
-                continue
-            chosen = None
-            for m in metrics:
-                dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
-                if dims.get("path") in ("/", "C:"):
-                    chosen = m["Dimensions"]
-                    break
-            if chosen is None:
-                chosen = metrics[0]["Dimensions"]
-            result[r["resource_id"]] = (r, chosen)
-        except Exception as e:
-            logger.warning(f"CWAgent disk presence check [{r['resource_id']}]: {e}")
-    return result
-
-
-def _collect_ec2_cwagent_disk(cw, resources):
-    cwagent_map = _ec2_instances_with_cwagent_disk_dims(cw, resources)
-    if not cwagent_map:
-        logger.info(f"    EC2 CWAgent disk: 0/{len(resources)} instances have CWAgent reporting")
-        return
-
     queries = []
     id_map = {}
-    for i, (resource, dims) in enumerate(cwagent_map.values()):
-        qid = f"cwdisk{i}"
-        queries.append({
-            "Id": qid,
-            "MetricStat": {
-                "Metric": {
-                    "Namespace": "CWAgent",
-                    "MetricName": "disk_used_percent",
-                    "Dimensions": dims,  # full, DISCOVERED set, root-fs-preferred
+    instances_reporting = 0
+
+    for r in resources:
+        mounts = all_cwagent_disk_dims(cw, r["resource_id"])
+        if not mounts:
+            continue
+        instances_reporting += 1
+        for dims, path, metric_name in mounts:
+            ensure_disk_mount_metric_registered(account_id, "ec2", metric_name, path)
+            qid = f"cwdisk{len(queries)}"
+            queries.append({
+                "Id": qid,
+                "MetricStat": {
+                    "Metric": {
+                        "Namespace": "CWAgent",
+                        "MetricName": "disk_used_percent",  # CW metric name never changes -- only our db metric_name is suffixed
+                        "Dimensions": dims,
+                    },
+                    "Period": 60,
+                    "Stat": "Average",
                 },
-                "Period": 60,
-                "Stat": "Average",
-            },
-            "ReturnData": True,
-        })
-        id_map[qid] = (resource["id"], "disk_used_percent")
+                "ReturnData": True,
+            })
+            id_map[qid] = (r["id"], metric_name)
 
     n = _execute_gmd(cw, queries, id_map, minutes=16)
-    logger.info(f"    EC2 CWAgent disk: {n} datapoints / {len(cwagent_map)} of {len(resources)} instances")
+    logger.info(f"    EC2 CWAgent disk: {n} datapoints / {instances_reporting} of {len(resources)} instances (all mounts)")
 
 def _collect_ebs(cw, resources):
     n = _run_gmd(cw, resources, EBS_METRICS, minutes=6)
@@ -495,7 +468,11 @@ def _collect_account(account, tier="standard"):
 
     def _run(task_cw, task_res, task_type):
         fn = _DISPATCH.get(task_type)
-        if fn:
+        if not fn:
+            return
+        if task_type == "ec2_cwagent_disk":
+            fn(task_cw, task_res, account["id"])  # needs account_id to register new mounts
+        else:
             fn(task_cw, task_res)
 
     with ThreadPoolExecutor(max_workers=6) as ex:

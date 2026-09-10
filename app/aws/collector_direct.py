@@ -28,6 +28,7 @@ Two GMD helpers (unchanged, still used for the boto3 fallback paths):
   _gmd_series(cw, queries)    — time-series arrays (for chart/detail views)
 """
 import boto3, logging, time, math
+from app.collector.disk_mounts import all_cwagent_disk_dims
 from datetime import datetime, timedelta, timezone
 # vm_client fully retired from THIS file (apply_final_cleanup.py): vm_query_all went in Phase 4b, vm_query's only use (StatusCheckFailed) is fixed by describe_polling.py now also writing locally. vm_client.py itself is NOT retired overall -- see that script's docstring for its one remaining legitimate use (ALB target-group health, external-Grafana-compatible, in app/aws/describe_polling.py).
 from app.db import get_connection
@@ -1189,16 +1190,14 @@ def _ec2_cwagent_installed_raw(instance_id, region=None) -> bool:
 def _ec2_cwagent_dimensions(cw, metric_name, instance_id):
     """
     Find the exact dimension set CWAgent published `metric_name` under
-    for this instance. mem_used_percent is dimensioned by InstanceId
-    alone, but disk_used_percent also carries `path` / `device` /
-    `fstype` (CWAgent's own defaults, one metric per mount point) —
-    GetMetricData needs the COMPLETE dimension set a datapoint was
-    actually published under; a partial match (InstanceId only)
-    returns nothing. If multiple mount points are reporting, prefer
-    the root filesystem ("/" on Linux, "C:" on Windows) since that's
-    what "disk space utilized" means to someone glancing at the
-    dashboard; otherwise fall back to whichever mount point
-    CloudWatch happens to return first.
+    for this instance. Used for mem_used_percent, which CWAgent
+    dimensions by InstanceId alone (or close to it) -- GetMetricData
+    needs the COMPLETE dimension set a datapoint was actually published
+    under; a partial match (InstanceId only) returns nothing.
+    disk_used_percent is NOT routed through this function -- it's
+    multi-mount (one series per path) and goes through
+    app/collector/disk_mounts.py's all_cwagent_disk_dims() instead,
+    which returns every mount rather than picking one.
     """
     try:
         resp = cw.list_metrics(
@@ -1206,13 +1205,7 @@ def _ec2_cwagent_dimensions(cw, metric_name, instance_id):
             Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
         )
         metrics = resp.get("Metrics", [])
-        if not metrics:
-            return None
-        for m in metrics:
-            dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
-            if dims.get("path") in ("/", "C:"):
-                return m["Dimensions"]
-        return metrics[0]["Dimensions"]
+        return metrics[0]["Dimensions"] if metrics else None
     except Exception as e:
         logger.warning(f"CWAgent dimension lookup [{instance_id}/{metric_name}]: {e}")
         return None
@@ -1238,47 +1231,58 @@ def get_ec2_metric_series(instance_id, region=None, hours=6) -> dict:
         # getting empty series back — the frontend uses
         # cwagent_installed to decide whether to render the chart
         # boxes at all, not just whether they have data.
-        mem_utilization   = []
-        disk_used_percent = []
+        mem_utilization        = []
+        disk_used_percent      = []
+        disk_used_percent_by_mount = {}  # path -> series, ALL mounts (new -- see app/collector/disk_mounts.py)
         if cwagent_installed:
             try:
                 cw        = boto3.client("cloudwatch", region_name=region)
                 cw_period = max(period, 60)  # CWAgent's own default reporting interval
 
-                mem_dims  = _ec2_cwagent_dimensions(cw, "mem_used_percent",  instance_id)
-                disk_dims = _ec2_cwagent_dimensions(cw, "disk_used_percent", instance_id)
+                mem_dims = _ec2_cwagent_dimensions(cw, "mem_used_percent", instance_id)
+                mounts   = all_cwagent_disk_dims(cw, instance_id)  # [(dims, path, metric_name), ...] -- every mount
 
                 queries = []
                 if mem_dims:
-                    queries.append(_make_query("mem",  "CWAgent", "mem_used_percent",  mem_dims,  "Average", cw_period))
-                if disk_dims:
-                    queries.append(_make_query("disk", "CWAgent", "disk_used_percent", disk_dims, "Average", cw_period))
+                    queries.append(_make_query("mem", "CWAgent", "mem_used_percent", mem_dims, "Average", cw_period))
+                for dims, path, metric_name in mounts:
+                    queries.append(_make_query(f"disk_{metric_name}", "CWAgent", "disk_used_percent", dims, "Average", cw_period))
 
                 if queries:
                     fb = _gmd_series(cw, queries, hours)
-                    mem_utilization   = fb.get("mem", [])
-                    disk_used_percent = fb.get("disk", [])
+                    mem_utilization = fb.get("mem", [])
+                    for dims, path, metric_name in mounts:
+                        series = fb.get(f"disk_{metric_name}", [])
+                        disk_used_percent_by_mount[path] = series
+                        if path in ("/", "C:"):
+                            disk_used_percent = series  # unchanged key, root-preferred -- backward compatible
+                    if disk_used_percent == [] and disk_used_percent_by_mount:
+                        # no root mount reporting -- fall back to whichever CloudWatch returned first,
+                        # same fallback behavior the old single-mount picker had
+                        disk_used_percent = next(iter(disk_used_percent_by_mount.values()))
             except Exception as e:
                 logger.warning(f"CWAgent series [{instance_id}]: {e}")
 
         return {
-            "instance_id":       instance_id,
-            "cpu":               s("cpuutilization"),
-            "network_in":        s("networkin"),
-            "network_out":       s("networkout"),
-            "disk_read":         s("diskreadbytes"),
-            "disk_write":        s("diskwritebytes"),
-            "cwagent_installed": cwagent_installed,
-            "mem_utilization":   mem_utilization,
-            "disk_used_percent": disk_used_percent,
-            "period_hours":      hours,
-            "period_secs":       period,
+            "instance_id":               instance_id,
+            "cpu":                       s("cpuutilization"),
+            "network_in":                s("networkin"),
+            "network_out":               s("networkout"),
+            "disk_read":                 s("diskreadbytes"),
+            "disk_write":                s("diskwritebytes"),
+            "cwagent_installed":         cwagent_installed,
+            "mem_utilization":           mem_utilization,
+            "disk_used_percent":         disk_used_percent,
+            "disk_used_percent_by_mount": disk_used_percent_by_mount,
+            "period_hours":              hours,
+            "period_secs":               period,
         }
     except Exception as e:
         logger.warning(f"EC2 series [{instance_id}]: {e}")
         return {"instance_id": instance_id, "cpu": [], "network_in": [],
                 "network_out": [], "disk_read": [], "disk_write": [],
-                "cwagent_installed": False, "mem_utilization": [], "disk_used_percent": []}
+                "cwagent_installed": False, "mem_utilization": [], "disk_used_percent": [],
+                "disk_used_percent_by_mount": {}}
 
 
 # ── Metric series — EBS (now VM-backed) ──────────────────────────────────
