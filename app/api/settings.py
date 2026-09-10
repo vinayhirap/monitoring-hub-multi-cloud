@@ -44,22 +44,40 @@ _STALE_DATA_CUTOFF_MINUTES = 7 * 24 * 60  # 10080 -- 7 days
 # instead of drifting copies. See
 # apply_fix_threshold_resource_type_everywhere.py for why this moved.
 
+# ALB/NLB share resources.resource_type='elb' (see
+# app/collector/discovery/runner.py -- this app doesn't distinguish load
+# balancer type at discovery time) and commonly share metric_catalog
+# metric names (e.g. HealthyHostCount). The only way to tell them apart
+# is the target-group/load-balancer ARN pattern. Same constants
+# app/api/metric_catalog.py's present_core_services logic already uses
+# for the Metrics to Monitor page -- reused here, not reinvented. See
+# apply_fix_nlb_ghost_thresholds.py.
+_ALB_ARN_PATTERN = "loadbalancer/app/"
+_NLB_ARN_PATTERN = "loadbalancer/net/"
+
+
 def _metrics_with_data_for_account(account_id: int) -> set:
     """
-    {(resource_type, metric_name_lower), ...} -- every (resource_type,
-    metric_name) combination that has at least one RECENT row in the
-    `metrics` last-value cache for a resource belonging to this account.
-    metric_name is lowercased here because metric_catalog.metric_name
-    stores CloudWatch-style names ("CPUUtilization") while
-    app/collector/metrics/runner.py's write_metric() writes its own
-    lowercase db_metric_name convention ("cpuutilization") into `metrics`
-    -- comparing them as plain Python strings without normalizing case
-    would incorrectly treat every AWS metric as having no data, since
-    the two sides never match by construction. (SQL comparisons
-    elsewhere in this app, e.g. alert_evaluator.py's JOIN, happen to work
-    despite this because MySQL's default collation is case-insensitive;
-    this is a plain Python set membership check, which is not.) Callers
-    must also .lower() the metric_name they're checking against this set.
+    {(resource_type, metric_name_lower, resource_id), ...} -- every
+    (resource_type, metric_name, resource ARN) combination that has at
+    least one RECENT row in the `metrics` last-value cache for a
+    resource belonging to this account. metric_name is lowercased here
+    because metric_catalog.metric_name stores CloudWatch-style names
+    ("CPUUtilization") while app/collector/metrics/runner.py's
+    write_metric() writes its own lowercase db_metric_name convention
+    ("cpuutilization") into `metrics` -- comparing them as plain Python
+    strings without normalizing case would incorrectly treat every AWS
+    metric as having no data, since the two sides never match by
+    construction. (SQL comparisons elsewhere in this app, e.g.
+    alert_evaluator.py's JOIN, happen to work despite this because
+    MySQL's default collation is case-insensitive; this is a plain
+    Python set membership check, which is not.) Callers must also
+    .lower() the metric_name they're checking against this set.
+
+    resource_id (the resource's ARN, not its DB primary key) is
+    included so callers can further disambiguate cases where
+    resource_type alone is too coarse -- e.g. ALB vs NLB, which both
+    normalize to 'elb'. See _has_data_for_threshold_row() below.
 
     RECENT, not just present: `metrics` is a last-value cache with NO
     equivalent of metric_history's prune_metric_history() -- a row
@@ -77,15 +95,47 @@ def _metrics_with_data_for_account(account_id: int) -> set:
     """
     conn = get_connection(); cur = conn.cursor()
     cur.execute("""
-        SELECT DISTINCT r.resource_type, m.metric_name
+        SELECT DISTINCT r.resource_type, m.metric_name, r.resource_id
         FROM metrics m
         JOIN resources r ON r.id = m.resource_id
         WHERE r.aws_account_id = %s
           AND m.metric_timestamp >= DATE_SUB(NOW(), INTERVAL %s MINUTE)
     """, (account_id, _STALE_DATA_CUTOFF_MINUTES))
-    pairs = {(resource_type, metric_name.lower()) for resource_type, metric_name in cur.fetchall()}
+    triples = {
+        (resource_type, metric_name.lower(), resource_id or "")
+        for resource_type, metric_name, resource_id in cur.fetchall()
+    }
     cur.close(); conn.close()
-    return pairs
+    return triples
+
+
+def _has_data_for_threshold_row(service, resource_type, db_metric_name, has_data_triples):
+    """
+    True if this threshold row's (service, resource_type, metric_name)
+    genuinely has recent data for THIS row's own service -- not a
+    same-resource_type, same-metric-name sibling service's data.
+
+    For alb/nlb specifically, resource_type alone ('elb' for both) and
+    metric_name alone (frequently shared, e.g. HealthyHostCount) are
+    both too coarse: an account with real ALBs and zero NLBs would
+    otherwise make the NLB row look populated purely because an ALB's
+    data happens to match on both fields. Disambiguated with the same
+    ARN pattern check apply_metrics_to_monitor_cleanup.py already uses
+    for Metrics to Monitor (loadbalancer/app/ vs loadbalancer/net/).
+
+    Every other service keeps the original, simpler
+    (resource_type, metric_name) membership check -- unaffected.
+    """
+    if service in ("alb", "nlb"):
+        pattern = _ALB_ARN_PATTERN if service == "alb" else _NLB_ARN_PATTERN
+        return any(
+            rt == resource_type and mn == db_metric_name and pattern in rid
+            for rt, mn, rid in has_data_triples
+        )
+    return any(
+        rt == resource_type and mn == db_metric_name
+        for rt, mn, _rid in has_data_triples
+    )
 
 
 def _ser(obj):
@@ -122,11 +172,12 @@ def get_thresholds(
     """, (account_id,))
     rows = cur.fetchall(); cur.close(); conn.close()
 
-    has_data_pairs = _metrics_with_data_for_account(account_id)
+    has_data_triples = _metrics_with_data_for_account(account_id)
     no_data_count = 0
     out = []
     for r in rows:
-        has_data = (r["resource_type"], resolve_db_metric_name(r["resource_type"], r["metric_name"])) in has_data_pairs
+        db_metric_name = resolve_db_metric_name(r["resource_type"], r["metric_name"])
+        has_data = _has_data_for_threshold_row(r["service"], r["resource_type"], db_metric_name, has_data_triples)
         r["has_data"] = has_data
         if not has_data:
             no_data_count += 1
