@@ -391,24 +391,3 @@
   .login-hint { padding: 12px 14px; margin-top: 18px; }
   .login-hint-row { flex-wrap: wrap; }
 }
-
-
-/* ── ServiceDetail light mode fixes ── */
-[data-theme="light"] .inst-table-wrap    { background: #ffffff; border-color: rgba(99,130,190,0.15); box-shadow: 0 1px 4px rgba(99,130,190,0.08); }
-[data-theme="light"] .inst-table thead  { background: #f0f4fa; }
-[data-theme="light"] .inst-table th     { color: #6b84a8; border-bottom-color: rgba(99,130,190,0.15); }
-[data-theme="light"] .inst-table td     { border-bottom-color: rgba(99,130,190,0.08); color: #0f1c35; }
-[data-theme="light"] .inst-row:hover    { background: rgba(0,119,204,0.03); }
-[data-theme="light"] .inst-selected     { background: rgba(0,119,204,0.06) !important; }
-
-/* Search + toolbar */
-[data-theme="light"] .inst-search       { background: #ffffff; border-color: rgba(99,130,190,0.2); color: #0f1c35; box-shadow: 0 1px 3px rgba(99,130,190,0.08); }
-[data-theme="light"] .sf-btn            { background: #ffffff; border-color: rgba(99,130,190,0.2); color: #4a6080; box-shadow: 0 1px 3px rgba(99,130,190,0.06); }
-[data-theme="light"] .sort-select       { background: #ffffff; border-color: rgba(99,130,190,0.2); color: #4a6080; box-shadow: 0 1px 3px rgba(99,130,190,0.06); }
-
-/* Breadcrumb bar */
-[data-theme="light"] .detail-page       { background: transparent; }
-[data-theme="light"] .detail-header h1  { color: #0f1c35; }
-
-/* Make page bg consistent */
-[data-theme="light"] .main-content      { background: #eef2f8; }

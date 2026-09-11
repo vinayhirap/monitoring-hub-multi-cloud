@@ -154,3 +154,22 @@
   cursor: pointer; text-decoration: none; transition: all .15s;
 }
 .btn-open-aws:hover { background: rgba(255,153,0,0.16); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(255,153,0,0.18); }
+
+/* ── Light theme overrides ──
+   Relocated from Login.css (see apply_ui_phase11_relocate_orphaned_login_css.py
+   for why) -- these classes only ever render on this page and
+   ServiceDetail, never on Login. Every value here is unchanged from
+   where it used to live; this is a file-organization fix only. Two
+   rules that turned out to be exact no-op duplicates of Layout.css
+   (.detail-header h1, .main-content) were dropped rather than moved,
+   since Layout.css's versions already produce the identical result. ── */
+[data-theme="light"] .inst-table-wrap  { background: #ffffff; border-color: rgba(99,130,190,0.15); box-shadow: 0 1px 4px rgba(99,130,190,0.08); }
+[data-theme="light"] .inst-table thead { background: #f0f4fa; }
+[data-theme="light"] .inst-table th    { color: #6b84a8; border-bottom-color: rgba(99,130,190,0.15); }
+[data-theme="light"] .inst-table td    { border-bottom-color: rgba(99,130,190,0.08); color: #0f1c35; }
+[data-theme="light"] .inst-row:hover   { background: rgba(0,119,204,0.03); }
+[data-theme="light"] .inst-selected    { background: rgba(0,119,204,0.06) !important; }
+[data-theme="light"] .inst-search      { background: #ffffff; border-color: rgba(99,130,190,0.2); color: #0f1c35; box-shadow: 0 1px 3px rgba(99,130,190,0.08); }
+[data-theme="light"] .sf-btn           { background: #ffffff; border-color: rgba(99,130,190,0.2); color: #4a6080; box-shadow: 0 1px 3px rgba(99,130,190,0.06); }
+[data-theme="light"] .sort-select      { background: #ffffff; border-color: rgba(99,130,190,0.2); color: #4a6080; box-shadow: 0 1px 3px rgba(99,130,190,0.06); }
+[data-theme="light"] .detail-page      { background: transparent; }
