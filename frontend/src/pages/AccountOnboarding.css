@@ -124,7 +124,7 @@
   cursor: pointer; transition: all 0.15s;
 }
 .ob-region-chip:hover {
-  border-color: rgba(43,179,172,0.3); color: var(--text, #c8d4e8);
+  border-color: rgba(43,179,172,0.3); color: var(--text, #c8d4e8); transform: translateY(-1px);
 }
 .ob-region-active {
   background: rgba(43,179,172,0.1);
@@ -148,7 +148,7 @@
   background: rgba(99,130,190,0.06); border: 1px solid var(--border, rgba(99,130,190,0.12));
   color: var(--text-muted, rgba(99,130,190,0.65)); cursor: pointer; transition: all 0.15s;
 }
-.ob-auth-btn:hover  { border-color: rgba(99,130,190,0.3); color: var(--text, #c8d4e8); }
+.ob-auth-btn:hover  { border-color: rgba(99,130,190,0.3); color: var(--text, #c8d4e8); transform: translateY(-1px); }
 .ob-auth-active {
   background: rgba(43,179,172,0.1); border-color: rgba(43,179,172,0.3); color: #2bb3ac;
 }
@@ -164,7 +164,7 @@
   background: transparent; border: 1px solid var(--border, rgba(99,130,190,0.12));
   color: var(--text-muted, rgba(99,130,190,0.65)); cursor: pointer; transition: all 0.15s;
 }
-.ob-btn-ghost:hover { border-color: rgba(99,130,190,0.3); color: var(--text, #c8d4e8); }
+.ob-btn-ghost:hover { border-color: rgba(99,130,190,0.3); color: var(--text, #c8d4e8); transform: translateY(-1px); }
 .ob-btn-primary {
   padding: 9px 24px; border-radius: 7px; font-size: 12px; font-weight: 700;
   background: linear-gradient(135deg, #f59e0b, #d97706);
@@ -313,3 +313,17 @@
 
 [data-theme="light"] .ob-test-ok   { color: #16a34a; }
 [data-theme="light"] .ob-test-fail { color: #dc2626; }
+
+/* ── Responsive (added: audit found this file had zero @media rules) ── */
+@media (max-width: 900px) {
+  .onboard-page { flex-direction: column; }
+  .onboard-sidebar { width: 100%; }
+}
+
+@media (max-width: 640px) {
+  .ob-grid-2 { grid-template-columns: 1fr; }
+  .ob-provider-tabs { flex-wrap: wrap; }
+  .ob-section { padding: 16px 18px; }
+  .ob-actions { padding: 16px 18px; flex-wrap: wrap; }
+}
+

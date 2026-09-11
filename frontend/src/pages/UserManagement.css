@@ -52,7 +52,7 @@
 
 .role-badge { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 4px; font-family: var(--font-mono); }
 .role-badge.role-admin  { background: rgba(249,115,22,.15); color: var(--accent-orange); border: 1px solid rgba(249,115,22,.3); }
-.role-badge.role-viewer { background: rgba(59,130,246,.12); color: var(--accent-blue);   border: 1px solid rgba(59,130,246,.25); }
+.role-badge.role-viewer { background: rgba(59,130,246,.12); color: #60a5fa;   border: 1px solid rgba(59,130,246,.25); }
 
 .role-select {
   background: var(--bg-input); border: 1px solid var(--border); color: var(--text-primary);
@@ -70,7 +70,7 @@
 .roles-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .role-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 22px; }
 .role-card-orange { border-top: 3px solid var(--accent-orange); }
-.role-card-blue   { border-top: 3px solid var(--accent-blue); }
+.role-card-blue   { border-top: 3px solid #60a5fa; }
 .role-card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .role-card-icon   { display: flex; align-items: center; }
 .role-card-title  { font-size: 15px; font-weight: 700; }
@@ -89,7 +89,7 @@
 }
 .modal-card {
   background: var(--bg-card); border: 1px solid var(--border-bright);
-  border-radius: var(--radius-lg); width: 440px; overflow: hidden;
+  border-radius: var(--radius-lg); width: 440px; max-width: calc(100vw - 32px); overflow: hidden;
   box-shadow: 0 24px 60px rgba(0,0,0,.5);
 }
 .modal-header {
@@ -111,7 +111,7 @@
   background: var(--bg-input); border: 1px solid var(--border); color: var(--text-primary);
   padding: 9px 12px; border-radius: var(--radius); font-size: 13px; font-family: var(--font-sans); outline: none;
 }
-.mfield input:focus, .mfield select:focus { border-color: var(--accent-blue); }
+.mfield input:focus, .mfield select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(43,179,172,0.1); }
 .mfield.merr input, .mfield.merr select { border-color: var(--red); }
 .err-msg { font-size: 11px; color: var(--red); }
 
@@ -140,7 +140,7 @@
   font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 4px;
   font-family: var(--font-mono); flex-shrink: 0;
 }
-.group-level-badge.level-l1 { background: rgba(59,130,246,.12);  color: var(--accent-blue);   border: 1px solid rgba(59,130,246,.25); }
+.group-level-badge.level-l1 { background: rgba(59,130,246,.12);  color: #60a5fa;   border: 1px solid rgba(59,130,246,.25); }
 .group-level-badge.level-l2 { background: rgba(168,85,247,.15);  color: #c084fc;               border: 1px solid rgba(168,85,247,.3); }
 .group-level-badge.level-l3 { background: rgba(249,115,22,.15);  color: var(--accent-orange);  border: 1px solid rgba(249,115,22,.3); }
 .group-name { font-weight: 600; font-size: 14px; }
@@ -166,3 +166,16 @@
 }
 .chip-x:hover { color: var(--red); background: rgba(239,68,68,.1); }
 .policy-list { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text-secondary); line-height: 1.8; }
+
+/* ── Responsive (added: audit found this file had zero @media rules) ── */
+@media (max-width: 700px) {
+  .page-header { flex-direction: column; align-items: stretch; gap: 12px; }
+  .groups-panel-header { flex-direction: column; align-items: stretch; gap: 10px; }
+}
+
+@media (max-width: 600px) {
+  .roles-grid { grid-template-columns: 1fr !important; }
+  .user-row { flex-wrap: wrap; }
+  .user-actions { width: 100%; justify-content: flex-end; }
+}
+

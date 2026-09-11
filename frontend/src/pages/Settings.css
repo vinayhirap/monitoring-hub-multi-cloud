@@ -48,7 +48,7 @@
   background: var(--bg-input); border: 1px solid var(--border); color: var(--text-primary);
   padding: 9px 12px; border-radius: var(--radius); font-size: 13px; font-family: var(--font-mono); outline: none;
 }
-.efield input:focus { border-color: var(--accent-blue); }
+.efield input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(43,179,172,0.1); }
 .efield input:disabled { opacity: .4; cursor: not-allowed; }
 .efield input::placeholder { color: var(--text-muted); }
 
@@ -60,7 +60,7 @@
 .tier {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; border-radius: 3px; background: var(--bg-card);
-  color: var(--accent-blue); font-weight: 700; font-size: 11px; font-family: var(--font-mono);
+  color: var(--accent); font-weight: 700; font-size: 11px; font-family: var(--font-mono);
   border: 1px solid var(--border);
 }
 
@@ -94,17 +94,17 @@
   padding: 6px 10px; border-radius: var(--radius); font-size: 13px; font-family: var(--font-mono);
   width: 90px; outline: none;
 }
-.thresh-input:focus { border-color: var(--accent-blue); }
+.thresh-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(43,179,172,0.1); }
 .thresh-input:disabled { opacity: .4; }
 .thresh-unit { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
 
 .thresh-actions { display: flex; gap: 10px; padding: 0 22px 20px; }
 .btn-save  { padding: 9px 20px; border-radius: var(--radius); font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid rgba(249,115,22,.4); color: var(--accent-orange); background: rgba(249,115,22,.08); transition: all .15s; }
-.btn-save:hover  { background: rgba(249,115,22,.2); }
+.btn-save:hover  { background: rgba(249,115,22,.2); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(249,115,22,0.15); }
 .btn-check { padding: 9px 20px; border-radius: var(--radius); font-size: 13px; font-weight: 600; cursor: pointer; border: none; color: #fff; background: var(--green); transition: opacity .15s; }
 .btn-check:hover { opacity: .85; }
 .btn-clear { padding: 9px 20px; border-radius: var(--radius); font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid var(--border); color: var(--text-secondary); background: transparent; transition: all .15s; }
-.btn-clear:hover { border-color: var(--red); color: var(--red); }
+.btn-clear:hover { border-color: var(--red); color: var(--red); transform: translateY(-1px); }
 
 .check-results { margin: 0 22px 20px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .results-header { padding: 8px 14px; font-size: 10px; font-weight: 700; color: var(--text-muted); font-family: var(--font-mono); letter-spacing: .06em; border-bottom: 1px solid var(--border); background: var(--bg-base); }
@@ -121,3 +121,17 @@
 .sec-label  { font-size: 12px; font-weight: 600; }
 .sec-status { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 2px; }
 .sec-badge.ok { background: rgba(34,197,94,.1); color: var(--green); border: 1px solid rgba(34,197,94,.2); border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+
+/* ── Responsive (added: audit found this file had zero @media rules) ── */
+@media (max-width: 900px) {
+  .thresholds-grid { grid-template-columns: repeat(2, 1fr); }
+  .security-grid   { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 600px) {
+  .email-fields     { grid-template-columns: 1fr; }
+  .thresholds-grid  { grid-template-columns: 1fr; }
+  .security-grid    { grid-template-columns: 1fr; }
+  .thresh-actions   { flex-wrap: wrap; }
+  .card-header      { flex-wrap: wrap; gap: 8px; }
+}

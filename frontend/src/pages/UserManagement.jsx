@@ -630,7 +630,7 @@ export default function UserManagement() {
           change (db/migrations/015_permissions_rbac.sql), not yet
           editable from here. */}
       {tab === "roles" && (
-        <div className="roles-grid" style={{ gridTemplateColumns: "1fr 1fr", alignItems: "start" }}>
+        <div className="roles-grid" style={{ alignItems: "start" }}>
           {permCategories.length === 0 ? (
             <div style={{ gridColumn: "1 / -1", padding: 24, color: "var(--text-muted)", fontSize: 13 }}>
               Loading permission catalog…
