@@ -40,7 +40,8 @@
 .detail-layout { display: flex; gap: 12px; }
 .instance-panel { flex: 1; min-width: 0; }
 .instance-panel.with-detail { flex: 0 0 55%; }
-.inst-detail { flex: 1; min-width: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; overflow-y: auto; max-height: calc(100vh - 200px); }
+.inst-detail { flex: 1; min-width: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; overflow-y: auto; max-height: calc(100vh - 200px); position: relative; box-shadow: 0 4px 20px rgba(2,8,20,0.14); }
+.inst-detail::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, var(--accent) 0%, transparent 100%); border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
 
 /* ── Responsive (added: audit found this file had zero @media rules).
    Below 1000px the 55%/45% split leaves too little room for either
