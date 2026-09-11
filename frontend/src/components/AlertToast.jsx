@@ -46,9 +46,12 @@ export default function AlertToast() {
 
   return (
     <div style={{
-      position: "fixed", bottom: 24, right: 24,
+      position: "fixed",
+      bottom: "min(24px, 4vh)", right: "min(24px, 4vw)",
       display: "flex", flexDirection: "column", gap: 10,
-      zIndex: 9999, maxWidth: 380,
+      zIndex: 9999,
+      width: "min(380px, calc(100vw - 48px))",
+      maxWidth: "calc(100vw - 48px)",
     }}>
       {toasts.map(t => (
         <ToastItem key={t.id} toast={t} onClose={() => setToasts(p => p.filter(x => x.id !== t.id))} />
