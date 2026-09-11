@@ -133,6 +133,7 @@
 @keyframes borderPulse { 0%,100%{border-left-color:#ef4444} 50%{border-left-color:#ef444488} }
 
 .acc-card-header { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:6px; }
+.acc-name { font-weight: 800; font-size: 16px; letter-spacing: -0.01em; color: var(--text-primary); }
 
 .acc-body { display:flex; align-items:center; gap:12px; margin:10px 0 12px; }
 .acc-chips { display:flex; flex-direction:column; gap:5px; flex:1; }
