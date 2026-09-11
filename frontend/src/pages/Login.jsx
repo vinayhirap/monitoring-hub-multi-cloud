@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { CheckIcon } from "../components/icons";
 import "./Login.css";
 
 const EyeIcon = ({ open }) => (
@@ -208,15 +209,54 @@ export default function Login() {
 
   return (
     <div className="login-root">
-      <div className="login-grid" aria-hidden="true">
-        {Array.from({ length: 80 }).map((_, i) => (
-          <div key={i} className="login-grid-cell" />
-        ))}
-      </div>
-      <div className="login-blob login-blob-1" aria-hidden="true" />
-      <div className="login-blob login-blob-2" aria-hidden="true" />
+      <div className="login-shell">
+        <div className="login-visual" aria-hidden="true">
+          <div className="login-grid">
+            {Array.from({ length: 80 }).map((_, i) => (
+              <div key={i} className="login-grid-cell" />
+            ))}
+          </div>
+          <div className="login-blob login-blob-1" />
+          <div className="login-blob login-blob-2" />
 
-      <div className="login-card">
+          <div className="login-visual-content">
+            <div className="login-orbit">
+              <div className="login-orbit-hub">
+                <svg width="26" height="26" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+                  <rect width="512" height="512" rx="112" fill="#0b1220" />
+                  <g transform="translate(-891.82,2.79) scale(0.8064)">
+                    <path fill="#2bb3ac" d="M1331.98,222.58c41.39-41.42,103.91-48.88,152.93-22.35l53.65-53.65c-79.15-54.58-188.41-46.67-258.82,23.77-70.44,70.4-78.35,179.67-23.77,258.82l53.65-53.65c-26.53-49.02-19.07-111.55,22.35-152.93Z" />
+                    <path fill="#2bb3ac" d="M1567.06,457.66c70.44-70.44,78.35-179.7,23.73-258.85l-53.65,53.65c26.53,49.02,19.07,111.55-22.32,152.97-41.42,41.39-103.95,48.85-152.93,22.32l-53.65,53.65c79.15,54.62,188.38,46.71,258.82-23.73Z" />
+                  </g>
+                </svg>
+              </div>
+              <div className="login-orbit-badge login-orbit-badge-aws">
+                <span className="login-orbit-dot" style={{ background: "#ff9900" }} />AWS
+              </div>
+              <div className="login-orbit-badge login-orbit-badge-azure">
+                <span className="login-orbit-dot" style={{ background: "#0078d4" }} />Azure
+              </div>
+              <div className="login-orbit-badge login-orbit-badge-gcp">
+                <span className="login-orbit-dot" style={{ background: "#ea4335" }} />GCP
+              </div>
+            </div>
+
+            <div className="login-eyebrow">Multi-Cloud Observability</div>
+            <h2 className="login-visual-title">Every cloud.<br />One dashboard.</h2>
+            <p className="login-visual-sub">
+              Real-time metrics, unified alerting, and role-based access —
+              across every account, region, and provider you run.
+            </p>
+            <ul className="login-visual-features">
+              <li><span className="login-feature-check"><CheckIcon size={11} /></span>Live health &amp; metrics across all accounts</li>
+              <li><span className="login-feature-check"><CheckIcon size={11} /></span>Unified, severity-based alerting</li>
+              <li><span className="login-feature-check"><CheckIcon size={11} /></span>Fine-grained RBAC for teams and groups</li>
+            </ul>
+          </div>
+        </div>
+
+        <div className="login-form-side">
+          <div className="login-card">
         <div className="login-brand">
           <div className="login-brand-sub">AURIONPRO</div>
           <div className="login-logo-row">
@@ -432,6 +472,8 @@ export default function Login() {
             </button>
           </form>
         )}
+          </div>
+        </div>
       </div>
     </div>
   );
