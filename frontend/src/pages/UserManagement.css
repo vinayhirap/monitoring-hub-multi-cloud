@@ -91,6 +91,12 @@
   background: var(--bg-card); border: 1px solid var(--border-bright);
   border-radius: var(--radius-lg); width: 440px; max-width: calc(100vw - 32px); overflow: hidden;
   box-shadow: 0 24px 60px rgba(0,0,0,.5);
+  position: relative;
+}
+.modal-card::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, var(--accent) 0%, transparent 100%);
+  z-index: 1;
 }
 .modal-header {
   display: flex; justify-content: space-between; align-items: center;
@@ -130,6 +136,12 @@
 .group-node {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: var(--radius-lg); overflow: hidden;
+  position: relative;
+  box-shadow: 0 4px 16px rgba(2,8,20,0.1);
+}
+.group-node::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, var(--accent) 0%, transparent 100%);
 }
 .group-node-row {
   display: flex; align-items: center; gap: 12px; padding: 14px 18px; cursor: pointer;
