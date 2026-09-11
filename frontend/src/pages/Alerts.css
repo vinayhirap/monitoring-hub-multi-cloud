@@ -157,3 +157,24 @@
 
 .mono  { font-family: 'JetBrains Mono', monospace; }
 .small { font-size: 11px; }
+
+/* ── Responsive (added: audit found this file had zero @media rules) ── */
+@media (max-width: 900px) {
+  .alerts-search { width: 160px; }
+}
+
+@media (max-width: 700px) {
+  .alerts-header { flex-wrap: wrap; gap: 12px; }
+  .alerts-header-right { width: 100%; justify-content: space-between; }
+  .alerts-tabs { gap: 8px; }
+  .alerts-search { margin-left: 0; width: 100%; order: 10; flex-basis: 100%; }
+}
+
+@media (max-width: 500px) {
+  .alerts-header h1 { font-size: 18px; }
+  .atab { padding: 5px 10px; font-size: 11px; }
+  .btn-refresh span { display: none; }
+  .console-links { flex-wrap: wrap; }
+  .alert-actions { flex-wrap: wrap; }
+}
+
