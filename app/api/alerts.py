@@ -9,6 +9,7 @@ from app.auth.deps import get_current_user, require_role
 from app.auth.permissions import require_permission
 from app.aws.federation import NoConsoleCredentialsError
 from app.ws.publisher import publish_alert_resolved
+from app.api.live_data import invalidate_accounts_cache
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +225,7 @@ def ack_alert(alert_id: int, current_user: dict = Depends(require_permission("op
     cursor.close()
     conn.close()
     _invalidate_cache()
+    invalidate_accounts_cache()
     return {"status": "acknowledged"}
 
 
@@ -253,6 +255,7 @@ def resolve_alert(alert_id: int, current_user: dict = Depends(require_permission
     cursor.close()
     conn.close()
     _invalidate_cache()
+    invalidate_accounts_cache()
 
     try:
         publish_alert_resolved(alert_id=alert_id, account_id=row["account_id"] if row else None)
@@ -275,6 +278,7 @@ def mute_alert(alert_id: int, minutes: int = 30, current_user: dict = Depends(re
     cursor.close()
     conn.close()
     _invalidate_cache()
+    invalidate_accounts_cache()
     return {"status": "muted", "minutes": minutes}
 
 
@@ -293,4 +297,5 @@ def clear_alerts(current_user: dict = Depends(require_role("admin"))):
     cur.close()
     conn.close()
     _invalidate_cache()
+    invalidate_accounts_cache()
     return {"status": "cleared", "count": affected}
