@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { CheckIcon } from "../components/icons";
+import { AwsBrandLogo, AzureBrandLogo, GoogleCloudBrandLogo } from "../components/cloud-icons";
 import "./Login.css";
 
 const EyeIcon = ({ open }) => (
@@ -231,18 +232,18 @@ export default function Login() {
                 </svg>
               </div>
               <div className="login-orbit-badge login-orbit-badge-aws">
-                <span className="login-orbit-dot" style={{ background: "#ff9900" }} />AWS
+                <AwsBrandLogo size={12} />AWS
               </div>
               <div className="login-orbit-badge login-orbit-badge-azure">
-                <span className="login-orbit-dot" style={{ background: "#0078d4" }} />Azure
+                <AzureBrandLogo size={15} />Azure
               </div>
               <div className="login-orbit-badge login-orbit-badge-gcp">
-                <span className="login-orbit-dot" style={{ background: "#ea4335" }} />GCP
+                <GoogleCloudBrandLogo size={14} />GCP
               </div>
             </div>
 
             <div className="login-eyebrow">Multi-Cloud Observability</div>
-            <h2 className="login-visual-title">Every cloud.<br />One dashboard.</h2>
+            <h2 className="login-visual-title">Total visibility.<br />Across every cloud.</h2>
             <p className="login-visual-sub">
               Real-time metrics, unified alerting, and role-based access —
               across every account, region, and provider you run.
