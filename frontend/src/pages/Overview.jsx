@@ -50,10 +50,21 @@ function aggregateStats(regions) {
       // this account's regions the same way every other stat here is.
       critical_alerts: acc.critical_alerts + (r.critical_alerts || 0),
       warning_alerts:  acc.warning_alerts  + (r.warning_alerts  || 0),
+      // EC2-scoped rollup from app/api/live_data.py's
+      // _get_ec2_instance_health_by_account() -- counts DISTINCT
+      // running EC2 instances whose OWN alert, or an alert on an EBS
+      // volume/ENI attached to them (tags.parent_ec2), is
+      // critical/warning. Deliberately separate from critical_alerts/
+      // warning_alerts above, which include every resource type (S3,
+      // Lambda, RDS, ELB...) and are what the badge + status pill
+      // still use. Only the HealthRing wedges use these.
+      ec2_critical_instances: acc.ec2_critical_instances + (r.ec2_critical_instances || 0),
+      ec2_warning_instances:  acc.ec2_warning_instances  + (r.ec2_warning_instances  || 0),
     }),
     {
       ec2_total: 0, ec2_running: 0, ebs_total: 0, s3_total: 0, lambda_total: 0, rds_total: 0,
       critical_alerts: 0, warning_alerts: 0,
+      ec2_critical_instances: 0, ec2_warning_instances: 0,
     }
   );
 }
@@ -317,10 +328,16 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick, onDelete }
   const acctCritical = stats.critical_alerts;
   const acctWarning  = stats.warning_alerts;
 
-  // Donut based on aggregated ec2_running
+  // Donut based on aggregated ec2_running -- wedge colours use the
+  // EC2-scoped rollup (instance's own alerts + its attached EBS/ENI
+  // alerts only), NOT acctCritical/acctWarning above, which include
+  // every resource type in the account (S3, Lambda, RDS, ELB...). A
+  // critical S3 alert with zero relationship to any EC2 instance
+  // should never paint an EC2 wedge red. See _get_ec2_instance_health_
+  // by_account() in app/api/live_data.py for how this is computed.
   const total         = stats.ec2_running || 0;
-  const criticalCount = Math.min(acctCritical, total);
-  const warningCount  = Math.min(acctWarning,  Math.max(0, total - criticalCount));
+  const criticalCount = Math.min(stats.ec2_critical_instances || 0, total);
+  const warningCount  = Math.min(stats.ec2_warning_instances  || 0, Math.max(0, total - criticalCount));
   const healthyCount  = Math.max(0, total - criticalCount - warningCount);
 
   return (

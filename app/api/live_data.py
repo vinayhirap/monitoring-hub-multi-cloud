@@ -56,6 +56,7 @@ from app.aws.collector_direct import (
 from app.db import get_connection
 import datetime
 import time
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -205,6 +206,140 @@ def _get_active_alert_counts_by_account() -> dict:
         return {}
 
 
+def _get_running_ec2_ids_by_account() -> dict:
+    """
+    {aws_account_id: {running EC2 resource_id, ...}}, straight from
+    `resources` (kept current by discovery_ec2.py). Used to scope
+    _get_ec2_instance_health_by_account() below to instances that
+    actually appear in the HealthRing's own denominator (ec2_running
+    -- see Overview.jsx's HealthRing/`total`). Without this, an alert
+    on an EBS volume still attached to a now-STOPPED instance would
+    count toward a wedge that doesn't exist in a ring sized by running
+    count alone.
+    """
+    try:
+        conn   = get_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT aws_account_id, resource_id
+            FROM resources
+            WHERE resource_type = 'ec2' AND instance_state = 'running'
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        out = {}
+        for r in rows:
+            out.setdefault(r["aws_account_id"], set()).add(r["resource_id"])
+        return out
+    except Exception as e:
+        logger.error(f"Running EC2 id fetch error: {e}")
+        return {}
+
+
+def _get_ec2_instance_health_by_account() -> dict:
+    """
+    EC2 "server" health for the Overview dashboard's HealthRing,
+    keyed by aws_account_id: {aws_account_id: {"critical": N,
+    "warning": N}}, where N counts DISTINCT running EC2 instances --
+    not raw alert rows, and not alerts on resource types the ring
+    doesn't represent.
+
+    _get_active_alert_counts_by_account() above is deliberately
+    account/severity-wide -- every resource type (EC2, EBS, RDS,
+    Lambda, S3, ELB...) rolls into it, which is correct for the top
+    status pill and the account-level "N critical / N warning" tiles
+    (an S3 policy alert SHOULD turn the account red). But the ring
+    drawn under each account card visually represents that account's
+    running EC2 fleet specifically (its centre label literally reads
+    "N running"). Feeding it the account-wide alert count meant an
+    alert with zero relationship to any EC2 instance -- an S3 bucket,
+    a Lambda function, anything -- could still paint EC2 wedges red or
+    amber: e.g. 2 critical + 2 warning anywhere in the account, 6
+    running instances, ring shows 4 of 6 wedges unhealthy regardless
+    of which resource actually alerted. Reported by Vinay 2026-09-10
+    (dashboard screenshot: 6 running, ring showing 4 unhealthy wedges
+    while the account only had 6 running instances and the alerts
+    were partly on non-EC2 resources).
+
+    Fix, matching how tools like Datadog/CloudWatch roll host status
+    up from attached resources: an instance's wedge is only unhealthy
+    if the alert is on the instance itself, OR on an EBS volume / ENI
+    physically attached to it. discovery_ec2.py already tags every
+    EBS volume and ENI with tags.parent_ec2 = <instance_id> at
+    collection time (see its EBS/ENI INHERITANCE blocks) -- this reads
+    that same linkage rather than adding a new one. Alerts on any
+    other resource type (S3, Lambda, RDS, ELB, SQS, ...) never touch
+    this ring; they still count toward the account-wide tiles via
+    _get_active_alert_counts_by_account(), unchanged.
+
+    Per-instance severity is the worst of its own + any inherited
+    alerts (critical beats warning); an instance is never counted in
+    both buckets. Stopped/terminated instances are excluded via
+    _get_running_ec2_ids_by_account() -- see that function's docstring.
+    """
+    try:
+        conn   = get_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT r.aws_account_id, r.resource_type, r.resource_id, r.tags, a.severity
+            FROM alerts a
+            JOIN resources r      ON r.resource_id = a.resource_id
+            JOIN aws_accounts acc ON acc.id = r.aws_account_id
+                                   AND acc.status = 'active'
+            WHERE a.status = 'active'
+              AND a.resolved_at IS NULL
+              AND r.resource_type IN ('ec2', 'ebs', 'eni')
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        running_by_account = _get_running_ec2_ids_by_account()
+
+        # account_id -> instance_id -> worst severity seen so far
+        worst: dict = {}
+        for r in rows:
+            acc_id = r["aws_account_id"]
+
+            if r["resource_type"] == "ec2":
+                instance_id = r["resource_id"]
+            else:
+                tags = r.get("tags")
+                if isinstance(tags, str):
+                    try:
+                        tags = json.loads(tags)
+                    except (TypeError, ValueError):
+                        tags = {}
+                instance_id = (tags or {}).get("parent_ec2")
+
+            if not instance_id:
+                continue
+            if instance_id not in running_by_account.get(acc_id, set()):
+                continue
+
+            sev = (r["severity"] or "").upper()
+            if sev not in ("CRITICAL", "WARNING"):
+                continue
+
+            bucket = worst.setdefault(acc_id, {})
+            if sev == "CRITICAL":
+                bucket[instance_id] = "CRITICAL"
+            elif bucket.get(instance_id) != "CRITICAL":
+                bucket[instance_id] = "WARNING"
+
+        out = {}
+        for acc_id, instances in worst.items():
+            out[acc_id] = {
+                "critical": sum(1 for s in instances.values() if s == "CRITICAL"),
+                "warning":  sum(1 for s in instances.values() if s == "WARNING"),
+            }
+        return out
+    except Exception as e:
+        logger.error(f"EC2 instance health fetch error: {e}")
+        return {}
+
+
 @router.get("/accounts")
 def live_accounts(current_user: dict = Depends(require_permission("resources.view"))):
     global _accounts_cache
@@ -223,6 +358,7 @@ def live_accounts(current_user: dict = Depends(require_permission("resources.vie
         accounts = [a for a in accounts if a["id"] in accessible]
 
     alert_counts_by_account = _get_active_alert_counts_by_account()
+    ec2_health_by_account   = _get_ec2_instance_health_by_account()
 
     def process_account(acc):
         region  = acc.get("default_region")
@@ -234,6 +370,16 @@ def live_accounts(current_user: dict = Depends(require_permission("resources.vie
         counts        = alert_counts_by_account.get(acc["id"], {"critical": 0, "warning": 0})
         acct_critical = counts["critical"]
         acct_warning  = counts["warning"]
+
+        # EC2-scoped rollup for the HealthRing only -- see
+        # _get_ec2_instance_health_by_account()'s docstring. Deliberately
+        # separate from acct_critical/acct_warning above, which stay
+        # account-wide (all resource types) and keep driving `health`,
+        # the status pill, and the CRITICAL/WARNING tiles exactly as
+        # before -- only the ring's own numbers change here.
+        ec2_health          = ec2_health_by_account.get(acc["id"], {"critical": 0, "warning": 0})
+        ec2_critical_ring   = ec2_health["critical"]
+        ec2_warning_ring    = ec2_health["warning"]
 
         # Real active alerts (any resource type) are authoritative.
         # avg_cpu is only a fallback heuristic for the rare case where
@@ -297,6 +443,11 @@ def live_accounts(current_user: dict = Depends(require_permission("resources.vie
             "alerts":           acct_critical + acct_warning,
             "critical_alerts":  acct_critical,
             "warning_alerts":   acct_warning,
+            # EC2-scoped counts for the HealthRing wedge colouring --
+            # see _get_ec2_instance_health_by_account(). Intentionally
+            # separate from critical_alerts/warning_alerts above.
+            "ec2_critical_instances": ec2_critical_ring,
+            "ec2_warning_instances":  ec2_warning_ring,
             "instance_count":   total,
             "healthy_resources":   healthy_count,
             "unhealthy_resources": unhealthy_count,
