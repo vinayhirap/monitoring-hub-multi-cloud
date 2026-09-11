@@ -9,6 +9,8 @@
   position: relative;
   overflow: hidden;
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  padding: 20px;
+  box-sizing: border-box;
 }
 
 /* ── animated grid ── */
@@ -378,6 +380,18 @@
   color: #60a5fa;
   border: 1px solid rgba(59,130,246,0.25);
 }
+
+/* ── Responsive (added: audit found this file had zero @media rules) ──
+   .login-root's own padding (above) already keeps the card off the
+   screen edges at every width; this trims internal spacing so small
+   phones get more usable content width. ── */
+@media (max-width: 480px) {
+  .login-card { padding: 28px 22px 24px; }
+  .login-brand { margin-bottom: 20px; }
+  .login-hint { padding: 12px 14px; margin-top: 18px; }
+  .login-hint-row { flex-wrap: wrap; }
+}
+
 
 /* ── ServiceDetail light mode fixes ── */
 [data-theme="light"] .inst-table-wrap    { background: #ffffff; border-color: rgba(99,130,190,0.15); box-shadow: 0 1px 4px rgba(99,130,190,0.08); }
