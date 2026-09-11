@@ -41,6 +41,10 @@ export const testGcpCredentials   = (data) => apiFetch("/api/admin/accounts/test
 
 // ── Alerts ──────────────────────────────────────────────────────────
 export const getAlerts = () => apiFetch("/api/alerts/open");
+// Uncapped, authoritative tab-badge counts -- see app/api/alerts.py's
+// /counts endpoint docstring for why this must never be derived from
+// a paginated row list on the client.
+export const getAlertCounts = () => apiFetch("/api/alerts/counts");
 export const acknowledgeAlert = (id) => apiFetch(`/api/alerts/${id}/ack`,     { method: "PATCH" });
 export const resolveAlert     = (id) => apiFetch(`/api/alerts/${id}/resolve`,  { method: "PATCH" });
 export const muteAlert        = (id) => apiFetch(`/api/alerts/${id}/mute`,     { method: "PATCH" });

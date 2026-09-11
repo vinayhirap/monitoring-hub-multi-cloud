@@ -49,11 +49,14 @@ export default function Layout() {
   useEffect(() => {
     async function fetchCount() {
       try {
-        const res = await fetch("/api/alerts/open");
+        // Uncapped, authoritative count -- see app/api/alerts.py's
+        // /counts endpoint. Previously this counted the (LIMIT-capped)
+        // /api/alerts/open row list client-side, which silently
+        // undercounts once real active alerts exceed that cap.
+        const res = await fetch("/api/alerts/counts");
         if (!res.ok) return;
         const data = await res.json();
-        const arr = Array.isArray(data) ? data : (data.alerts ?? []);
-        setAlertCount(arr.filter(a => (a.status || "").toLowerCase() === "active").length);
+        setAlertCount(data.active ?? 0);
       } catch {}
     }
     fetchCount();

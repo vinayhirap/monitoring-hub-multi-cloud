@@ -124,6 +124,11 @@ export default function Alerts() {
   const [alerts,  setAlerts]  = useState([]);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
+  // Authoritative tab-badge counts, fetched separately from the (capped)
+  // row list -- see api.js's getAlertCounts / app/api/alerts.py's
+  // /counts endpoint. Falls back to counting the row list only until
+  // the first successful fetch, so badges aren't blank on first paint.
+  const [counts,  setCounts]  = useState(null);
   const [tab,     setTab]     = useState("active");
   const [search,  setSearch]  = useState("");
   const [acting,  setActing]  = useState(null);
@@ -161,6 +166,16 @@ export default function Alerts() {
       setError(e.message);
     } finally {
       setLoading(false);
+    }
+    // Tab badges come from a separate, uncapped endpoint -- deliberately
+    // NOT derived from the row list above, which is paginated and can be
+    // crowded out by a burst of resolved noise (see api.js/alerts.py
+    // comments). Fetched alongside but independently, so a failure here
+    // doesn't block the row list from loading.
+    try {
+      setCounts(await apiFetch("/api/alerts/counts"));
+    } catch {
+      // keep showing the last-known counts rather than blanking badges
     }
   }, []);
 
@@ -277,7 +292,11 @@ export default function Alerts() {
     // watch, without silently resolving/hiding them.
     if (tab === "active"       && (s !== "active" || a.stale)) return false;
     if (tab === "stale"        && (s !== "active" || !a.stale)) return false;
-    if (tab === "critical"     && (a.severity || "").toUpperCase() !== "CRITICAL") return false;
+    // "Critical" means currently open and critical -- same definition as
+    // the Overview banner/tiles (status active + severity CRITICAL), not
+    // "ever was critical". Without the status check, a resolved alert
+    // that broke critical stays in this tab forever.
+    if (tab === "critical"     && (s !== "active" || (a.severity || "").toUpperCase() !== "CRITICAL")) return false;
     if (tab === "acknowledged" && s !== "acknowledged") return false;
     if (tab === "resolved"     && s !== "resolved")     return false;
     if (search) {
@@ -291,14 +310,21 @@ export default function Alerts() {
     return true;
   });
 
-  const counts = {
+  // Fall back to counting the (capped) row list only until the first
+  // /api/alerts/counts response lands, so badges show *something* on
+  // first paint instead of "0" -- this fallback is expected to briefly
+  // disagree with reality under the same crowding-out conditions the
+  // real counts object fixes, and is replaced within one loadAlerts()
+  // cycle (~10s, or immediately on mount).
+  const fallbackCounts = {
     all:          alerts.length,
     active:       alerts.filter(a => (a.status || "").toLowerCase() === "active" && !a.stale).length,
     stale:        alerts.filter(a => (a.status || "").toLowerCase() === "active" && a.stale).length,
-    critical:     alerts.filter(a => (a.severity || "").toUpperCase() === "CRITICAL").length,
+    critical:     alerts.filter(a => (a.status || "").toLowerCase() === "active" && (a.severity || "").toUpperCase() === "CRITICAL").length,
     acknowledged: alerts.filter(a => (a.status || "").toLowerCase() === "acknowledged").length,
     resolved:     alerts.filter(a => (a.status || "").toLowerCase() === "resolved").length,
   };
+  const displayCounts = counts ?? fallbackCounts;
 
   return (
     <div className="alerts-page">
@@ -340,7 +366,7 @@ export default function Alerts() {
           >
             {label}
             <span className={`atab-count ${tab === key ? "atab-count-active" : ""}`}>
-              {counts[key]}
+              {displayCounts[key]}
             </span>
           </button>
         ))}

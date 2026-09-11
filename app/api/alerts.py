@@ -19,6 +19,12 @@ router = APIRouter(prefix="/alerts", tags=["Alerts"])
 _alerts_cache: dict = {"data": None, "ts": 0}
 _CACHE_TTL = 15  # seconds — short enough for near-realtime, avoids hammering DB
 
+# Authoritative, uncapped tab counts (see /counts below). Kept in its own
+# cache/entry, invalidated in lockstep with _alerts_cache by
+# _invalidate_cache(), so a badge can never read a count from before the
+# write that changed it while the row list already reflects it.
+_counts_cache: dict = {"data": None, "ts": 0}
+
 # An active alert whose last_seen_at hasn't been touched in this long has
 # stopped getting fresh metric data -- surfaced to the UI as "stale / no
 # data" so it's not mistaken for a live, just-reconfirmed breach. It is
@@ -30,6 +36,8 @@ _STALE_AFTER_MINUTES = 20
 def _invalidate_cache():
     _alerts_cache["data"] = None
     _alerts_cache["ts"]   = 0
+    _counts_cache["data"] = None
+    _counts_cache["ts"]   = 0
 
 def _fetch_alerts_from_db():
     conn   = get_connection()
@@ -63,8 +71,18 @@ def _fetch_alerts_from_db():
         JOIN resources r      ON r.resource_id = a.resource_id
         JOIN aws_accounts acc ON acc.id = r.aws_account_id
                                AND acc.status = 'active'
-        ORDER BY a.triggered_at DESC
-        LIMIT 200
+        ORDER BY
+            -- Unresolved rows always sort ahead of resolved ones. Without
+            -- this, a burst of alerts that trigger-then-quickly-resolve
+            -- (e.g. a flapping metric re-creating a row every cycle) can
+            -- fill the entire LIMIT window with fresh *resolved* noise by
+            -- triggered_at alone, silently pushing a genuinely still-open
+            -- alert (older triggered_at, never resolved) out of the page
+            -- entirely -- which is exactly how "Active" showed 0 while
+            -- Overview's separate, uncapped query correctly showed 26.
+            (a.resolved_at IS NULL) DESC,
+            a.triggered_at DESC
+        LIMIT 500
     """.format(stale=_STALE_AFTER_MINUTES))
     rows = cursor.fetchall()
     cursor.close()
@@ -139,7 +157,7 @@ def open_alerts(current_user: dict = Depends(require_permission("alerts.view")))
             ORDER BY
             FIELD(a.severity, 'CRITICAL', 'WARNING', 'INFO'),
             a.triggered_at DESC
-        LIMIT 100
+        LIMIT 2000
     """.format(stale=_STALE_AFTER_MINUTES))
     rows = cursor.fetchall()
     cursor.close()
@@ -154,6 +172,82 @@ def open_alerts(current_user: dict = Depends(require_permission("alerts.view")))
         r["stale"] = bool(r.get("stale"))
 
     return rows
+
+
+def _fetch_counts_from_db() -> dict:
+    """
+    Authoritative tab-badge counts, aggregated directly in SQL with no
+    LIMIT/windowing of any kind — so they can never disagree with
+    reality the way client-side counts derived from a capped, recency-
+    ordered row list can (see the ORDER BY comment in
+    _fetch_alerts_from_db above for how that happened in practice).
+
+    "critical" is defined identically to live_data.py's
+    _get_active_alert_counts_by_account() -- status = 'active' AND
+    severity = 'CRITICAL' -- so this number always matches the Overview
+    banner/tiles for the same moment in time. It deliberately does NOT
+    fold in acknowledged or resolved rows just because they were once
+    critical; a resolved alert isn't something that "requires attention"
+    any more, no matter what severity it broke at.
+    """
+    conn   = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT
+            COUNT(*) AS all_count,
+            SUM(CASE WHEN a.status = 'active'
+                      AND NOT (a.last_seen_at IS NOT NULL
+                               AND a.last_seen_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {stale} MINUTE))
+                     THEN 1 ELSE 0 END) AS active_count,
+            SUM(CASE WHEN a.status = 'active'
+                      AND a.last_seen_at IS NOT NULL
+                      AND a.last_seen_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {stale} MINUTE)
+                     THEN 1 ELSE 0 END) AS stale_count,
+            SUM(CASE WHEN a.status = 'active' AND a.severity = 'CRITICAL'
+                     THEN 1 ELSE 0 END) AS critical_count,
+            SUM(CASE WHEN a.status = 'acknowledged' THEN 1 ELSE 0 END) AS acknowledged_count,
+            SUM(CASE WHEN a.status = 'resolved' THEN 1 ELSE 0 END) AS resolved_count
+        FROM alerts a
+        JOIN resources r      ON r.resource_id = a.resource_id
+        JOIN aws_accounts acc ON acc.id = r.aws_account_id
+                               AND acc.status = 'active'
+    """.format(stale=_STALE_AFTER_MINUTES))
+    row = cursor.fetchone() or {}
+    cursor.close()
+    conn.close()
+
+    def _n(key):
+        return int(row.get(key) or 0)
+
+    return {
+        "all":          _n("all_count"),
+        "active":       _n("active_count"),
+        "stale":        _n("stale_count"),
+        "critical":     _n("critical_count"),
+        "acknowledged": _n("acknowledged_count"),
+        "resolved":     _n("resolved_count"),
+    }
+
+
+# ── GET tab-badge counts (uncapped, authoritative) ──────────────
+@router.get("/counts")
+def alert_counts(current_user: dict = Depends(require_permission("alerts.view"))):
+    """
+    Source of truth for every alert-count badge in the app (Alerts page
+    tabs, sidebar nav badge). Unlike /alerts and /alerts/open, this is
+    never paginated/limited, so a badge fed from here can't under- or
+    over-report just because the underlying row list got crowded out --
+    see _fetch_alerts_from_db's ORDER BY comment for the failure mode
+    this replaces. Same 15s TTL and invalidation path (_invalidate_cache)
+    as the row-list cache, so both stay in sync on every alert write.
+    """
+    now = time.time()
+    if _counts_cache["data"] is not None and now - _counts_cache["ts"] < _CACHE_TTL:
+        return _counts_cache["data"]
+    data = _fetch_counts_from_db()
+    _counts_cache["data"] = data
+    _counts_cache["ts"]   = now
+    return data
 
 
 # ── AWS CONSOLE DEEP-LINK (account-correct) ────────────────────
