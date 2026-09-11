@@ -4,7 +4,7 @@
 .ov-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; }
 .hl { color:var(--accent); }
 .ov-refresh { background:var(--bg-card); border:1px solid var(--border-md); color:var(--text-secondary); padding:7px 14px; border-radius:var(--radius); font-size:13px; cursor:pointer; transition:all .15s; }
-.ov-refresh:hover { border-color:var(--accent); color:var(--accent); }
+.ov-refresh:hover { border-color:var(--accent); color:var(--accent); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(43,179,172,0.15); }
 
 .ov-summary {
   display: grid;
@@ -64,7 +64,12 @@
 @keyframes pulseBig       { 0%{box-shadow:0 0 0 0 rgba(239,68,68,.7)}  70%{box-shadow:0 0 0 10px rgba(239,68,68,0)}  100%{box-shadow:0 0 0 0 rgba(239,68,68,0)} }
 @keyframes pulseBigYellow { 0%{box-shadow:0 0 0 0 rgba(245,158,11,.7)} 70%{box-shadow:0 0 0 10px rgba(245,158,11,0)} 100%{box-shadow:0 0 0 0 rgba(245,158,11,0)} }
 
-.alert-strip { display:flex; align-items:center; gap:8px; background:rgba(239,68,68,0.07); border:1px solid rgba(239,68,68,0.2); border-radius:var(--radius); padding:10px 16px; margin-bottom:16px; }
+.alert-strip { display:flex; align-items:center; gap:8px; background:rgba(239,68,68,0.07); border:1px solid rgba(239,68,68,0.2); border-radius:var(--radius); padding:10px 16px; margin-bottom:16px; transition: box-shadow 1.4s ease; }
+.alert-strip:has(.as-dot.critical) { animation: alertStripGlow 2.4s ease infinite; }
+@keyframes alertStripGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+  50%       { box-shadow: 0 0 16px 1px rgba(239,68,68,0.18); }
+}
 .as-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
 .as-dot.critical { background:var(--red); animation:pulseBig 1.4s ease infinite; }
 .as-btn { margin-left:auto; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.3); color:var(--red); padding:4px 12px; border-radius:var(--radius); font-size:12px; font-weight:600; cursor:pointer; }
@@ -184,14 +189,17 @@
   padding: 9px 12px;
   border-radius: 8px;
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
   border: 1px solid transparent;
 }
-.region-row:hover { opacity: 0.82; }
+.region-row:hover { transform: translateX(2px); }
 
 .region-row-healthy  { background: rgba(34,197,94,0.06);  border-color: rgba(34,197,94,0.18); }
+.region-row-healthy:hover  { background: rgba(34,197,94,0.11);  border-color: rgba(34,197,94,0.3); }
 .region-row-warning  { background: rgba(245,158,11,0.06); border-color: rgba(245,158,11,0.18); }
+.region-row-warning:hover  { background: rgba(245,158,11,0.11); border-color: rgba(245,158,11,0.3); }
 .region-row-critical { background: rgba(239,68,68,0.06); border-color: rgba(239,68,68,0.18); }
+.region-row-critical:hover { background: rgba(239,68,68,0.11); border-color: rgba(239,68,68,0.3); }
 
 .region-row-main {
   display: flex;
