@@ -47,16 +47,22 @@ CURATED = {
         # CWAgent-published, not standard EC2 namespace -- only present
         # for instances with the CloudWatch Agent actually installed and
         # reporting (see collector_direct.py's _ec2_cwagent_installed).
-        # is_default=False deliberately -- unlike CPUUtilization/etc,
-        # which apply to every instance, this is opt-in since it doesn't
-        # exist at all for instances without the agent. metric_name uses
-        # CWAgent's own literal published name (snake_case, not the
-        # PascalCase convention of standard EC2 metrics) for consistency
-        # with the official platform naming, matching this session's
-        # broader naming-consistency work. See apply_add_cwagent_mem_threshold.py.
-        ("mem_used_percent",   "Percent", "Average", False, "Memory utilization (requires CloudWatch Agent)"),
+        # PROMOTED to is_default=True (2026-09-12): originally opt-in
+        # since it doesn't exist at all for instances without the agent,
+        # but memory pressure is common enough on EC2 fleets that it
+        # belongs in the recommended onboarding template alongside
+        # CPU/Network/StatusCheck -- an instance without CWAgent simply
+        # never has data for it (see settings.py's has_data filter),
+        # so defaulting it on is harmless noise-wise, not a false signal.
+        # metric_name uses CWAgent's own literal published name
+        # (snake_case, not the PascalCase convention of standard EC2
+        # metrics) for consistency with the official platform naming,
+        # matching this session's broader naming-consistency work. See
+        # apply_add_cwagent_mem_threshold.py.
+        ("mem_used_percent",   "Percent", "Average", True,  "Memory utilization (requires CloudWatch Agent)"),
         # disk_used_percent: same rationale as mem_used_percent above
-        # (CWAgent-published, opt-in, snake_case official name) -- but
+        # (CWAgent-published, snake_case official name, now also
+        # promoted to is_default=True for the same reasons) -- but
         # published PER MOUNT POINT (multiple series per instance if
         # more than one is monitored). The scheduled collector prefers
         # the root filesystem ("/" / "C:") when multiple exist, matching
@@ -64,7 +70,7 @@ CURATED = {
         # -- "disk space utilized" as a single dashboard number means
         # the root volume to anyone glancing at it. See
         # apply_add_cwagent_disk_threshold.py.
-        ("disk_used_percent",  "Percent", "Average", False, "Disk space utilized, root filesystem (requires CloudWatch Agent)"),
+        ("disk_used_percent",  "Percent", "Average", True,  "Disk space utilized, root filesystem (requires CloudWatch Agent)"),
     ]),
     "ebs": ("Amazon EBS", "AWS/EBS", "core", [
         ("VolumeReadOps",       "Count",   "Average", True,  "Read operations/sec"),
