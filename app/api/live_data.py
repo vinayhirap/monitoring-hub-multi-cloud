@@ -69,6 +69,25 @@ _accounts_cache: dict = {"data": None, "ts": 0}
 CACHE_TTL = 60   # seconds — near-real-time
 
 
+def invalidate_accounts_cache():
+    """
+    Call this any time the `alerts` table changes (ack/resolve/mute/
+    clear -- see app/api/alerts.py's own _invalidate_cache(), which
+    this is the live_data-side counterpart to). Without it, resolving
+    or clearing alerts only invalidated alerts.py's OWN cache -- this
+    module's separate _accounts_cache kept serving pre-resolve
+    critical/warning counts (via _get_active_alert_counts_by_account()/
+    _get_ec2_instance_health_by_account(), both read fresh from here
+    only on a cache miss) for up to CACHE_TTL seconds after the DB
+    already agreed the alert was gone. That's a second, timing-based
+    way for the Overview banner/tiles to disagree with the Alerts
+    page/sidebar badge on top of the raw-count-vs-distinct-resource
+    issue already fixed there -- same class of bug, different cause.
+    """
+    global _accounts_cache
+    _accounts_cache = {"data": None, "ts": 0}
+
+
 def _serialize(obj):
     if isinstance(obj, dict):
         return {k: _serialize(v) for k, v in obj.items()}
