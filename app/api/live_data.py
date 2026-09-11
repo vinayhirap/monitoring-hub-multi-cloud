@@ -206,6 +206,66 @@ def _get_active_alert_counts_by_account() -> dict:
         return {}
 
 
+# Metrics that genuinely mean an EC2 instance is slow, degraded, or down --
+# i.e. actually worth painting that instance's HealthRing wedge red/amber
+# for. Deliberately a curated ALLOWLIST, not "any active alert on this
+# resource": confirmed live on HCS-PROD-MD-01 (2026-09-11) that most
+# alerts on a resource can be pure noise with zero performance impact --
+# 37 CRITICAL alerts were disk_used_percent__snap_* (permanently-100%-used
+# snap loopback/pseudo-fs mounts, see apply_cleanup_disk_mount_noise.py;
+# these are read-only images sized exactly to their content and were never
+# going to be a real "disk filling up" concern) against exactly 1 alert
+# that reflected genuine resource pressure (NetworkOut, WARNING). Painting
+# the ring off the raw alert count would have shown that instance as the
+# account's worst offender when it was, in reality, the healthiest one
+# with real signal on it.
+#
+# Matched by exact metric_name for EC2's own metrics. disk_used_percent
+# (the real root-filesystem reading, see apply_add_cwagent_disk_threshold.py)
+# IS included; the auto-registered disk_used_percent__<mount-slug> family
+# is deliberately NOT -- see _is_performance_impacting() below for why an
+# exact-match set handles that distinction for free.
+PERFORMANCE_IMPACTING_EC2_METRICS = {
+    "CPUUtilization",      # sustained high CPU -- instance genuinely slow
+    "mem_used_percent",    # memory pressure -- instance genuinely slow
+    "disk_used_percent",   # root filesystem full -- instance genuinely degraded
+    "NetworkIn",           # bandwidth saturation
+    "NetworkOut",          # bandwidth saturation
+    "StatusCheckFailed",             # >0 = instance/system health check failing -- literally down
+    "StatusCheckFailed_Instance",
+    "StatusCheckFailed_System",
+    "CPUCreditBalance",    # T-class credits nearly exhausted -- imminent CPU throttling
+}
+
+# EBS metrics that mean the ATTACHED instance is I/O-bottlenecked -- rolls
+# up to that instance's wedge the same as the instance's own metrics
+# above. Deliberately excludes plain throughput counters (VolumeReadOps/
+# WriteOps/*Bytes, VolumeIdleTime, VolumeTotalRead/WriteTime) -- a volume
+# doing a lot of I/O isn't itself a problem; only these two (per their own
+# catalog descriptions in metric_catalog_data.py -- "I/O requests waiting,
+# bottleneck signal" and burst-credit exhaustion) indicate the instance is
+# actually waiting on disk.
+PERFORMANCE_IMPACTING_EBS_METRICS = {
+    "VolumeQueueLength",
+    "BurstBalance",
+}
+
+
+def _is_performance_impacting(resource_type: str, metric_name: str) -> bool:
+    """True if an alert on this (resource_type, metric_name) means the
+    attached EC2 instance is actually slow/degraded/down -- see the two
+    sets above for the reasoning and the concrete noise case that
+    prompted this. Everything else on the instance/its attached EBS
+    still counts toward the account-wide critical/warning tiles via
+    _get_active_alert_counts_by_account() -- this function ONLY narrows
+    what the HealthRing wedges react to."""
+    if resource_type == "ec2":
+        return metric_name in PERFORMANCE_IMPACTING_EC2_METRICS
+    if resource_type == "ebs":
+        return metric_name in PERFORMANCE_IMPACTING_EBS_METRICS
+    return False
+
+
 def _get_running_ec2_ids_by_account() -> dict:
     """
     {aws_account_id: {running EC2 resource_id, ...}}, straight from
@@ -265,16 +325,25 @@ def _get_ec2_instance_health_by_account() -> dict:
     Fix, matching how tools like Datadog/CloudWatch roll host status
     up from attached resources: an instance's wedge is only unhealthy
     if the alert is on the instance itself, OR on an EBS volume / ENI
-    physically attached to it. discovery_ec2.py already tags every
-    EBS volume and ENI with tags.parent_ec2 = <instance_id> at
+    physically attached to it, AND the alerting metric is actually
+    performance-impacting (see PERFORMANCE_IMPACTING_EC2_METRICS /
+    _EBS_METRICS below -- added after a second real case: an alert
+    existing on the resource is not the same as that resource actually
+    being slow or down, e.g. a permanently-100%-used snap loopback
+    mount alerting CRITICAL forever). discovery_ec2.py already tags
+    every EBS volume and ENI with tags.parent_ec2 = <instance_id> at
     collection time (see its EBS/ENI INHERITANCE blocks) -- this reads
     that same linkage rather than adding a new one. Alerts on any
-    other resource type (S3, Lambda, RDS, ELB, SQS, ...) never touch
-    this ring; they still count toward the account-wide tiles via
-    _get_active_alert_counts_by_account(), unchanged.
+    other resource type (S3, Lambda, RDS, ELB, SQS, ...), or on a
+    matching resource type but a non-performance-impacting metric,
+    never touch this ring; they still count toward the account-wide
+    tiles via _get_active_alert_counts_by_account(), unchanged.
 
     Per-instance severity is the worst of its own + any inherited
-    alerts (critical beats warning); an instance is never counted in
+    alerts (critical beats warning) -- but ONLY among alerts whose
+    metric is actually performance-impacting; see
+    PERFORMANCE_IMPACTING_EC2_METRICS/_EBS_METRICS and
+    _is_performance_impacting() above. An instance is never counted in
     both buckets. Stopped/terminated instances are excluded via
     _get_running_ec2_ids_by_account() -- see that function's docstring.
     """
@@ -282,7 +351,8 @@ def _get_ec2_instance_health_by_account() -> dict:
         conn   = get_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute("""
-            SELECT r.aws_account_id, r.resource_type, r.resource_id, r.tags, a.severity
+            SELECT r.aws_account_id, r.resource_type, r.resource_id, r.tags,
+                   a.severity, a.metric_name
             FROM alerts a
             JOIN resources r      ON r.resource_id = a.resource_id
             JOIN aws_accounts acc ON acc.id = r.aws_account_id
@@ -301,6 +371,9 @@ def _get_ec2_instance_health_by_account() -> dict:
         worst: dict = {}
         for r in rows:
             acc_id = r["aws_account_id"]
+
+            if not _is_performance_impacting(r["resource_type"], r["metric_name"]):
+                continue
 
             if r["resource_type"] == "ec2":
                 instance_id = r["resource_id"]
