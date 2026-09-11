@@ -207,7 +207,30 @@ def _safe_qid(s: str) -> str:
 
 
 def _gmd_snapshot(cw, queries, minutes=3):
-    """Fetch latest single value for each query. Returns {query_id: float}."""
+    """
+    Fetch latest single value for each query. Returns {query_id: float} --
+    only for queries that actually returned a datapoint.
+
+    Deliberately OMITS the key entirely when CloudWatch returns zero
+    datapoints, rather than defaulting to 0.0. "No data" and "the value
+    is 0" are different facts -- e.g. a gp3 EBS volume never publishes
+    BurstBalance at all (it's a gp2-only credit-bucket metric; gp3 uses
+    provisioned baseline performance instead), so CloudWatch always
+    returns nothing for it. Silently treating that as 0.0 used to make
+    _EVERY_ gp3 volume look like it had exhausted its (nonexistent)
+    burst credits -- the worst possible reading for a "< threshold"
+    comparison -- and check_and_write_alerts() below would breach and
+    permanently alert on all of them (confirmed live, 2026-09-11: 21
+    gp3 volumes, all CRITICAL, current_value=0/threshold=10, every one
+    a false positive).
+
+    Existing callers are unaffected: both consume this via
+    `.get(key, 0.0)` for list-view display (still get 0.0 for a
+    genuinely-missing key, same as before) except check_and_write_alerts,
+    which iterates `.items()` and must NOT see a fabricated 0.0 for a
+    resource/metric combo that was never really measured -- that's
+    exactly the bug this fixes.
+    """
     if not queries:
         return {}
     end   = datetime.now(timezone.utc)
@@ -224,7 +247,8 @@ def _gmd_snapshot(cw, queries, minutes=3):
             )
             for r in resp.get("MetricDataResults", []):
                 vals = r.get("Values", [])
-                out[r["Id"]] = vals[0] if vals else 0.0
+                if vals:
+                    out[r["Id"]] = vals[0]
     except Exception as e:
         logger.error(f"GMD snapshot failed: {e}")
     return out
@@ -1849,22 +1873,43 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> li
             "severity":  severity,
         })
         try:
+            # Match alert_evaluator.py's own definition of "already open"
+            # -- ANY existing active alert for this resource+metric, not
+            # just one from the last 10 minutes. The old 10-minute window
+            # meant every manual "Check Thresholds Now" click more than
+            # 10 minutes apart inserted a brand-new duplicate row on top
+            # of whatever was already active, rather than refreshing it
+            # -- confirmed live: the same 21 gp3 volumes got a second
+            # full batch of BurstBalance alerts a day after the first,
+            # doubling up instead of updating in place. Also now sets
+            # last_seen_at, which the old INSERT never did at all --
+            # leaving it NULL, which made `stale` (alerts.py) evaluate to
+            # false forever (its check requires last_seen_at IS NOT
+            # NULL), so these alerts could never even surface as stale
+            # for an operator to notice and clean up manually.
             cur.execute("""
-                INSERT INTO alerts
-                  (resource_id, metric_name, severity, status,
-                   current_value, threshold, value,
-                   triggered_at, environment)
-                SELECT %s,%s,%s,'active',%s,%s,%s,NOW(),'PROD'
-                FROM DUAL
-                WHERE NOT EXISTS (
-                  SELECT 1 FROM alerts
-                  WHERE resource_id=%s AND metric_name=%s
-                    AND status='active'
-                    AND triggered_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
-                )
-            """, (resource_id, metric, severity,
-                  round(val, 4), threshold_val, round(val, 4),
-                  resource_id, metric))
+                SELECT id FROM alerts
+                WHERE resource_id=%s AND metric_name=%s AND status='active'
+                LIMIT 1
+            """, (resource_id, metric))
+            existing = cur.fetchone()
+            if existing:
+                cur.execute("""
+                    UPDATE alerts
+                    SET current_value=%s, threshold=%s, value=%s,
+                        severity=%s, last_seen_at=NOW()
+                    WHERE id=%s
+                """, (round(val, 4), threshold_val, round(val, 4),
+                      severity, existing[0]))
+            else:
+                cur.execute("""
+                    INSERT INTO alerts
+                      (resource_id, metric_name, severity, status,
+                       current_value, threshold, value,
+                       triggered_at, last_seen_at, environment)
+                    VALUES (%s,%s,%s,'active',%s,%s,%s,NOW(),NOW(),'PROD')
+                """, (resource_id, metric, severity,
+                      round(val, 4), threshold_val, round(val, 4)))
         except Exception as db_err:
             logger.warning(f"Alert insert [{resource_id}/{metric}]: {db_err}")
 
