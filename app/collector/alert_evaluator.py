@@ -320,13 +320,30 @@ def _evaluate_alerts_body(conn, cursor):
                 # healthy readings before actually resolving, so one good
                 # datapoint doesn't flap an active alert closed and let it
                 # reopen (as a brand-new alert row) a few minutes later.
+                #
+                # Also refresh `threshold` here now (apply_fix_threshold_lag_on_resolve.py)
+                # -- previously only the breaching branch below did this, so
+                # an operator raising a threshold in Settings while an alert
+                # was already breaching-then-recovering would see the OLD
+                # threshold value keep displaying for the whole healthy-streak
+                # window, even though the new value was already live and in
+                # effect. Matched to the alert's own existing severity (not
+                # re-derived from is_critical/is_warning, which are both
+                # False here by definition -- we're in the `not is_breaching`
+                # branch), same critical_value/warning_value split the
+                # breaching branch below already uses.
+                resolve_threshold_value = (
+                    row["critical_value"] if existing["severity"] == "CRITICAL"
+                    else row["warning_value"]
+                )
                 cursor.execute("""
                     UPDATE alerts
                     SET current_value  = %s,
+                        threshold      = %s,
                         last_seen_at   = NOW(),
                         healthy_streak = healthy_streak + 1
                     WHERE id = %s
-                """, (metric_value, existing["id"]))
+                """, (metric_value, resolve_threshold_value, existing["id"]))
 
                 cursor.execute("SELECT healthy_streak FROM alerts WHERE id = %s", (existing["id"],))
                 streak = cursor.fetchone()["healthy_streak"]
