@@ -39,7 +39,9 @@ body {
 .sidebar {
   width: 220px;
   flex-shrink: 0;
-  background: var(--bg-sidebar);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.03) 0%, transparent 220px),
+    var(--bg-sidebar);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -49,8 +51,8 @@ body {
   inset: 0 auto 0 0;
   z-index: 60;
   transform: translateX(-100%);
-  transition: transform 0.22s ease;
-  box-shadow: 0 12px 32px rgba(2,8,20,0.5);
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 12px 40px rgba(2,8,20,0.55);
 }
 /* Sidebar is closed (off-canvas) by default; the topbar toggle button
    opens it as a slide-in drawer, at every screen size. */
@@ -126,7 +128,7 @@ body {
   text-decoration: none;
   font-size: 12px;
   font-weight: 500;
-  transition: all 0.15s;
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease, transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   cursor: pointer;
   position: relative;
   border: 1px solid transparent;
@@ -135,11 +137,14 @@ body {
   color: var(--text);
   background: var(--bg-hover);
   border-color: var(--border);
+  transform: translateX(2px);
 }
 .nav-active {
   color: var(--accent) !important;
-  background: rgba(43,179,172,0.08) !important;
-  border-color: rgba(43,179,172,0.15) !important;
+  background: linear-gradient(90deg, rgba(43,179,172,0.16) 0%, rgba(43,179,172,0.05) 100%) !important;
+  border-color: rgba(43,179,172,0.18) !important;
+  box-shadow: inset 2px 0 0 var(--accent), 0 2px 10px rgba(43,179,172,0.12) !important;
+  transform: none !important;
 }
 .nav-active .nav-icon { opacity: 1; }
 .nav-icon { display: flex; opacity: 0.6; flex-shrink: 0; }
@@ -192,11 +197,14 @@ body {
   flex-shrink: 0;
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 4px 16px rgba(2,8,20,0.18);
   display: flex;
   align-items: center;
   justify-content: flex-end;
   padding: 0 20px;
   gap: 14px;
+  position: relative;
+  z-index: 40;
 }
 .topbar-page-label {
   flex: 1;
@@ -224,16 +232,31 @@ body {
   font-weight: 700;
   letter-spacing: 0.08em;
   color: var(--accent-g);
+  box-shadow: 0 0 0 0 rgba(34,197,94,0.35);
+  transition: box-shadow 0.2s;
 }
 .live-dot {
   width: 6px; height: 6px;
   background: var(--accent-g);
   border-radius: 50%;
+  position: relative;
   animation: live-blink 1.4s ease-in-out infinite;
+}
+.live-dot::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent-g);
+  animation: live-ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
 }
 @keyframes live-blink {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.3; }
+}
+@keyframes live-ping {
+  0%   { transform: scale(0.6); opacity: 0.7; }
+  75%, 100% { transform: scale(1.8); opacity: 0; }
 }
 
 /* clock */
@@ -307,6 +330,8 @@ body {
   background: rgba(239,68,68,0.16);
   border-color: rgba(239,68,68,0.4);
   color: var(--accent-red);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(239,68,68,0.15);
 }
 
 /* ── page content ── */
@@ -359,9 +384,13 @@ body {
 .sum-tile {
   background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
   padding: 16px; display: flex; align-items: center; gap: 12px;
-  transition: border-color 0.15s;
+  transition: border-color 0.2s, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s;
 }
-.sum-tile:hover { border-color: rgba(99,130,190,0.25); }
+.sum-tile:hover {
+  border-color: rgba(99,130,190,0.28);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.28);
+}
 .sum-icon {
   display: flex; align-items: center; justify-content: center;
   width: 36px; height: 36px; border-radius: var(--radius); flex-shrink: 0;
@@ -386,7 +415,7 @@ body {
   background: transparent; border: 1px solid var(--border); color: var(--text-muted);
   cursor: pointer; transition: all 0.15s;
 }
-.f-btn:hover  { border-color: rgba(99,130,190,0.3); color: var(--text); }
+.f-btn:hover  { border-color: rgba(99,130,190,0.3); color: var(--text); transform: translateY(-1px); }
 .f-active     { background: rgba(43,179,172,0.1); border-color: rgba(43,179,172,0.3); color: var(--accent); }
 
 .ov-loading { text-align: center; padding: 60px; color: var(--text-muted); font-size: 13px; }
@@ -565,7 +594,14 @@ body {
 .id-loading { font-size: 12px; color: var(--text-muted); text-align: center; padding: 16px; }
 
 .charts-stack { display: flex; flex-direction: column; gap: 12px; }
-.chart-box { background: rgba(0,0,0,0.2); border-radius: var(--radius); padding: 12px; }
+.chart-box {
+  background: rgba(0,0,0,0.2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.chart-box:hover { border-color: var(--border-hi); box-shadow: 0 6px 18px rgba(0,0,0,0.22); }
 .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .chart-title  { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); }
 .chart-latest { font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
@@ -593,13 +629,15 @@ body {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s, box-shadow 0.15s;
   padding: 0;
   flex-shrink: 0;
 }
 .btn-theme-toggle:hover {
   background: rgba(99,130,190,0.2);
   border-color: rgba(99,130,190,0.4);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99,130,190,0.15);
 }
 
 /* ── Timezone selector — same visual family as the theme toggle ── */
@@ -646,8 +684,15 @@ body {
   display: block;
   position: fixed;
   inset: 0;
-  background: rgba(2,6,16,0.55);
+  background: rgba(2,6,16,0.5);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
   z-index: 50;
+  animation: scrim-in 0.2s ease both;
+}
+@keyframes scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 /* ── responsive topbar decluttering ── */
