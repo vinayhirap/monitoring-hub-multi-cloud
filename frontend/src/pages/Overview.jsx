@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWebSocket } from "../hooks/useWebSocket";
-import { getLiveAccounts, getAlerts } from "../api/api";
+import { getLiveAccounts } from "../api/api";
 import "./Overview.css";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached } from "../utils/dataCache";
@@ -72,10 +72,9 @@ function aggregateStats(regions) {
 export default function Overview() {
   const navigate = useNavigate();
   const { ianaName } = useTimezone();
-  const OVERVIEW_CACHE_KEY = "overview:accounts_alerts";
+  const OVERVIEW_CACHE_KEY = "overview:accounts";
 
   const [accounts,    setAccounts]    = useState([]);
-  const [alerts,      setAlerts]      = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [revalidating, setRevalidating] = useState(false);
   // True only when the MOST RECENT fetch attempt failed outright (network
@@ -90,41 +89,26 @@ export default function Overview() {
   const deletedIds = useRef(new Set());
   const { lastMessage: alertMsg } = useWebSocket("alerts");
 
+  // Alert counts are NOT fetched independently here anymore -- see the
+  // criticalAlerts/warningAlerts comment below for why (they used to
+  // come from a separately-filtered GET /api/alerts/open, which is
+  // exactly what made the banner disagree with the per-account tiles).
+  // /api/accounts's critical_alerts/warning_alerts fields (computed
+  // server-side by _get_active_alert_counts_by_account()) are now the
+  // single source both the banner and the tiles read from.
   const loadAll = useCallback(async () => {
     setRevalidating(true);
-    // Promise.allSettled (not Promise.all + .catch(() => [])) is the whole
-    // fix here: a failed request must NEVER be indistinguishable from a
-    // successful one that happens to return zero rows. Each of
-    // accounts/alerts only updates state (and the cache) for the specific
-    // one that actually succeeded -- a transient failure changes nothing
-    // on screen and leaves the cache untouched, rather than overwriting
-    // good data with an empty snapshot that then sticks around on every
-    // reload until the next successful poll happens to fix it.
-    const [accResult, alertResult] = await Promise.allSettled([getLiveAccounts(), getAlerts()]);
-
-    if (accResult.status === "fulfilled") {
-      const filtered = (Array.isArray(accResult.value) ? accResult.value : [])
+    try {
+      const data = await getLiveAccounts();
+      const filtered = (Array.isArray(data) ? data : [])
         .filter(a => !deletedIds.current.has(a.id));
       setAccounts(filtered);
       setLoadError(false);
-      const cachedAlerts = getCached(OVERVIEW_CACHE_KEY)?.data?.alerts || [];
-      setCached(OVERVIEW_CACHE_KEY, {
-        accounts: filtered,
-        alerts: alertResult.status === "fulfilled" && Array.isArray(alertResult.value)
-          ? alertResult.value
-          : cachedAlerts,
-      });
-    } else {
-      console.error("Overview: accounts fetch failed, keeping last known data:", accResult.reason);
+      setCached(OVERVIEW_CACHE_KEY, { accounts: filtered });
+    } catch (err) {
+      console.error("Overview: accounts fetch failed, keeping last known data:", err);
       setLoadError(true);
     }
-
-    if (alertResult.status === "fulfilled") {
-      setAlerts(Array.isArray(alertResult.value) ? alertResult.value : []);
-    } else {
-      console.error("Overview: alerts fetch failed, keeping last known data:", alertResult.reason);
-    }
-
     setLastSync(new Date());
     setLoading(false);
     setRevalidating(false);
@@ -140,7 +124,6 @@ export default function Overview() {
     if (!cached) return;
     const filtered = (cached.data.accounts || []).filter(a => !deletedIds.current.has(a.id));
     setAccounts(filtered);
-    setAlerts(cached.data.alerts || []);
     setLastSync(new Date(cached.ts));
     setLoading(false);
   }, []);
@@ -151,10 +134,16 @@ export default function Overview() {
     return () => clearInterval(t);
   }, [loadAll]);
 
+  // A new alert over the websocket means the server-side counts this
+  // page reads (critical_alerts/warning_alerts on every account row)
+  // are now stale -- refetch accounts immediately rather than waiting
+  // up to 60s for the next poll, so the banner/tiles/ring update in
+  // near-real-time without reintroducing a second, independently
+  // filtered count of their own.
   useEffect(() => {
     if (!alertMsg || alertMsg.type !== "new_alert") return;
-    setAlerts(prev => [alertMsg, ...prev].slice(0, 100));
-  }, [alertMsg]);
+    loadAll();
+  }, [alertMsg, loadAll]);
 
   async function handleDelete(e, acc) {
     e.stopPropagation();
@@ -187,9 +176,30 @@ export default function Overview() {
   const warningCount  = grouped.filter(g => aggregateStatus(g.regions) === "warning").length;
   const criticalCount = grouped.filter(g => aggregateStatus(g.regions) === "critical").length;
 
-  const activeAlerts   = alerts.filter(a => (a.status || "").toLowerCase() === "active");
-  const criticalAlerts = activeAlerts.filter(a => (a.severity || "").toUpperCase() === "CRITICAL").length;
-  const warningAlerts  = activeAlerts.filter(a => (a.severity || "").toUpperCase() === "WARNING").length;
+  // Root cause of "the alert counts are different everywhere" (Vinay,
+  // 2026-09-11): this banner used to derive its numbers from raw rows
+  // in GET /api/alerts/open, filtered client-side -- i.e. RAW ALERT
+  // ROW COUNT, no dedup. The per-account tiles below (acctCritical/
+  // acctWarning, via aggregateStats) instead use critical_alerts/
+  // warning_alerts computed server-side by
+  // _get_active_alert_counts_by_account(), which counts DISTINCT
+  // ALERTING RESOURCES. Same account, two different definitions of
+  // "how many critical" -- e.g. HCS-PROD-MD-01's 37 disk_used_percent
+  // __snap_* alerts (all on the same instance, see
+  // PERFORMANCE_IMPACTING_EC2_METRICS in live_data.py) used to count
+  // as 37 here but as 1 critical resource in the tiles. Summing the
+  // exact same per-account server numbers the tiles already use makes
+  // this banner mathematically guaranteed to agree with every tile on
+  // screen -- one source of truth, not two independently-fetched and
+  // independently-filtered ones.
+  const alertTotals    = grouped.reduce((acc, g) => {
+    const s = aggregateStats(g.regions);
+    acc.critical += s.critical_alerts;
+    acc.warning  += s.warning_alerts;
+    return acc;
+  }, { critical: 0, warning: 0 });
+  const criticalAlerts = alertTotals.critical;
+  const warningAlerts  = alertTotals.warning;
 
   const filteredGroups = grouped.filter(g => {
     const s = aggregateStatus(g.regions);
