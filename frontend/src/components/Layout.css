@@ -63,13 +63,49 @@ body {
   }
   .layout.nav-open .sidebar { transform: translateX(0); }
 }
-/* ≥900px: the sidebar defaults to its full 208px rail (styled above).
-   nav-open here means "collapsed", not "open" — inverted from the
-   <900px drawer meaning below — so the same button/state can drive
-   both without extra JS. See the collapsed-rail block further down
-   for the actual width/label/footer changes. */
+/* ≥900px: the sidebar defaults to a collapsed 60px icon rail; nav-open
+   expands it to the full 208px rail with labels. This matches the
+   <900px drawer meaning below (nav-open = fully visible either way),
+   so the same button/state drives both without extra JS. */
 @media (min-width: 900px) {
-  .sidebar { transition: width 0.22s cubic-bezier(0.16, 1, 0.3, 1); }
+  .sidebar {
+    width: 60px;
+    transition: width 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .sidebar-nav { padding-left: 0; padding-right: 0; }
+  .nav-item { justify-content: center; padding-left: 0; padding-right: 0; }
+  .nav-label,
+  .sidebar-footer { display: none; }
+  .nav-badge {
+    position: absolute;
+    top: 4px;
+    right: 10px;
+    width: 8px;
+    height: 8px;
+    min-width: 0;
+    padding: 0;
+    font-size: 0;
+    border-radius: 50%;
+  }
+
+  .layout.nav-open .sidebar { width: 208px; }
+  .layout.nav-open .sidebar-nav { padding-left: 8px; padding-right: 8px; }
+  .layout.nav-open .nav-item {
+    justify-content: flex-start;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .layout.nav-open .nav-label,
+  .layout.nav-open .sidebar-footer { display: block; }
+  .layout.nav-open .nav-badge {
+    position: static;
+    width: auto;
+    height: auto;
+    min-width: 18px;
+    padding: 1px 6px;
+    font-size: 9px;
+    border-radius: 10px;
+  }
 }
 
 /* Persistent brand/logo in the topbar — stays visible whether the
@@ -485,32 +521,6 @@ body {
 }
 @media (min-width: 900px) {
   .layout.nav-open .sidebar-scrim { display: none; }
-
-  /* Collapsed rail: icons only, no overlay/blur — content in
-     .main-wrap just reflows into the reclaimed space since .sidebar
-     stays a normal in-flow flex item (only its width changes). */
-  .layout.nav-open .sidebar { width: 60px; }
-  .layout.nav-open .sidebar-nav { padding-left: 0; padding-right: 0; }
-  .layout.nav-open .nav-item {
-    justify-content: center;
-    padding-left: 0;
-    padding-right: 0;
-  }
-  .layout.nav-open .nav-label,
-  .layout.nav-open .sidebar-footer { display: none; }
-  /* Badge collapses to a plain dot on the icon instead of vanishing —
-     alert count is still worth a glance even with the rail collapsed. */
-  .layout.nav-open .nav-badge {
-    position: absolute;
-    top: 4px;
-    right: 10px;
-    width: 8px;
-    height: 8px;
-    min-width: 0;
-    padding: 0;
-    font-size: 0;
-    border-radius: 50%;
-  }
 }
 
 /* ── responsive topbar decluttering ── */
