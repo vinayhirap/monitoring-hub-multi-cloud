@@ -171,12 +171,22 @@ def run_discovery_once():
     run_discovery()
 
 
-def run_loop():
+def run_loop(leader_event=None):
     """
     Tiered loop:
       Every 2 min  → critical tier
       Every 5 min  → standard tier (+ alerts)
       Every 15 min → low tier + discovery + partition check
+      Every 60 min → extended tier
+      Every 24 h   → slow_extended tier
+
+    leader_event: a threading.Event from app/collector/leader.py, set()
+    for as long as this process actually holds the collector-leader lock.
+    Checked once per cycle -- if it's ever cleared (lock lost, even
+    without this process dying), this loop stops itself instead of
+    running forever as an orphaned second scheduler. Optional/None for
+    any caller outside the normal leader-elected startup path (e.g.
+    tests, the standalone `run()` entry point never reaches here).
     """
     last_standard   = 0
     last_low        = 0
@@ -189,6 +199,11 @@ def run_loop():
                 "(critical=2min, standard=5min, low=15min, extended=60min, slow_extended=24h)")
 
     while not _stop_event.is_set():
+        if leader_event is not None and not leader_event.is_set():
+            logger.warning("[scheduler] leadership lost -- stopping this loop "
+                            "(another worker is now the leader)")
+            return
+
         now    = time.time()
         cycle += 1
 

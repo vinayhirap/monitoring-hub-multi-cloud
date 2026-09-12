@@ -89,13 +89,24 @@ def run_once(categories=None):
         logger.error(f"[multicloud:{tier_label}] GCP collection cycle crashed: {e}")
 
 
-def run_loop(core_interval: int = CORE_INTERVAL_SECONDS, extended_interval: int = EXTENDED_INTERVAL_SECONDS):
+def run_loop(leader_event=None, core_interval: int = CORE_INTERVAL_SECONDS, extended_interval: int = EXTENDED_INTERVAL_SECONDS):
+    """
+    leader_event: see app/collector/scheduler.py's run_loop docstring --
+    same leadership-loss guard, same reasoning (this loop is started
+    under the identical leader-elected code path and was equally
+    vulnerable to running forever as an orphaned second scheduler).
+    """
     logger.info(
         f"Multi-cloud (Azure/GCP) metrics scheduler started "
         f"(core={core_interval}s, extended={extended_interval}s)"
     )
     last_extended = 0.0
     while not _stop_event.is_set():
+        if leader_event is not None and not leader_event.is_set():
+            logger.warning("[multicloud-scheduler] leadership lost -- stopping this loop "
+                            "(another worker is now the leader)")
+            return
+
         now = time.time()
 
         run_once(categories=("core",))
