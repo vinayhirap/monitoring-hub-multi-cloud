@@ -11,7 +11,9 @@ async function openAccountConsole(accountId, service, resourceId) {
   try {
     const params = new URLSearchParams({ service });
     if (resourceId) params.set("resource_id", resourceId);
-    const res = await fetch(`/api/admin/accounts/${accountId}/console-url?${params}`);
+    // POST, not GET: see app/api/admin/accounts.py's console-url
+    // docstring for the CSRF/audit-log-side-effect reasoning.
+    const res = await fetch(`/api/admin/accounts/${accountId}/console-url?${params}`, { method: "POST" });
     if (!res.ok) throw new Error(String(res.status));
     const data = await res.json();
     window.open(data.url, "_blank", "noopener,noreferrer");

@@ -1100,7 +1100,9 @@ function StatusCheckBadge({ value }) {
 async function openAccountConsole(accountId, service, params = {}) {
   try {
     const qs = new URLSearchParams({ service: service.toLowerCase(), ...params });
-    const res = await fetch(`/api/admin/accounts/${accountId}/console-url?${qs}`);
+    // POST, not GET: see app/api/admin/accounts.py's console-url
+    // docstring for the CSRF/audit-log-side-effect reasoning.
+    const res = await fetch(`/api/admin/accounts/${accountId}/console-url?${qs}`, { method: "POST" });
     if (!res.ok) throw new Error(String(res.status));
     const data = await res.json();
     window.open(data.url, "_blank", "noopener,noreferrer");
