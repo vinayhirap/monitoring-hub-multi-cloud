@@ -21,6 +21,7 @@ Docs: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_enable
 import datetime
 import json
 import logging
+import re
 import urllib.parse
 
 import requests
@@ -33,6 +34,35 @@ logger = logging.getLogger(__name__)
 FEDERATION_ENDPOINT = "https://signin.aws.amazon.com/federation"
 ISSUER = "monitoring-hub"
 SESSION_DURATION_SECONDS = 3600  # must be <= the assumed role's max session duration
+
+# Real AWS region names only ever look like "us-east-1", "ap-south-2",
+# "eu-central-1", etc. -- lowercase letters/digits and single hyphens,
+# 2-3 letter-groups then a digit.
+_VALID_REGION_RE = re.compile(r"^[a-z]{2,3}(-[a-z]+){1,2}-\d$")
+_DEFAULT_REGION = "us-east-1"
+
+
+def _safe_region(region: str | None) -> str:
+    """
+    SECURITY: every URL builder below places `region` directly into
+    the URL's HOST/subdomain position (f"https://{region}.console.
+    aws.amazon.com"), and region is caller-supplied on some paths
+    (app/api/admin/accounts.py's GET .../console-url takes it as a
+    plain, unrestricted query param, reachable by anyone with the
+    viewer-level accounts.view permission). Without validation, a
+    value like "evil.com/" splits the string so the resulting URL's
+    actual host becomes evil.com instead of AWS -- a classic open-
+    redirect / URL-spoofing primitive (CWE-601), since the app hands
+    back what looks like an AWS link but isn't one. Every caller in
+    this module must route region through this before it ever touches
+    an f-string; falls back to a safe default rather than erroring,
+    since a bad/spoofed region should degrade to "wrong region,
+    console still opens" rather than break the whole console-link
+    feature.
+    """
+    if region and _VALID_REGION_RE.match(region):
+        return region
+    return _DEFAULT_REGION
 
 
 class NoConsoleCredentialsError(ValueError):
@@ -52,7 +82,7 @@ def service_console_list_url(service: str, region: str) -> str:
     List-view console URL for a whole service (e.g. all EC2 instances) —
     used when no specific resource is selected yet.
     """
-    region = region or "us-east-1"
+    region = _safe_region(region)
     service = (service or "").lower()
     base = f"https://{region}.console.aws.amazon.com"
     return {
@@ -88,7 +118,7 @@ def resource_console_destination(service: str, resource_id: str, region: str,
     been updated yet), falls back to the original ID-prefix-guessing
     behavior so nothing regresses for callers not yet passing `service`.
     """
-    region = region or "us-east-1"
+    region = _safe_region(region)
     if not resource_id:
         return service_console_list_url(service, region)
 
@@ -125,7 +155,7 @@ def _legacy_prefix_guess_destination(resource: str, region: str) -> str:
     EC2/EBS/Lambda/RDS — identical to this file's behavior before this
     patch, no S3/ELB/ECS support on this path.
     """
-    region = region or "us-east-1"
+    region = _safe_region(region)
     if not resource:
         return f"https://{region}.console.aws.amazon.com/console/home?region={region}"
 

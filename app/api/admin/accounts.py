@@ -7,10 +7,20 @@ from app.auth.authorization import get_accessible_account_ids
 import datetime
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/accounts", tags=["Admin - Accounts"])
+
+# Azure region short-names (eastus2, centralindia, westeurope, ...) are
+# pure lowercase letters/digits -- validated at onboarding so a bad/
+# malicious value can never reach app/providers/azure/metrics_collector.py's
+# endpoint construction (f"https://{region}.metrics.monitor.azure.com"),
+# which would otherwise be an SSRF + live credential-token-exfiltration
+# vector for any editor with accounts.onboard permission. See that
+# module's matching validation for the full writeup.
+_VALID_AZURE_REGION_RE = re.compile(r"^[a-z0-9]+$")
 
 
 def _serialize(obj):
@@ -194,6 +204,11 @@ def _add_azure_account(payload: dict) -> tuple[int, str, str]:
                if not v]
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing required field(s): {', '.join(missing)}")
+    if not _VALID_AZURE_REGION_RE.match(region):
+        raise HTTPException(
+            status_code=400,
+            detail="default_region must be a valid Azure region short-name (e.g. 'centralindia', 'eastus2') -- lowercase letters/digits only",
+        )
 
     # Validate against real Azure ARM before writing anything.
     provider = get_provider("azure")

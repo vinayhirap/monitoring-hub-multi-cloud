@@ -40,11 +40,16 @@ metrics costs exactly 1 API call per collection cycle for that service,
 not 30 or 180.
 """
 import logging
+import re
 from datetime import timedelta
 
 from app.db import get_connection
 from app.credentials import load_credential
 from app.collector.metrics_writer import write_metrics_batch, write_metric_history_batch
+
+# Real Azure region short-names (eastus2, centralindia, westeurope, ...)
+# are pure lowercase letters/digits, never dots/slashes/colons.
+_VALID_AZURE_REGION_RE = re.compile(r"^[a-z0-9]+$")
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +130,25 @@ def collect_account_metrics(account: dict, categories=None) -> dict:
 
     try:
         cred = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=secret)
+        # SECURITY: `region` comes from aws_accounts.default_region,
+        # which app/api/admin/accounts.py's onboarding endpoints only
+        # ever required to be non-empty -- no format check. Placed
+        # unvalidated into an f-string HOST position like this, an
+        # account onboarded with default_region="attacker.example.com"
+        # would make this server issue a real, authenticated HTTPS
+        # request (carrying this account's live Azure OAuth bearer
+        # token in the Authorization header, since MetricsClient
+        # attaches `cred` to every call it makes) to an attacker-
+        # controlled host on every collection cycle -- SSRF PLUS live
+        # credential/token exfiltration, not just a theoretical
+        # request-forgery. Validated here as the last line of defense
+        # regardless of whether onboarding's own input validation ever
+        # regresses or is bypassed by a future direct-DB edit.
+        if not _VALID_AZURE_REGION_RE.match(region):
+            result["errors"].append(
+                f"default_region {region!r} is not a valid Azure region short-name -- refusing to build a metrics endpoint from it"
+            )
+            return result
         # Azure Monitor's Metrics data-plane endpoint is regional, matching
         # the account's own default_region (Azure region short-name, e.g.
         # "centralindia" -- NOT an AWS-style region code).
