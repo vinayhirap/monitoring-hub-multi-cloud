@@ -66,17 +66,22 @@ body {
 /* ≥900px: the sidebar defaults to a collapsed 60px icon rail; nav-open
    expands it to the full 208px rail with labels. This matches the
    <900px drawer meaning below (nav-open = fully visible either way),
-   so the same button/state drives both without extra JS. */
+   so the same button/state drives both without extra JS.
+   Every selector below is prefixed with .layout (the collapsed state)
+   or .layout.nav-open (the expanded state) specifically so it always
+   outranks the plain unconditional .sidebar/.nav-item/.nav-badge
+   rules elsewhere in this file on specificity alone -- this file has
+   already broken twice from relying on source order instead. */
 @media (min-width: 900px) {
-  .sidebar {
+  .layout .sidebar {
     width: 60px;
     transition: width 0.22s cubic-bezier(0.16, 1, 0.3, 1);
   }
-  .sidebar-nav { padding-left: 0; padding-right: 0; }
-  .nav-item { justify-content: center; padding-left: 0; padding-right: 0; }
-  .nav-label,
-  .sidebar-footer { display: none; }
-  .nav-badge {
+  .layout .sidebar-nav { padding-left: 0; padding-right: 0; }
+  .layout .nav-item { justify-content: center; padding-left: 0; padding-right: 0; }
+  .layout .nav-label,
+  .layout .sidebar-footer { display: none; }
+  .layout .nav-badge {
     position: absolute;
     top: 4px;
     right: 10px;
