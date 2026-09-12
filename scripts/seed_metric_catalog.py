@@ -21,9 +21,11 @@ and the now-redundant orphan is removed.
 
 Usage:
     python scripts/seed_metric_catalog.py
-Requires DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME env vars
-(same as the app — see app/db.py), or falls back to the same local
-defaults used there.
+Requires DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME env vars,
+same as the app (see app/db.py) -- DB_PASSWORD has no fallback default
+of any kind (by design, see app/db.py's _require_db_password()); this
+script now fails immediately at import time if it's unset, rather than
+silently falling back to anything.
 """
 import os
 from dotenv import load_dotenv
@@ -32,16 +34,21 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import mysql.connector
+from app.db import get_connection
 from app.aws.metric_catalog_data import CURATED, DIRECTORY
 
-DB_CONFIG = dict(
-    host=os.getenv("DB_HOST", "127.0.0.1"),
-    port=int(os.getenv("DB_PORT", 3306)),
-    user=os.getenv("DB_USER", "monitor"),
-    password=os.getenv("DB_PASSWORD", "root123"),
-    database=os.getenv("DB_NAME", "monitoring_hub"),
-)
+# SECURITY: previously built its own mysql.connector.connect(**DB_CONFIG)
+# with password=os.getenv("DB_PASSWORD", "root123") -- a hardcoded
+# insecure fallback, the exact anti-pattern app/db.py's
+# _require_db_password() was specifically hardened against (see that
+# function's own docstring). If DB_PASSWORD were ever unset in whatever
+# shell/environment this script gets run from (e.g. .env not found
+# because it's invoked from a different working directory), this would
+# have silently connected with a guessable default instead of failing
+# loudly. Now reuses app.db.get_connection() -- the same pooled,
+# already-hardened connection every other part of this app uses, which
+# raises immediately at import time if DB_PASSWORD is missing, with no
+# fallback of any kind.
 
 # (old_service, old_namespace, old_metric_name) -> (new_service, curated_metric_name)
 # Only needed for rows from the original seed_thresholds.sql that don't
@@ -167,7 +174,7 @@ def reconcile_legacy_rows(cur):
 
 
 def main():
-    conn = mysql.connector.connect(**DB_CONFIG)
+    conn = get_connection()
     cur = conn.cursor()
 
     reconciled, merged = reconcile_legacy_rows(cur)
