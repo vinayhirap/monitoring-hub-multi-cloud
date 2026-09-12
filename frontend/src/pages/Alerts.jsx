@@ -272,7 +272,7 @@ export default function Alerts() {
     if (tab) tab.opener = null;
     setOpeningConsole(id);
     try {
-      const { url } = await apiFetch(`/api/alerts/${id}/console-url`);
+      const { url } = await apiFetch(`/api/alerts/${id}/console-url`, { method: "POST" });
       if (tab) tab.location.href = url;
       else window.open(url, "_blank", "noopener,noreferrer");
     } catch (e) {

@@ -493,7 +493,7 @@ def delete_account(account_id: int, current_user: dict = Depends(require_role("a
     return {"status": "removed", "id": account_id, "account_name": account["account_name"]}
 
 
-@router.get("/{account_id}/console-url")
+@router.post("/{account_id}/console-url")
 def get_account_console_url(
     account_id: int,
     service: str = Query(None),
@@ -509,6 +509,20 @@ def get_account_console_url(
     client-side (same pattern the Alerts page already used). Dispatches
     through the provider layer so this also works for Azure/GCP once
     those providers implement get_console_url.
+
+    POST, not GET, despite this only fetching a URL: this endpoint
+    writes an audit-log entry as a side effect (_write_console_open_audit
+    in app/aws/federation.py), which violates the HTTP "GET is safe/
+    side-effect-free" contract. Under SameSite=Lax cookies (see
+    app/api/auth.py's login()), a GET version would still send the
+    session cookie on a plain top-level navigation (e.g. a crafted
+    <a href> link), letting a CSRF attacker force a spurious "console
+    opened" audit entry under the victim's name -- low severity (no
+    data exposure, since CORS_ALLOWED_ORIGINS is an explicit allowlist
+    so the attacker's page can trigger this but never read the
+    response) but a real correctness gap, fixed 2026-09-12. All
+    frontend callers already use fetch()/apiFetch() rather than a raw
+    browser navigation, so this required no other behavior change.
     """
     accessible = get_accessible_account_ids(user)
     if accessible is not None and account_id not in accessible:

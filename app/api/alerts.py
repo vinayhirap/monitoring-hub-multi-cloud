@@ -336,7 +336,7 @@ def alert_counts(current_user: dict = Depends(require_permission("alerts.view"))
 
 
 # ── AWS CONSOLE DEEP-LINK (account-correct) ────────────────────
-@router.get("/{alert_id}/console-url")
+@router.post("/{alert_id}/console-url")
 def get_console_url(alert_id: int, user: dict = Depends(require_permission("alerts.view"))):
     """
     Returns a console deep link that opens THIS alert's resource in THIS
@@ -349,6 +349,14 @@ def get_console_url(alert_id: int, user: dict = Depends(require_permission("aler
     which meant no Azure/GCP alert could ever produce a working console
     link (AWS's federation helpers were being called directly regardless
     of the alert's actual account provider).
+
+    POST, not GET, despite only fetching a URL: see
+    app/api/admin/accounts.py's matching get_account_console_url
+    docstring for why (writes an audit-log entry as a side effect,
+    which a GET version would let a CSRF attacker trigger via a plain
+    top-level navigation under SameSite=Lax). Alerts.jsx already calls
+    this via apiFetch(), so this required no other frontend change
+    beyond the method itself.
     """
     # SECURITY: previously generated a live cloud-console federation
     # link for this alert's account with no scope check at all -- any
