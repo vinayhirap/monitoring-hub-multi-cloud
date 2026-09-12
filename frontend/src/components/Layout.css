@@ -47,11 +47,11 @@ body {
   overflow: hidden;
 }
 
-/* ≥900px: sidebar is a persistent rail, always visible, laid out
-   in-flow next to .main-wrap — the nav toggle button hides on this
-   breakpoint (see below) since there's nothing to toggle. Below
-   900px it becomes a fixed off-canvas drawer opened by that button,
-   for phones/small tablets and heavily zoomed-in windows. */
+/* ≥900px: sidebar is a persistent, in-flow rail (not off-canvas) —
+   the toggle button collapses it to an icon-only strip instead of
+   hiding it (see the ≥900px collapsed-rail block further down).
+   Below 900px it's a fixed off-canvas drawer opened by that same
+   button, for phones/small tablets and heavily zoomed-in windows. */
 @media (max-width: 899px) {
   .sidebar {
     position: fixed;
@@ -63,8 +63,13 @@ body {
   }
   .layout.nav-open .sidebar { transform: translateX(0); }
 }
+/* ≥900px: the sidebar defaults to its full 208px rail (styled above).
+   nav-open here means "collapsed", not "open" — inverted from the
+   <900px drawer meaning below — so the same button/state can drive
+   both without extra JS. See the collapsed-rail block further down
+   for the actual width/label/footer changes. */
 @media (min-width: 900px) {
-  .layout .btn-nav-toggle { display: none; }
+  .sidebar { transition: width 0.22s cubic-bezier(0.16, 1, 0.3, 1); }
 }
 
 /* Persistent brand/logo in the topbar — stays visible whether the
@@ -480,6 +485,32 @@ body {
 }
 @media (min-width: 900px) {
   .layout.nav-open .sidebar-scrim { display: none; }
+
+  /* Collapsed rail: icons only, no overlay/blur — content in
+     .main-wrap just reflows into the reclaimed space since .sidebar
+     stays a normal in-flow flex item (only its width changes). */
+  .layout.nav-open .sidebar { width: 60px; }
+  .layout.nav-open .sidebar-nav { padding-left: 0; padding-right: 0; }
+  .layout.nav-open .nav-item {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .layout.nav-open .nav-label,
+  .layout.nav-open .sidebar-footer { display: none; }
+  /* Badge collapses to a plain dot on the icon instead of vanishing —
+     alert count is still worth a glance even with the rail collapsed. */
+  .layout.nav-open .nav-badge {
+    position: absolute;
+    top: 4px;
+    right: 10px;
+    width: 8px;
+    height: 8px;
+    min-width: 0;
+    padding: 0;
+    font-size: 0;
+    border-radius: 50%;
+  }
 }
 
 /* ── responsive topbar decluttering ── */
