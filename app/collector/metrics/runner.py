@@ -630,10 +630,18 @@ def _collect_account(account, tier="standard"):
     # with EC2 CWAgent mem/disk purely by coincidence of both being
     # "not critical/standard", not because any of them need 15-min
     # freshness. See scheduler.py's module docstring for the reasoning.
-    if tier == "extended":
+    #
+    # A further split, same day: SLOW_EXTENDED_SERVICES (S3, CloudWatch
+    # Logs, Backup, CloudFront, WAFv2) confirmed via live metric_history
+    # audit to return zero datapoints regardless of poll frequency --
+    # they publish daily or only on rare events, not on any short fixed
+    # interval. Those run on "slow_extended" (24h) instead; everything
+    # else extended-tier stays on the hourly "extended" tier. See
+    # extended.py's SLOW_EXTENDED_SERVICES docstring for the audit data.
+    if tier in ("extended", "slow_extended"):
         try:
             from app.collector.metrics.extended import collect_extended_for_account
-            collect_extended_for_account(session, account)
+            collect_extended_for_account(session, account, tier=tier)
         except Exception as e:
             logger.error(f"Extended collection error [{account['account_name']}]: {e}")
 
@@ -652,10 +660,11 @@ def _collect_account(account, tier="standard"):
 
 def run_metrics_collection(accounts, tier="standard"):
     """
-    tier = 'critical'  — RDS + ELB                       (2-min cycle)
-    tier = 'standard'  — EC2 CPU/Network + EBS + Lambda Errors (5-min cycle)
-    tier = 'low'       — EC2 Disk + CWAgent + Lambda Invocations (15-min cycle)
-    tier = 'extended'  — 33 extended-tier services       (60-min cycle)
+    tier = 'critical'      — RDS + ELB                       (2-min cycle)
+    tier = 'standard'      — EC2 CPU/Network + EBS + Lambda Errors (5-min cycle)
+    tier = 'low'           — EC2 Disk + CWAgent + Lambda Invocations (15-min cycle)
+    tier = 'extended'      — most extended-tier services     (60-min cycle)
+    tier = 'slow_extended' — S3/Logs/Backup/CloudFront/WAFv2  (24h cycle)
     """
     logger.info(f"Metrics [{tier}] — {len(accounts)} accounts")
 

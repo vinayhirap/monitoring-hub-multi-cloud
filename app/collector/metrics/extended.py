@@ -37,6 +37,26 @@ for _service_key, (_display, _namespace, _category, _metrics) in CURATED.items()
         for (m_name, unit, stat, is_default, desc) in _metrics
     ]
 
+# Services confirmed, via a live 24h metric_history audit on 2026-09-12
+# (AuroGov Mumbai), to publish zero datapoints regardless of how often
+# they're polled: S3 storage metrics publish once/day (AWS-confirmed),
+# CloudWatch Logs DeliveryErrors/Backup job-failure counters/CloudFront
+# request-rate metrics/WAFv2 BlockedRequests only emit on rare events,
+# not on a fixed short interval. Polling any of these hourly (or every
+# 15 min, before this patch) can only ever return empty -- AWS bills
+# per request regardless of whether data comes back. Moved to a 24h
+# cadence: still catches the once-a-day S3 storage snapshot and any of
+# the rare-event counters within a day, at 1/24th the request volume.
+#
+# SQS/Kinesis were ALSO all-zero in that same audit, but deliberately
+# NOT included here: their metrics only publish when there's queue/
+# stream activity at all (not a slow-vs-fast publish-rate issue), so a
+# slower poll doesn't fix anything -- it just means finding out about
+# real activity up to 24h late. Left on the hourly "extended" tier;
+# worth checking with the resource owners whether those specific
+# queues/streams are actually still in use before touching further.
+SLOW_EXTENDED_SERVICES = {"s3", "logs", "backup", "cloudfront", "wafv2"}
+
 
 # ── Per-service dimension builders ──────────────────────────────
 #
@@ -258,13 +278,17 @@ def _get_extended_resources_for_account(account_id):
     return grouped
 
 
-def collect_extended_for_account(session, account):
+def collect_extended_for_account(session, account, tier="extended"):
     """
     Queries this account's already-discovered extended-tier resources
     and runs GetMetricData for each (resource_type, region) group.
-    Meant to be called once per account at the "low" tier, same
-    cadence as EC2 CWAgent mem/disk -- these aren't latency-sensitive
-    signals worth polling every 60-300s.
+
+    tier = 'extended'      -- everything except SLOW_EXTENDED_SERVICES,
+                               called hourly (scheduler.py's "extended" tier)
+    tier = 'slow_extended' -- only SLOW_EXTENDED_SERVICES, called once
+                               a day (scheduler.py's "slow_extended" tier)
+                               -- see SLOW_EXTENDED_SERVICES' docstring
+                               above for why these are split out.
     """
     grouped_resources = _get_extended_resources_for_account(account["id"])
     if not grouped_resources:
@@ -284,6 +308,9 @@ def collect_extended_for_account(session, account):
 
     for (resource_type, region), resources in grouped_resources.items():
         if resource_type not in EXTENDED_METRICS:
+            continue
+        is_slow = resource_type in SLOW_EXTENDED_SERVICES
+        if (tier == "slow_extended") != is_slow:
             continue
         cw_region = _region_for_service(resource_type, region)
         try:
