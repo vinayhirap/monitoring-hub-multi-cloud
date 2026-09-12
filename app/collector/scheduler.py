@@ -6,9 +6,20 @@ Tiered scheduler — Phase 2 implementation.
   standard  — every 5 min  : EC2 CPU/Network + EBS + Lambda Errors
   low       — every 15 min : EC2 Disk, EC2 CWAgent mem/disk, Lambda
                               Invocations
-  extended  — every 60 min : the 33 extended-tier services (S3,
-                              CloudWatch Logs, KMS, EventBridge, ACM,
-                              ECS, etc.)
+  extended  — every 60 min : the extended-tier services minus the
+                              always-empty group below
+
+Split further 2026-09-12: a live 24h metric_history audit (AuroGov
+Mumbai) found S3, CloudWatch Logs (DeliveryErrors), Backup (job-failure
+counters), CloudFront (request-rate metrics), and WAFv2 (BlockedRequests)
+returning ZERO datapoints regardless of poll frequency -- these publish
+once/day or only on rare events, not on any short fixed interval, so
+even the 60-min "extended" tier could only ever return empty for them.
+Split onto a new "slow_extended" (24h) tier -- see extended.py's
+SLOW_EXTENDED_SERVICES docstring for the full audit data and for why
+SQS/Kinesis (also all-zero in that same audit) were deliberately NOT
+included here (different root cause: no queue/stream activity at all,
+not a publish-rate mismatch -- a slower poll doesn't fix that).
 
 Split out 2026-09-12: extended-tier services previously rode the "low"
 (15-min) tier purely because that's where EC2 disk/CWAgent already
@@ -91,7 +102,8 @@ logger      = logging.getLogger(__name__)
 CRITICAL_INTERVAL  = 120     #  2 min — EC2 CPU, RDS, ELB
 STANDARD_INTERVAL  = 300     #  5 min — + EBS, Lambda Errors
 LOW_INTERVAL       = 900     # 15 min — EC2 Disk, Lambda Invocations
-EXTENDED_INTERVAL  = 3600    # 60 min — 33 extended-tier services (see module docstring)
+EXTENDED_INTERVAL  = 3600    # 60 min — extended-tier services except SLOW_EXTENDED_SERVICES
+SLOW_EXTENDED_INTERVAL = 86400  # 24 h  — S3/CloudWatch Logs/Backup/CloudFront/WAFv2 (see extended.py)
 DISCOVERY_INTERVAL = 900     # 15 min — aligned with low tier
 
 
@@ -169,11 +181,12 @@ def run_loop():
     last_standard   = 0
     last_low        = 0
     last_extended   = 0
+    last_slow_extended = 0
     last_discovery  = 0
     cycle           = 0
 
     logger.info("Tiered scheduler started "
-                "(critical=2min, standard=5min, low=15min, extended=60min)")
+                "(critical=2min, standard=5min, low=15min, extended=60min, slow_extended=24h)")
 
     while not _stop_event.is_set():
         now    = time.time()
@@ -212,6 +225,15 @@ def run_loop():
                 last_extended = now
             except Exception as e:
                 logger.error(f"Extended tier error: {e}")
+
+        # ── Slow-extended tier (24 h) ───────────────────────────
+        if now - last_slow_extended >= SLOW_EXTENDED_INTERVAL:
+            logger.info(f"[Cycle {cycle}] slow_extended tier")
+            try:
+                run_once("slow_extended")
+                last_slow_extended = now
+            except Exception as e:
+                logger.error(f"Slow-extended tier error: {e}")
 
         if now - last_discovery >= DISCOVERY_INTERVAL:
             logger.info(f"[Cycle {cycle}] discovery")
