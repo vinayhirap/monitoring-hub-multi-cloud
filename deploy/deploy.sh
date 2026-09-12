@@ -369,7 +369,14 @@ User=${REAL_USER}
 WorkingDirectory=${REPO_DIR}
 Environment="PATH=${VENV_DIR}/bin"
 EnvironmentFile=${REPO_DIR}/.env
-ExecStart=${VENV_DIR}/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
+# --proxy-headers + --forwarded-allow-ips: this app is only ever reached
+# through nginx (ExecStart binds 127.0.0.1, not 0.0.0.0), so trusting
+# X-Forwarded-For from that single local, controlled source is safe --
+# without this flag, request.client.host is ALWAYS 127.0.0.1 for every
+# request regardless of the real visitor, which silently breaks any
+# IP-based rate limiting (see app/auth/rate_limit.py) by putting every
+# user in the same shared bucket.
+ExecStart=${VENV_DIR}/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips='127.0.0.1'
 Restart=always
 RestartSec=5
 StandardOutput=journal

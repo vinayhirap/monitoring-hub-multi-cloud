@@ -312,7 +312,10 @@ User=${REAL_USER}
 WorkingDirectory=${REPO_DIR}
 Environment="PATH=${VENV_DIR}/bin"
 EnvironmentFile=${REPO_DIR}/.env
-ExecStart=${VENV_DIR}/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
+# See deploy/deploy.sh's matching ExecStart line for why --proxy-headers
+# + --forwarded-allow-ips is required here (IP-based rate limiting
+# correctness, see app/auth/rate_limit.py).
+ExecStart=${VENV_DIR}/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips='127.0.0.1'
 Restart=always
 RestartSec=5
 StandardOutput=journal
