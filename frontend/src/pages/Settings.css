@@ -1,7 +1,26 @@
 /*monitoring-hub/frontend/src/pages/Settings.css */
 
 .settings-page { max-width: 1000px; display: flex; flex-direction: column; gap: 20px; }
-.page-header { margin-bottom: 4px; }
+.page-header {
+  margin-bottom: 20px;
+  padding: 24px 28px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, rgba(43,179,172,0.08) 0%, rgba(43,179,172,0.015) 55%, transparent 100%);
+  border: 1px solid rgba(43,179,172,0.13);
+  position: relative;
+  overflow: hidden;
+}
+.page-header::before {
+  content: ''; position: absolute; top: -60px; right: -60px;
+  width: 200px; height: 200px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(43,179,172,0.14), transparent 70%);
+  pointer-events: none;
+}
+.page-header > * { position: relative; z-index: 1; }
+.hl {
+  background: linear-gradient(135deg, var(--accent) 0%, #38bdf8 100%);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
 .page-header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
 .subtitle { color: var(--text-secondary); font-size: 13px; margin-top: 4px; }
 
@@ -18,7 +37,13 @@
 
 .card-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 22px; border-bottom: 1px solid var(--border); background: var(--bg-surface);
+  padding: 16px 22px 16px 25px; border-bottom: 1px solid var(--border); background: var(--bg-surface);
+  position: relative;
+}
+.card-header::before {
+  content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--accent), transparent);
 }
 .card-header-simple {
   padding: 14px 22px; border-bottom: 1px solid var(--border); background: var(--bg-surface);
@@ -108,7 +133,7 @@
 .btn-save  { padding: 9px 20px; border-radius: var(--radius); font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid rgba(249,115,22,.4); color: var(--accent-orange); background: rgba(249,115,22,.08); transition: all .15s; }
 .btn-save:hover  { background: rgba(249,115,22,.2); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(249,115,22,0.15); }
 .btn-check { padding: 9px 20px; border-radius: var(--radius); font-size: 13px; font-weight: 600; cursor: pointer; border: none; color: #fff; background: var(--green); transition: opacity .15s; }
-.btn-check:hover { opacity: .85; }
+.btn-check:hover { opacity: .9; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(34,197,94,0.25); }
 .btn-clear { padding: 9px 20px; border-radius: var(--radius); font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid var(--border); color: var(--text-secondary); background: transparent; transition: all .15s; }
 .btn-clear:hover { border-color: var(--red); color: var(--red); transform: translateY(-1px); }
 
