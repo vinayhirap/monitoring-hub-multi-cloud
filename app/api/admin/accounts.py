@@ -337,8 +337,9 @@ def add_account(payload: dict = Body(...), current_user: dict = Depends(require_
     try:
         from app.api.metric_catalog import seed_account_defaults
         if selected_metric_ids:
-            from app.api.metric_catalog import set_account_metrics
-            set_account_metrics(new_id, {"enabled_metric_ids": selected_metric_ids})
+            from app.api.metric_catalog import _set_account_metrics_internal
+            _set_account_metrics_internal(new_id, {"enabled_metric_ids": selected_metric_ids},
+                                           actor=current_user["username"])
         elif provider_name == "aws":
             from app.api.metric_catalog import enable_metrics_for_services
             from app.aws.resource_discovery import discover_all_service_keys
