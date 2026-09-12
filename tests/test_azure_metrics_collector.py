@@ -140,3 +140,43 @@ def test_no_datapoints_is_not_an_error():
     assert written["metrics"] == []
     assert written["history"] == []
     assert result["errors"] == []
+
+
+def test_malicious_default_region_is_refused_not_used_as_ssrf_endpoint():
+    """
+    SECURITY REGRESSION TEST: default_region is only ever required to be
+    non-empty at onboarding (app/api/admin/accounts.py), so this
+    collector must not trust it's a real Azure region short-name.
+    Before the fix, a default_region like "attacker.example.com" would
+    have been placed directly into the MetricsClient endpoint
+    (f"https://{region}.metrics.monitor.azure.com"), making this
+    server issue a real, credentialed HTTPS request -- carrying this
+    account's live Azure OAuth bearer token -- to an attacker-
+    controlled host on every collection cycle. Asserts that a
+    non-region-shaped value is rejected before MetricsClient is ever
+    constructed, and that no metrics get silently dropped in a way
+    that could mask the refusal.
+    """
+    def query_resources(resource_ids):
+        raise AssertionError(
+            "MetricsClient.query_resources must never be called when "
+            "default_region fails validation -- reaching this point "
+            "means the SSRF guard was bypassed."
+        )
+
+    written = _stub_common(query_resources)
+    mod = _load_collector()
+
+    for malicious_region in ["attacker.example.com", "evil.com/", "a b", "", "east.us"]:
+        account = {"id": 5, "tenant_id": "t", "client_id": "c", "client_secret_ref": "s",
+                   "subscription_id": "s", "default_region": malicious_region}
+        import unittest.mock as um
+        with um.patch.object(mod, "_enabled_azure_metrics",
+                              return_value={("Microsoft.Compute/virtualMachines", "vm"): {"Percentage CPU"}}):
+            result = mod.collect_account_metrics(account)
+
+        assert result["pushed"] == 0, f"region {malicious_region!r} should push nothing"
+        assert result["errors"], f"region {malicious_region!r} should report an error, not silently no-op"
+
+    assert written["metrics"] == []
+    assert written["history"] == []
