@@ -625,10 +625,12 @@ def _collect_account(account, tier="standard"):
             except Exception as e:
                 logger.error(f"Task error [{account['account_name']}]: {e}")
 
-    # Extended-tier services -- same "low" (15-min) cadence as EC2
-    # CWAgent mem/disk, not latency-sensitive enough for critical/
-    # standard tiers. See apply_add_extended_service_discovery.py.
-    if tier == "low":
+    # Extended-tier services -- own "extended" (60-min) cadence, split
+    # out 2026-09-12 from the "low" (15-min) tier they used to share
+    # with EC2 CWAgent mem/disk purely by coincidence of both being
+    # "not critical/standard", not because any of them need 15-min
+    # freshness. See scheduler.py's module docstring for the reasoning.
+    if tier == "extended":
         try:
             from app.collector.metrics.extended import collect_extended_for_account
             collect_extended_for_account(session, account)
@@ -650,9 +652,10 @@ def _collect_account(account, tier="standard"):
 
 def run_metrics_collection(accounts, tier="standard"):
     """
-    tier = 'critical'  — EC2 CPU/Network + RDS + ELB    (2-min cycle)
-    tier = 'standard'  — above + EBS + Lambda Errors     (5-min cycle)
-    tier = 'low'       — EC2 Disk + Lambda Invocations   (15-min cycle)
+    tier = 'critical'  — RDS + ELB                       (2-min cycle)
+    tier = 'standard'  — EC2 CPU/Network + EBS + Lambda Errors (5-min cycle)
+    tier = 'low'       — EC2 Disk + CWAgent + Lambda Invocations (15-min cycle)
+    tier = 'extended'  — 33 extended-tier services       (60-min cycle)
     """
     logger.info(f"Metrics [{tier}] — {len(accounts)} accounts")
 

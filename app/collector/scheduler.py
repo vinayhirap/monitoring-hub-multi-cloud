@@ -5,7 +5,22 @@ Tiered scheduler — Phase 2 implementation.
   critical  — every 2 min  : RDS, ELB
   standard  — every 5 min  : EC2 CPU/Network + EBS + Lambda Errors
   low       — every 15 min : EC2 Disk, EC2 CWAgent mem/disk, Lambda
-                              Invocations, extended-tier services
+                              Invocations
+  extended  — every 60 min : the 33 extended-tier services (S3,
+                              CloudWatch Logs, KMS, EventBridge, ACM,
+                              ECS, etc.)
+
+Split out 2026-09-12: extended-tier services previously rode the "low"
+(15-min) tier purely because that's where EC2 disk/CWAgent already
+lived, not because any of them need 15-min freshness. S3 storage
+metrics publish once/day, ACM/KMS/EventBridge/Backup/Route53 barely
+change minute to minute -- none of this is latency-sensitive the way
+RDS/ALB are. Mirrors the reasoning already applied to Azure/GCP in
+multicloud_scheduler.py (core vs extended cadence chosen by real
+billing/publication behavior, not copied blindly from AWS's split).
+Cuts extended-tier GetMetricData call volume by 4x (96 cycles/day -> 24)
+for zero loss of real freshness, since AWS itself isn't publishing
+these any faster than that anyway for most of these namespaces.
 
 Note (post metric_audit.md §8/§10 fix, updated 2026-09-10): EC2 CPU/
 Network and ELB were previously ALSO re-triggered on the "standard" tier
@@ -73,10 +88,11 @@ _stop_event = threading.Event()
 logger      = logging.getLogger(__name__)
 
 # ── Intervals (seconds) ───────────────────────────────────────
-CRITICAL_INTERVAL  = 120    #  2 min — EC2 CPU, RDS, ELB
-STANDARD_INTERVAL  = 300    #  5 min — + EBS, Lambda Errors
-LOW_INTERVAL       = 900    # 15 min — EC2 Disk, Lambda Invocations
-DISCOVERY_INTERVAL = 900    # 15 min — aligned with low tier
+CRITICAL_INTERVAL  = 120     #  2 min — EC2 CPU, RDS, ELB
+STANDARD_INTERVAL  = 300     #  5 min — + EBS, Lambda Errors
+LOW_INTERVAL       = 900     # 15 min — EC2 Disk, Lambda Invocations
+EXTENDED_INTERVAL  = 3600    # 60 min — 33 extended-tier services (see module docstring)
+DISCOVERY_INTERVAL = 900     # 15 min — aligned with low tier
 
 
 def _get_active_accounts():
@@ -152,11 +168,12 @@ def run_loop():
     """
     last_standard   = 0
     last_low        = 0
+    last_extended   = 0
     last_discovery  = 0
     cycle           = 0
 
     logger.info("Tiered scheduler started "
-                "(critical=2min, standard=5min, low=15min)")
+                "(critical=2min, standard=5min, low=15min, extended=60min)")
 
     while not _stop_event.is_set():
         now    = time.time()
@@ -186,6 +203,15 @@ def run_loop():
                 last_low = now
             except Exception as e:
                 logger.error(f"Low tier error: {e}")
+
+        # ── Extended tier (60 min) ─────────────────────────────
+        if now - last_extended >= EXTENDED_INTERVAL:
+            logger.info(f"[Cycle {cycle}] extended tier")
+            try:
+                run_once("extended")
+                last_extended = now
+            except Exception as e:
+                logger.error(f"Extended tier error: {e}")
 
         if now - last_discovery >= DISCOVERY_INTERVAL:
             logger.info(f"[Cycle {cycle}] discovery")

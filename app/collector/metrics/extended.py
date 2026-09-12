@@ -149,12 +149,46 @@ def _region_for_service(service_key, resource_region):
     return resource_region
 
 
-def _collect_extended_service(cw, resources, service_key):
+def _enabled_extended_metrics(cur, account_id):
+    """
+    {(service, metric_name), ...} for this account's actually-enabled
+    extended-tier selection -- the same account_metric_selections table
+    Azure's _enabled_azure_metrics() and GCP's _enabled_gcp_metrics()
+    already filter against, and that Settings -> Metrics writes to.
+
+    Before this, extended.py was the one collector in this codebase that
+    ignored account_metric_selections entirely and just polled every
+    metric_catalog row for a service regardless of enabled state --
+    billing for metrics the UI itself showed as switched off. Discovery's
+    enable_metrics_for_services() only ever auto-enables is_default=1
+    metrics (additive-only, never disables), so this filter doesn't drop
+    anything currently considered "on" -- it stops paying for the ~55%
+    of extended-tier metrics (169 -> 76 across the curated extended
+    services) that were never enabled to begin with, and makes
+    unchecking a metric in Settings -> Metrics actually reduce spend.
+    """
+    cur.execute("""
+        SELECT mc.service, mc.metric_name
+        FROM metric_catalog mc
+        JOIN account_metric_selections ams ON ams.metric_id = mc.id
+        WHERE ams.aws_account_id = %s AND ams.enabled = 1
+              AND mc.provider = 'aws' AND mc.category = 'extended'
+    """, (account_id,))
+    return {(row["service"], row["metric_name"]) for row in cur.fetchall()}
+
+
+def _collect_extended_service(cw, resources, service_key, enabled_keys):
     """resources: list of dicts (id, resource_id, resource_type, name,
     region, tags) all belonging to the same (service_key, region) group.
     Mirrors app/collector/metrics/runner.py's _build_queries/_execute_gmd
     shape but supports multi-dimension metrics via _build_dimensions."""
     metric_defs = EXTENDED_METRICS.get(service_key)
+    if not metric_defs:
+        return 0
+
+    # Only the metrics this account has actually enabled -- see
+    # _enabled_extended_metrics()'s docstring for why this filter exists.
+    metric_defs = [d for d in metric_defs if (service_key, d[0]) in enabled_keys]
     if not metric_defs:
         return 0
 
@@ -233,13 +267,28 @@ def collect_extended_for_account(session, account):
     signals worth polling every 60-300s.
     """
     grouped_resources = _get_extended_resources_for_account(account["id"])
+    if not grouped_resources:
+        return
+
+    conn = get_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        enabled_keys = _enabled_extended_metrics(cur, account["id"])
+    finally:
+        cur.close()
+        conn.close()
+
+    if not enabled_keys:
+        logger.info(f"    Extended: no enabled extended-tier metrics for [{account['account_name']}] -- skipping")
+        return
+
     for (resource_type, region), resources in grouped_resources.items():
         if resource_type not in EXTENDED_METRICS:
             continue
         cw_region = _region_for_service(resource_type, region)
         try:
             cw = session.client("cloudwatch", region_name=cw_region)
-            _collect_extended_service(cw, resources, resource_type)
+            _collect_extended_service(cw, resources, resource_type, enabled_keys)
         except Exception as e:
             logger.error(f"  Extended collection failed [{resource_type}/{cw_region}] "
                          f"[{account['account_name']}]: {e}")
