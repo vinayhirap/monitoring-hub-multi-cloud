@@ -57,3 +57,26 @@ export function clearCached(key) {
     // same as above — never let cache cleanup throw
   }
 }
+
+export function clearAllCached() {
+  // SECURITY: called on logout (and on a session-expiry-triggered
+  // redirect to /login, see api.js) rather than only ever removing
+  // one key at a time. This cache renders whatever it has IMMEDIATELY
+  // on page mount, before the fresh fetch resolves -- on a SHARED
+  // device, if it were never cleared, the next person who logs in on
+  // the same browser (even with an entirely different, more
+  // restrictive RBAC scope) would briefly see the PREVIOUS user's
+  // cached account list / EC2 instances / per-service resources,
+  // since localStorage is scoped to the browser origin, not to who's
+  // currently logged in. Removing every mh_cache: key here closes
+  // that window instead of leaving stale, wrongly-scoped data sitting
+  // around for up to MAX_AGE_MS (24h).
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(PREFIX)) localStorage.removeItem(k);
+    }
+  } catch {
+    // same as above — never let cache cleanup throw
+  }
+}
