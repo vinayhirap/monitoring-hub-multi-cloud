@@ -1087,47 +1087,6 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
       >
         <CloudIcon size={13} /> Open in AWS <ExternalLinkIcon size={12} />
       </button>
-
-      <style>{`
-        .id-section-title-row {
-          display: flex; align-items: center; justify-content: space-between;
-          margin-bottom: 10px; flex-wrap: wrap; gap: 8px;
-        }
-        .time-range-tabs {
-          display: flex; gap: 2px;
-          background: rgba(8,14,26,0.6); border: 1px solid rgba(99,130,190,0.15);
-          border-radius: 6px; padding: 3px;
-        }
-        .tr-btn {
-          background: none; border: none; color: rgba(99,130,190,0.6);
-          font-size: 10px; font-family: monospace; padding: 3px 7px;
-          border-radius: 4px; cursor: pointer; letter-spacing: 0.5px;
-          transition: all 0.15s; white-space: nowrap;
-        }
-        .tr-btn:hover { color: #a8bdd8; background: rgba(99,130,190,0.1); }
-        .tr-active { background: rgba(43,179,172,0.15) !important; color: #2bb3ac !important; font-weight: 700; }
-        .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        .chart-full { grid-column: 1 / -1; }
-        .rel-list { display: flex; flex-direction: column; gap: 6px; }
-        .rel-item {
-          display: flex; align-items: center; gap: 10px;
-          background: rgba(8,14,26,0.5); border: 1px solid rgba(99,130,190,0.12);
-          border-radius: 7px; padding: 8px 10px; transition: border-color 0.15s;
-        }
-        .rel-item:hover { border-color: rgba(99,130,190,0.25); }
-        .rel-icon { font-size: 16px; flex-shrink: 0; }
-        .rel-info { flex: 1; min-width: 0; }
-        .rel-name { font-size: 12px; font-weight: 600; color: #c8d8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .rel-sub  { font-size: 10px; color: rgba(99,130,190,0.55); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .rel-badge {
-          font-size: 10px; font-family: monospace;
-          background: rgba(34,197,94,0.12); color: #22c55e;
-          border: 1px solid rgba(34,197,94,0.25); border-radius: 4px;
-          padding: 2px 7px; white-space: nowrap; flex-shrink: 0;
-        }
-        .sc-ok   { font-size: 10px; font-weight: 700; color: #22c55e; font-family: monospace; display: inline-flex; align-items: center; gap: 3px; }
-        .sc-fail { font-size: 10px; font-weight: 700; color: #ef4444; font-family: monospace; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.25); border-radius: 4px; padding: 2px 7px; display: inline-flex; align-items: center; gap: 3px; }
-      `}</style>
     </div>
   );
 }

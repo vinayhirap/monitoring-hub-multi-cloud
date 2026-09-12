@@ -2,23 +2,12 @@
 .alerts-page { max-width: 1200px; }
 
 .alerts-header {
-  display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px;
-  padding: 26px 30px;
-  border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, rgba(245,158,11,0.07) 0%, rgba(245,158,11,0.015) 55%, transparent 100%);
-  border: 1px solid rgba(245,158,11,0.14);
-  position: relative;
-  overflow: hidden;
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-5);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
 }
-.alerts-header::before {
-  content: ''; position: absolute; top: -70px; right: -70px;
-  width: 240px; height: 240px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(245,158,11,0.14), transparent 70%);
-  pointer-events: none;
-}
-.alerts-header > * { position: relative; z-index: 1; }
 .alerts-header h1 { font-size: 22px; font-weight: 700; color: #e2e8f0; }
-.accent { color: #f59e0b; }
+.accent { color: #f59e0b; font-weight: 700; }
 .alerts-sub { font-size: 12px; color: var(--text-muted, rgba(99,130,190,0.65)); margin-top: 4px; }
 .alerts-header-right { display: flex; align-items: center; gap: 10px; }
 
@@ -54,7 +43,7 @@
   color: var(--text-muted, rgba(99,130,190,0.65)); cursor: pointer; transition: all 0.15s;
 }
 .atab:hover { color: var(--text, #c8d4e8); border-color: var(--border, rgba(99,130,190,0.12)); }
-.atab-active { background: rgba(245,158,11,0.16); border-color: rgba(245,158,11,0.4); color: #f59e0b; font-weight: 700; box-shadow: 0 0 0 3px rgba(245,158,11,0.08); }
+.atab-active { background: rgba(245,158,11,0.16); border-color: rgba(245,158,11,0.4); color: #f59e0b; font-weight: 700; }
 .atab-count {
   font-size: 10px; background: rgba(99,130,190,0.12);
   border-radius: 10px; padding: 0 6px; color: var(--text-muted, rgba(99,130,190,0.65));
@@ -82,14 +71,7 @@
 /* ── Table ── */
 .alerts-table-wrap {
   border: 1px solid var(--border, rgba(99,130,190,0.12));
-  border-radius: 10px; overflow-x: auto;
-  position: relative;
-  box-shadow: 0 4px 20px rgba(2,8,20,0.14);
-}
-.alerts-table-wrap::before {
-  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
-  background: linear-gradient(90deg, #f59e0b 0%, transparent 100%);
-  z-index: 1;
+  border-radius: var(--radius-lg); overflow-x: auto;
 }
 .alerts-table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: 12px; }
 .alerts-table thead { background: rgba(0,0,0,0.3); }
@@ -105,8 +87,8 @@
 .alert-row:last-child td { border-bottom: none; }
 
 /* Row left-border accent by severity — use sev-row- to avoid class conflict with badge */
-.sev-row-critical { border-left: 3px solid #ef4444; background: linear-gradient(90deg, rgba(239,68,68,0.07) 0%, transparent 60%); }
-.sev-row-warning  { border-left: 3px solid #f59e0b; background: linear-gradient(90deg, rgba(245,158,11,0.05) 0%, transparent 60%); }
+.sev-row-critical { border-left: 3px solid #ef4444; background: rgba(239,68,68,0.05); }
+.sev-row-warning  { border-left: 3px solid #f59e0b; background: rgba(245,158,11,0.04); }
 .sev-row-info     { border-left: 3px solid #2bb3ac; }
 
 /* ── Severity badge ── */
@@ -114,9 +96,9 @@
   font-size: 10px; font-weight: 700; border-radius: 5px; padding: 3px 9px; white-space: nowrap;
   display: inline-flex; align-items: center; gap: 4px;
 }
-.sev-critical { background: rgba(239,68,68,0.14); color: #ef4444; border: 1px solid rgba(239,68,68,0.35); box-shadow: 0 0 0 3px rgba(239,68,68,0.07); }
-.sev-warning  { background: rgba(245,158,11,0.14); color: #f59e0b; border: 1px solid rgba(245,158,11,0.35); box-shadow: 0 0 0 3px rgba(245,158,11,0.07); }
-.sev-info     { background: rgba(43,179,172,0.13);  color: #2bb3ac; border: 1px solid rgba(43,179,172,0.35); box-shadow: 0 0 0 3px rgba(43,179,172,0.06); }
+.sev-critical { background: rgba(239,68,68,0.14); color: #ef4444; border: 1px solid rgba(239,68,68,0.35); }
+.sev-warning  { background: rgba(245,158,11,0.14); color: #f59e0b; border: 1px solid rgba(245,158,11,0.35); }
+.sev-info     { background: rgba(43,179,172,0.13);  color: #2bb3ac; border: 1px solid rgba(43,179,172,0.35); }
 
 /* ── Status badge ── */
 .st-badge { font-size: 10px; font-weight: 600; border-radius: 4px; padding: 2px 8px; }

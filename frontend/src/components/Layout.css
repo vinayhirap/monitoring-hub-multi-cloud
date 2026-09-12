@@ -37,26 +37,36 @@ body {
 
 /* ── sidebar ── */
 .sidebar {
-  width: 220px;
+  width: 208px;
   flex-shrink: 0;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.03) 0%, transparent 220px),
-    var(--bg-sidebar);
+  background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
-  position: fixed;
-  inset: 0 auto 0 0;
-  z-index: 60;
-  transform: translateX(-100%);
-  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 12px 40px rgba(2,8,20,0.55);
 }
-/* Sidebar is closed (off-canvas) by default; the topbar toggle button
-   opens it as a slide-in drawer, at every screen size. */
-.layout.nav-open .sidebar { transform: translateX(0); }
+
+/* ≥900px: sidebar is a persistent rail, always visible, laid out
+   in-flow next to .main-wrap — the nav toggle button hides on this
+   breakpoint (see below) since there's nothing to toggle. Below
+   900px it becomes a fixed off-canvas drawer opened by that button,
+   for phones/small tablets and heavily zoomed-in windows. */
+@media (max-width: 899px) {
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 60;
+    transform: translateX(-100%);
+    transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: var(--shadow-lg);
+  }
+  .layout.nav-open .sidebar { transform: translateX(0); }
+}
+@media (min-width: 900px) {
+  .btn-nav-toggle { display: none; }
+  .sidebar-scrim  { display: none; }
+}
 
 /* Persistent brand/logo in the topbar — stays visible whether the
    collapsible sidebar is open or closed. */
@@ -208,10 +218,10 @@ body {
 }
 .topbar-page-label {
   flex: 1;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.005em;
 }
 .topbar-right {
   display: flex;
@@ -365,256 +375,31 @@ body {
 .bc-sep   { color: var(--text-dim); }
 .bc-current { color: var(--accent); }
 
-/* summary tiles */
-.ov-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 24px; }
-.ov-header h1 { font-size: 22px; font-weight: 700; color: #e2e8f0; }
-.ov-header .hl { color: var(--accent); }
-.sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
-.ov-header-right { display: flex; align-items: center; gap: 10px; }
-.sync-time { font-size: 11px; color: var(--text-dim); }
-.ov-refresh {
-  background: var(--bg-card); border: 1px solid var(--border);
-  color: var(--text-muted); border-radius: var(--radius);
-  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
-  cursor: pointer; font-size: 14px; transition: all 0.15s;
-}
-.ov-refresh:hover { color: var(--accent); border-color: var(--border-hi); }
+/* Overview's own header/summary-tile/filter styles live in
+   Overview.css now (see apply_ui_phase1_token_collision_fix history) —
+   this file used to carry a second, slightly different copy of the
+   same .ov-header/.sum-tile/.f-btn rules that only Overview.jsx
+   actually renders, which is exactly the kind of drift an audit flags.
+   Removed rather than left to silently disagree with the real ones. */
 
-.ov-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
-.sum-tile {
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
-  padding: 16px; display: flex; align-items: center; gap: 12px;
-  transition: border-color 0.2s, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s;
-}
-.sum-tile:hover {
-  border-color: rgba(99,130,190,0.28);
-  transform: translateY(-2px);
-  box-shadow: 0 10px 24px rgba(0,0,0,0.28);
-}
-.sum-icon {
-  display: flex; align-items: center; justify-content: center;
-  width: 36px; height: 36px; border-radius: var(--radius); flex-shrink: 0;
-  color: var(--text-muted); background: rgba(99,130,190,0.08);
-}
-.sum-blue  .sum-icon { color: var(--accent); background: rgba(43,179,172,0.12); }
-.sum-green .sum-icon { color: var(--accent-g); background: rgba(34,197,94,0.12); }
-.sum-red   .sum-icon { color: var(--red); background: rgba(239,68,68,0.12); }
-.sum-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 4px; }
-.sum-value { font-size: 28px; font-weight: 700; color: #e2e8f0; line-height: 1; }
-.sum-sub   { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
-.sum-blue  { border-left: 2px solid var(--accent); }
-.sum-green { border-left: 2px solid var(--accent-g); }
-.sum-red   { border-left: 2px solid var(--red); }
-
-.ov-section-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-.ov-section-bar h2 { font-size: 14px; font-weight: 600; color: #e2e8f0; }
-.filter-row { display: flex; align-items: center; gap: 6px; }
-.filter-label { font-size: 11px; color: var(--text-muted); }
-.f-btn {
-  padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 500;
-  background: transparent; border: 1px solid var(--border); color: var(--text-muted);
-  cursor: pointer; transition: all 0.15s;
-}
-.f-btn:hover  { border-color: rgba(99,130,190,0.3); color: var(--text); transform: translateY(-1px); }
-.f-active     { background: rgba(43,179,172,0.1); border-color: rgba(43,179,172,0.3); color: var(--accent); }
-
-.ov-loading { text-align: center; padding: 60px; color: var(--text-muted); font-size: 13px; }
-.spin       { display: inline-block; animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
 .ov-empty   { text-align: center; padding: 60px; color: var(--text-muted); font-size: 13px; }
 .ov-link    { color: var(--accent); cursor: pointer; }
 .ov-link:hover { text-decoration: underline; }
 
-/* account cards */
-.accounts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-.account-card {
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
-  padding: 16px; cursor: pointer; transition: all 0.2s; position: relative; overflow: hidden;
-}
-.account-card::before {
-  content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, rgba(43,179,172,0.02) 0%, transparent 60%);
-  pointer-events: none;
-}
-.account-card:hover { border-color: var(--border-hi); transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
-
-.acc-card-header { margin-bottom: 12px; }
-.acc-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
-.acc-name  { font-size: 14px; font-weight: 700; color: #e2e8f0; }
-.acc-id    { font-size: 10px; color: var(--text-dim); margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; }
-.acc-tags  { display: flex; gap: 6px; flex-wrap: wrap; }
-.tag       { font-size: 10px; border-radius: 4px; padding: 2px 8px; font-weight: 500; }
-.tag-blue  { background: rgba(43,179,172,0.1); color: var(--accent); border: 1px solid rgba(43,179,172,0.2); }
-.tag-purple{ background: rgba(124,110,224,0.1); color: var(--accent-purple); border: 1px solid rgba(124,110,224,0.2); }
-
-.acc-health { display: flex; align-items: center; gap: 16px; margin-bottom: 10px; }
-.h-ring-wrap { position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.h-ring-label { position: absolute; text-align: center; }
-.h-ring-num  { font-size: 14px; font-weight: 700; color: #e2e8f0; line-height: 1; }
-.h-ring-sub  { font-size: 8px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
-
-.acc-stats { flex: 1; }
-.stat-row  { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; border-bottom: 1px solid rgba(99,130,190,0.06); }
-.stat-row:last-child { border-bottom: none; }
-.sr-label  { font-size: 11px; color: var(--text-muted); }
-.sr-value  { font-size: 12px; font-weight: 600; }
-.c-purple  { color: var(--accent-purple); } .c-blue { color: var(--accent); }
-.c-red     { color: var(--red); } .c-green { color: var(--accent-g); }
-.c-muted   { color: var(--text-dim); } .c-yellow { color: var(--yellow); }
-
-.acc-footer { display: flex; justify-content: flex-end; margin-top: 8px; }
-.btn-delete-sm {
-  background: none; border: 1px solid transparent; color: var(--text-dim);
-  border-radius: 4px; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
-  cursor: pointer; font-size: 11px; transition: all 0.15s;
-}
-.btn-delete-sm:hover { color: var(--red); border-color: rgba(239,68,68,0.3); background: rgba(239,68,68,0.08); }
-
-.status-pill { font-size: 10px; font-weight: 600; border-radius: 4px; padding: 2px 8px; letter-spacing: 0.04em; }
-.pill-green  { background: rgba(34,197,94,0.12); color: var(--accent-g); border: 1px solid rgba(34,197,94,0.2); }
-.pill-yellow { background: rgba(245,158,11,0.12); color: var(--yellow);  border: 1px solid rgba(245,158,11,0.2); }
-.pill-red    { background: rgba(239,68,68,0.12); color: var(--red);     border: 1px solid rgba(239,68,68,0.2); }
-
-/* ── detail page shared ── */
-.detail-page { max-width: 1400px; }
-.detail-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; }
-.detail-header h1 { font-size: 20px; font-weight: 700; color: #e2e8f0; }
-.hl { color: var(--accent); }
-.detail-meta { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
-.meta-tag    { font-size: 10px; background: rgba(99,130,190,0.1); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; color: var(--text-muted); }
-.meta-sep    { color: var(--text-dim); }
-.meta-running{ font-size: 11px; color: var(--accent-g); }
-.meta-stopped{ font-size: 11px; color: var(--text-muted); }
-.detail-header-right { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
-
-.btn-back {
-  background: var(--bg-card); border: 1px solid var(--border); color: var(--text-muted);
-  border-radius: var(--radius); padding: 7px 14px; font-size: 11px; font-weight: 500;
-  cursor: pointer; transition: all 0.15s; text-decoration: none; display: inline-flex; align-items: center; gap: 5px;
-}
-.btn-back:hover { border-color: var(--border-hi); color: var(--text); }
-.btn-aws {
-  background: linear-gradient(135deg, var(--accent-yellow), #d97706);
-  border: none; color: #1a0a00; border-radius: var(--radius);
-  padding: 7px 14px; font-size: 11px; font-weight: 700;
-  cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 5px;
-  transition: opacity 0.15s;
-}
-.btn-aws:hover { opacity: 0.88; }
-
-/* instance table */
-.detail-layout { display: flex; gap: 16px; align-items: flex-start; }
-.instance-panel { flex: 1; min-width: 0; }
-.instance-panel.with-detail { flex: none; width: 55%; }
-
-.inst-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-.inst-search {
-  flex: 1; min-width: 200px;
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 7px 12px; color: var(--text); font-size: 12px; outline: none;
-  transition: border-color 0.15s;
-}
-.inst-search:focus { border-color: rgba(43,179,172,0.35); }
-.inst-search::placeholder { color: var(--text-dim); }
-
-.state-filters { display: flex; gap: 4px; }
-.sf-btn {
-  display: flex; align-items: center; gap: 5px;
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 5px 10px;
-  font-size: 11px; color: var(--text-muted); cursor: pointer; transition: all 0.15s;
-}
-.sf-btn:hover  { border-color: rgba(99,130,190,0.3); color: var(--text); }
-.sf-active     { background: rgba(43,179,172,0.08); border-color: rgba(43,179,172,0.25); color: var(--accent); }
-.sf-count      { font-size: 10px; background: rgba(99,130,190,0.15); border-radius: 10px; padding: 0 5px; }
-
-.sort-select {
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 5px 10px; color: var(--text-muted); font-size: 11px; cursor: pointer; outline: none;
-}
-
-.inst-table-wrap { border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--border); }
-.inst-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.inst-table thead { background: rgba(0,0,0,0.3); }
-.inst-table th { padding: 9px 12px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); font-weight: 600; border-bottom: 1px solid var(--border); white-space: nowrap; }
-.inst-table td { padding: 10px 12px; border-bottom: 1px solid rgba(99,130,190,0.06); vertical-align: middle; }
-.inst-row { cursor: pointer; transition: background 0.12s; }
-.inst-row:hover   { background: rgba(43,179,172,0.04); }
-.inst-selected    { background: rgba(43,179,172,0.07) !important; }
-.inst-row:last-child td { border-bottom: none; }
-.inst-name { font-weight: 600; color: #e2e8f0; font-size: 12px; }
-.inst-id   { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
-.tbl-empty { padding: 32px !important; text-align: center; color: var(--text-muted); font-size: 12px; }
-.tbl-error { padding: 16px !important; color: var(--red); font-size: 12px; }
-.tbl-error button { margin-left: 8px; background: none; border: 1px solid rgba(239,68,68,0.3); color: var(--red); border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 11px; }
+/* This block used to hold an entire pre-redesign copy of the
+   account-card / detail-header / instance-table / chart-box family
+   of rules -- markup Overview.jsx, AccountDetail.jsx and
+   ServiceDetail.jsx no longer render (they moved to acc-body/
+   mini-chip/region-row and the real .account-card/.detail-header/
+   .inst-table/.chart-box definitions now live in Overview.css and
+   AccountDetail.css). None of those old selectors matched anything
+   in current JSX -- verified against every page before removal.
+   Kept the four still-used generic utilities that only ever lived
+   here. */
 .mono  { font-family: 'JetBrains Mono', monospace; }
 .small { font-size: 11px; }
 .muted { color: var(--text-dim); }
 .truncate { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.state-badge { font-size: 10px; font-weight: 600; border-radius: 4px; padding: 2px 7px; text-transform: capitalize; white-space: nowrap; }
-.sb-green  { background: rgba(34,197,94,0.12); color: var(--accent-g); border: 1px solid rgba(34,197,94,0.2); }
-.sb-muted  { background: rgba(99,130,190,0.1); color: var(--text-muted); border: 1px solid var(--border); }
-.sb-yellow { background: rgba(245,158,11,0.12); color: var(--yellow); border: 1px solid rgba(245,158,11,0.2); }
-.sb-red    { background: rgba(239,68,68,0.12); color: var(--red); border: 1px solid rgba(239,68,68,0.2); }
-
-.cpu-cell  { display: flex; align-items: center; gap: 6px; }
-.cpu-bar-bg { width: 50px; height: 4px; background: rgba(99,130,190,0.15); border-radius: 2px; overflow: hidden; }
-.cpu-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
-.cpu-label { font-size: 11px; min-width: 38px; font-family: 'JetBrains Mono', monospace; }
-
-/* instance detail panel */
-.inst-detail {
-  width: 44%; flex-shrink: 0;
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius-lg); padding: 20px;
-  max-height: calc(100vh - 130px); overflow-y: auto;
-}
-.inst-detail::-webkit-scrollbar { width: 4px; }
-.inst-detail::-webkit-scrollbar-thumb { background: rgba(99,130,190,0.15); border-radius: 2px; }
-
-.id-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
-.id-name   { font-size: 15px; font-weight: 700; color: #e2e8f0; }
-.id-sub    { font-size: 10px; color: var(--text-dim); margin-top: 4px; line-height: 1.5; }
-.id-close  { background: none; border: 1px solid var(--border); color: var(--text-muted); border-radius: 4px; width: 24px; height: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 11px; flex-shrink: 0; transition: all 0.15s; }
-.id-close:hover { color: var(--red); border-color: rgba(239,68,68,0.3); }
-
-.id-stats  { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
-.qs-item   { background: rgba(0,0,0,0.25); border-radius: var(--radius); padding: 10px 12px; border: 1px solid var(--border); }
-.qs-label  { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin-bottom: 5px; }
-.qs-value  { font-size: 14px; font-weight: 600; color: #e2e8f0; }
-
-.id-section        { margin-bottom: 16px; }
-.id-section-title  { font-size: 9px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); margin-bottom: 10px; font-weight: 600; }
-.id-tags   { display: flex; flex-direction: column; gap: 4px; }
-.id-tag    { display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px 8px; }
-.id-tag-key{ font-size: 11px; color: var(--text-muted); min-width: 80px; }
-.id-tag-val{ font-size: 11px; color: var(--text); font-family: 'JetBrains Mono', monospace; }
-
-.id-no-metrics { font-size: 12px; color: var(--text-muted); background: rgba(0,0,0,0.2); border-radius: var(--radius); padding: 16px; text-align: center; line-height: 1.6; }
-.id-loading { font-size: 12px; color: var(--text-muted); text-align: center; padding: 16px; }
-
-.charts-stack { display: flex; flex-direction: column; gap: 12px; }
-.chart-box {
-  background: rgba(0,0,0,0.2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-.chart-box:hover { border-color: var(--border-hi); box-shadow: 0 6px 18px rgba(0,0,0,0.22); }
-.chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.chart-title  { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); }
-.chart-latest { font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
-.chart-empty  { font-size: 11px; color: var(--text-dim); text-align: center; padding: 12px; }
-
-.btn-open-aws {
-  display: block; width: 100%; text-align: center;
-  background: linear-gradient(135deg, var(--accent-yellow), #d97706);
-  border: none; color: #1a0a00; border-radius: var(--radius);
-  padding: 10px; font-size: 12px; font-weight: 700;
-  cursor: pointer; text-decoration: none; transition: opacity 0.15s; margin-top: 4px;
-}
-.btn-open-aws:hover { opacity: 0.88; }
 
 /* ── Theme toggle button ─────────────────────────────────────── */
 .btn-theme-toggle {
@@ -758,13 +543,11 @@ body {
 [data-theme="light"] .qs-label     { color: #6b84a8; }
 [data-theme="light"] .qs-value     { color: #0f1c35; }
 
-[data-theme="light"] .tr-btn       { color: #6b84a8; }
-[data-theme="light"] .tr-btn:hover { background: rgba(0,119,204,0.08); color: var(--accent); }
-[data-theme="light"] .tr-active    { background: rgba(0,119,204,0.12) !important; color: var(--accent) !important; }
-
-[data-theme="light"] .rel-item     { background: #f7f9fc; border-color: rgba(99,130,190,0.15); }
-[data-theme="light"] .rel-name     { color: #0f1c35; }
-[data-theme="light"] .rel-sub      { color: #6b84a8; }
+/* .tr-btn/.tr-active/.rel-item/.rel-name/.rel-sub light overrides now
+   live in AccountDetail.css next to their (also relocated) base
+   rules -- see that file's history for why they used to be split
+   across a JS-injected <style> tag, this file, and duplicated again
+   further down in this same file. */
 
 [data-theme="light"] .sidebar-footer { border-top-color: rgba(99,130,190,0.12); }
 [data-theme="light"] .lup-label    { color: #6b84a8; }
@@ -813,7 +596,7 @@ body {
 [data-theme="light"] .topbar-tz            { color: #8099bb; }
 [data-theme="light"] .topbar-username      { color: #0f1c35; }
 [data-theme="light"] .topbar-user-icon     { color: #6b84a8; }
-[data-theme="light"] .topbar-page-label    { color: #8099bb; }
+[data-theme="light"] .topbar-page-label    { color: #0f1c35; }
 [data-theme="light"] .live-pill            { background: rgba(0,135,90,0.1); border-color: rgba(0,135,90,0.25); color: #00875a; }
 [data-theme="light"] .live-dot             { background: #00875a; }
 [data-theme="light"] .btn-theme-toggle     { background: rgba(0,119,204,0.07); border-color: rgba(0,119,204,0.2); color: var(--accent); }
@@ -911,20 +694,9 @@ body {
 [data-theme="light"] .id-no-metrics      { background: #f5f8fd; color: #6b84a8; }
 [data-theme="light"] .id-loading         { color: #6b84a8; }
 
-/* Time range tabs */
-[data-theme="light"] .time-range-tabs    { background: #f0f4fa; border-color: rgba(99,130,190,0.15); }
-[data-theme="light"] .tr-btn             { color: #8099bb; }
-[data-theme="light"] .tr-btn:hover       { background: rgba(0,119,204,0.06); color: var(--accent); }
-[data-theme="light"] .tr-active          { background: rgba(0,119,204,0.1) !important; color: var(--accent) !important; }
-
-/* charts-grid inner chart-box */
-[data-theme="light"] .charts-grid .chart-box { background: #f5f8fd; border-color: rgba(99,130,190,0.12); }
-
-/* ── Resource relationships ──────────────────────────────────── */
-[data-theme="light"] .rel-item           { background: #f5f8fd; border-color: rgba(99,130,190,0.15); }
-[data-theme="light"] .rel-item:hover     { border-color: rgba(99,130,190,0.28); }
-[data-theme="light"] .rel-name           { color: #0f1c35; }
-[data-theme="light"] .rel-sub            { color: #8099bb; }
+/* Time range tabs, resource relationships, charts-grid — see
+   AccountDetail.css for the base + light rules (this was the third
+   copy of the same overrides). */
 
 /* ── Overview section bars ───────────────────────────────────── */
 [data-theme="light"] .ov-section-bar h2  { color: #0f1c35; }
@@ -994,12 +766,8 @@ body {
 [data-theme="light"] .c-btn               { background: #ffffff; border-color: rgba(99,130,190,0.2); color: #4a6080; }
 [data-theme="light"] .c-btn:hover         { border-color: rgba(0,119,204,0.3); color: var(--accent); }
 [data-theme="light"] .c-btn-primary       { background: var(--accent); color: #fff; border-color: var(--accent); }
-[data-theme="light"] .um-card             { background: #ffffff; border-color: rgba(99,130,190,0.18); }
-[data-theme="light"] .um-name             { color: #0f1c35; }
-[data-theme="light"] .um-meta             { color: #6b84a8; }
-[data-theme="light"] .perm-tag.granted    { background: rgba(0,135,90,0.08); border-color: rgba(0,135,90,0.2); color: #00875a; }
-[data-theme="light"] .perm-tag.denied     { background: rgba(192,57,43,0.07); border-color: rgba(192,57,43,0.18); color: #c0392b; }
-[data-theme="light"] .ob-card             { background: #ffffff; border-color: rgba(99,130,190,0.18); }
-[data-theme="light"] .field-label         { color: #3d5070; }
-[data-theme="light"] .ob-input            { background: #f5f8fd; border-color: rgba(99,130,190,0.25); color: #0f1c35; }
-[data-theme="light"] .ob-input::placeholder { color: #a0b0c8; }
+/* .um-card/.um-name/.um-meta/.perm-tag/.ob-card/.field-label/.ob-input
+   light-theme overrides removed here — none of those classNames are
+   rendered by any current page (UserManagement.jsx uses .perm-chip,
+   AccountOnboarding.jsx uses .ob-field, etc.); these were leftover
+   from renamed markup with no base rule anywhere either. */

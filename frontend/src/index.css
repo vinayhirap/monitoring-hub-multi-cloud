@@ -46,13 +46,26 @@
   --fs-table:         13px;
   --fs-nav:           13px;
 
-  --radius:         7px;
-  --radius-lg:      12px;
-  --radius-sm:      5px;
+  --radius:         6px;
+  --radius-lg:      9px;
+  --radius-sm:      4px;
 
-  --shadow-sm: 0 1px 2px rgba(2,8,20,0.4);
-  --shadow-md: 0 4px 16px rgba(2,8,20,0.45);
-  --shadow-lg: 0 12px 32px rgba(2,8,20,0.5);
+  /* Flat, low-glare elevation — enterprise monitoring UIs are read for
+     hours at a stretch, so shadows stay short and dark rather than the
+     soft diffuse "floating card" look. */
+  --shadow-sm: 0 1px 2px rgba(2,8,20,0.35);
+  --shadow-md: 0 2px 8px rgba(2,8,20,0.35);
+  --shadow-lg: 0 6px 20px rgba(2,8,20,0.4);
+
+  /* Spacing scale — use these instead of one-off px values so density
+     stays consistent across pages. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
 
   --container-max: 1600px;
 }
