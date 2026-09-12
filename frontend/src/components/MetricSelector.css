@@ -1,4 +1,4 @@
-﻿/* src/components/MetricSelector.css */
+/* src/components/MetricSelector.css */
 .ms-root {
   display: flex;
   flex-direction: column;
@@ -6,7 +6,7 @@
   font-family: var(--font-sans);
 }
 
-/* â”€â”€ Toolbar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* -- Toolbar ----------------------------------------------------------- */
 .ms-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -64,9 +64,11 @@
 .ms-tab-active {
   background: var(--accent-dim);
   color: var(--accent);
+  font-weight: 700;
+  box-shadow: 0 0 0 3px rgba(43,179,172,0.08);
 }
 
-/* â”€â”€ Summary bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* -- Summary bar ------------------------------------------------------- */
 .ms-summary-bar {
   display: flex;
   align-items: center;
@@ -102,7 +104,7 @@
 .ms-btn-ghost:disabled { opacity: 0.5; cursor: default; }
 .ms-btn-danger:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,0.08); }
 
-/* â”€â”€ List / sections â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* -- List / sections --------------------------------------------------- */
 .ms-list {
   display: flex;
   flex-direction: column;
@@ -171,7 +173,7 @@
   padding-left: 4px;
 }
 
-/* â”€â”€ Service cards â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* -- Service cards ----------------------------------------------------- */
 .ms-card {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -179,7 +181,11 @@
   overflow: hidden;
   transition: border-color 0.15s;
 }
-.ms-card-active { border-color: var(--border-bright); }
+.ms-card-active { border-color: var(--border-bright); position: relative; }
+.ms-card-active::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, var(--accent) 0%, transparent 100%);
+}
 
 .ms-card-header {
   width: 100%;
@@ -240,7 +246,7 @@
   white-space: nowrap;
 }
 .ms-progress-partial { color: var(--accent); border-color: var(--accent); }
-.ms-progress-full     { color: var(--accent-green); border-color: var(--accent-green); }
+.ms-progress-full     { color: var(--accent-green); border-color: var(--accent-green); box-shadow: 0 0 0 3px rgba(34,197,94,0.08); }
 
 .ms-select-all {
   font-size: 11px;
@@ -327,13 +333,13 @@
   white-space: nowrap;
 }
 
-/* â”€â”€ Scrollbar polish â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* -- Scrollbar polish -------------------------------------------------- */
 .ms-list::-webkit-scrollbar { width: 8px; }
 .ms-list::-webkit-scrollbar-track { background: transparent; }
 .ms-list::-webkit-scrollbar-thumb { background: var(--border-md); border-radius: 8px; }
 .ms-list::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
 
-/* â”€â”€ Small screens â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* -- Small screens ----------------------------------------------------- */
 @media (max-width: 640px) {
   .ms-metric-row { grid-template-columns: 18px 1fr; row-gap: 2px; }
   .ms-metric-stat, .ms-metric-desc { grid-column: 2; font-size: 10.5px; }
