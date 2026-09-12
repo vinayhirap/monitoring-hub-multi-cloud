@@ -253,7 +253,23 @@ export default function Alerts() {
   async function openConsole(id) {
     // Open the tab synchronously (on the click) so browsers don't block it
     // as a popup once the async fetch resolves.
+    //
+    // SECURITY: window.open("", "_blank") with no third argument leaves
+    // this new tab's `window.opener` pointing back at THIS page -- unlike
+    // every other window.open() call in this codebase (ServiceList.jsx,
+    // AccountDetail.jsx, ServiceDetail.jsx), which all pass
+    // "noopener,noreferrer" directly. Whatever eventually loads in `tab`
+    // (here: the AWS federation URL) would otherwise get script-level
+    // access to navigate the ORIGINAL tab via window.opener.location --
+    // classic reverse tabnabbing. Can't pass "noopener" as a literal
+    // argument here the way the other call sites do, since this call
+    // has to happen before we know the destination URL (that's the
+    // whole point of the two-step pattern) -- so we sever the opener
+    // link explicitly instead, immediately after opening, which
+    // achieves the same isolation without losing the synchronous-open
+    // popup-blocker workaround.
     const tab = window.open("", "_blank");
+    if (tab) tab.opener = null;
     setOpeningConsole(id);
     try {
       const { url } = await apiFetch(`/api/alerts/${id}/console-url`);
