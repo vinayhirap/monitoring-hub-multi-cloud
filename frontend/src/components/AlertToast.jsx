@@ -45,18 +45,28 @@ export default function AlertToast() {
   if (toasts.length === 0) return null;
 
   return (
-    <div style={{
-      position: "fixed",
-      bottom: "min(24px, 4vh)", right: "min(24px, 4vw)",
-      display: "flex", flexDirection: "column", gap: 10,
-      zIndex: 9999,
-      width: "min(380px, calc(100vw - 48px))",
-      maxWidth: "calc(100vw - 48px)",
-    }}>
-      {toasts.map(t => (
-        <ToastItem key={t.id} toast={t} onClose={() => setToasts(p => p.filter(x => x.id !== t.id))} />
-      ))}
-    </div>
+    <>
+      <style>{`
+        @keyframes toastCriticalGlow {
+          0%, 100% { box-shadow: 0 8px 32px rgba(239,68,68,0.18), 0 0 0 0 rgba(239,68,68,0); }
+          50%       { box-shadow: 0 8px 32px rgba(239,68,68,0.28), 0 0 20px 2px rgba(239,68,68,0.18); }
+        }
+        .toast-close-btn { transition: background 0.15s, color 0.15s; border-radius: 6px; }
+        .toast-close-btn:hover { background: rgba(99,130,190,0.12); color: #dce6f5 !important; }
+      `}</style>
+      <div style={{
+        position: "fixed",
+        bottom: "min(24px, 4vh)", right: "min(24px, 4vw)",
+        display: "flex", flexDirection: "column", gap: 10,
+        zIndex: 9999,
+        width: "min(380px, calc(100vw - 48px))",
+        maxWidth: "calc(100vw - 48px)",
+      }}>
+        {toasts.map(t => (
+          <ToastItem key={t.id} toast={t} onClose={() => setToasts(p => p.filter(x => x.id !== t.id))} />
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -68,17 +78,26 @@ function ToastItem({ toast, onClose }) {
 
   return (
     <div style={{
-      background: bg, border: `1px solid ${border}`,
-      borderRadius: 10, padding: "14px 16px",
+      background: bg,
+      borderTop: `1px solid ${border}`, borderRight: `1px solid ${border}`, borderBottom: `1px solid ${border}`,
+      borderLeft: `4px solid ${color}`,
+      borderRadius: 12, padding: "16px 18px",
       display: "flex", gap: 12, alignItems: "flex-start",
-      boxShadow: `0 4px 24px ${color}22`,
-      animation: "slideIn .25s ease",
+      boxShadow: `0 8px 32px ${color}22`,
+      backdropFilter: "blur(10px) saturate(140%)",
+      WebkitBackdropFilter: "blur(10px) saturate(140%)",
+      animation: isCrit ? "slideIn .25s ease, toastCriticalGlow 2.4s ease infinite" : "slideIn .25s ease",
     }}>
-      <div style={{ flexShrink: 0, color }}>
-        {isCrit ? <AlertOctagonIcon size={22} /> : <AlertTriangleIcon size={22} />}
+      <div style={{
+        flexShrink: 0, color,
+        width: 36, height: 36, borderRadius: 10,
+        background: `${color}1f`, border: `1px solid ${color}55`,
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}>
+        {isCrit ? <AlertOctagonIcon size={19} /> : <AlertTriangleIcon size={19} />}
       </div>
       <div style={{ flex: 1 }}>
-        <div style={{ fontWeight: 700, fontSize: 14, color, marginBottom: 3 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color, marginBottom: 3, letterSpacing: "0.01em" }}>
           {toast.severity} ALERT
         </div>
         <div style={{ fontSize: 13, color: "#dce6f5", marginBottom: 2 }}>
@@ -89,9 +108,9 @@ function ToastItem({ toast, onClose }) {
           {toast.region ? ` · ${toast.region}` : ""}
         </div>
       </div>
-      <button onClick={onClose} style={{
+      <button className="toast-close-btn" onClick={onClose} style={{
         background: "none", border: "none", color: "#4a5f80",
-        cursor: "pointer", padding: 0, lineHeight: 1, display: "flex",
+        cursor: "pointer", padding: 4, lineHeight: 1, display: "flex",
       }}>
         <XIcon size={14} />
       </button>
