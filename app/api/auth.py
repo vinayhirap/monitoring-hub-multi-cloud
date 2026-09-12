@@ -175,7 +175,13 @@ def forgot_password(payload: dict = Body(...)):
         cursor.close()
         conn.close()
         # Same response either way so usernames can't be enumerated.
-        return {"status": "ok", "message": "If that account exists, a reset token has been generated."}
+        return {
+            "status":  "ok",
+            "message": "If that account exists, a password reset has been initiated. "
+                        "Check your email, or contact an administrator if you don't "
+                        "receive it shortly.",
+            "expires_in_minutes": RESET_TOKEN_TTL_MINUTES,
+        }
 
     token      = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(minutes=RESET_TOKEN_TTL_MINUTES)
