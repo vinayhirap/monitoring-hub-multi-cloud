@@ -359,9 +359,19 @@ def build_federated_console_url(role_arn: str | None, external_id: str | None,
     _write_console_open_audit(requested_by, target_account_id, service, resource_id)
 
     if target_account_id:
+        # region is quote()'d into a query VALUE here, not a host
+        # position, so it can't split the URL's authority the way the
+        # other builders in this file could -- but it's still
+        # unvalidated attacker-reachable input being forwarded to an
+        # external domain (signin.aws.amazon.com), even if only inside
+        # an encoded query string. Routed through _safe_region() for
+        # consistency with resource_console_destination/
+        # service_console_list_url, and so this app never hands
+        # AWS's own sign-in service a garbage/spoofed-looking region
+        # value on a caller's behalf.
         return (
             f"https://{target_account_id}.signin.aws.amazon.com/console"
-            f"?region={urllib.parse.quote(region or 'us-east-1', safe='')}"
+            f"?region={urllib.parse.quote(_safe_region(region), safe='')}"
             f"&redirect_uri={urllib.parse.quote(destination, safe='')}"
         )
     return destination
