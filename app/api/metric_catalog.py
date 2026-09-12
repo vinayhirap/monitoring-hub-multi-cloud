@@ -14,6 +14,7 @@ CloudWatch metric catalog + per-account metric selection.
 from fastapi import APIRouter, HTTPException, Body, Query, Response, Depends
 from app.db import get_connection
 from app.auth.permissions import require_permission
+from app.auth.authorization import get_accessible_account_ids
 from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type
 import datetime
 import json
@@ -22,6 +23,25 @@ import yaml
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Metric Catalog"])
+
+
+def _require_account_access(account_id: int, current_user: dict) -> None:
+    """
+    SECURITY: every /api/account-metrics/{account_id}/* endpoint below
+    took account_id as a plain path param and never checked it against
+    the caller's RBAC scope -- only the router-level "must be logged
+    in" dependency (main.py's _auth_dep) and, for some endpoints, a
+    role-level permission. That let any user see/replace another
+    account's metric selection, and (worse) let generate_yace_config
+    hand back that account's real AWS IAM role_arn + external_id --
+    a credential-adjacent secret -- to anyone merely logged in,
+    regardless of role or assigned scope. Mirrors the same
+    account_id-not-in-accessible pattern used consistently elsewhere
+    (app/api/live_data.py, app/api/alerts.py, app/api/settings.py).
+    """
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is not None and account_id not in accessible:
+        raise HTTPException(status_code=403, detail="You do not have access to this account")
 
 
 def _ser(obj):
@@ -34,12 +54,12 @@ def _ser(obj):
     return obj
 
 
-def _write_audit(actor, action, detail):
+def _write_audit(actor, action, detail, role="ADMIN"):
     try:
         conn = get_connection(); cur = conn.cursor()
         cur.execute(
             "INSERT INTO audit_logs (actor, action, payload) VALUES (%s,%s,%s)",
-            (actor, action, json.dumps({"detail": detail}))
+            (actor, action, json.dumps({"detail": detail, "role": role}))
         )
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
@@ -204,6 +224,7 @@ def enable_metrics_for_services(account_id: int, service_keys: set, provider: st
 
 @router.get("/api/account-metrics/{account_id}")
 def get_account_metrics(account_id: int, current_user: dict = Depends(require_permission("metrics.view"))):
+    _require_account_access(account_id, current_user)
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("SELECT id, provider FROM aws_accounts WHERE id = %s", (account_id,))
     account = cur.fetchone()
@@ -375,6 +396,21 @@ def set_account_metrics(account_id: int, payload: dict = Body(...), current_user
     Full-replace selection for this account.
     Body: { "enabled_metric_ids": [1, 2, 3, ...] }
     """
+    _require_account_access(account_id, current_user)
+    return _set_account_metrics_internal(account_id, payload, actor=current_user["username"])
+
+
+def _set_account_metrics_internal(account_id: int, payload: dict, actor: str = "system (onboarding)"):
+    """
+    The actual full-replace logic, split out from the route above so
+    app/api/admin/accounts.py's onboarding flow can call it directly
+    as a plain Python function (new_id was JUST created by that same
+    request's own accounts.onboard-permission check, so there's no
+    separate caller/scope to re-validate here -- re-running
+    _require_account_access against a Depends() sentinel object,
+    which is what current_user would be on a direct non-HTTP call,
+    would crash rather than protect anything).
+    """
     enabled_ids = set(int(i) for i in payload.get("enabled_metric_ids", []))
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
@@ -413,13 +449,14 @@ def set_account_metrics(account_id: int, payload: dict = Body(...), current_user
 
     conn.commit(); cur.close(); conn.close()
 
-    _write_audit("admin", "Account metric selection updated",
+    _write_audit(actor, "Account metric selection updated",
                  f"account={account_id} enabled={len(enabled_ids)} added={len(to_add)} removed={len(to_remove)}")
     return {"status": "saved", "enabled_count": len(enabled_ids)}
 
 
 @router.post("/api/account-metrics/{account_id}/apply-default")
 def apply_default_template(account_id: int, current_user: dict = Depends(require_permission("alerts.configure"))):
+    _require_account_access(account_id, current_user)
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("SELECT id, provider FROM aws_accounts WHERE id = %s", (account_id,))
     account = cur.fetchone()
@@ -586,7 +623,8 @@ def _discover_azure_metrics(acc: dict, namespace: str) -> set:
 
 
 @router.post("/api/account-metrics/{account_id}/discover")
-def discover_namespace_metrics(account_id: int, namespace: str = Query(...), region: str = Query(None)):
+def discover_namespace_metrics(account_id: int, namespace: str = Query(...), region: str = Query(None),
+                                current_user: dict = Depends(require_permission("alerts.configure"))):
     """
     Live metric discovery for a 'directory' namespace — used when a user
     expands a service that doesn't have a hand-curated metric list.
@@ -595,6 +633,17 @@ def discover_namespace_metrics(account_id: int, namespace: str = Query(...), reg
     Discovered metric names are cached into metric_catalog as category
     'directory' rows (still metric_name-populated) so future loads are instant.
     """
+    # SECURITY: this endpoint previously had no permission dependency
+    # at all beyond the router-level "must be logged in" check, and no
+    # account-scope check either -- any authenticated user, including
+    # a read-only viewer, could trigger a live discovery API call
+    # (billed/rate-limited against the TARGET account's own cloud
+    # quota) against any account_id in the system. Gated the same way
+    # its write-siblings in this file (set_account_metrics,
+    # apply_default_template) already are: alerts.configure (editor+)
+    # plus the caller's own account scope.
+    _require_account_access(account_id, current_user)
+
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT id, provider, default_region, role_arn, external_id,
@@ -643,8 +692,9 @@ def discover_namespace_metrics(account_id: int, namespace: str = Query(...), reg
         """, (service_key, namespace, display_service, metric_name, provider))
     conn.commit(); cur.close(); conn.close()
 
-    _write_audit("admin", "Discovered namespace metrics",
-                 f"account={account_id} provider={provider} namespace={namespace} count={len(seen)}")
+    _write_audit(current_user["username"], "Discovered namespace metrics",
+                 f"account={account_id} provider={provider} namespace={namespace} count={len(seen)}",
+                 role=current_user["role"].upper())
     return {"namespace": namespace, "discovered": len(seen), "metrics": sorted(seen)}
 
 
@@ -677,6 +727,7 @@ def generate_yace_config(
                      "-- this export exists only for anyone still running "
                      "a separate external YACE + VictoriaMetrics stack.",
     ),
+    current_user: dict = Depends(require_permission("accounts.onboard")),
 ):
     """
     Builds a ready-to-use YACE (yet-another-cloudwatch-exporter) discovery
@@ -703,6 +754,19 @@ def generate_yace_config(
     (CloudWatch -> YACE -> local VictoriaMetrics) and reload/restart YACE
     there. This app does not remotely push config; it only generates it.
     """
+    # SECURITY: this endpoint returns the account's real IAM role_arn
+    # AND external_id (a confused-deputy-prevention secret, not just
+    # an identifier) straight into the downloadable YAML. It previously
+    # required only "logged in" -- no permission check at all, no
+    # account-scope check -- meaning any authenticated user regardless
+    # of role, including a read-only viewer, could download another
+    # account's cross-account role credentials wholesale. Gated to
+    # accounts.onboard (the same permission already required to see/
+    # test cloud credential material elsewhere in this app, e.g.
+    # app/api/admin/accounts.py's test-role/test-azure-credentials/
+    # test-gcp-credentials) plus the caller's own account scope.
+    _require_account_access(account_id, current_user)
+
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT account_name, account_id, role_arn, external_id, default_region

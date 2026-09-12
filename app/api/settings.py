@@ -1,7 +1,8 @@
 # app/api/settings.py
-from fastapi import APIRouter, Body, Query, Depends
+from fastapi import APIRouter, Body, Query, Depends, HTTPException
 from app.db import get_connection
 from app.auth.permissions import require_permission
+from app.auth.authorization import get_accessible_account_ids
 from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type, resolve_db_metric_name
 import datetime, json, logging
 
@@ -54,6 +55,36 @@ _STALE_DATA_CUTOFF_MINUTES = 7 * 24 * 60  # 10080 -- 7 days
 # apply_fix_nlb_ghost_thresholds.py.
 _ALB_ARN_PATTERN = "loadbalancer/app/"
 _NLB_ARN_PATTERN = "loadbalancer/net/"
+
+
+def _require_account_access(account_id: int, current_user: dict) -> None:
+    """
+    SECURITY: every endpoint in this file takes account_id as a plain
+    query/body param and, until this fix, never checked it against the
+    caller's RBAC scope at all -- only the role-level permission
+    (alerts.view / alerts.configure) was enforced. That meant a viewer
+    could read another account's alert-threshold configuration, and an
+    EDITOR could silently create/modify/disable alerting thresholds
+    (or trigger a live threshold check/alert write) for any account_id
+    in the system, not just the accounts their access_scopes/
+    group_policies actually grant them -- a materially worse gap than
+    a read-only IDOR, since it lets a scoped-down editor blind
+    monitoring for infrastructure outside their assignment. Mirrors
+    the account_id-not-in-accessible pattern already used in
+    app/api/live_data.py, app/api/admin/accounts.py, and
+    app/api/alerts.py.
+    """
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is not None and account_id not in accessible:
+        raise HTTPException(status_code=403, detail="You do not have access to this account")
+
+
+def _get_threshold_account_id(threshold_id: int):
+    conn = get_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT aws_account_id FROM thresholds WHERE id = %s", (threshold_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return row["aws_account_id"] if row else None
 
 
 def _metrics_with_data_for_account(account_id: int) -> set:
@@ -158,6 +189,7 @@ def get_thresholds(
     ),
     current_user: dict = Depends(require_permission("alerts.view")),
 ):
+    _require_account_access(account_id, current_user)
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("""
         SELECT
@@ -191,6 +223,7 @@ def get_thresholds(
 @router.post("/thresholds")
 def upsert_threshold(payload: dict = Body(...), current_user: dict = Depends(require_permission("alerts.configure"))):
     account_id     = int(payload.get("account_id", 3))
+    _require_account_access(account_id, current_user)
     metric_id      = payload["metric_id"]
     resource_type  = normalize_threshold_resource_type(payload.get("resource_type", "ec2"))
     warning_value  = float(payload["warning_value"])
@@ -216,13 +249,19 @@ def upsert_threshold(payload: dict = Body(...), current_user: dict = Depends(req
           critical_value, comparison, eval_period, enabled))
     conn.commit(); new_id = cur.lastrowid; cur.close(); conn.close()
 
-    _write_audit("admin", "Threshold updated",
-                 f"account={account_id} metric_id={metric_id} warn={warning_value} crit={critical_value}")
+    _write_audit(current_user["username"], "Threshold updated",
+                 f"account={account_id} metric_id={metric_id} warn={warning_value} crit={critical_value}",
+                 role=current_user["role"].upper())
     return {"status": "saved", "id": new_id}
 
 
 @router.patch("/thresholds/{threshold_id}/toggle")
 def toggle_threshold(threshold_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("alerts.configure"))):
+    account_id = _get_threshold_account_id(threshold_id)
+    if account_id is None:
+        raise HTTPException(status_code=404, detail="Threshold not found")
+    _require_account_access(account_id, current_user)
+
     enabled = int(payload.get("enabled", 1))
     conn = get_connection(); cur = conn.cursor()
     cur.execute("UPDATE thresholds SET enabled=%s WHERE id=%s", (enabled, threshold_id))
@@ -232,6 +271,7 @@ def toggle_threshold(threshold_id: int, payload: dict = Body(...), current_user:
 
 @router.post("/thresholds/seed")
 def seed_default_thresholds(account_id: int = Query(3), current_user: dict = Depends(require_permission("alerts.configure"))):
+    _require_account_access(account_id, current_user)
     # Only seed thresholds for metrics actually enabled in "Metrics to
     # Monitor" for this account (account_metric_selections). Previously this
     # pulled from the entire metric_catalog regardless of selection, so the
@@ -263,6 +303,7 @@ def seed_default_thresholds(account_id: int = Query(3), current_user: dict = Dep
 
 @router.get("/check")
 def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(require_permission("alerts.view"))):
+    _require_account_access(account_id, current_user)
     from app.aws.collector_direct import check_and_write_alerts
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
@@ -285,12 +326,12 @@ def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(re
         return {"breaches": [], "error": str(e)}
 
 
-def _write_audit(actor, action, detail):
+def _write_audit(actor, action, detail, role="ADMIN"):
     try:
         conn = get_connection(); cur = conn.cursor()
         cur.execute(
             "INSERT INTO audit_logs (actor, action, payload) VALUES (%s,%s,%s)",
-            (actor, action, json.dumps({"detail": detail, "role": "ADMIN"}))
+            (actor, action, json.dumps({"detail": detail, "role": role}))
         )
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
