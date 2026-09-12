@@ -36,25 +36,33 @@ async def _safe_redis_listener():
         logger.warning(f"Redis listener crashed (server continues): {e}")
 
 
-def _run_collector():
+def _run_collector(leader_event):
     try:
         from app.collector.scheduler import run_loop
-        run_loop()
+        run_loop(leader_event)
     except Exception as e:
         logger.error(f"Collector crashed: {e}")
 
 
-def _run_describe_poll_loop():
+def _run_describe_poll_loop(leader_event):
     """
     Free EC2 status + ALB target health via Describe APIs — not CloudWatch,
     zero GetMetricData cost either way, so this runs on its own tight loop
     (default 30s) independent of the tiered scheduler's cadence, for the
     lowest latency the AWS Describe APIs can give us.
+
+    leader_event: checked once per cycle so this loop stops itself if this
+    worker ever loses collector leadership mid-run (see app/collector/
+    leader.py's docstring for the 2026-09-12 incident this closes the gap
+    on — losing the DB lock used to leave this loop running forever).
     """
     import time
     from app.aws.describe_polling import poll_all
     interval = 30
     while True:
+        if not leader_event.is_set():
+            logger.warning("[describe-poll] leadership lost -- stopping this loop")
+            return
         try:
             poll_all()
         except Exception as e:
@@ -62,20 +70,20 @@ def _run_describe_poll_loop():
         time.sleep(interval)
 
 
-def _run_multicloud_collector():
+def _run_multicloud_collector(leader_event):
     """Azure/GCP metric collection — see app/collector/multicloud_scheduler.py for why
     this is a separate loop from the AWS tiered scheduler rather than folded into it."""
     try:
         from app.collector.multicloud_scheduler import run_loop
-        run_loop()
+        run_loop(leader_event)
     except Exception as e:
         logger.error(f"Multi-cloud collector crashed: {e}")
 
 
-def _start_all_collector_threads():
-    threading.Thread(target=_run_collector, daemon=True, name="collector").start()
-    threading.Thread(target=_run_describe_poll_loop, daemon=True, name="describe-poll").start()
-    threading.Thread(target=_run_multicloud_collector, daemon=True, name="multicloud-collector").start()
+def _start_all_collector_threads(leader_event):
+    threading.Thread(target=_run_collector, args=(leader_event,), daemon=True, name="collector").start()
+    threading.Thread(target=_run_describe_poll_loop, args=(leader_event,), daemon=True, name="describe-poll").start()
+    threading.Thread(target=_run_multicloud_collector, args=(leader_event,), daemon=True, name="multicloud-collector").start()
 
 
 @asynccontextmanager
