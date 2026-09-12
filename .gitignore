@@ -50,3 +50,11 @@ grant_*_scope.json
 *_scope.json
 .env.bak.*
 .env.production.bak.*
+
+# Provider (Azure/GCP) credential encryption-at-rest key -- app/credentials.py
+# auto-generates this file on first use if CREDENTIAL_ENCRYPTION_KEY isn't set
+# in the environment. It decrypts every Azure client secret / GCP service-
+# account key stored in provider_credentials -- committing it would defeat
+# that encryption entirely, the same class of incident fix_p0_credential_leak.py
+# already had to clean up once for session cookies/passwords. Never commit.
+config/credential.key
