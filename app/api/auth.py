@@ -197,11 +197,23 @@ def forgot_password(payload: dict = Body(...)):
 
     _write_audit(username, "Password reset requested", {"username": username})
 
-    # Email the link when SMTP + an address on file are both available;
-    # otherwise fall back to the original behavior (return the token
-    # directly in the response) rather than leave the user stuck with
-    # no way to reset at all -- this is exactly the swap-in point the
-    # original docstring/comment on this endpoint called for.
+    # SECURITY: the reset token must NEVER be returned in this API
+    # response. This endpoint is intentionally unauthenticated (anyone
+    # can call it for any username, so the not-found path can't be used
+    # to enumerate accounts) -- if the token itself came back in the
+    # JSON, that same unauthenticated caller could reset ANY account's
+    # password without ever proving ownership of the account's inbox,
+    # i.e. a one-request full account takeover for every username in
+    # the system. The previous "no SMTP configured -> return the token
+    # directly" fallback made that the default behavior of this
+    # deployment (SMTP_HOST is blank in .env.production.example).
+    #
+    # If mail is configured and an address is on file, email the link.
+    # Otherwise the token is written ONLY to the server-side
+    # application log (readable by someone with shell/log access to
+    # the box, not by an anonymous HTTP caller) and an admin can always
+    # set a user's password directly via the admin users API/UI
+    # regardless of SMTP configuration.
     if user.get("email") and mailer.is_configured():
         reset_link = f"{mailer.get_public_app_url()}/reset-password?token={token}"
         sent = mailer.send_email(
@@ -213,17 +225,24 @@ def forgot_password(payload: dict = Body(...)):
                 f"If you didn't request this, you can ignore this email.\n"
             ),
         )
-        if sent:
-            return {
-                "status":  "ok",
-                "message": "If that account exists, a reset link has been emailed to it.",
-                "expires_in_minutes": RESET_TOKEN_TTL_MINUTES,
-            }
+        if not sent:
+            logger.warning(
+                f"Password reset for '{username}' could not be emailed "
+                f"(send failed); token={token} (server log only, never returned via API)"
+            )
+    else:
+        logger.warning(
+            f"Password reset requested for '{username}' but SMTP is not configured "
+            f"and/or no email is on file; token={token} (server log only, never "
+            f"returned via API). Configure SMTP_HOST or have an admin reset the "
+            f"password directly via the admin users API."
+        )
 
     return {
-        "status":     "ok",
-        "message":    "If that account exists, a reset token has been generated.",
-        "token":      token,
+        "status":  "ok",
+        "message": "If that account exists, a password reset has been initiated. "
+                    "Check your email, or contact an administrator if you don't "
+                    "receive it shortly.",
         "expires_in_minutes": RESET_TOKEN_TTL_MINUTES,
     }
 

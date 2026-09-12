@@ -20,7 +20,8 @@ from app.api.settings       import router as settings_router
 from app.api.live_data      import router as live_data_router
 from app.api.audit_logs     import router as audit_logs_router
 from app.api.metric_catalog import router as metric_catalog_router
-from app.auth.deps          import get_current_user
+from app.auth.deps          import get_current_user, COOKIE_NAME
+from app.auth.security      import decode_token
 
 from app.ws.manager import ws_manager
 from app.ws.pusher  import redis_listener, stop_listener
@@ -130,6 +131,56 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    """
+    Baseline security headers -- previously set nowhere (neither here
+    nor in deploy/nginx.conf), so every response left the defaults of
+    "no policy at all" for clickjacking/MIME-sniffing/referrer leakage
+    protections. Applied here rather than in nginx so they travel with
+    the app regardless of how it's fronted, and can't silently
+    disappear if the reverse-proxy config drifts.
+
+    No CSP `upgrade-insecure-requests`/HSTS forced on by default: this
+    deployment currently serves plain HTTP (COOKIE_SECURE defaults to
+    false for the same reason -- see app/api/auth.py), and sending
+    Strict-Transport-Security or forcing HTTPS upgrades over a
+    non-HTTPS origin would break the app outright rather than harden
+    it. HSTS is added automatically once request.url.scheme is https,
+    i.e. as soon as this is placed behind TLS per the deployment
+    guide's Security Checklist.
+    """
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = (
+        "geolocation=(), microphone=(), camera=(), payment=(), usb=()"
+    )
+    # frame-ancestors 'none' backs up X-Frame-Options for browsers that
+    # honor CSP over the legacy header; base-uri/object-src pinned down
+    # as cheap, safe-by-default hardening that this SPA doesn't need to
+    # relax (it doesn't use <base> or plugins). style-src needs
+    # 'unsafe-inline' because the React app sets inline style={{...}}
+    # attributes throughout (frontend/src/**) -- tightening that to a
+    # nonce/hash scheme would need frontend build changes out of scope
+    # here. font/style-src also allow Google Fonts, the only external
+    # resource frontend/index.html actually loads; connect-src allows
+    # ws/wss for the same-origin WebSocket feed.
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data:; "
+        "connect-src 'self' ws: wss:; "
+        "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+    )
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "version": "0.3.0"}
@@ -137,6 +188,39 @@ def root():
 
 @app.websocket("/ws/{channel}")
 async def websocket_endpoint(websocket: WebSocket, channel: str):
+    # SECURITY: this endpoint previously accepted every connection with
+    # no authentication at all. The channels it serves ("overview",
+    # "alerts", "metrics") broadcast live account IDs/names, regions,
+    # CPU/memory values, and alert severity/thresholds for every cloud
+    # account in the system -- an anonymous client (no login, no
+    # cookie) could open ws://<host>/ws/overview directly and receive
+    # that live feed for accounts far outside anything an authenticated
+    # viewer's RBAC scope would ever show them. Same-origin browser
+    # WebSocket handshakes already carry the httpOnly mh_session
+    # cookie automatically (see frontend/src/hooks/useWebSocket.js --
+    # it connects to a same-origin ws://.../ws/{channel} URL, no
+    # frontend change needed), so we validate it the same way
+    # get_current_user does for REST routes before accepting the
+    # upgrade.
+    #
+    # NOTE: this closes the "must be logged in at all" gap. It does
+    # NOT yet filter broadcast payloads per-connection by the caller's
+    # account/region scope (get_effective_scope) -- that would require
+    # per-message filtering keyed to each connection's user, a larger
+    # change to ws/manager.py + ws/publisher.py. Recorded as a
+    # follow-up finding below; every currently-connected client is at
+    # minimum an authenticated user of the system, which is the
+    # binary access-control gap this fixes.
+    token = websocket.cookies.get(COOKIE_NAME)
+    if not token:
+        await websocket.close(code=4401)
+        return
+    try:
+        decode_token(token)
+    except Exception:
+        await websocket.close(code=4401)
+        return
+
     await ws_manager.connect(websocket, channel)
     try:
         while True:
