@@ -3,11 +3,11 @@ annotated-types==0.7.0
 anyio==4.12.1
 boto3==1.42.54
 botocore==1.42.54
-click==8.3.1
+click==8.3.3
 colorama==0.4.6
 fastapi==0.129.0
 h11==0.16.0
-idna==3.11
+idna==3.15
 jmespath==1.1.0
 mysql-connector-python==9.6.0
 pydantic==2.12.5
@@ -19,16 +19,16 @@ six==1.17.0
 starlette==0.52.1
 typing-inspection==0.4.2
 typing_extensions==4.15.0
-urllib3==2.6.3
+urllib3==2.7.0
 uvicorn==0.41.0
 uvicorn[standard]
 websockets
 redis
 bcrypt==4.0.1
 passlib[bcrypt]
-PyJWT==2.10.1
-requests==2.32.3
-python-dotenv==1.0.1
+PyJWT==2.13.0
+requests==2.33.0
+python-dotenv==1.2.2
 
 # Azure provider (Service Principal auth + real ARM discovery)
 azure-identity>=1.19,<2
@@ -71,11 +71,19 @@ google-cloud-spanner>=3.49,<4
 google-cloud-firestore>=2.17,<3
 google-cloud-asset>=3,<4
 
-# Credential encryption-at-rest (Azure client secret / GCP SA key JSON)
-cryptography>=42,<44
+# Credential encryption-at-rest (Azure client secret / GCP SA key JSON).
+# >=46.0.6 fixes several real CVEs found in a 2026-09-12 dependency audit:
+# a bundled-OpenSSL vulnerability, and an ECC public-key subgroup
+# validation gap affecting ECDSA/ECDH (PYSEC-2026-2141/CVE-2026-26007).
+# This library is exactly what encrypts every stored Azure/GCP secret in
+# this app (see app/credentials.py), so its own CVEs matter more here
+# than in a typical app. azure-identity only requires cryptography>=2.5
+# (confirmed via its own package metadata), so this range doesn't
+# conflict with anything else in this file.
+cryptography>=46.0.6,<51
 
 # Testing (tests/ -- this repo's first test suite, see add_test_suite.py).
 # Small and harmless to have installed in production; not worth splitting
 # into a separate requirements-dev.txt when only one file is wired into
 # setup.sh/deploy.sh/update.sh's pip install step.
-pytest>=8,<9
+pytest>=9,<10
