@@ -1,10 +1,15 @@
 # app/api/auth.py
 import os
 
-from fastapi import APIRouter, HTTPException, Body, Response, Depends
+from fastapi import APIRouter, HTTPException, Body, Response, Request, Depends
 from app.db import get_connection
 from app.auth.security import create_access_token
 from app.auth.deps import get_current_user, COOKIE_NAME
+from app.auth.rate_limit import (
+    enforce_login_rate_limit,
+    enforce_forgot_password_rate_limit,
+    enforce_reset_password_rate_limit,
+)
 from app.email import mailer
 import bcrypt
 import logging
@@ -53,12 +58,19 @@ def _write_audit(actor: str, action: str, payload: dict):
 
 
 @router.post("/login")
-def login(response: Response, payload: dict = Body(...)):
+def login(request: Request, response: Response, payload: dict = Body(...)):
     username = (payload.get("username") or "").strip()
     password = (payload.get("password") or "").strip()
 
     if not username or not password:
         raise HTTPException(status_code=400, detail="username and password required")
+
+    # SECURITY: this endpoint had no rate limiting at all -- unlimited
+    # password guesses against any account. Checked AFTER validating
+    # username/password are present (no point spending a rate-limit
+    # slot on an obviously-malformed request) but BEFORE the DB lookup
+    # (no point querying the DB for a request we're about to reject).
+    enforce_login_rate_limit(request, username)
 
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -148,20 +160,25 @@ def change_password(payload: dict = Body(...), current_user: dict = Depends(get_
 
 
 @router.post("/forgot-password")
-def forgot_password(payload: dict = Body(...)):
+def forgot_password(request: Request, payload: dict = Body(...)):
     """
     Request a password reset. Always returns a generic success message
     (never reveals whether the username exists). If the account is
-    real, a one-time token valid for 30 minutes is created.
-
-    NOTE: this deployment has no SMTP/email service wired in, so the
-    token is returned directly in the response for now instead of being
-    emailed — swap the return value for an email send once mail is
-    configured, without changing the token/table logic.
+    real, a one-time token valid for 30 minutes is created and either
+    emailed (if SMTP is configured) or logged server-side only -- see
+    mailer.send_email()'s call below. The token is NEVER returned in
+    this response; that was fixed in patch 0001/0002 of the 2026-09-12
+    audit after it was found to be a full account-takeover vector.
     """
     username = (payload.get("username") or "").strip()
     if not username:
         raise HTTPException(status_code=400, detail="username is required")
+
+    # SECURITY: unlimited calls here previously meant free-form DB
+    # lookups (and, when SMTP is configured, free email sends) at
+    # whatever rate an attacker chose. Checked after the basic
+    # "username present" validation, before any DB work.
+    enforce_forgot_password_rate_limit(request)
 
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -254,13 +271,16 @@ def forgot_password(payload: dict = Body(...)):
 
 
 @router.post("/reset-password")
-def reset_password(payload: dict = Body(...)):
+def reset_password(request: Request, payload: dict = Body(...)):
     """Complete a reset using the token from /forgot-password."""
     token  = (payload.get("token") or "").strip()
     new_pw = (payload.get("new_password") or "").strip()
 
     if not token or not new_pw:
         raise HTTPException(status_code=400, detail="token and new_password are required")
+
+    # SECURITY: defense-in-depth against brute-forcing the token itself.
+    enforce_reset_password_rate_limit(request)
     if len(new_pw) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
 
