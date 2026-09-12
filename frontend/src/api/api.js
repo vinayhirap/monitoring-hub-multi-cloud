@@ -1,4 +1,6 @@
 // src/api/api.js
+import { clearAllCached } from "../utils/dataCache";
+
 const BASE = "";
 
 async function apiFetch(path, options = {}) {
@@ -13,6 +15,15 @@ async function apiFetch(path, options = {}) {
   if (res.status === 401) {
     // Session expired (or never existed) — bounce to login rather
     // than leaving the caller to interpret a raw fetch failure.
+    // SECURITY: also clear the localStorage data cache here, not just
+    // in AuthContext's logout() — a 401 can happen without the user
+    // ever clicking "log out" (server-side session expiry, a
+    // restarted backend, etc.), and without this, whatever this
+    // browser cached under the just-ended session stays sitting
+    // around for the next login on the same device to render before
+    // its own scoped fetch resolves. See dataCache.js's
+    // clearAllCached() docstring for the full shared-device scenario.
+    clearAllCached();
     if (window.location.pathname !== "/login") {
       window.location.href = "/login";
     }

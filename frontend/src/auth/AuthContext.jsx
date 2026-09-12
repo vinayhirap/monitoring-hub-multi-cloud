@@ -1,5 +1,6 @@
 // src/auth/AuthContext.jsx
 import { createContext, useContext, useEffect, useState } from "react";
+import { clearAllCached } from "../utils/dataCache";
 
 const AuthContext = createContext(null);
 const BASE = "";
@@ -76,6 +77,10 @@ export function AuthProvider({ children }) {
       // Even if the network call fails, still clear local state below —
       // worst case the cookie just sits there until it expires (12h).
     }
+    // SECURITY: must run on every logout, not just be "nice to have" —
+    // see clearAllCached()'s own docstring for why leaving this data
+    // behind is a real cross-user disclosure risk on shared devices.
+    clearAllCached();
     setUser(null);
     setPermissions(new Set());
   }
