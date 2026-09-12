@@ -29,11 +29,35 @@ metrics elsewhere in this app.
 """
 import logging
 import os
+import re
 import smtplib
 import ssl
 from email.mime.text import MIMEText
 
 logger = logging.getLogger(__name__)
+
+# Defense-in-depth against CRLF/header injection (CWE-93): every current
+# caller (app/api/auth.py's forgot-password, app/api/admin/users.py's
+# welcome email) passes a hardcoded subject string, but to_addr always
+# comes from the users.email column, which create_user() only
+# .strip()s -- no format validation, no rejection of embedded control
+# characters. Without this check here, an editor creating a user could
+# put a CRLF sequence into the email field and have it land verbatim
+# in both the MIME "To" header (header injection -- e.g. smuggling in
+# an extra Bcc: line) AND smtplib.sendmail's raw envelope RCPT TO
+# argument (the more severe case: some smtplib/server combinations
+# would treat embedded CRLF there as SMTP command injection).
+# Centralized here rather than only at create_user's input boundary so
+# every current AND future caller is protected uniformly, matching
+# this app's own "centralized, reusable security controls over
+# duplicated fixes" convention (see app/auth/authorization.py's
+# docstring for the same principle applied to RBAC).
+_HEADER_INJECTION_RE = re.compile(r"[\r\n]")
+
+
+def _reject_header_injection(value: str, field_name: str) -> None:
+    if _HEADER_INJECTION_RE.search(value):
+        raise ValueError(f"{field_name} contains a disallowed control character (CR/LF)")
 
 
 def is_configured() -> bool:
@@ -51,7 +75,25 @@ def send_email(to_addr: str, subject: str, body_text: str) -> bool:
     -- callers should treat a False return as "email not sent, fall
     back to your existing non-email behavior", not as an error to
     surface to the end user).
+
+    Never raises -- if to_addr or subject contain embedded CR/LF (which
+    would otherwise be a header/envelope injection vulnerability: that
+    value lands verbatim in both the MIME "To" header and smtplib's raw
+    envelope RCPT TO argument), this is treated the same as any other
+    send failure: logged at error level and False is returned, so a
+    malicious/malformed value can never reach the wire but also never
+    take down the caller's own request (e.g. create_user's account
+    creation must still succeed even if the just-typed email is bad;
+    the caller can decide separately whether to reject the value up
+    front -- see admin/users.py's create_user for the input-side check).
     """
+    try:
+        _reject_header_injection(to_addr, "to_addr")
+        _reject_header_injection(subject, "subject")
+    except ValueError as e:
+        logger.error(f"Refusing to send mail -- {e} (to_addr={to_addr!r}, subject={subject!r})")
+        return False
+
     if not is_configured():
         logger.warning(
             f"Mail not sent to {to_addr!r} (subject={subject!r}) -- SMTP_HOST is not set. "

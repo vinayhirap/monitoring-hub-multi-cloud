@@ -8,6 +8,7 @@ from app.email import mailer
 import bcrypt
 import datetime
 import json
+import re
 import secrets
 
 router = APIRouter(prefix="/api/users", tags=["Users"])
@@ -187,6 +188,18 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
         raise HTTPException(status_code=400, detail="password min 6 characters")
     if role not in ["admin", "editor", "viewer"]:
         raise HTTPException(status_code=400, detail="role must be admin, editor, or viewer")
+    # SECURITY: only .strip()'d before this fix -- no format check, no
+    # rejection of embedded control characters. This value later flows
+    # straight into mailer.send_email(to_addr=email, ...) as both the
+    # MIME "To" header and the raw SMTP envelope recipient, so an
+    # unvalidated value here was a CRLF/header-injection vector (an
+    # editor could plant a fake "email" containing a newline to smuggle
+    # in extra headers or attempt SMTP command injection). mailer.py's
+    # send_email() also independently refuses CR/LF as defense-in-depth,
+    # but rejecting here means bad data never even reaches the users
+    # table in the first place.
+    if email and not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
+        raise HTTPException(status_code=400, detail="email is not a valid address")
 
     if not authz.can_manage_role(current_user, role):
         raise HTTPException(
