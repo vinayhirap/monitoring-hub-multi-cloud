@@ -42,6 +42,7 @@ from app.db import get_connection
 from app.auth.deps import require_role
 from app.auth.permissions import require_permission
 from app.auth import authorization as authz
+from app.api.admin.users import _user_manageable_by
 import datetime
 import json
 
@@ -165,6 +166,19 @@ def get_user_groups(user_id: int, current_user: dict = Depends(require_role("adm
     if not user:
         conn.close()
         raise HTTPException(status_code=404, detail="User not found")
+
+    # SECURITY: this endpoint returns another user's FULLY-RESOLVED
+    # access scope (every account/region they can reach, via direct
+    # grants AND group inheritance) -- the same category of
+    # information app/api/admin/users.py's GET /{user_id}/access
+    # already guards with _user_manageable_by before returning
+    # anything. This endpoint had no such check: any editor could look
+    # up ANY user_id (another editor, a viewer well outside their own
+    # scope, even attempt an admin's id) and see their exact resolved
+    # access, not just users the editor actually manages.
+    if not _user_manageable_by(current_user, user):
+        conn.close()
+        raise HTTPException(status_code=403, detail="You do not have access to this user's scope")
 
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
