@@ -3,28 +3,13 @@
 .c-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 20px;
-  padding: 24px 28px;
-  border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, rgba(43,179,172,0.08) 0%, rgba(43,179,172,0.015) 55%, transparent 100%);
-  border: 1px solid rgba(43,179,172,0.13);
-  position: relative;
-  overflow: hidden;
+  align-items: center;
+  margin-bottom: var(--space-5);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
 }
-.c-header::before {
-  content: ''; position: absolute; top: -60px; right: -60px;
-  width: 200px; height: 200px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(43,179,172,0.14), transparent 70%);
-  pointer-events: none;
-}
-.c-header > * { position: relative; z-index: 1; }
-.c-header h1  { font-size: 24px; font-weight: 700; }
-.hl {
-  background: linear-gradient(135deg, var(--accent) 0%, #38bdf8 100%);
-  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
-  font-weight: 800;
-}
+.c-header h1  { font-size: 22px; font-weight: 700; }
+.hl { color: var(--accent); font-weight: 700; }
 .sub          { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 
 .c-header-actions {
@@ -79,7 +64,7 @@
   align-items: center;
   gap: 6px;
 }
-.c-btn:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
+.c-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 .c-btn-primary {
   background: var(--accent-dim);
@@ -96,7 +81,7 @@
   gap: 6px;
 }
 .c-btn-primary:disabled { opacity: .4; cursor: not-allowed; }
-.c-btn-primary:hover:not(:disabled) { background: rgba(43,179,172,.2); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(43,179,172,0.15); }
+.c-btn-primary:hover:not(:disabled) { background: rgba(43,179,172,.2); }
 
 /* Audit Card */
 .audit-card {
@@ -104,12 +89,6 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  position: relative;
-  box-shadow: 0 4px 20px rgba(2,8,20,0.12);
-}
-.audit-card::before {
-  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
-  background: linear-gradient(90deg, var(--accent) 0%, transparent 100%);
 }
 
 .audit-bar {
@@ -174,7 +153,7 @@
   cursor: pointer;
   transition: transform 0.15s;
 }
-.c-retry:hover { transform: translateY(-1px); }
+.c-retry:hover { background: rgba(239,68,68,.18); }
 
 .c-empty {
   padding: 48px;

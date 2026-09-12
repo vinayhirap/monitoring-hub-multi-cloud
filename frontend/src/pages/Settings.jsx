@@ -10,8 +10,7 @@ import {
   ServerIcon, SaveIcon, ScaleIcon, DatabaseIcon, BucketIcon, SettingsIcon,
   MailIcon, InfoIcon, ArrowRightIcon, BarChartIcon, TrashIcon, AlertTriangleIcon,
   RedDotIcon, CheckIcon, CompassIcon, RotateCcwIcon, DownloadIcon, LockIcon,
-  ShieldIcon, KeyIcon, ZapIcon, PackageIcon, EyeIcon, SlashIcon,
-  ClipboardIcon, XIcon,
+  XIcon,
 } from "../components/icons";
 
 const BASE = "";
@@ -487,38 +486,6 @@ export default function Settings() {
             />
           </div>
         )}
-      </div>
-
-      {/* Security */}
-      <div className="settings-card">
-        <div className="card-header-simple">
-          <div className="card-title-row">
-            <span className="card-icon"><LockIcon size={16}/></span>
-            <span className="card-title">SECURITY & VAPT</span>
-          </div>
-        </div>
-        <div className="security-grid">
-          {[
-            { icon: ShieldIcon,    label: "CSRF Protection",   status: "Active — SameSite cookies enforced" },
-            { icon: KeyIcon,       label: "JWT Auth",           status: "HS256 — tokens expire in 24h" },
-            { icon: ZapIcon,       label: "Rate Limiting",      status: "100 req/min per IP" },
-            { icon: LockIcon,      label: "HTTPS Enforcement",  status: "Redirect all HTTP → HTTPS" },
-            { icon: PackageIcon,   label: "Input Sanitization", status: "Pydantic v2 schema validation" },
-            { icon: EyeIcon,       label: "Audit Logging",       status: "All mutations logged to DB" },
-            { icon: SlashIcon,     label: "SQL Injection Guard", status: "Parameterized queries only" },
-            { icon: LockIcon,      label: "Secrets Management",  status: "Env vars — never in code" },
-            { icon: ClipboardIcon, label: "Read-Only IAM",       status: "6 AWS ReadOnly policies — zero writes" },
-          ].map(s => (
-            <div key={s.label} className="sec-item">
-              <span className="sec-icon"><s.icon size={16}/></span>
-              <div className="sec-info">
-                <div className="sec-label">{s.label}</div>
-                <div className="sec-status">{s.status}</div>
-              </div>
-              <span className="sec-badge ok"><CheckIcon size={11}/></span>
-            </div>
-          ))}
-        </div>
       </div>
     </div>
   );

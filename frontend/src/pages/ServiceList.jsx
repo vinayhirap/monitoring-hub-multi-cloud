@@ -187,12 +187,12 @@ export default function ServiceList() {
 
   return (
     <div style={{ maxWidth: 1100 }}>
-      <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:20, fontSize:11, color:"var(--text-muted)", fontFamily:"var(--font-mono)", letterSpacing:"0.06em" }}>
-        <span style={{ cursor:"pointer", color:"var(--accent)" }} onClick={() => navigate("/overview")}>ALL ACCOUNTS</span>
-        <span style={{ opacity:.4 }}>›</span>
-        <span style={{ color:"var(--text-secondary)" }}>{account?.account_name ?? `Account ${id}`}</span>
-        <span style={{ opacity:.4 }}>›</span>
-        <span>SERVICES</span>
+      <div className="breadcrumb">
+        <span className="bc-link" onClick={() => navigate("/overview")}>ALL ACCOUNTS</span>
+        <span className="bc-sep">›</span>
+        <span className="bc-link" onClick={() => navigate(`/accounts/${id}`)}>{account?.account_name ?? `Account ${id}`}</span>
+        <span className="bc-sep">›</span>
+        <span className="bc-current">SERVICES</span>
       </div>
 
       <div style={{ marginBottom:32, display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
@@ -224,7 +224,7 @@ export default function ServiceList() {
           )}
         </div>
       ) : (
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(220px, 1fr))", gap:16 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))", gap:10 }}>
           {activeServices.map(svc => {
             const routable = CORE_AWS_SERVICES.has(svc.id);
             return (
@@ -244,60 +244,52 @@ export default function ServiceList() {
 
 function ServiceCard({ svc, provider, onClick, alertCount, hasCritical, routable = true, isConsoleLoading = false }) {
   const [hovered, setHovered] = useState(false);
-  const alertColor = hasCritical ? "#ef4444" : "#f59e0b";
+  const alertColor = hasCritical ? "var(--red)" : "var(--yellow)";
   return (
     <div onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
         background:   hovered ? "var(--bg-card-hover)" : "var(--bg-card)",
-        border:       `1px solid ${alertCount > 0 ? alertColor+"50" : hovered ? svc.color+"60" : "var(--border)"}`,
-        borderRadius: "var(--radius-lg)", padding: "28px 20px 22px",
-        cursor: "pointer", transition: "all .18s ease", textAlign: "center",
-        position: "relative", overflow: "hidden",
-        transform: hovered ? "translateY(-4px)" : "translateY(0)",
-        boxShadow: hovered ? `0 12px 32px ${svc.color}20` : "none",
+        border:       `1px solid ${alertCount > 0 ? alertColor : hovered ? "var(--border-bright)" : "var(--border)"}`,
+        borderLeft:   `3px solid ${alertCount > 0 ? alertColor : svc.color}`,
+        borderRadius: "var(--radius)", padding: "18px 18px 16px",
+        cursor: "pointer", transition: "background .15s, border-color .15s",
+        display: "flex", alignItems: "center", gap: 14,
       }}>
-      {alertCount > 0 && (
-        <div style={{
-          position:"absolute", top:10, right:10,
-          background: alertColor, color:"#fff",
-          fontSize:10, fontWeight:700, borderRadius:10, padding:"2px 7px",
-          fontFamily:"var(--font-mono)", zIndex:2,
-        }}>
-          {hasCritical ? "🔴" : "⚠️"} {alertCount}
-        </div>
-      )}
-      <div style={{ position:"absolute", top:0, left:0, right:0, height:3,
-        background:`linear-gradient(90deg,${svc.color}00,${svc.color},${svc.color}00)`,
-        opacity: hovered ? 1 : 0.35, transition:"opacity .18s" }}/>
       <div style={{
-        width:64, height:64, borderRadius:"50%",
-        background: hovered ? svc.color+"25" : svc.color+"15",
-        borderWidth:1, borderStyle:"solid",
-        borderColor: hovered ? svc.color+"50" : svc.color+"25",
+        width:40, height:40, borderRadius:"var(--radius)", flexShrink: 0,
+        background: svc.color+"14", border: `1px solid ${svc.color}30`,
         display:"flex", alignItems:"center", justifyContent:"center",
-        margin:"0 auto 14px", transition:"background .18s, border-color .18s",
       }}>
-        <CloudServiceIcon provider={provider} service={svc.id} size={32} />
+        <CloudServiceIcon provider={provider} service={svc.id} size={20} />
       </div>
-      <div style={{ fontWeight:700, fontSize:15, color:"var(--text-primary)", marginBottom:6 }}>{svc.label}</div>
-      <div style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5, marginBottom:6 }}>{svc.desc}</div>
-      <div style={{ fontSize:10, color:"var(--text-muted)", opacity:.7, marginBottom:10, fontFamily:"var(--font-mono)" }}>
-        {svc.resourceCount != null && (
-          <>{svc.resourceCount} resource{svc.resourceCount === 1 ? "" : "s"} · </>
-        )}
-        {svc.enabledCount} metric{svc.enabledCount === 1 ? "" : "s"} enabled
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+          <span style={{ fontWeight:600, fontSize:14, color:"var(--text-primary)" }}>{svc.label}</span>
+          {alertCount > 0 && (
+            <span style={{
+              fontSize:10, fontWeight:700, borderRadius:4, padding:"1px 6px",
+              fontFamily:"var(--font-mono)", color: alertColor, background: alertColor+"1a",
+            }}>
+              {alertCount} {hasCritical ? "critical" : "warning"}
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize:12, color:"var(--text-muted)", marginBottom:4 }}>{svc.desc}</div>
+        <div style={{ fontSize:11, color:"var(--text-muted)", fontFamily:"var(--font-mono)" }}>
+          {svc.resourceCount != null && (
+            <>{svc.resourceCount} resource{svc.resourceCount === 1 ? "" : "s"} · </>
+          )}
+          {svc.enabledCount} metric{svc.enabledCount === 1 ? "" : "s"} enabled
+        </div>
       </div>
       <div style={{
-        display:"inline-flex", alignItems:"center", gap:5,
-        fontSize:10, fontFamily:"var(--font-mono)", fontWeight:700,
-        color:svc.color, letterSpacing:"0.08em",
-        background:svc.color+"12", border:`1px solid ${svc.color}30`,
-        borderRadius:20, padding:"4px 12px",
-        opacity: hovered ? 1 : 0.6, transition:"all .18s",
+        fontSize:11, fontFamily:"var(--font-mono)", fontWeight:600,
+        color: hovered ? svc.color : "var(--text-muted)", letterSpacing:"0.02em",
+        whiteSpace: "nowrap", flexShrink: 0,
       }}>
-        {routable ? "OPEN →" : (isConsoleLoading ? "OPENING…" : "VIEW IN CONSOLE ↗")}
+        {routable ? "Open →" : (isConsoleLoading ? "Opening…" : "View in console ↗")}
       </div>
     </div>
   );

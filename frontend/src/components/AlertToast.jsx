@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { AlertOctagonIcon, AlertTriangleIcon, XIcon } from "./icons";
+import "./AlertToast.css";
 
 const SOUND_URL = "https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg";
 
@@ -45,16 +46,7 @@ export default function AlertToast() {
   if (toasts.length === 0) return null;
 
   return (
-    <>
-      <style>{`
-        @keyframes toastCriticalGlow {
-          0%, 100% { box-shadow: 0 8px 32px rgba(239,68,68,0.18), 0 0 0 0 rgba(239,68,68,0); }
-          50%       { box-shadow: 0 8px 32px rgba(239,68,68,0.28), 0 0 20px 2px rgba(239,68,68,0.18); }
-        }
-        .toast-close-btn { transition: background 0.15s, color 0.15s; border-radius: 6px; }
-        .toast-close-btn:hover { background: rgba(99,130,190,0.12); color: #dce6f5 !important; }
-      `}</style>
-      <div style={{
+    <div style={{
         position: "fixed",
         bottom: "min(24px, 4vh)", right: "min(24px, 4vw)",
         display: "flex", flexDirection: "column", gap: 10,
@@ -66,7 +58,6 @@ export default function AlertToast() {
           <ToastItem key={t.id} toast={t} onClose={() => setToasts(p => p.filter(x => x.id !== t.id))} />
         ))}
       </div>
-    </>
   );
 }
 
@@ -81,9 +72,9 @@ function ToastItem({ toast, onClose }) {
       background: bg,
       borderTop: `1px solid ${border}`, borderRight: `1px solid ${border}`, borderBottom: `1px solid ${border}`,
       borderLeft: `4px solid ${color}`,
-      borderRadius: 12, padding: "16px 18px",
+      borderRadius: 10, padding: "14px 16px",
       display: "flex", gap: 12, alignItems: "flex-start",
-      boxShadow: `0 8px 32px ${color}22`,
+      boxShadow: `0 4px 16px ${color}18`,
       backdropFilter: "blur(10px) saturate(140%)",
       WebkitBackdropFilter: "blur(10px) saturate(140%)",
       animation: isCrit ? "slideIn .25s ease, toastCriticalGlow 2.4s ease infinite" : "slideIn .25s ease",

@@ -10,27 +10,12 @@
 
 /* Header */
 .detail-header {
-  display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;
-  padding: 24px 28px;
-  border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, rgba(43,179,172,0.08) 0%, rgba(43,179,172,0.015) 55%, transparent 100%);
-  border: 1px solid rgba(43,179,172,0.13);
-  position: relative;
-  overflow: hidden;
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-5);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
 }
-.detail-header::before {
-  content: ''; position: absolute; top: -60px; right: -60px;
-  width: 200px; height: 200px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(43,179,172,0.14), transparent 70%);
-  pointer-events: none;
-}
-.detail-header > * { position: relative; z-index: 1; }
 .detail-header h1 { font-size: 20px; font-weight: 700; }
-.hl {
-  background: linear-gradient(135deg, var(--accent) 0%, #38bdf8 100%);
-  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
-  font-weight: 800;
-}
+.hl { color: var(--accent); font-weight: 700; }
 .detail-meta { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
 .meta-tag     { background: var(--bg-elevated); border: 1px solid var(--border); padding: 2px 8px; border-radius: 3px; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); }
 .meta-sep     { color: var(--text-muted); }
@@ -41,26 +26,25 @@
 .btn-back {
   background: transparent; border: 1px solid var(--border-md);
   color: var(--text-secondary); padding: 7px 14px; border-radius: var(--radius);
-  font-size: 12px; cursor: pointer; transition: all .15s;
+  font-size: 12px; cursor: pointer; transition: border-color .15s, color .15s;
   display: inline-flex; align-items: center; gap: 6px;
 }
-.btn-back:hover { border-color: var(--border-bright); color: var(--text-primary); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(2,8,20,0.2); }
+.btn-back:hover { border-color: var(--border-bright); color: var(--text-primary); }
 
 .btn-aws {
   background: rgba(255,153,0,0.1); border: 1px solid rgba(255,153,0,0.3);
   color: #ff9900; padding: 7px 14px; border-radius: var(--radius);
-  font-size: 12px; font-weight: 600; cursor: pointer; transition: all .15s;
+  font-size: 12px; font-weight: 600; cursor: pointer; transition: background .15s;
   text-decoration: none;
   display: inline-flex; align-items: center; gap: 6px;
 }
-.btn-aws:hover { background: rgba(255,153,0,0.2); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(255,153,0,0.2); }
+.btn-aws:hover { background: rgba(255,153,0,0.18); }
 
 /* Layout */
 .detail-layout { display: flex; gap: 12px; }
 .instance-panel { flex: 1; min-width: 0; }
 .instance-panel.with-detail { flex: 0 0 55%; }
-.inst-detail { flex: 1; min-width: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; overflow-y: auto; max-height: calc(100vh - 200px); position: relative; box-shadow: 0 4px 20px rgba(2,8,20,0.14); }
-.inst-detail::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, var(--accent) 0%, transparent 100%); border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+.inst-detail { flex: 1; min-width: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; overflow-y: auto; max-height: calc(100vh - 200px); }
 
 /* ── Responsive (added: audit found this file had zero @media rules).
    Below 1000px the 55%/45% split leaves too little room for either
@@ -87,7 +71,7 @@
   border: 1px solid var(--border); background: transparent; color: var(--text-muted);
   cursor: pointer; transition: all .15s; display: flex; align-items: center; gap: 5px;
 }
-.sf-btn:hover { color: var(--text-secondary); border-color: var(--border-bright); transform: translateY(-1px); }
+.sf-btn:hover { color: var(--text-secondary); border-color: var(--border-bright); }
 .sf-active    { background: var(--accent-dim); border-color: rgba(43,179,172,0.3); color: var(--accent); }
 .sf-count     { font-family: var(--font-mono); font-size: 10px; opacity: .8; }
 
@@ -121,10 +105,10 @@
 
 /* State badge */
 .state-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 3px; font-family: var(--font-mono); }
-.sb-green  { background: rgba(34,197,94,.12);  color: var(--green);  border: 1px solid rgba(34,197,94,.3); box-shadow: 0 0 0 3px rgba(34,197,94,0.06); }
+.sb-green  { background: rgba(34,197,94,.12);  color: var(--green);  border: 1px solid rgba(34,197,94,.3); }
 .sb-muted  { background: rgba(99,130,190,.08); color: var(--text-muted); border: 1px solid var(--border); }
-.sb-yellow { background: rgba(245,158,11,.12); color: var(--yellow); border: 1px solid rgba(245,158,11,.3); box-shadow: 0 0 0 3px rgba(245,158,11,0.06); }
-.sb-red    { background: rgba(239,68,68,.12); color: var(--red);    border: 1px solid rgba(239,68,68,.3); box-shadow: 0 0 0 3px rgba(239,68,68,0.06); }
+.sb-yellow { background: rgba(245,158,11,.12); color: var(--yellow); border: 1px solid rgba(245,158,11,.3); }
+.sb-red    { background: rgba(239,68,68,.12); color: var(--red);    border: 1px solid rgba(239,68,68,.3); }
 
 /* CPU cell */
 .cpu-cell  { display: flex; align-items: center; gap: 6px; }
@@ -140,8 +124,8 @@
 .id-close:hover { border-color: var(--red); color: var(--red); }
 
 .id-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
-.qs-item  { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s; }
-.qs-item:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(2,8,20,0.2); border-color: var(--border-bright); }
+.qs-item  { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; transition: border-color 0.15s; }
+.qs-item:hover { border-color: var(--border-bright); }
 .qs-label { font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase; margin-bottom: 3px; }
 .qs-value { font-size: 13px; font-weight: 600; }
 .c-green  { color: var(--accent-green); }
@@ -174,7 +158,56 @@
   color: #ff9900; border-radius: var(--radius); font-size: 12px; font-weight: 600;
   cursor: pointer; text-decoration: none; transition: all .15s;
 }
-.btn-open-aws:hover { background: rgba(255,153,0,0.16); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(255,153,0,0.18); }
+.btn-open-aws:hover { background: rgba(255,153,0,0.16); }
+
+/* ── Metrics section header + time range tabs (ServiceDetail) ──
+   Previously a raw <style> tag re-injected into the DOM on every
+   render of ServiceDetailPanel, with colors hardcoded instead of
+   design tokens -- meaning it also had no light-theme variant at all.
+   Moved here as normal rules using the shared tokens. */
+.id-section-title-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px; flex-wrap: wrap; gap: 8px;
+}
+.time-range-tabs {
+  display: flex; gap: 2px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 3px;
+}
+.tr-btn {
+  background: none; border: none; color: var(--text-muted);
+  font-size: 11px; font-family: var(--font-mono); padding: 4px 9px;
+  border-radius: var(--radius-sm); cursor: pointer;
+  transition: color 0.15s, background 0.15s; white-space: nowrap;
+}
+.tr-btn:hover { color: var(--text-secondary); background: rgba(99,130,190,0.1); }
+.tr-active { background: var(--accent-dim) !important; color: var(--accent) !important; font-weight: 700; }
+
+.charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.chart-full { grid-column: 1 / -1; }
+
+/* ── Resource relationships (attached volumes / instance / VPC etc.) ── */
+.rel-list { display: flex; flex-direction: column; gap: 6px; }
+.rel-item {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bg-surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 8px 10px; transition: border-color 0.15s;
+}
+.rel-item:hover { border-color: var(--border-bright); }
+.rel-icon { display: flex; color: var(--text-muted); flex-shrink: 0; }
+.rel-info { flex: 1; min-width: 0; }
+.rel-name { font-size: 12px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rel-sub  { font-size: 10px; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rel-badge {
+  font-size: 10px; font-family: var(--font-mono);
+  background: rgba(34,197,94,0.12); color: var(--green);
+  border: 1px solid rgba(34,197,94,0.25); border-radius: var(--radius-sm);
+  padding: 2px 7px; white-space: nowrap; flex-shrink: 0;
+}
+
+/* ── Status check pass/fail badges ── */
+.sc-ok   { font-size: 10px; font-weight: 700; color: var(--green); font-family: var(--font-mono); display: inline-flex; align-items: center; gap: 3px; }
+.sc-fail { font-size: 10px; font-weight: 700; color: var(--red); font-family: var(--font-mono); background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.25); border-radius: var(--radius-sm); padding: 2px 7px; display: inline-flex; align-items: center; gap: 3px; }
 
 /* ── Light theme overrides ──
    Relocated from Login.css (see apply_ui_phase11_relocate_orphaned_login_css.py
@@ -194,3 +227,11 @@
 [data-theme="light"] .sf-btn           { background: #ffffff; border-color: rgba(99,130,190,0.2); color: #4a6080; box-shadow: 0 1px 3px rgba(99,130,190,0.06); }
 [data-theme="light"] .sort-select      { background: #ffffff; border-color: rgba(99,130,190,0.2); color: #4a6080; box-shadow: 0 1px 3px rgba(99,130,190,0.06); }
 [data-theme="light"] .detail-page      { background: transparent; }
+[data-theme="light"] .time-range-tabs  { background: #f0f4fa; border-color: rgba(99,130,190,0.15); }
+[data-theme="light"] .tr-btn           { color: #6b84a8; }
+[data-theme="light"] .tr-btn:hover     { background: rgba(0,119,204,0.06); color: var(--accent); }
+[data-theme="light"] .tr-active        { background: rgba(0,119,204,0.1) !important; color: var(--accent) !important; }
+[data-theme="light"] .rel-item         { background: #f5f8fd; border-color: rgba(99,130,190,0.15); }
+[data-theme="light"] .rel-item:hover   { border-color: rgba(99,130,190,0.28); }
+[data-theme="light"] .rel-name         { color: #0f1c35; }
+[data-theme="light"] .rel-sub          { color: #6b84a8; }

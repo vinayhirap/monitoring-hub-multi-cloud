@@ -1,5 +1,5 @@
 // src/components/Layout.jsx
-import { Outlet, NavLink, useNavigate } from "react-router-dom";
+import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useState, useEffect } from "react";
 import AlertToast from "./AlertToast";
@@ -29,6 +29,7 @@ const NAV_ITEMS = [
 export default function Layout() {
   const { user, logout, hasPermission } = useAuth();
   const navigate          = useNavigate();
+  const location          = useLocation();
   const { timezone, setTimezone, ianaName } = useTimezone();
   const role              = (user?.role || "viewer").toLowerCase();
   const [now, setNow]     = useState(new Date());
@@ -84,6 +85,14 @@ export default function Layout() {
   const visibleNav = NAV_ITEMS.filter(item =>
     item.roles.includes(role) && (!item.perm || hasPermission(item.perm))
   );
+
+  // Gives the topbar a current-page label without every page having to
+  // set it itself — falls back to "Accounts" for the drill-down routes
+  // (/accounts/:id, /accounts/:id/services, /accounts/:id/:service),
+  // which aren't top-level nav items.
+  const pageLabel =
+    NAV_ITEMS.find(item => location.pathname.startsWith(item.to))?.label
+    ?? (location.pathname.startsWith("/accounts") ? "Accounts" : "");
 
   return (
     <div className={`layout ${navOpen ? "nav-open" : ""}`}>
@@ -148,7 +157,7 @@ export default function Layout() {
               <div className="sidebar-brand-name">CloudOps</div>
             </div>
           </div>
-          <div className="topbar-page-label" id="page-label" />
+          <div className="topbar-page-label">{pageLabel}</div>
           <div className="topbar-right">
             <div className="live-pill">
               <span className="live-dot" />
