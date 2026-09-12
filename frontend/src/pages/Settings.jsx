@@ -265,7 +265,7 @@ export default function Settings() {
     <div className="settings-page">
       <div className="page-header">
         <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.02em" }}>
-          <span style={{display:"inline-flex",alignItems:"center",gap:8}}><SettingsIcon size={22}/> Settings</span> <span style={{ color: "var(--accent)" }}>& Thresholds</span>
+          <span style={{display:"inline-flex",alignItems:"center",gap:8}}><SettingsIcon size={22}/> Settings</span> <span className="hl">& Thresholds</span>
         </h1>
         <p className="subtitle">Configure alert thresholds, notifications, and security for your NOC dashboard</p>
       </div>
