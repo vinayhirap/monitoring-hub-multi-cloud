@@ -96,10 +96,21 @@ async def lifespan(app):
     # Only the worker that wins the MySQL named lock actually starts the
     # background threads; others stand by and take over automatically if
     # the leader worker dies.
-    from app.collector.leader import run_when_leader
-    run_when_leader(_start_all_collector_threads)
+    collector_enabled = os.getenv("COLLECTOR_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+    if collector_enabled:
+        from app.collector.leader import run_when_leader
+        run_when_leader(_start_all_collector_threads)
+    else:
+        logger.warning(
+            "COLLECTOR_ENABLED=false -- skipping leader election and all collector "
+            "threads (AWS/Azure/GCP scheduler, describe-poll). This process will "
+            "serve UI/API traffic only and make zero cloud provider API calls."
+        )
     redis_task = asyncio.create_task(_safe_redis_listener())
-    logger.info("Startup complete — collector leader-election started, Redis listener started")
+    logger.info(
+        "Startup complete — collector %s, Redis listener started",
+        "leader-election started" if collector_enabled else "disabled (COLLECTOR_ENABLED=false)",
+    )
     yield
     # ── Shutdown ────────────────────────────────────────────────
     logger.info("Shutting down")
