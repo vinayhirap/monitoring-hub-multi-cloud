@@ -64,8 +64,7 @@ body {
   .layout.nav-open .sidebar { transform: translateX(0); }
 }
 @media (min-width: 900px) {
-  .btn-nav-toggle { display: none; }
-  .sidebar-scrim  { display: none; }
+  .layout .btn-nav-toggle { display: none; }
 }
 
 /* Persistent brand/logo in the topbar — stays visible whether the
@@ -478,6 +477,9 @@ body {
 @keyframes scrim-in {
   from { opacity: 0; }
   to   { opacity: 1; }
+}
+@media (min-width: 900px) {
+  .layout.nav-open .sidebar-scrim { display: none; }
 }
 
 /* ── responsive topbar decluttering ── */
