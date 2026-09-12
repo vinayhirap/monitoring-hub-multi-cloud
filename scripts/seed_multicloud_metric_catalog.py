@@ -15,17 +15,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import mysql.connector
+from app.db import get_connection
 from app.providers.azure.metric_catalog_data import CURATED as AZURE_CURATED, DIRECTORY as AZURE_DIRECTORY
 from app.providers.gcp.metric_catalog_data import CURATED as GCP_CURATED, DIRECTORY as GCP_DIRECTORY
 
-DB_CONFIG = dict(
-    host=os.getenv("DB_HOST", "127.0.0.1"),
-    port=int(os.getenv("DB_PORT", 3306)),
-    user=os.getenv("DB_USER", "monitor"),
-    password=os.getenv("DB_PASSWORD", "root123"),
-    database=os.getenv("DB_NAME", "monitoring_hub"),
-)
+# SECURITY: see scripts/seed_metric_catalog.py's matching comment --
+# this had the identical hardcoded password="root123" fallback and is
+# fixed the identical way, reusing app.db.get_connection().
 
 
 def seed_provider(cur, provider: str, curated: dict, directory: list) -> tuple[int, int]:
@@ -78,7 +74,7 @@ def seed_provider(cur, provider: str, curated: dict, directory: list) -> tuple[i
 
 
 def main():
-    conn = mysql.connector.connect(**DB_CONFIG)
+    conn = get_connection()
     cur = conn.cursor()
 
     az_curated, az_dir = seed_provider(cur, "azure", AZURE_CURATED, AZURE_DIRECTORY)
