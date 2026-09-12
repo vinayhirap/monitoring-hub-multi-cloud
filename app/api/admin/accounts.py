@@ -420,7 +420,7 @@ def add_account(payload: dict = Body(...), current_user: dict = Depends(require_
         print(f"Metric template seed error: {e}")
 
     _bust_accounts_cache()
-    _write_audit("admin", "Account onboarded", f"{account_name} ({provider_name}) id={new_id}")
+    _write_audit(current_user["username"], "Account onboarded", f"{account_name} ({provider_name}) id={new_id}", role=current_user["role"].upper())
     return {"status": "added", "id": new_id, "account_name": account_name, "provider": provider_name}
 
 
@@ -470,8 +470,9 @@ def delete_account(account_id: int, current_user: dict = Depends(require_role("a
     # Bust cache so next poll doesn't return deleted account
     _bust_accounts_cache()
 
-    _write_audit("admin", "Account removed",
-                 f"{account['account_name']} ({account['account_id']}) removed from monitoring")
+    _write_audit(current_user["username"], "Account removed",
+                 f"{account['account_name']} ({account['account_id']}) removed from monitoring",
+                 role=current_user["role"].upper())
 
     return {"status": "removed", "id": account_id, "account_name": account["account_name"]}
 
@@ -675,6 +676,20 @@ def test_gcp_credentials(payload: dict = Body(...), current_user: dict = Depends
 
 @router.post("/{account_id}/discover")
 def discover_account(account_id: int, current_user: dict = Depends(require_permission("accounts.onboard"))):
+    # SECURITY: this endpoint had no account-scope check at all --
+    # every other account_id-taking route in this file (get_account,
+    # get_account_console_url) checks get_accessible_account_ids
+    # first; this one didn't, so any editor holding the role-level
+    # accounts.onboard permission could pass an arbitrary account_id
+    # and (a) learn whether it exists/is active from the 404 vs 200
+    # response (account enumeration outside their scope) and (b)
+    # trigger real discovery/AWS-API calls against an account they
+    # have no assigned access to at all. Brought in line with the
+    # pattern already used elsewhere in this file.
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is not None and account_id not in accessible:
+        raise HTTPException(status_code=403, detail="You do not have access to this account")
+
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT * FROM aws_accounts WHERE id = %s AND status = 'active'", (account_id,))
@@ -706,5 +721,5 @@ def discover_account(account_id: int, current_user: dict = Depends(require_permi
     cursor.close()
     conn.close()
 
-    _write_audit("admin", "Account discovery triggered", f"{account['account_name']} ({account['account_id']})")
+    _write_audit(current_user["username"], "Account discovery triggered", f"{account['account_name']} ({account['account_id']})", role=current_user["role"].upper())
     return {"status": "discovery triggered", "account_id": account_id}

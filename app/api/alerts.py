@@ -10,6 +10,7 @@ from app.auth.permissions import require_permission
 from app.aws.federation import NoConsoleCredentialsError
 from app.ws.publisher import publish_alert_resolved
 from app.api.live_data import invalidate_accounts_cache
+from app.auth.authorization import get_accessible_account_ids
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,70 @@ _counts_cache: dict = {"data": None, "ts": 0}
 # NOT auto-resolved (see 008_revert_falsely_resolved_alerts.sql) -- this
 # is display-only, the operator decides whether to resolve it.
 _STALE_AFTER_MINUTES = 20
+
+
+def _filter_rows_by_scope(rows: list, current_user: dict) -> list:
+    """
+    SECURITY: every row list this module returns includes account_id,
+    but until this fix nothing filtered by it -- a viewer with only
+    alerts.view (no admin/editor role) could see every alert for
+    every account in the entire system, not just the accounts their
+    access_scopes/group_policies actually grant them. The row lists
+    themselves stay globally cached (they're cheap to compute once and
+    identical for everyone before this filter), so this filters a
+    per-request COPY rather than changing what's cached -- correctness
+    of the RBAC boundary doesn't depend on cache TTL or who warmed it.
+    """
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is None:
+        return rows  # FULL_ACCESS (admin)
+    return [r for r in rows if r.get("account_id") in accessible]
+
+
+def _get_alert_account_id(alert_id: int):
+    """Returns the aws_accounts.id an alert belongs to, or None if the
+    alert doesn't exist. Used to authorize single-alert actions
+    (ack/resolve/mute/console-url) against the caller's scope before
+    touching the row -- see _require_alert_access."""
+    conn   = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT acc.id AS account_id
+        FROM alerts a
+        JOIN resources r      ON r.resource_id = a.resource_id
+        JOIN aws_accounts acc ON acc.id = r.aws_account_id
+        WHERE a.id = %s
+    """, (alert_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row["account_id"] if row else None
+
+
+def _require_alert_access(alert_id: int, current_user: dict) -> int:
+    """
+    SECURITY: ack/resolve/mute/console-url previously took no scope
+    check at all -- any authenticated user holding the ROLE-level
+    operations.execute/alerts.view permission (which is not itself
+    account-scoped) could act on an alert belonging to any account in
+    the system just by iterating alert_id, regardless of their
+    assigned account/region scope. This is the same
+    account_id-not-in-accessible pattern already used consistently in
+    app/api/live_data.py and app/api/admin/accounts.py, applied here
+    for parity. Raises 404 if the alert doesn't exist at all (so a
+    caller with real access can't distinguish "doesn't exist" from
+    "not yours" by a different status code), 403 if it exists but is
+    outside the caller's scope. Returns the alert's account_id on
+    success, for callers (e.g. resolve's publish_alert_resolved) that
+    need it afterward without a second query.
+    """
+    account_id = _get_alert_account_id(alert_id)
+    if account_id is None:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is not None and account_id not in accessible:
+        raise HTTPException(status_code=403, detail="You do not have access to this alert")
+    return account_id
 
 
 def _invalidate_cache():
@@ -104,11 +169,11 @@ def _fetch_alerts_from_db():
 def get_alerts(current_user: dict = Depends(require_permission("alerts.view"))):
     now = time.time()
     if _alerts_cache["data"] is not None and now - _alerts_cache["ts"] < _CACHE_TTL:
-        return _alerts_cache["data"]
+        return _filter_rows_by_scope(_alerts_cache["data"], current_user)
     rows = _fetch_alerts_from_db()
     _alerts_cache["data"] = rows
     _alerts_cache["ts"]   = now
-    return rows
+    return _filter_rows_by_scope(rows, current_user)
 
 
 # ── GET open/active only ──────────────────────────────────────
@@ -121,7 +186,8 @@ def open_alerts(current_user: dict = Depends(require_permission("alerts.view")))
     now = time.time()
     # Reuse full cache if available, filter client-side to avoid second DB call
     if _alerts_cache["data"] is not None and now - _alerts_cache["ts"] < _CACHE_TTL:
-        return [a for a in _alerts_cache["data"] if a.get("status") != "resolved"]
+        rows = [a for a in _alerts_cache["data"] if a.get("status") != "resolved"]
+        return _filter_rows_by_scope(rows, current_user)
 
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -171,10 +237,10 @@ def open_alerts(current_user: dict = Depends(require_permission("alerts.view")))
                 r[field] = r[field].rstrip("+00:00").rstrip(" UTC") + "Z"
         r["stale"] = bool(r.get("stale"))
 
-    return rows
+    return _filter_rows_by_scope(rows, current_user)
 
 
-def _fetch_counts_from_db() -> dict:
+def _fetch_counts_from_db() -> list:
     """
     Authoritative tab-badge counts, aggregated directly in SQL with no
     LIMIT/windowing of any kind — so they can never disagree with
@@ -189,11 +255,20 @@ def _fetch_counts_from_db() -> dict:
     fold in acknowledged or resolved rows just because they were once
     critical; a resolved alert isn't something that "requires attention"
     any more, no matter what severity it broke at.
+
+    SECURITY: GROUPed BY account (rather than one grand-total row like
+    the pre-fix version) so the cache holds a per-account breakdown --
+    _aggregate_counts_for_user then sums only the accounts the calling
+    user is actually scoped to see. A single flat total across every
+    account would have leaked "how many alerts exist system-wide" (and,
+    combined with acking/resolving elsewhere, actual activity volume)
+    to a viewer scoped to a single account, regardless of role.
     """
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
         SELECT
+            acc.id AS account_id,
             COUNT(*) AS all_count,
             SUM(CASE WHEN a.status = 'active'
                       AND NOT (a.last_seen_at IS NOT NULL
@@ -211,21 +286,31 @@ def _fetch_counts_from_db() -> dict:
         JOIN resources r      ON r.resource_id = a.resource_id
         JOIN aws_accounts acc ON acc.id = r.aws_account_id
                                AND acc.status = 'active'
+        GROUP BY acc.id
     """.format(stale=_STALE_AFTER_MINUTES))
-    row = cursor.fetchone() or {}
+    rows = cursor.fetchall()
     cursor.close()
     conn.close()
+    return rows
 
-    def _n(key):
-        return int(row.get(key) or 0)
 
+def _aggregate_counts_for_user(per_account_rows: list, current_user: dict) -> dict:
+    accessible = get_accessible_account_ids(current_user)
+    keys = ("all_count", "active_count", "stale_count",
+            "critical_count", "acknowledged_count", "resolved_count")
+    totals = {k: 0 for k in keys}
+    for row in per_account_rows:
+        if accessible is not None and row["account_id"] not in accessible:
+            continue
+        for k in keys:
+            totals[k] += int(row.get(k) or 0)
     return {
-        "all":          _n("all_count"),
-        "active":       _n("active_count"),
-        "stale":        _n("stale_count"),
-        "critical":     _n("critical_count"),
-        "acknowledged": _n("acknowledged_count"),
-        "resolved":     _n("resolved_count"),
+        "all":          totals["all_count"],
+        "active":       totals["active_count"],
+        "stale":        totals["stale_count"],
+        "critical":     totals["critical_count"],
+        "acknowledged": totals["acknowledged_count"],
+        "resolved":     totals["resolved_count"],
     }
 
 
@@ -243,11 +328,11 @@ def alert_counts(current_user: dict = Depends(require_permission("alerts.view"))
     """
     now = time.time()
     if _counts_cache["data"] is not None and now - _counts_cache["ts"] < _CACHE_TTL:
-        return _counts_cache["data"]
-    data = _fetch_counts_from_db()
-    _counts_cache["data"] = data
+        return _aggregate_counts_for_user(_counts_cache["data"], current_user)
+    per_account_rows = _fetch_counts_from_db()
+    _counts_cache["data"] = per_account_rows
     _counts_cache["ts"]   = now
-    return data
+    return _aggregate_counts_for_user(per_account_rows, current_user)
 
 
 # ── AWS CONSOLE DEEP-LINK (account-correct) ────────────────────
@@ -265,6 +350,13 @@ def get_console_url(alert_id: int, user: dict = Depends(require_permission("aler
     link (AWS's federation helpers were being called directly regardless
     of the alert's actual account provider).
     """
+    # SECURITY: previously generated a live cloud-console federation
+    # link for this alert's account with no scope check at all -- any
+    # user holding the role-level alerts.view permission could obtain
+    # console access into an account entirely outside their assigned
+    # scope just by supplying its alert_id.
+    _require_alert_access(alert_id, user)
+
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
@@ -307,6 +399,12 @@ def get_console_url(alert_id: int, user: dict = Depends(require_permission("aler
 @router.post("/{alert_id}/ack")
 @router.patch("/{alert_id}/ack")
 def ack_alert(alert_id: int, current_user: dict = Depends(require_permission("operations.execute"))):
+    # SECURITY: operations.execute is a role-level permission, not an
+    # account-scoped one -- without this check any editor could
+    # acknowledge an alert belonging to any account in the system by
+    # guessing/iterating alert_id, regardless of their assigned scope.
+    _require_alert_access(alert_id, current_user)
+
     conn   = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -327,6 +425,11 @@ def ack_alert(alert_id: int, current_user: dict = Depends(require_permission("op
 @router.post("/{alert_id}/resolve")
 @router.patch("/{alert_id}/resolve")
 def resolve_alert(alert_id: int, current_user: dict = Depends(require_permission("operations.execute"))):
+    # SECURITY: same class of gap as ack_alert above -- resolving is
+    # also a destructive, account-scoped action that had no scope
+    # check at all.
+    account_id = _require_alert_access(alert_id, current_user)
+
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
@@ -337,22 +440,13 @@ def resolve_alert(alert_id: int, current_user: dict = Depends(require_permission
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Alert not found")
     conn.commit()
-
-    cursor.execute("""
-        SELECT acc.id AS account_id
-        FROM alerts a
-        JOIN resources r      ON r.resource_id = a.resource_id
-        JOIN aws_accounts acc ON acc.id = r.aws_account_id
-        WHERE a.id = %s
-    """, (alert_id,))
-    row = cursor.fetchone()
     cursor.close()
     conn.close()
     _invalidate_cache()
     invalidate_accounts_cache()
 
     try:
-        publish_alert_resolved(alert_id=alert_id, account_id=row["account_id"] if row else None)
+        publish_alert_resolved(alert_id=alert_id, account_id=account_id)
     except Exception as e:
         logger.warning(f"Resolve publish failed: {e}")
 
@@ -362,6 +456,9 @@ def resolve_alert(alert_id: int, current_user: dict = Depends(require_permission
 # ── MUTE ──────────────────────────────────────────────────────
 @router.post("/{alert_id}/mute")
 def mute_alert(alert_id: int, minutes: int = 30, current_user: dict = Depends(require_permission("operations.execute"))):
+    # SECURITY: same class of gap as ack_alert/resolve_alert above.
+    _require_alert_access(alert_id, current_user)
+
     conn   = get_connection()
     cursor = conn.cursor()
     cursor.execute(
