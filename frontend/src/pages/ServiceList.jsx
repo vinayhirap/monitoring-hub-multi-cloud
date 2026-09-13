@@ -3,6 +3,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getAlerts, getAccountMetrics, getResourceCounts, getConsoleUrl } from "../api/api";
 import { CloudServiceIcon, AzureBrandLogo, officialPerService } from "../components/cloud-icons";
+import { LinkIcon, ZapIcon } from "../components/icons";
 
 // Short blurbs for the services we know about. Anything not listed here
 // (e.g. a directory-tier service the account onboarded via live discovery)
@@ -215,13 +216,16 @@ export default function ServiceList() {
               borderRadius:"var(--radius)", fontSize:13, fontWeight:600, cursor:"pointer",
             }}
           >
-            ⛓ Resource Topology
+            <LinkIcon size={14} /> Resource Topology
           </button>
           {/* AIOps roadmap Phase 1 (2026-09-14): correlated incidents +
               resource health + probable-root-cause analysis. Same
               discoverability gap Topology's own entry point above was
               added to fix (this account's service grid had no link to
-              it before either). */}
+              it before either). Uses the app's own icon set (icons.jsx)
+              instead of a raw emoji glyph, matching every other button
+              in this file after the emoji was flagged as inconsistent
+              with the rest of the product's iconography. */}
           <button
             onClick={() => navigate(`/accounts/${id}/incidents`)}
             style={{
@@ -230,7 +234,7 @@ export default function ServiceList() {
               borderRadius:"var(--radius)", fontSize:13, fontWeight:600, cursor:"pointer",
             }}
           >
-            ⚡ Incidents
+            <ZapIcon size={14} /> Incidents
           </button>
         </div>
       </div>
