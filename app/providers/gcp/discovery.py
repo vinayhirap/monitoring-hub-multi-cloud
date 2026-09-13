@@ -15,6 +15,7 @@ don't fit the "list resources of type X" shape the others share.
 """
 import json
 import logging
+import re
 
 from google.oauth2 import service_account as gcp_service_account
 from google.cloud import compute_v1
@@ -342,9 +343,29 @@ def _discover_nat_gateways(creds, project_id, account_id, cursor) -> int:
     return count
 
 
+def _gcp_relative_resource_path(uri: str) -> str | None:
+    """
+    GCP Disk.users entries are full resource URIs
+    (https://www.googleapis.com/compute/v1/projects/.../instances/...),
+    but this app's resource_id for compute_instance is the relative
+    path only (projects/.../zones/.../instances/... -- see
+    _discover_compute_instances above). Using the raw URI as-is would
+    never match a real row, same class of mismatch the AWS Lambda
+    event-source-mapping sync hit with EventSourceArn vs bare names.
+    Strips everything up to and including the host, keeping "projects/"
+    onward -- also a no-op passthrough if a future API version ever
+    returns the relative path directly instead of the full URI.
+    """
+    if not uri:
+        return None
+    m = re.search(r"projects/.*", uri)
+    return m.group(0) if m else None
+
+
 def _discover_persistent_disks(creds, project_id, account_id, cursor) -> int:
     client = compute_v1.DisksClient(credentials=creds)
     count = 0
+    attachments = []
     for zone, response in client.aggregated_list(project=project_id):
         if not response.disks:
             continue
@@ -356,6 +377,30 @@ def _discover_persistent_disks(creds, project_id, account_id, cursor) -> int:
                 dict(disk.labels or {}), zone_name, "storage",
             )
             count += 1
+            # Topology auto-sync follow-up (roadmap phase 4/7,
+            # 2026-09-13), same "the data was already in the response"
+            # principle as the AWS EC2<->EBS attachment sync. `users` is
+            # a disk's list of attaching instance URIs (empty if
+            # unattached) -- GCP allows multi-attach for some disk
+            # types, hence a list here rather than the single
+            # `attached_to` AWS's EBS model has.
+            #
+            # Refresh cadence note: unlike AWS's continuous 30s
+            # describe-poll loop, this only runs when
+            # discover_account_resources() runs -- account onboarding,
+            # or a manual re-discovery trigger -- there is no periodic
+            # GCP discovery loop in this app today. Real, correctly-
+            # detected edges, just refreshed less often than AWS's.
+            for user_uri in (disk.users or []):
+                instance_id = _gcp_relative_resource_path(user_uri)
+                if instance_id:
+                    attachments.append((instance_id, resource_id))
+    if attachments:
+        try:
+            from app.topology_sync import sync_auto_edges
+            sync_auto_edges(account_id, "attached_to", attachments)
+        except Exception as e:
+            logger.warning(f"GCP persistent-disk attachment edge sync failed [account {account_id}]: {e}")
     return count
 
 

@@ -188,8 +188,63 @@ def _discover_lambda(session, account, region, cursor):
                 _upsert_resource(cursor, account["id"], "lambda", rid, name, tags, region)
                 count += 1
         logger.info(f"  Lambda: {count} functions in {account['account_name']} / {region}")
+
+        # Event-source mappings (roadmap phase 4/7 follow-up, 2026-09-13):
+        # ListEventSourceMappings with no FunctionName filter returns
+        # EVERY mapping in this account/region in one paginated call --
+        # not one call per function -- and each one is an exact,
+        # unambiguous "this Lambda consumes this SQS queue/DynamoDB
+        # stream/Kinesis stream" edge, unlike inferring relationships
+        # from IAM policies or VPC config (which is only ever a guess).
+        # Zero extra API calls beyond the one call itself; this info was
+        # never being fetched before at all (unlike the EC2<->EBS case,
+        # where the data was already being pulled for something else).
+        try:
+            pairs = []
+            for page in lmb.get_paginator("list_event_source_mappings").paginate():
+                for m in page.get("EventSourceMappings", []):
+                    arn = m.get("EventSourceArn")
+                    tgt = m.get("FunctionArn")
+                    src = _event_source_resource_id(arn) if arn else None
+                    if src and tgt:
+                        pairs.append((src, tgt))
+            if pairs:
+                from app.topology_sync import sync_auto_edges
+                sync_auto_edges(account["id"], "invokes", pairs)
+        except Exception as e:
+            logger.warning(f"  Lambda event-source-mapping sync failed [{account['account_name']}/{region}]: {e}")
     except Exception as e:
         logger.error(f"  Lambda discovery failed [{account['account_name']}/{region}]: {e}")
+
+
+def _event_source_resource_id(arn: str) -> str | None:
+    """
+    EventSourceArn is a full ARN, but resources.resource_id for the
+    three source types ListEventSourceMappings can return is stored as
+    a bare name, NOT the ARN (see _discover_sqs/_discover_dynamodb/
+    _discover_kinesis above -- each upserts the plain queue/table/
+    stream name). Using the raw ARN as source_resource_id would never
+    match a real row and every single edge would render as a ghost/
+    unresolved node instead of resolving properly. Normalizes each
+    service's ARN shape to the same bare name discovery already stores:
+      SQS      arn:aws:sqs:region:acct:queue-name           -> queue-name
+      Kinesis  arn:aws:kinesis:region:acct:stream/name       -> name
+      DynamoDB arn:aws:dynamodb:region:acct:table/name/...   -> name
+    Returns None for any other/unrecognized event source type (e.g.
+    MSK, self-managed Kafka) rather than guessing -- those aren't
+    tracked resource types in this app at all yet, so there'd be
+    nothing for the edge to resolve against regardless.
+    """
+    try:
+        service = arn.split(":")[2]
+        tail = arn.split(":", 5)[-1]  # everything after the 5th colon
+        if service in ("sqs", "kinesis"):
+            return tail.rsplit("/", 1)[-1]
+        if service == "dynamodb" and tail.startswith("table/"):
+            return tail.split("/")[1]
+    except (IndexError, AttributeError):
+        pass
+    return None
 
 
 # ── Continuous metric auto-enable ───────────────────────────────

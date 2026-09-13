@@ -168,12 +168,26 @@ export default function Topology() {
   const [addingEdge, setAddingEdge] = useState(false);
   const [form, setForm] = useState({ source: "", target: "" });
   const [saving, setSaving] = useState(false);
+  // Matches the free describe-poll loop's own 30s cadence (see
+  // app/main.py's _run_describe_poll_loop) -- a shorter interval here
+  // would never see fresher data anyway, since that's how often
+  // AWS-side auto-sync edges can actually change. Azure/GCP edges only
+  // change at discovery time (onboarding / manual re-trigger), much
+  // less often than 30s, but re-fetching this page's own data on the
+  // same short interval is still correct for them -- it just usually
+  // finds nothing new, which costs one cheap GET, not a real problem.
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
   const load = useCallback(() => {
     getTopology(id).then(setData).catch(e => setError(e.message));
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const t = setInterval(load, 30000);
+    return () => clearInterval(t);
+  }, [autoRefresh, load]);
   useEffect(() => {
     fetch(`/api/admin/accounts/${id}`).then(r => r.ok ? r.json() : null).then(d => d && setAccount(d)).catch(() => {});
   }, [id]);
@@ -259,6 +273,11 @@ export default function Topology() {
           <p className="sub">{account?.account_name ? `${account.account_name} — ` : ""}{layout.edges.length} tracked relationship{layout.edges.length === 1 ? "" : "s"} across {layout.nodes.length} resources</p>
         </div>
         <div className="c-header-actions">
+          <label className="topo-refresh-toggle" title="Auto-refresh every 30s">
+            <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} />
+            <span className="topo-refresh-track"><span className="topo-refresh-thumb" /></span>
+            <span className="topo-refresh-label">Auto-refresh</span>
+          </label>
           <button className="topo-btn-back" onClick={() => navigate(`/accounts/${id}/services`)}>← Back to Services</button>
           {canManage && (
             <button className="c-btn-primary" onClick={() => setAddingEdge(v => !v)}>
