@@ -23,7 +23,10 @@ const NAV_ITEMS = [
   { to: "/onboarding", label: "Account Onboarding", icon: OnboardIcon,    roles: ["admin","editor"] },
   { to: "/users",      label: "User Management",    icon: UsersIcon,      roles: ["admin","editor","viewer"], perm: "users.view" },
   { to: "/compliance", label: "Compliance",         icon: ComplianceIcon, roles: ["admin","editor","viewer"] },
-  { to: "/op-events",          label: "Operational Events", icon: OpEventsIcon,   roles: ["admin","editor","viewer"], perm: "operations.view" },
+  // Operational Events: nav entry temporarily hidden (2026-09-13) --
+  // route/page/backend all still fully intact at /op-events, just not
+  // linked from the sidebar for now. Uncomment to re-enable.
+  // { to: "/op-events",          label: "Operational Events", icon: OpEventsIcon,   roles: ["admin","editor","viewer"], perm: "operations.view" },
   { to: "/escalation-policies", label: "Escalation Policies", icon: EscalationIcon, roles: ["admin","editor","viewer"], perm: "alerts.configure" },
   { to: "/settings",   label: "Settings",           icon: SettingsIcon,   roles: ["admin","editor"] },
 ];
