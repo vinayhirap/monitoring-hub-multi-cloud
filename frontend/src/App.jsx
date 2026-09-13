@@ -13,6 +13,9 @@ import Settings          from "./pages/Settings";
 import AccountOnboarding from "./pages/AccountOnboarding";
 import ServiceList       from "./pages/ServiceList";
 import ServiceDetail     from "./pages/ServiceDetail";
+import Topology          from "./pages/Topology";
+import OpEvents          from "./pages/OpEvents";
+import EscalationPolicies from "./pages/EscalationPolicies";
 
 function SessionCheckingScreen() {
   // Shown only for the brief moment while AuthContext asks the backend
@@ -47,8 +50,11 @@ function AppRoutes() {
         <Route path="onboarding"                element={<AccountOnboarding />} />
         <Route path="users"                     element={<UserManagement />} />
         <Route path="compliance"                element={<Compliance />} />
+        <Route path="op-events"                 element={<OpEvents />} />
+        <Route path="escalation-policies"       element={<EscalationPolicies />} />
         <Route path="settings"                  element={<Settings />} />
         <Route path="accounts/:id/services"     element={<ServiceList />} />
+        <Route path="accounts/:id/topology"     element={<Topology />} />
         <Route path="accounts/:id/:service"     element={<ServiceDetail />} />
         <Route path="accounts/:id"              element={<AccountDetail />} />
       </Route>

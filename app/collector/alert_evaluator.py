@@ -56,6 +56,46 @@ def compare(value, threshold, op):
     return ops.get(op, False)
 
 
+def _dynamic_bounds(cursor, aws_resource_id, metric_name, comparison, k):
+    """
+    Looks up this resource+metric's current hour-of-day/day-of-week
+    bucket in metric_baseline (populated nightly by
+    app/collector/baseline.py) and returns (dynamic_warning,
+    dynamic_critical), or None if no bucket exists yet (cold start --
+    caller falls back to the static threshold row).
+
+    critical = mean +/- k * stddev (direction depends on `comparison`:
+    ">"/">=" metrics are bad when HIGH, so critical is mean + k*stddev;
+    "<"/"<=" metrics -- e.g. healthy-host-count, free-disk-percent -- are
+    bad when LOW, so critical is mean - k*stddev). warning uses a
+    tighter 0.66*k band so there are still two distinguishable severity
+    levels instead of both firing at once.
+    """
+    cursor.execute("""
+        SELECT mean_value, stddev_value, sample_count
+        FROM metric_baseline
+        WHERE resource_id = %s AND metric_name = %s
+          AND hour_of_day = HOUR(NOW()) AND day_of_week = WEEKDAY(NOW())
+    """, (aws_resource_id, metric_name))
+    baseline = cursor.fetchone()
+    if not baseline:
+        return None
+
+    mean   = baseline["mean_value"]
+    stddev = baseline["stddev_value"] or 0
+    if stddev == 0:
+        # A flat-line metric (stddev 0) has no meaningful band -- any
+        # deviation at all would "breach", which is noise, not signal.
+        # Fall back to static thresholds for this bucket instead.
+        return None
+
+    warn_k = k * 0.66
+    if comparison in (">", ">="):
+        return (mean + warn_k * stddev, mean + k * stddev)
+    else:  # "<", "<="
+        return (mean - warn_k * stddev, mean - k * stddev)
+
+
 def _required_cycles(evaluation_period_minutes):
     """
     thresholds.evaluation_period is in minutes (default 5 -- i.e. one
@@ -251,7 +291,9 @@ def _evaluate_alerts_body(conn, cursor):
             t.warning_value,
             t.critical_value,
             t.comparison,
-            t.evaluation_period
+            t.evaluation_period,
+            t.use_dynamic,
+            t.dynamic_k
         FROM metrics m
         JOIN resources r
             ON r.id = m.resource_id
@@ -298,8 +340,22 @@ def _evaluate_alerts_body(conn, cursor):
             tags = {}
         environment = tags.get("environment", tags.get("Environment", "prod")).lower()
 
-        is_critical = compare(metric_value, row["critical_value"], row["comparison"])
-        is_warning  = compare(metric_value, row["warning_value"],  row["comparison"])
+        warning_value, critical_value = row["warning_value"], row["critical_value"]
+        if row.get("use_dynamic"):
+            dynamic = _dynamic_bounds(
+                cursor, aws_resource_id, metric_name,
+                row["comparison"], row["dynamic_k"] or 3.0,
+            )
+            if dynamic is not None:
+                # Cold start / flat-line handled inside _dynamic_bounds by
+                # returning None, in which case the static row values set
+                # above are used unchanged -- dynamic mode never disables
+                # alerting for a resource, it only replaces WHAT counts as
+                # a breach once there's enough history to trust.
+                warning_value, critical_value = dynamic
+
+        is_critical = compare(metric_value, critical_value, row["comparison"])
+        is_warning  = compare(metric_value, warning_value,  row["comparison"])
         is_breaching = is_critical or is_warning
 
         # ── Existing open alert for this resource+metric? ─────
@@ -332,9 +388,15 @@ def _evaluate_alerts_body(conn, cursor):
                 # False here by definition -- we're in the `not is_breaching`
                 # branch), same critical_value/warning_value split the
                 # breaching branch below already uses.
+                # Uses the SAME warning_value/critical_value resolved above
+                # (static, or dynamic if this threshold has use_dynamic=1)
+                # -- not row["..."] directly, so a resource evaluated under
+                # a dynamic band doesn't fall back to showing the static
+                # value here while it was actually recovering against the
+                # dynamic one.
                 resolve_threshold_value = (
-                    row["critical_value"] if existing["severity"] == "CRITICAL"
-                    else row["warning_value"]
+                    critical_value if existing["severity"] == "CRITICAL"
+                    else warning_value
                 )
                 cursor.execute("""
                     UPDATE alerts
@@ -369,7 +431,7 @@ def _evaluate_alerts_body(conn, cursor):
         else:
             severity = "INFO"
 
-        threshold_value = row["critical_value"] if is_critical else row["warning_value"]
+        threshold_value = critical_value if is_critical else warning_value
 
         if existing:
             # Already a visible alert — keep it fresh every cycle (fixes
@@ -403,15 +465,21 @@ def _evaluate_alerts_body(conn, cursor):
 
         # Sustained — promote to a real, visible alert.
         promoted_severity = pending["severity"]
+        # group_key powers the /api/alerts/grouped read-time collapse
+        # (db/migrations/019_alert_grouping.sql) -- "account + resource
+        # type + metric", deliberately NOT region, so an incident that
+        # breaches the same metric across regions in one account still
+        # collapses into one group instead of one row per region.
+        group_key = f"{aws_account_id}:{row['resource_type']}:{metric_name}"
         cursor.execute("""
             INSERT INTO alerts
                 (resource_id, metric_name, severity,
-                 environment, status, triggered_at, last_seen_at,
+                 environment, group_key, status, triggered_at, last_seen_at,
                  healthy_streak, current_value, threshold)
-            VALUES (%s, %s, %s, %s, 'active', %s, NOW(), 0, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, 'active', %s, NOW(), 0, %s, %s)
         """, (
             aws_resource_id, metric_name, promoted_severity, environment,
-            pending["first_breach_at"], metric_value, threshold_value,
+            group_key, pending["first_breach_at"], metric_value, threshold_value,
         ))
         new_alert_id = cursor.lastrowid
         new_alerts  += 1

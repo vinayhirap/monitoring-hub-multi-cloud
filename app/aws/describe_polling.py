@@ -194,6 +194,57 @@ def _elb_resource_db_ids_by_arn(account_db_id):
         cur.close(); conn.close()
 
 
+def _sync_topology_edges(account_db_id, lb_targets: dict) -> None:
+    """
+    Upserts ALB -> EC2 'routes_to' edges into resource_relationships
+    (db/migrations/021_resource_relationships.sql) from data
+    poll_alb_target_health() already fetched -- no new AWS calls.
+
+    Only writes 'auto' edges here; 'manual' edges (added via
+    app/api/topology.py) are never touched by this sync, so a
+    resync never clobbers something an operator added by hand.
+    Also removes 'auto' edges for LB/target pairs no longer observed
+    (target deregistered, LB deleted) so the graph doesn't accumulate
+    stale routes forever.
+    """
+    conn = get_connection(); cur = conn.cursor()
+    try:
+        seen_pairs = []
+        for lb_arn, target_ids in lb_targets.items():
+            for target_id in target_ids:
+                cur.execute("""
+                    INSERT INTO resource_relationships
+                        (aws_account_id, source_resource_id, target_resource_id,
+                         relationship_type, source)
+                    VALUES (%s, %s, %s, 'routes_to', 'auto')
+                    ON DUPLICATE KEY UPDATE source_resource_id = VALUES(source_resource_id)
+                """, (account_db_id, lb_arn, target_id))
+                seen_pairs.append((lb_arn, target_id))
+
+        # Prune stale auto edges for this account's ALBs that are no
+        # longer observed in this poll (deregistered target / deleted LB).
+        if seen_pairs:
+            lb_arns = list(lb_targets.keys())
+            fmt = ",".join(["%s"] * len(lb_arns))
+            cur.execute(f"""
+                SELECT id, source_resource_id, target_resource_id
+                FROM resource_relationships
+                WHERE aws_account_id = %s AND relationship_type = 'routes_to'
+                  AND source = 'auto' AND source_resource_id IN ({fmt})
+            """, (account_db_id, *lb_arns))
+            existing = cur.fetchall()
+            stale_ids = [
+                row[0] for row in existing
+                if (row[1], row[2]) not in seen_pairs
+            ]
+            if stale_ids:
+                fmt2 = ",".join(["%s"] * len(stale_ids))
+                cur.execute(f"DELETE FROM resource_relationships WHERE id IN ({fmt2})", stale_ids)
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
+
+
 def poll_alb_target_health() -> int:
     """
     DescribeTargetHealth for every target group across all active accounts —
@@ -218,7 +269,8 @@ def poll_alb_target_health() -> int:
             elbv2 = session.client("elbv2", region_name=region)
             ts = int(time.time() * 1000)
             lines = []
-            lb_totals = {}  # lb_arn -> [healthy, unhealthy]
+            lb_totals = {}    # lb_arn -> [healthy, unhealthy]
+            lb_targets = {}   # lb_arn -> set of target Ids (topology edges)
             for tg_arn, lb_arns in tg_pairs:
                 try:
                     health = elbv2.describe_target_health(TargetGroupArn=tg_arn)
@@ -235,11 +287,30 @@ def poll_alb_target_health() -> int:
                     f'aws_alb_unhealthy_host_count_describe{{dimension_TargetGroup="{tg_id}",dimension_AccountId="{account_db_id}"}} {unhealthy} {ts}'
                 )
                 total += 1
+                # target["Id"] is the EC2 instance ID for instance-type
+                # target groups (IP for ip-type -- those are skipped below,
+                # since resources.resource_id for EC2 is the instance ID,
+                # not an IP, so an IP target wouldn't resolve to a node
+                # anyway). This is the SAME `descs` payload the
+                # healthy/unhealthy counts above already came from -- zero
+                # additional AWS API calls to also capture topology edges
+                # here (roadmap phase 4/7, 2026-09-13).
+                target_ids = {
+                    t["Target"]["Id"] for t in descs
+                    if t.get("Target", {}).get("Id", "").startswith("i-")
+                }
                 for lb_arn in lb_arns:
                     acc = lb_totals.setdefault(lb_arn, [0, 0])
                     acc[0] += healthy
                     acc[1] += unhealthy
+                    lb_targets.setdefault(lb_arn, set()).update(target_ids)
             _push_to_vm(lines)
+
+            if lb_targets:
+                try:
+                    _sync_topology_edges(account_db_id, lb_targets)
+                except Exception as e:
+                    logger.warning(f"describe_polling: topology edge sync failed [account {account_db_id}]: {e}")
 
             if lb_totals:
                 resource_ids_by_arn = _elb_resource_db_ids_by_arn(account_db_id)

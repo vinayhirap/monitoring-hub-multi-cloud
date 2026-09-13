@@ -271,6 +271,22 @@ def _discover_account(account):
                 time.sleep(1 + attempt)
             else:
                 logger.error(f"Discovery error [{account['account_name']}]: {e}")
+                try:
+                    from app.collector.op_log import log_event
+                    # This exact spot is the RCA-relevant one (roadmap
+                    # phase 5, 2026-09-13): the 2026-08-26 incident's
+                    # root cause was a discovery failure exactly like
+                    # this one going unrecorded anywhere searchable,
+                    # discovered only by manual investigation days later.
+                    log_event(
+                        "discovery_failed",
+                        f"Discovery error [{account['account_name']}]: {e}",
+                        severity="ERROR",
+                        account_id=account["id"],
+                        detail={"region": region, "attempt": attempt + 1},
+                    )
+                except Exception:
+                    pass  # op_log's own failures are already swallowed; this is belt-and-suspenders
                 break
         finally:
             cursor.close()

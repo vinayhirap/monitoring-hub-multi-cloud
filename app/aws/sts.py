@@ -3,6 +3,7 @@ import time
 
 import boto3
 from botocore.exceptions import ClientError
+from app.aws.boto_config import STANDARD_RETRY
 
 # In-memory cache for the server's own AWS account id (discovered via
 # STS GetCallerIdentity against whatever credentials the process already
@@ -24,7 +25,7 @@ def get_own_account_id() -> str | None:
     if cached and (now - _own_account_cache["checked_at"]) < _OWN_ACCOUNT_CACHE_TTL_SECONDS:
         return cached
     try:
-        identity = boto3.client("sts").get_caller_identity()
+        identity = boto3.client("sts", config=STANDARD_RETRY).get_caller_identity()
         account_id = identity["Account"]
         _own_account_cache["account_id"] = account_id
         _own_account_cache["checked_at"] = now
@@ -77,7 +78,7 @@ def get_self_federation_session(session_name: str | None = None,
     always takes the INTERSECTION of PolicyArns and Policy, so this
     can only restrict, never expand, what the session can do.
     """
-    sts = boto3.client("sts")
+    sts = boto3.client("sts", config=STANDARD_RETRY)
     kwargs = {
         "Name": session_name or "monitoring-hub-self",
         "PolicyArns": [{"arn": "arn:aws:iam::aws:policy/ReadOnlyAccess"}],
@@ -134,7 +135,7 @@ def assume_role(role_arn: str, external_id: str | None = None,
             # fallback in discovery/runner.py and metrics/runner.py.
             return boto3.Session()
 
-    sts = boto3.client("sts")
+    sts = boto3.client("sts", config=STANDARD_RETRY)
 
     params = {
         "RoleArn": role_arn,

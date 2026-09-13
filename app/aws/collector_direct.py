@@ -32,6 +32,7 @@ from app.collector.disk_mounts import all_cwagent_disk_dims
 from datetime import datetime, timedelta, timezone
 # vm_client fully retired from THIS file (apply_final_cleanup.py): vm_query_all went in Phase 4b, vm_query's only use (StatusCheckFailed) is fixed by describe_polling.py now also writing locally. vm_client.py itself is NOT retired overall -- see that script's docstring for its one remaining legitimate use (ALB target-group health, external-Grafana-compatible, in app/aws/describe_polling.py).
 from app.db import get_connection
+from app.aws.boto_config import STANDARD_RETRY
 
 logger = logging.getLogger(__name__)
 
@@ -500,7 +501,7 @@ def _s3_raw(role_arn=None, external_id=None) -> list:
 
 def get_s3_metric_series(bucket_name: str, hours: int = 24) -> dict:
     try:
-        cw            = boto3.client("cloudwatch", region_name="us-east-1")
+        cw            = boto3.client("cloudwatch", region_name="us-east-1", config=STANDARD_RETRY)
         end           = datetime.now(timezone.utc)
         effective_hrs = max(hours, 24 * 14)
         start         = end - timedelta(hours=effective_hrs)
@@ -759,7 +760,7 @@ def collect_cloudfront_distributions(region=None) -> list:
 
 def _cloudfront_raw() -> list:
     try:
-        cf = boto3.client("cloudfront")
+        cf = boto3.client("cloudfront", config=STANDARD_RETRY)
         resp = cf.list_distributions()
         return resp.get("DistributionList", {}).get("Items", [])
     except Exception as e:
@@ -934,7 +935,7 @@ def collect_route53_zones(region=None) -> list:
 
 def _route53_raw() -> list:
     try:
-        r53 = boto3.client("route53")
+        r53 = boto3.client("route53", config=STANDARD_RETRY)
         out = []
         for page in r53.get_paginator("list_hosted_zones").paginate():
             out.extend(page.get("HostedZones", []))
@@ -1065,7 +1066,7 @@ def collect_global_accelerator_accelerators(region=None) -> list:
 
 def _global_accelerator_raw() -> list:
     try:
-        ga = boto3.client("globalaccelerator", region_name="us-west-2")
+        ga = boto3.client("globalaccelerator", region_name="us-west-2", config=STANDARD_RETRY)
         out = []
         for page in ga.get_paginator("list_accelerators").paginate():
             out.extend(page.get("Accelerators", []))
@@ -1200,7 +1201,7 @@ def _ec2_cwagent_installed(instance_id, region=None) -> bool:
 
 def _ec2_cwagent_installed_raw(instance_id, region=None) -> bool:
     try:
-        cw = boto3.client("cloudwatch", region_name=region)
+        cw = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
         resp = cw.list_metrics(
             Namespace="CWAgent",
             Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
@@ -1260,7 +1261,7 @@ def get_ec2_metric_series(instance_id, region=None, hours=6) -> dict:
         disk_used_percent_by_mount = {}  # path -> series, ALL mounts (new -- see app/collector/disk_mounts.py)
         if cwagent_installed:
             try:
-                cw        = boto3.client("cloudwatch", region_name=region)
+                cw        = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
                 cw_period = max(period, 60)  # CWAgent's own default reporting interval
 
                 mem_dims = _ec2_cwagent_dimensions(cw, "mem_used_percent", instance_id)
@@ -1390,7 +1391,7 @@ def _get_lambda_metric_series_raw(function_name, region=None, hours=6) -> dict:
 
         missing = [k for k, v in result.items() if not v]
         if missing:
-            cw   = boto3.client("cloudwatch", region_name=region)
+            cw   = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
             dims = [{"Name": "FunctionName", "Value": function_name}]
             fallback_map = {
                 "invocations": ("Invocations", "Sum"),
@@ -1468,7 +1469,7 @@ def _get_rds_metric_series(db_id, region=None, hours=6) -> dict:
 
 def _get_elb_metric_series(lb_name: str, region=None, hours=6) -> dict:
     try:
-        elbv2 = boto3.client("elbv2", region_name=region)
+        elbv2 = boto3.client("elbv2", region_name=region, config=STANDARD_RETRY)
 
         lb_dim = lb_name
         try:
@@ -1525,7 +1526,7 @@ def _get_elb_metric_series(lb_name: str, region=None, hours=6) -> dict:
 
         missing = [k for k, v in result.items() if not v]
         if missing:
-            cw   = boto3.client("cloudwatch", region_name=region)
+            cw   = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
             dims = [{"Name": "LoadBalancer", "Value": lb_dim}]
             ns   = "AWS/ApplicationELB"
             fallback_map = {
@@ -1615,7 +1616,7 @@ def _get_ecs_metric_series(cluster_name: str, service_name: str = None,
         # boto3 fallback for AWS/ECS if VM has nothing yet (not deployed /
         # not scraped yet) — same safety pattern as _get_elb_metric_series.
         if not cpu or not mem:
-            cw = boto3.client("cloudwatch", region_name=region)
+            cw = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
             fallback_q = [
                 _make_query("cpu", "AWS/ECS", "CPUUtilization",    dims, "Average"),
                 _make_query("mem", "AWS/ECS", "MemoryUtilization", dims, "Average"),
@@ -1624,7 +1625,7 @@ def _get_ecs_metric_series(cluster_name: str, service_name: str = None,
             cpu = cpu or fb.get("cpu", [])
             mem = mem or fb.get("mem", [])
 
-        cw = boto3.client("cloudwatch", region_name=region)
+        cw = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
         ci_ns = "ECS/ContainerInsights"
         ci_queries = [
             _make_query("running",  ci_ns, "RunningTaskCount",  dims, "Average"),
@@ -1701,7 +1702,7 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> li
     """
     from app.db import get_connection
 
-    cw = boto3.client("cloudwatch", region_name=region)
+    cw = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
 
     ec2_instances = collect_ec2_instances(region)
     ebs_volumes   = collect_ebs_volumes(region)
