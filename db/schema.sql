@@ -92,6 +92,7 @@ CREATE TABLE audit_logs (
   actor VARCHAR(100),
   action VARCHAR(100),
   payload JSON,
+  ip_address VARCHAR(45),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

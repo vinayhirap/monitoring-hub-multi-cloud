@@ -32,20 +32,15 @@ def _serialize(obj):
     return obj
 
 
-def _write_audit(actor: str, action: str, detail: str, role: str = "ADMIN"):
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        payload = json.dumps({"detail": detail, "role": role})
-        cursor.execute(
-            "INSERT INTO audit_logs (actor, action, payload) VALUES (%s, %s, %s)",
-            (actor, action, payload)
-        )
-        conn.commit()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        print(f"Audit log write error: {e}")
+from app.audit import write_audit as _write_audit
+# NOTE: previously a local copy defaulting role="ADMIN" whenever a
+# caller didn't pass one explicitly. Three call sites below ("Role
+# changed", "Access revoked", "User deleted") relied on that default
+# silently -- despite all three endpoints being reachable by
+# require_role("admin", "editor"), so an editor performing any of them
+# had the action misattributed to "ADMIN" in the compliance audit
+# trail. Fixed by passing role=current_user["role"].upper() explicitly
+# at every call site below.
 
 
 def _account_ids_by_cloud(conn) -> dict:
@@ -271,6 +266,7 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
     _write_audit(
         actor=current_user["username"], action="User created",
         detail=f"{username} added as {role.upper()} with {len(scopes)} scope grant(s)",
+        role=current_user["role"].upper(),
     )
 
     # Welcome email with a set-your-password link, not the raw
@@ -340,7 +336,9 @@ def update_role(user_id: int, payload: dict = Body(...), current_user: dict = De
     cursor.close()
     conn.close()
 
-    _write_audit(actor=current_user["username"], action="Role changed", detail=f"{user['username']} \u2192 {new_role.upper()}")
+    _write_audit(actor=current_user["username"], action="Role changed",
+                 detail=f"{user['username']} \u2192 {new_role.upper()}",
+                 role=current_user["role"].upper())
     return {"status": "updated", "id": user_id, "role": new_role}
 
 
@@ -380,6 +378,7 @@ def add_user_access(user_id: int, payload: dict = Body(...), current_user: dict 
     _write_audit(
         actor=current_user["username"], action="Access granted",
         detail=f"{target['username']}: +{len(inserted_ids)} scope grant(s)",
+        role=current_user["role"].upper(),
     )
     return {"status": "updated", "user_id": user_id, "scope_ids": inserted_ids}
 
@@ -410,7 +409,9 @@ def revoke_access_scope(scope_id: int, current_user: dict = Depends(require_role
     cursor.close()
     conn.close()
 
-    _write_audit(actor=current_user["username"], action="Access revoked", detail=f"{target['username']}: scope #{scope_id} removed")
+    _write_audit(actor=current_user["username"], action="Access revoked",
+                 detail=f"{target['username']}: scope #{scope_id} removed",
+                 role=current_user["role"].upper())
     return {"status": "revoked", "scope_id": scope_id}
 
 
@@ -434,5 +435,7 @@ def delete_user(user_id: int, current_user: dict = Depends(require_role("admin",
     cursor.close()
     conn.close()
 
-    _write_audit(actor=current_user["username"], action="User deleted", detail=f"{target['username']} removed")
+    _write_audit(actor=current_user["username"], action="User deleted",
+                 detail=f"{target['username']} removed",
+                 role=current_user["role"].upper())
     return {"status": "deleted", "id": user_id, "username": target["username"]}

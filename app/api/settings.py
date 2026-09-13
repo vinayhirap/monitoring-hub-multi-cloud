@@ -326,13 +326,4 @@ def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(re
         return {"breaches": [], "error": str(e)}
 
 
-def _write_audit(actor, action, detail, role="ADMIN"):
-    try:
-        conn = get_connection(); cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO audit_logs (actor, action, payload) VALUES (%s,%s,%s)",
-            (actor, action, json.dumps({"detail": detail, "role": role}))
-        )
-        conn.commit(); cur.close(); conn.close()
-    except Exception as e:
-        logger.warning(f"Audit: {e}")
+from app.audit import write_audit as _write_audit

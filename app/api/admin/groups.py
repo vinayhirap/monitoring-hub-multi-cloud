@@ -59,20 +59,15 @@ def _serialize(obj):
     return obj
 
 
-def _write_audit(actor: str, action: str, detail: str):
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        payload = json.dumps({"detail": detail, "role": "ADMIN"})
-        cursor.execute(
-            "INSERT INTO audit_logs (actor, action, payload) VALUES (%s, %s, %s)",
-            (actor, action, payload),
-        )
-        conn.commit()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        print(f"Audit log write error: {e}")
+from app.audit import write_audit as _write_audit
+# NOTE: previously a local copy that hardcoded every entry's role to
+# "ADMIN" regardless of the actual caller -- every endpoint below is
+# gated by a granular permission (groups.create/update/delete), not
+# require_role("admin"), so an editor with that permission granted had
+# their group-management actions permanently misattributed as admin
+# actions in the compliance audit trail. Fixed by switching to the
+# shared writer and passing the caller's real role at every call site
+# below (role=current_user["role"].upper()).
 
 
 def _account_ids_by_cloud(conn) -> dict:
@@ -238,6 +233,7 @@ def create_group(payload: dict = Body(...), current_user: dict = Depends(require
     _write_audit(
         current_user["username"], "Group created",
         f"{name} ({level})" + (f", parent #{parent_group_id}" if parent_group_id else ""),
+        role=current_user["role"].upper(),
     )
     return {
         "status": "created", "id": new_id, "name": name,
@@ -284,7 +280,8 @@ def delete_group(group_id: int, current_user: dict = Depends(require_permission(
     cursor.close()
     conn.close()
 
-    _write_audit(current_user["username"], "Group deleted", f"{g['name']} ({g['level']}) removed")
+    _write_audit(current_user["username"], "Group deleted", f"{g['name']} ({g['level']}) removed",
+                 role=current_user["role"].upper())
     return {"status": "deleted", "id": group_id, "name": g["name"]}
 
 
@@ -359,6 +356,7 @@ def add_group_policy(group_id: int, payload: dict = Body(...), current_user: dic
     _write_audit(
         current_user["username"], "Group policy granted",
         f"{g['name']}: +{len(inserted_ids)} scope grant(s)",
+        role=current_user["role"].upper(),
     )
     return {"status": "updated", "group_id": group_id, "policy_ids": inserted_ids}
 
@@ -384,7 +382,8 @@ def delete_group_policy(policy_id: int, current_user: dict = Depends(require_per
     cursor.close()
     conn.close()
 
-    _write_audit(current_user["username"], "Group policy revoked", f"{row['group_name']}: policy #{policy_id} removed")
+    _write_audit(current_user["username"], "Group policy revoked", f"{row['group_name']}: policy #{policy_id} removed",
+                 role=current_user["role"].upper())
     return {"status": "revoked", "policy_id": policy_id}
 
 
@@ -448,6 +447,7 @@ def add_group_members(group_id: int, payload: dict = Body(...), current_user: di
     _write_audit(
         current_user["username"], "Group membership added",
         f"{g['name']}: +{len(added)} user(s)" + (f", {len(already)} already member" if already else ""),
+        role=current_user["role"].upper(),
     )
     return {"status": "updated", "group_id": group_id, "added": added, "already_member": already}
 
@@ -473,5 +473,6 @@ def remove_group_member(group_id: int, user_id: int, current_user: dict = Depend
     if not removed:
         raise HTTPException(status_code=404, detail="User is not a member of this group")
 
-    _write_audit(current_user["username"], "Group membership removed", f"{g['name']}: user #{user_id} removed")
+    _write_audit(current_user["username"], "Group membership removed", f"{g['name']}: user #{user_id} removed",
+                 role=current_user["role"].upper())
     return {"status": "removed", "group_id": group_id, "user_id": user_id}

@@ -14,7 +14,6 @@ from app.email import mailer
 import bcrypt
 import logging
 import secrets
-import json
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -42,19 +41,16 @@ def _hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
 
 
-def _write_audit(actor: str, action: str, payload: dict):
-    try:
-        conn = get_connection()
-        cur  = conn.cursor()
-        cur.execute(
-            "INSERT INTO audit_logs (actor, action, payload) VALUES (%s, %s, %s)",
-            (actor, action, json.dumps(payload)),
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        logger.warning(f"Audit write failed: {e}")
+from app.audit import write_audit as _write_audit
+# NOTE: previously a local copy taking a raw `payload` dict with no
+# {"role": ...} key at all -- so "Password changed"/"Password reset
+# requested"/"Password reset completed" audit rows never carried the
+# actor's actual role, and (see Compliance.jsx) the UI badge silently
+# defaulted a missing role to "ADMIN" regardless of who the actor
+# really was. Also: successful/failed logins and logouts were never
+# audited AT ALL before this fix -- for a NOC/compliance tool, that's
+# the single biggest gap in the audit trail, bigger than any of the
+# role-misattribution bugs fixed elsewhere alongside this change.
 
 
 @router.post("/login")
@@ -83,8 +79,12 @@ def login(request: Request, response: Response, payload: dict = Body(...)):
     conn.close()
 
     if not user:
+        _write_audit(username, "Login failed", request=request,
+                      payload={"username": username, "reason": "unknown username"})
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not _verify_password(password, user["pw"]):
+        _write_audit(username, "Login failed", request=request,
+                      payload={"username": username, "reason": "incorrect password"})
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = create_access_token(user["id"], user["username"], user["role"])
@@ -98,6 +98,9 @@ def login(request: Request, response: Response, payload: dict = Body(...)):
         path="/",
     )
 
+    _write_audit(user["username"], "Login successful", role=user["role"].upper(), request=request,
+                  payload={"username": user["username"]})
+
     return {
         "id":       user["id"],
         "username": user["username"],
@@ -106,7 +109,19 @@ def login(request: Request, response: Response, payload: dict = Body(...)):
 
 
 @router.post("/logout")
-def logout(response: Response):
+def logout(request: Request, response: Response):
+    # Best-effort actor lookup for the audit entry only -- logout must
+    # still succeed (200 + cookie cleared) even with no/expired/invalid
+    # session, so this never raises the way get_current_user() would.
+    token = request.cookies.get(COOKIE_NAME)
+    if token:
+        try:
+            from app.auth.security import decode_token
+            claims = decode_token(token)
+            _write_audit(claims["username"], "Logout", role=claims["role"].upper(), request=request,
+                          payload={"username": claims["username"]})
+        except Exception:
+            pass
     response.delete_cookie(COOKIE_NAME, path="/")
     return {"status": "ok"}
 
@@ -155,7 +170,8 @@ def change_password(payload: dict = Body(...), current_user: dict = Depends(get_
     cursor.close()
     conn.close()
 
-    _write_audit(username, "Password changed", {"username": username})
+    _write_audit(username, "Password changed", role=current_user["role"].upper(),
+                  payload={"username": username})
     return {"status": "ok"}
 
 
@@ -183,7 +199,7 @@ def forgot_password(request: Request, payload: dict = Body(...)):
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
-        "SELECT id, email FROM users WHERE username = %s AND active = 1",
+        "SELECT id, email, role FROM users WHERE username = %s AND active = 1",
         (username,),
     )
     user = cursor.fetchone()
@@ -218,7 +234,8 @@ def forgot_password(request: Request, payload: dict = Body(...)):
     cursor.close()
     conn.close()
 
-    _write_audit(username, "Password reset requested", {"username": username})
+    _write_audit(username, "Password reset requested", role=user["role"].upper(), request=request,
+                  payload={"username": username})
 
     # SECURITY: the reset token must NEVER be returned in this API
     # response. This endpoint is intentionally unauthenticated (anyone
@@ -288,7 +305,7 @@ def reset_password(request: Request, payload: dict = Body(...)):
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
         """
-        SELECT prt.id AS token_id, prt.user_id, prt.expires_at, u.username
+        SELECT prt.id AS token_id, prt.user_id, prt.expires_at, u.username, u.role
         FROM password_reset_tokens prt
         JOIN users u ON u.id = prt.user_id
         WHERE prt.token = %s
@@ -314,5 +331,6 @@ def reset_password(request: Request, payload: dict = Body(...)):
     cursor.close()
     conn.close()
 
-    _write_audit(row["username"], "Password reset completed", {"username": row["username"]})
+    _write_audit(row["username"], "Password reset completed", role=row["role"].upper(), request=request,
+                  payload={"username": row["username"]})
     return {"status": "ok"}

@@ -14,7 +14,9 @@ const ACTION_ICONS = {
   "Viewed resource detail":  SearchIcon,
   "Viewed service metrics":  BarChartIcon,
   "Viewed account detail":   BuildingIcon,
-  "User login":              LockIcon,
+  "Login successful":        LockIcon,
+  "Login failed":            AlertOctagonIcon,
+  "Logout":                  LockIcon,
   "Alert acknowledged":      CheckCircleIcon,
   "Alert resolved":          CheckIcon,
   "Alert triggered":         AlertOctagonIcon,
@@ -26,6 +28,20 @@ const ACTION_ICONS = {
   "Role changed":            RefreshCwIcon,
   "Settings saved":          SaveIcon,
 };
+
+// Single place that decides how to display an audit row's role, used by
+// both the live table and the CSV export so they can never disagree
+// about the same entry (previously the live badge defaulted a missing
+// role to "ADMIN" while the CSV export defaulted it to "SYSTEM" --
+// same row, two different answers depending on where you looked, and
+// "ADMIN" was actively misleading since a missing role has never meant
+// "this was definitely an admin"). Returns "" when the backend simply
+// never recorded a role for this entry (some console-open/system
+// events still don't -- see app/aws/federation.py) rather than
+// guessing one.
+function displayRole(payload) {
+  return payload?.actor_role ?? payload?.role ?? "";
+}
 
 function getIcon(action) {
   if (!action) return ClipboardIcon;
@@ -53,7 +69,7 @@ function AuditRow({ log }) {
   const [expanded, setExpanded] = useState(false);
   const action = log.action ?? "System action";
   const actor  = log.actor  ?? "System";
-  const role   = log.payload?.role ?? "ADMIN";
+  const role   = displayRole(log.payload);
   const detail = log.payload?.detail ?? "";
 
   return (
@@ -71,7 +87,7 @@ function AuditRow({ log }) {
         <div className="ar-detail">
           <span className="ar-actor">{actor}</span>
           {detail && <span className="ar-extra">{detail}</span>}
-          <span className={`ar-role ${(role || "").toLowerCase()}`}>{role}</span>
+          {role && <span className={`ar-role ${role.toLowerCase()}`}>{role}</span>}
         </div>
         {expanded && log.payload && Object.keys(log.payload).length > 0 && (
           <pre className="ar-payload">{JSON.stringify(log.payload, null, 2)}</pre>
@@ -98,14 +114,22 @@ export default function Compliance() {
     try {
       const data = await getAuditLogs(200);
       if (Array.isArray(data)) {
-        setLogs(data.map(l => ({
-          ...l,
-          action:  l.action  ?? l.payload?.action ?? "System action",
-          actor:   l.actor   ?? l.payload?.actor  ?? "System",
-          payload: typeof l.payload === "string"
+        setLogs(data.map(l => {
+          const payload = typeof l.payload === "string"
             ? (() => { try { return JSON.parse(l.payload); } catch { return {}; } })()
-            : (l.payload ?? {}),
-        })));
+            : (l.payload ?? {});
+          // ip_address is its own DB column (added alongside the audit
+          // consolidation fix), not part of the payload JSON -- folded
+          // in here so it shows up in the expanded raw-JSON view and is
+          // searchable/exportable the same way every other field is,
+          // without every backend caller needing to remember to add it.
+          return {
+            ...l,
+            action:  l.action  ?? payload?.action ?? "System action",
+            actor:   l.actor   ?? payload?.actor  ?? "System",
+            payload: l.ip_address ? { ...payload, ip_address: l.ip_address } : payload,
+          };
+        }));
         setLastFetch(new Date());
         setError(null);
       }
@@ -135,7 +159,7 @@ export default function Compliance() {
         l.action ?? "",
         l.actor  ?? "",
         l.payload?.detail ?? "",
-        l.payload?.actor_role ?? l.payload?.role ?? (l.actor === "admin" ? "ADMIN" : "SYSTEM"),
+        displayRole(l.payload),
       ])
     ];
     const csv = rows
@@ -154,7 +178,7 @@ export default function Compliance() {
       (l.action  ?? "").toLowerCase().includes(q) ||
       (l.actor   ?? "").toLowerCase().includes(q) ||
       (l.payload?.detail ?? "").toLowerCase().includes(q) ||
-      (l.payload?.role   ?? "").toLowerCase().includes(q)
+      displayRole(l.payload).toLowerCase().includes(q)
     );
   });
 
