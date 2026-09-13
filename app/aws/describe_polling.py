@@ -245,6 +245,114 @@ def _sync_topology_edges(account_db_id, lb_targets: dict) -> None:
         cur.close(); conn.close()
 
 
+def _get_active_accounts_for_ebs():
+    """
+    [(account_db_id, role_arn, external_id, region), ...] for every active
+    account with a default region set. Unlike ALB target health,
+    describe_volumes() returns every volume for an account/region in ONE
+    call with no per-resource list-then-fetch step needed first, so this
+    is a plain account list, not a grouped-by-target-group structure.
+    """
+    conn = get_connection(); cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT id AS account_db_id, role_arn, external_id, default_region
+            FROM aws_accounts WHERE status = 'active'
+        """)
+        return [
+            (a["account_db_id"], a["role_arn"], a["external_id"], a["default_region"])
+            for a in cur.fetchall() if a["default_region"]
+        ]
+    finally:
+        cur.close(); conn.close()
+
+
+def _sync_ebs_attachment_edges(account_db_id, attachments: dict) -> None:
+    """
+    Upserts EC2 -> EBS 'attached_to' edges into resource_relationships
+    from data poll_ebs_attachments() already fetched -- no extra AWS
+    calls beyond the one describe_volumes() that function already makes.
+
+    Deliberately a near-duplicate of _sync_topology_edges() above rather
+    than a shared/generalized helper: same shape (upsert 'auto' edges,
+    prune ones no longer observed, never touch 'manual' edges), but kept
+    separate so ALB-edge and EBS-edge pruning can never accidentally
+    cross-match on relationship_type or interfere with each other's
+    upsert/prune cycle if one of the two poll functions is disabled or
+    changed independently later.
+
+    attachments: {instance_id: {volume_id, ...}}
+    """
+    conn = get_connection(); cur = conn.cursor()
+    try:
+        seen_pairs = []
+        for instance_id, volume_ids in attachments.items():
+            for volume_id in volume_ids:
+                cur.execute("""
+                    INSERT INTO resource_relationships
+                        (aws_account_id, source_resource_id, target_resource_id,
+                         relationship_type, source)
+                    VALUES (%s, %s, %s, 'attached_to', 'auto')
+                    ON DUPLICATE KEY UPDATE source_resource_id = VALUES(source_resource_id)
+                """, (account_db_id, instance_id, volume_id))
+                seen_pairs.append((instance_id, volume_id))
+
+        if seen_pairs:
+            cur.execute("""
+                SELECT id, source_resource_id, target_resource_id
+                FROM resource_relationships
+                WHERE aws_account_id = %s AND relationship_type = 'attached_to' AND source = 'auto'
+            """, (account_db_id,))
+            existing = cur.fetchall()
+            stale_ids = [row[0] for row in existing if (row[1], row[2]) not in seen_pairs]
+            if stale_ids:
+                fmt = ",".join(["%s"] * len(stale_ids))
+                cur.execute(f"DELETE FROM resource_relationships WHERE id IN ({fmt})", stale_ids)
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
+
+
+def poll_ebs_attachments() -> int:
+    """
+    DescribeVolumes for every active account/region -- one free API call
+    per account/region returns every volume AND its attachment in the
+    same response (Volumes[].Attachments[].InstanceId), so this needs no
+    separate per-volume call the way ALB target health needs one call
+    per target group. Returns count of volumes polled.
+
+    This is the "major resources should get topology automatically"
+    follow-up to the ALB->EC2 auto-sync: EC2<->EBS attachment is the
+    single most common relationship in any account's inventory and
+    costs nothing extra to derive, same principle as
+    poll_alb_target_health() above.
+
+    Only feeds the topology graph (resource_relationships) -- unlike
+    poll_ec2_status()/poll_alb_target_health(), this doesn't also push
+    a metric anywhere; EBS metrics are already fully covered by the
+    existing YACE/GetMetricData path, this call's only job is the
+    attachment edge.
+    """
+    total = 0
+    for account_db_id, role_arn, external_id, region in _get_active_accounts_for_ebs():
+        try:
+            session = _session_for(role_arn, external_id, region)
+            ec2 = session.client("ec2", region_name=region)
+            vols = ec2.describe_volumes().get("Volumes", [])
+            attachments = {}
+            for v in vols:
+                for a in v.get("Attachments", []):
+                    iid = a.get("InstanceId")
+                    if iid:
+                        attachments.setdefault(iid, set()).add(v["VolumeId"])
+            total += len(vols)
+            if attachments:
+                _sync_ebs_attachment_edges(account_db_id, attachments)
+        except Exception as e:
+            logger.warning(f"describe_polling: EBS attachments [{region}, account {account_db_id}]: {e}")
+    return total
+
+
 def poll_alb_target_health() -> int:
     """
     DescribeTargetHealth for every target group across all active accounts —
@@ -344,8 +452,9 @@ def poll_alb_target_health() -> int:
 
 
 def poll_all() -> dict:
-    """Run both free pollers once. Safe to call on any cadence — zero AWS cost either way."""
+    """Run all free pollers once. Safe to call on any cadence — zero AWS cost either way."""
     ec2_count = poll_ec2_status()
     alb_count = poll_alb_target_health()
-    logger.info(f"describe_polling: {ec2_count} EC2 instances, {alb_count} target groups (free, 0 GetMetricData calls)")
-    return {"ec2_instances": ec2_count, "target_groups": alb_count}
+    ebs_count = poll_ebs_attachments()
+    logger.info(f"describe_polling: {ec2_count} EC2 instances, {alb_count} target groups, {ebs_count} EBS volumes (free, 0 GetMetricData calls)")
+    return {"ec2_instances": ec2_count, "target_groups": alb_count, "ebs_volumes": ebs_count}

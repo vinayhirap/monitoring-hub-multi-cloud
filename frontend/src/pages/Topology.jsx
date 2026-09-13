@@ -23,6 +23,26 @@
 //     account's actual resources instead of free-text resource-ID
 //     inputs, which were easy to typo and gave no feedback until the
 //     save actually failed.
+//   - ENI resources are excluded entirely (nodes AND any edge touching
+//     one) -- they're a supporting/plumbing resource type that adds
+//     graph noise without adding useful topology information for this
+//     view; every account has one per attached interface and they
+//     rarely represent a relationship anyone is trying to understand.
+//   - Clicking a node navigates to that resource's metrics page, same
+//     detailRoute() pattern Alerts.jsx already uses. AWS-only for now,
+//     same as Alerts.jsx and ServiceDetail.jsx -- neither of those
+//     support drilling into a specific Azure/GCP resource yet either,
+//     so a node for one of those providers just isn't clickable rather
+//     than navigating somewhere broken.
+//   - Node icons and column placement are provider-aware (AWS/Azure/
+//     GCP resource-type keys all map to a sensible tier), since an
+//     account onboarded as Azure or GCP renders its own topology here
+//     too, not just AWS accounts.
+//   - "Add dependency" / delete controls only render for a user with
+//     topology.manage (see db/migrations/024_topology_manage_permission.sql)
+//     -- previously any viewer could mutate manually-declared edges
+//     because the write endpoints rode along on the same permission as
+//     the read-only view.
 //
 // Deliberately still no graph-layout library (react-flow etc.) --
 // frontend/package.json has zero graph dependencies today, and a fixed
@@ -32,31 +52,72 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getTopology, addManualEdge, deleteManualEdge } from "../api/api";
+import { useAuth } from "../auth/AuthContext";
 import { CloudServiceIcon } from "../components/cloud-icons";
-import { AlertTriangleIcon, TrashIcon, PlusIcon, LinkIcon, InfoIcon } from "../components/icons";
+import { AlertTriangleIcon, TrashIcon, PlusIcon, InfoIcon } from "../components/icons";
 import "./Topology.css";
 
 // Which column a resource_type lands in. Anything unlisted falls back
-// to the compute column (TIER_FALLBACK) rather than being dropped --
-// see cloud-icons.jsx's AWS_ICON map for the full set of service keys
-// this app already knows how to draw icons for.
+// to the compute column (TIER_FALLBACK) rather than being dropped.
+// Covers all three providers this app onboards accounts for -- see
+// cloud-icons.jsx's AWS_ICON/GCP_ICON_URL maps and ServiceList.jsx's
+// Azure resource-type matchers for the full set of keys each provider
+// actually uses.
 const TIERS = [
-  { key: "entry",   label: "Entry / Routing", types: ["elb", "alb", "nlb", "cloudfront", "apigateway", "route53", "globalaccelerator"] },
-  { key: "compute",  label: "Compute",         types: ["ec2", "lambda", "ecs", "eks", "autoscaling"] },
-  { key: "data",     label: "Data / Storage / Network", types: ["ebs", "eni", "rds", "s3", "dynamodb", "elasticache", "efs", "redshift", "opensearch", "documentdb", "neptune"] },
+  {
+    key: "entry", label: "Entry / Routing",
+    types: [
+      "elb", "alb", "nlb", "cloudfront", "apigateway", "route53", "globalaccelerator", // aws
+      "cloud_lb", "nat_gateway", // gcp
+    ],
+  },
+  {
+    key: "compute", label: "Compute",
+    types: [
+      "ec2", "lambda", "ecs", "eks", "autoscaling", // aws
+      "vm", "app_service", "aks_cluster", // azure
+      "compute_instance", "cloud_run_service", "gke_cluster", "gke_node", "cloudfunctions_function", // gcp
+    ],
+  },
+  {
+    key: "data", label: "Data / Storage / Messaging",
+    types: [
+      "ebs", "rds", "s3", "dynamodb", "elasticache", "efs", "redshift", "opensearch", "documentdb", "neptune", // aws
+      "storage_account", "sql_database", // azure
+      "gce_persistent_disk", "gcs_bucket", "cloudsql_instance", "firestore_database", "bigquery_project",
+      "spanner_instance", "redis_instance", "pubsub_topic", "pubsub_subscription", // gcp
+    ],
+  },
 ];
 const TIER_FALLBACK = "compute";
-// Resource types with no real branded icon in cloud-icons.jsx (it
-// falls back to the EC2 icon for anything unrecognized) -- showing an
-// EC2 icon on an ENI node would be actively misleading, so these get a
-// neutral generic icon instead.
-const NO_BRAND_ICON = new Set(["eni"]);
+// Excluded entirely -- see file header. Not just "no branded icon", not
+// drawn at all: filtered out of nodes, edges, and the others-list below.
+const HIDDEN_RESOURCE_TYPES = new Set(["eni"]);
 
 const NODE_W = 208, NODE_H = 60, COL_GAP = 130, ROW_GAP = 20, PAD = 30;
 
 function tierIndexOf(resourceType) {
   const i = TIERS.findIndex(t => t.types.includes(resourceType));
   return i === -1 ? TIERS.findIndex(t => t.key === TIER_FALLBACK) : i;
+}
+
+// Same AWS-only resource_type -> route-segment mapping Alerts.jsx uses
+// for its res-deeplink, duplicated here rather than shared (matches
+// this codebase's existing convention of keeping small per-page lookup
+// tables local -- see e.g. SevBadge/oe-sev/ep-sev). Azure/GCP resource
+// types intentionally have no entry: ServiceDetail.jsx (the page this
+// links to) doesn't support drilling into a specific non-AWS resource
+// yet, so returning null here correctly makes those nodes non-clickable
+// instead of navigating to a page that can't render them.
+const ROUTE_SEGMENT_BY_TYPE = {
+  ec2: "ec2", ebs: "ebs", rds: "rds", lambda: "lambda",
+  s3: "s3", elb: "elb", alb: "alb", ecs: "ecs",
+};
+function detailRoute(node, accountId) {
+  if (!node || node.ghost) return null;
+  const seg = ROUTE_SEGMENT_BY_TYPE[node.resource_type];
+  if (!seg) return null;
+  return `/accounts/${accountId}/${seg}?resource=${encodeURIComponent(node.resource_id)}`;
 }
 
 function StateDot({ state }) {
@@ -66,22 +127,22 @@ function StateDot({ state }) {
   return <span className={`td-dot ${cls}`} title={state} />;
 }
 
-function NodeCard({ node, hovered, dimmed, onHover, onLeave, provider }) {
+function NodeCard({ node, hovered, dimmed, onHover, onLeave, provider, onOpen }) {
   const isGhost = node.ghost;
+  const clickable = !!onOpen;
   return (
     <div
-      className={`topo-node ${hovered ? "topo-node-hovered" : ""} ${dimmed ? "topo-node-dimmed" : ""} ${isGhost ? "topo-node-ghost" : ""}`}
+      className={`topo-node ${hovered ? "topo-node-hovered" : ""} ${dimmed ? "topo-node-dimmed" : ""} ${isGhost ? "topo-node-ghost" : ""} ${clickable ? "topo-node-clickable" : ""}`}
       style={{ left: node.x, top: node.y, width: NODE_W, height: NODE_H }}
       onMouseEnter={() => onHover(node.resource_id)}
       onMouseLeave={onLeave}
-      title={node.resource_id}
+      onClick={clickable ? onOpen : undefined}
+      title={clickable ? `${node.resource_id} — view metrics` : node.resource_id}
     >
       <span className="topo-node-icon">
         {isGhost
           ? <InfoIcon size={16} />
-          : NO_BRAND_ICON.has(node.resource_type)
-            ? <LinkIcon size={16} />
-            : <CloudServiceIcon provider={provider} service={node.resource_type} size={20} />}
+          : <CloudServiceIcon provider={provider} service={node.resource_type} size={20} />}
       </span>
       <div className="topo-node-body">
         <div className="topo-node-type">
@@ -97,6 +158,8 @@ function NodeCard({ node, hovered, dimmed, onHover, onLeave, provider }) {
 export default function Topology() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { hasPermission } = useAuth();
+  const canManage = hasPermission("topology.manage");
   const [data, setData] = useState(null);
   const [account, setAccount] = useState(null);
   const [error, setError] = useState(null);
@@ -117,9 +180,14 @@ export default function Topology() {
 
   const layout = useMemo(() => {
     if (!data) return null;
-    const byId = Object.fromEntries(data.nodes.map(n => [n.resource_id, n]));
+
+    const eniIds = new Set(data.nodes.filter(n => HIDDEN_RESOURCE_TYPES.has(n.resource_type)).map(n => n.resource_id));
+    const nodes = data.nodes.filter(n => !HIDDEN_RESOURCE_TYPES.has(n.resource_type));
+    const edges = data.edges.filter(e => !eniIds.has(e.source_resource_id) && !eniIds.has(e.target_resource_id));
+
+    const byId = Object.fromEntries(nodes.map(n => [n.resource_id, n]));
     const connectedIds = new Set();
-    data.edges.forEach(e => { connectedIds.add(e.source_resource_id); connectedIds.add(e.target_resource_id); });
+    edges.forEach(e => { connectedIds.add(e.source_resource_id); connectedIds.add(e.target_resource_id); });
 
     // Real nodes that participate in an edge, plus "ghost" placeholder
     // nodes for edge endpoints with no matching resources row (the
@@ -131,7 +199,7 @@ export default function Topology() {
     const ghostNodes = ghostIds.map(rid => ({ resource_id: rid, resource_type: "unknown", ghost: true }));
     const allConnected = [...connectedReal, ...ghostNodes];
 
-    const others = data.nodes.filter(n => !connectedIds.has(n.resource_id));
+    const others = nodes.filter(n => !connectedIds.has(n.resource_id));
 
     const columns = TIERS.map(() => []);
     allConnected.forEach(n => columns[tierIndexOf(n.resource_type)].push(n));
@@ -149,18 +217,18 @@ export default function Topology() {
     const width  = usedCols * (NODE_W + COL_GAP) - COL_GAP + PAD * 2;
     const height = Math.max(1, maxRows) * (NODE_H + ROW_GAP) - ROW_GAP + PAD * 2;
 
-    return { positioned, others, width, height, columns };
+    return { nodes, edges, positioned, others, width, height, columns };
   }, [data]);
 
   if (error) return <div className="topo-page"><div className="topo-error"><AlertTriangleIcon size={14} /> Failed to load topology: {error}</div></div>;
   if (!data || !layout) return <div className="topo-page"><div className="topo-loading">Loading topology…</div></div>;
 
-  const gaps = data.edges.filter(e => e.source_missing || e.target_missing);
-  const manualEdges = data.edges.filter(e => e.source === "manual");
+  const gaps = layout.edges.filter(e => e.source_missing || e.target_missing);
+  const manualEdges = layout.edges.filter(e => e.source === "manual");
   const provider = account?.provider || "aws";
 
   const isEdgeActive = (e) => hoveredId && (e.source_resource_id === hoveredId || e.target_resource_id === hoveredId);
-  const isNodeActive = (rid) => hoveredId && (hoveredId === rid || data.edges.some(e =>
+  const isNodeActive = (rid) => hoveredId && (hoveredId === rid || layout.edges.some(e =>
     (e.source_resource_id === hoveredId && e.target_resource_id === rid) ||
     (e.target_resource_id === hoveredId && e.source_resource_id === rid)
   ));
@@ -188,23 +256,25 @@ export default function Topology() {
       <div className="c-header">
         <div>
           <h1>Resource <span className="hl">Topology</span></h1>
-          <p className="sub">{account?.account_name ? `${account.account_name} — ` : ""}{data.edges.length} tracked relationship{data.edges.length === 1 ? "" : "s"} across {data.nodes.length} resources</p>
+          <p className="sub">{account?.account_name ? `${account.account_name} — ` : ""}{layout.edges.length} tracked relationship{layout.edges.length === 1 ? "" : "s"} across {layout.nodes.length} resources</p>
         </div>
         <div className="c-header-actions">
           <button className="topo-btn-back" onClick={() => navigate(`/accounts/${id}/services`)}>← Back to Services</button>
-          <button className="c-btn-primary" onClick={() => setAddingEdge(v => !v)}>
-            <PlusIcon size={13} /> {addingEdge ? "Cancel" : "Add dependency"}
-          </button>
+          {canManage && (
+            <button className="c-btn-primary" onClick={() => setAddingEdge(v => !v)}>
+              <PlusIcon size={13} /> {addingEdge ? "Cancel" : "Add dependency"}
+            </button>
+          )}
         </div>
       </div>
 
-      {addingEdge && (
+      {addingEdge && canManage && (
         <form className="topo-add-form" onSubmit={handleAddEdge}>
           <div className="topo-field">
             <label>Source resource</label>
             <select value={form.source} onChange={e => setForm(f => ({ ...f, source: e.target.value }))} required>
               <option value="" disabled>Select a resource…</option>
-              {data.nodes.map(n => <option key={n.resource_id} value={n.resource_id}>{nodeLabel(n)}</option>)}
+              {layout.nodes.map(n => <option key={n.resource_id} value={n.resource_id}>{nodeLabel(n)}</option>)}
             </select>
           </div>
           <span className="topo-add-arrow">depends on / routes to →</span>
@@ -212,7 +282,7 @@ export default function Topology() {
             <label>Target resource</label>
             <select value={form.target} onChange={e => setForm(f => ({ ...f, target: e.target.value }))} required>
               <option value="" disabled>Select a resource…</option>
-              {data.nodes.map(n => <option key={n.resource_id} value={n.resource_id}>{nodeLabel(n)}</option>)}
+              {layout.nodes.map(n => <option key={n.resource_id} value={n.resource_id}>{nodeLabel(n)}</option>)}
             </select>
           </div>
           <button type="submit" className="topo-btn-add" disabled={saving || !form.source || !form.target}>
@@ -224,12 +294,12 @@ export default function Topology() {
       {gaps.length > 0 && (
         <div className="topo-gap-banner">
           <div className="topo-gap-title"><AlertTriangleIcon size={14} /> {gaps.length} edge{gaps.length > 1 ? "s" : ""} point at a resource not in this account's inventory</div>
-          <p>AWS reports this relationship but the resource never showed up in discovery — the same failure class as the 2026-08-26 RCA. Shown below as a dashed node; worth checking discovery logs for it.</p>
+          <p>The cloud provider reports this relationship but the resource never showed up in discovery — the same failure class as the 2026-08-26 RCA. Shown below as a dashed node; worth checking discovery logs for it.</p>
         </div>
       )}
 
       {Object.keys(layout.positioned).length === 0 ? (
-        <div className="topo-empty">No relationships tracked for this account yet — add a manual dependency, or wait for the next ALB target-health sync.</div>
+        <div className="topo-empty">No relationships tracked for this account yet{canManage ? " — add a manual dependency, or wait for the next auto-sync." : " yet."}</div>
       ) : (
         <div className="topo-graph-wrap">
           <div className="topo-tier-labels" style={{ width: layout.width }}>
@@ -247,7 +317,7 @@ export default function Topology() {
                   <path d="M0,0 L6,3 L0,6 Z" fill="var(--accent-purple)" />
                 </marker>
               </defs>
-              {data.edges.map(e => {
+              {layout.edges.map(e => {
                 const s = layout.positioned[e.source_resource_id];
                 const t = layout.positioned[e.target_resource_id];
                 if (!s || !t) return null;
@@ -272,20 +342,24 @@ export default function Topology() {
                 );
               })}
             </svg>
-            {Object.values(layout.positioned).map(n => (
-              <NodeCard
-                key={n.resource_id}
-                node={n}
-                provider={provider}
-                hovered={hoveredId === n.resource_id}
-                dimmed={hoveredId && !isNodeActive(n.resource_id)}
-                onHover={setHoveredId}
-                onLeave={() => setHoveredId(null)}
-              />
-            ))}
+            {Object.values(layout.positioned).map(n => {
+              const route = detailRoute(n, id);
+              return (
+                <NodeCard
+                  key={n.resource_id}
+                  node={n}
+                  provider={provider}
+                  hovered={hoveredId === n.resource_id}
+                  dimmed={hoveredId && !isNodeActive(n.resource_id)}
+                  onHover={setHoveredId}
+                  onLeave={() => setHoveredId(null)}
+                  onOpen={route ? () => navigate(route) : null}
+                />
+              );
+            })}
           </div>
           <div className="topo-legend">
-            <span><i className="topo-legend-line topo-legend-auto" /> Auto-detected (ALB target health)</span>
+            <span><i className="topo-legend-line topo-legend-auto" /> Auto-detected</span>
             <span><i className="topo-legend-line topo-legend-manual" /> Manually declared</span>
           </div>
         </div>
@@ -298,14 +372,22 @@ export default function Topology() {
           </button>
           {showOthers && (
             <div className="topo-others-grid">
-              {layout.others.map(n => (
-                <div key={n.resource_id} className="topo-chip" title={n.resource_id}>
-                  <span className="topo-chip-icon">
-                    {NO_BRAND_ICON.has(n.resource_type) ? <LinkIcon size={13} /> : <CloudServiceIcon provider={provider} service={n.resource_type} size={15} />}
-                  </span>
-                  {n.name || n.resource_id}
-                </div>
-              ))}
+              {layout.others.map(n => {
+                const route = detailRoute(n, id);
+                return (
+                  <div
+                    key={n.resource_id}
+                    className={`topo-chip ${route ? "topo-chip-clickable" : ""}`}
+                    title={n.resource_id}
+                    onClick={route ? () => navigate(route) : undefined}
+                  >
+                    <span className="topo-chip-icon">
+                      <CloudServiceIcon provider={provider} service={n.resource_type} size={15} />
+                    </span>
+                    {n.name || n.resource_id}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -317,9 +399,11 @@ export default function Topology() {
           {manualEdges.map(e => (
             <div key={e.id} className="topo-manual-row">
               <span className="mono">{e.source_resource_id} → {e.target_resource_id}</span>
-              <button className="topo-btn-delete" onClick={async () => { await deleteManualEdge(id, e.id); load(); }} title="Delete this manual edge">
-                <TrashIcon size={13} />
-              </button>
+              {canManage && (
+                <button className="topo-btn-delete" onClick={async () => { await deleteManualEdge(id, e.id); load(); }} title="Delete this manual edge">
+                  <TrashIcon size={13} />
+                </button>
+              )}
             </div>
           ))}
         </div>
