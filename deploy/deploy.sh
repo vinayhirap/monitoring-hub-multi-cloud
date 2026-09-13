@@ -58,10 +58,23 @@ SERVICE_NAME="monitoring-hub"
 
 DB_NAME="monitoring_hub"
 DB_USER="monitor"
-DB_PASS="root123"
-# Same DB password across all boxes on purpose. Root's MySQL password is
-# deliberately never touched (stays on auth_socket / passwordless sudo
-# mysql) — changing that caused a full root lockout on a previous run.
+# SECURITY: previously hardcoded to the literal "root123" -- a well-known
+# weak/default password, baked directly into this script and therefore
+# public forever in this repo's git history (this repo is public). Now
+# freshly randomly generated per install, the same way JWT_SECRET already
+# is a few steps below -- there was never a real reason these two should
+# be treated differently. This does NOT touch any already-provisioned
+# server's existing DB_PASSWORD; it only affects what a brand-new
+# deploy.sh run creates the MySQL user with. Rotating an already-live
+# root123 password on an existing box is a separate, manual operation
+# (ALTER USER ... IDENTIFIED BY ..., update that box's .env, restart) --
+# intentionally not automated here, since this script only ever CREATEs
+# the user (IF NOT EXISTS) and was never the thing that would reset an
+# existing one's password anyway.
+DB_PASS="$(openssl rand -base64 24 | tr -d '=+/' | cut -c1-24)"
+# Root's MySQL password is deliberately never touched (stays on
+# auth_socket / passwordless sudo mysql) -- changing that caused a full
+# root lockout on a previous run.
 
 # test_server — VictoriaMetrics + YACE, ap-south-1 (Mumbai).
 # VM_URL has NO port: nginx on that box reverse-proxies 80 -> 127.0.0.1:8428.
