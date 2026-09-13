@@ -1,101 +1,171 @@
 // src/pages/EscalationPolicies.jsx
-// Roadmap phase 9 (2026-09-13). Minimal CRUD — list, create, delete.
+// Roadmap phase 9 (2026-09-13). CRUD for escalation_policies.
 // See app/collector/escalation.py's docstring: escalating here changes
 // what the Alerts page shows, it does not send a notification yet
 // (SMTP wiring, item #3, is deferred).
+//
+// Rebuilt from the original Tailwind-utility-class scaffold for the same
+// reason as OpEvents.jsx (raw bg-white/border classes ignoring this
+// app's actual theme), and to fix two real functional gaps found while
+// rebuilding it:
+//   1. It called its own local fetch() wrapper instead of api.js's
+//      apiFetch, because the five helpers it needed simply didn't exist
+//      in api.js yet -- added there now.
+//   2. It never exposed the per-account override the backend already
+//      supports (escalate_to_group_id is scoped by aws_account_id,
+//      NULL = global fallback -- see the uniq_policy_scope constraint in
+//      db/migrations/023_escalation_policies.sql) -- the form only ever
+//      created global policies, so an account-specific override was
+//      unreachable through the UI even though the API accepted it.
 import { useState, useEffect, useCallback } from "react";
+import {
+  getEscalationPolicies, getEscalationGroups, createEscalationPolicy, deleteEscalationPolicy,
+  updateEscalationPolicy, getAccounts,
+} from "../api/api";
+import { PlusIcon, TrashIcon, AlertOctagonIcon } from "../components/icons";
+import "./EscalationPolicies.css";
 
-const BASE = "/api/escalation-policies";
-async function api(path, options = {}) {
-  const res = await fetch(`${BASE}${path}`, {
-    ...options, credentials: "include",
-    headers: { "Content-Type": "application/json", ...options.headers },
-  });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `HTTP ${res.status}`);
-  return res.json();
+const EMPTY_FORM = { aws_account_id: "", severity: "CRITICAL", ack_sla_minutes: 15, escalate_to_group_id: "" };
+
+function SevBadge({ sev }) {
+  return <span className={`ep-sev ${sev === "CRITICAL" ? "ep-sev-critical" : "ep-sev-warning"}`}>● {sev}</span>;
 }
 
 export default function EscalationPolicies() {
   const [policies, setPolicies] = useState([]);
   const [groups, setGroups] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [error, setError] = useState(null);
-  const [form, setForm] = useState({ severity: "CRITICAL", ack_sla_minutes: 15, escalate_to_group_id: "" });
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
 
   const load = useCallback(() => {
-    api("").then(setPolicies).catch((e) => setError(e.message));
-    api("/groups").then(setGroups).catch((e) => setError(e.message));
+    getEscalationPolicies().then(setPolicies).catch(e => setError(e.message));
+    getEscalationGroups().then(setGroups).catch(e => setError(e.message));
+    getAccounts().then(setAccounts).catch(() => {});
   }, []);
   useEffect(() => { load(); }, [load]);
 
   const handleCreate = async (e) => {
     e.preventDefault();
+    setSaving(true);
+    setError(null);
     try {
-      await api("", { method: "POST", body: JSON.stringify(form) });
-      setForm({ severity: "CRITICAL", ack_sla_minutes: 15, escalate_to_group_id: "" });
+      await createEscalationPolicy({
+        ...form,
+        aws_account_id: form.aws_account_id || null,
+        ack_sla_minutes: Number(form.ack_sla_minutes),
+      });
+      setForm(EMPTY_FORM);
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleEnabled = async (p) => {
+    try {
+      await updateEscalationPolicy(p.id, { enabled: p.enabled ? 0 : 1 });
       load();
     } catch (err) { setError(err.message); }
   };
 
   const handleDelete = async (id) => {
-    await api(`/${id}`, { method: "DELETE" });
-    load();
+    try {
+      await deleteEscalationPolicy(id);
+      load();
+    } catch (err) { setError(err.message); }
   };
 
   return (
-    <div className="p-6">
-      <h1 className="text-xl font-semibold mb-1">Escalation Policies</h1>
-      <p className="text-xs text-gray-500 mb-4">
-        An unacked alert past its SLA is reassigned to the target group and logged —
-        no notification is sent yet (SMTP not wired).
-      </p>
-      {error && <div className="text-red-600 text-sm mb-3">{error}</div>}
+    <div className="escpol-page">
+      <div className="c-header">
+        <div>
+          <h1>Escalation <span className="hl">Policies</span></h1>
+          <p className="sub">An unacked alert past its SLA is reassigned to the target group and logged — no notification is sent yet (SMTP not wired)</p>
+        </div>
+      </div>
 
-      <form onSubmit={handleCreate} className="flex gap-2 items-center bg-gray-50 border rounded p-3 mb-4 text-sm">
-        <select className="border rounded px-2 py-1" value={form.severity}
-                onChange={(e) => setForm((f) => ({ ...f, severity: e.target.value }))}>
-          <option value="CRITICAL">Critical</option>
-          <option value="WARNING">Warning</option>
-        </select>
-        <span>unacked for</span>
-        <input type="number" min="1" className="border rounded px-2 py-1 w-20" value={form.ack_sla_minutes}
-               onChange={(e) => setForm((f) => ({ ...f, ack_sla_minutes: e.target.value }))} />
-        <span>min → escalate to</span>
-        <select className="border rounded px-2 py-1" value={form.escalate_to_group_id}
-                onChange={(e) => setForm((f) => ({ ...f, escalate_to_group_id: e.target.value }))}>
-          <option value="">Select group…</option>
-          {groups.map((g) => <option key={g.id} value={g.id}>{g.level} — {g.name}</option>)}
-        </select>
-        <button type="submit" className="px-3 py-1 rounded bg-blue-600 text-white">Add</button>
+      {error && <div className="ep-error"><AlertOctagonIcon size={13} /> {error}</div>}
+
+      <form className="ep-form" onSubmit={handleCreate}>
+        <div className="ep-field">
+          <label>Account</label>
+          <select value={form.aws_account_id} onChange={e => setForm(f => ({ ...f, aws_account_id: e.target.value }))}>
+            <option value="">All accounts (global)</option>
+            {accounts.map(a => <option key={a.id} value={a.id}>{a.account_name}</option>)}
+          </select>
+        </div>
+        <div className="ep-field">
+          <label>Severity</label>
+          <select value={form.severity} onChange={e => setForm(f => ({ ...f, severity: e.target.value }))}>
+            <option value="CRITICAL">Critical</option>
+            <option value="WARNING">Warning</option>
+          </select>
+        </div>
+        <div className="ep-field ep-field-narrow">
+          <label>Unacked for (min)</label>
+          <input type="number" min="1" value={form.ack_sla_minutes}
+                 onChange={e => setForm(f => ({ ...f, ack_sla_minutes: e.target.value }))} />
+        </div>
+        <div className="ep-field">
+          <label>Escalate to</label>
+          <select value={form.escalate_to_group_id} onChange={e => setForm(f => ({ ...f, escalate_to_group_id: e.target.value }))} required>
+            <option value="" disabled>Select group…</option>
+            {groups.map(g => <option key={g.id} value={g.id}>{g.level} — {g.name}</option>)}
+          </select>
+        </div>
+        <button type="submit" className="ep-btn-add" disabled={saving || !form.escalate_to_group_id}>
+          <PlusIcon size={13} /> {saving ? "Adding…" : "Add policy"}
+        </button>
       </form>
 
-      <div className="border rounded bg-white overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50 text-left text-gray-500">
-            <tr>
-              <th className="px-3 py-2">Account</th>
-              <th className="px-3 py-2">Severity</th>
-              <th className="px-3 py-2">SLA (min)</th>
-              <th className="px-3 py-2">Escalates to</th>
-              <th className="px-3 py-2"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {policies.map((p) => (
-              <tr key={p.id} className="border-t">
-                <td className="px-3 py-2">{p.account_name || "All accounts (global)"}</td>
-                <td className="px-3 py-2">{p.severity}</td>
-                <td className="px-3 py-2">{p.ack_sla_minutes}</td>
-                <td className="px-3 py-2">{p.group_name}</td>
-                <td className="px-3 py-2 text-right">
-                  <button className="text-red-500 text-xs" onClick={() => handleDelete(p.id)}>Delete</button>
-                </td>
+      <div className="ep-card">
+        <div className="ep-bar">
+          <span className="bar-icon">▐</span>
+          <span className="bar-title">ACTIVE POLICIES</span>
+          <span className="bar-count">{policies.length} configured</span>
+        </div>
+
+        {policies.length === 0 ? (
+          <div className="ep-empty">No escalation policies configured yet — add one above.</div>
+        ) : (
+          <table className="ep-table">
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th>Severity</th>
+                <th>SLA</th>
+                <th>Escalates to</th>
+                <th>Status</th>
+                <th></th>
               </tr>
-            ))}
-            {policies.length === 0 && !error && (
-              <tr><td colSpan={5} className="px-3 py-6 text-center text-gray-400">No escalation policies configured.</td></tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {policies.map(p => (
+                <tr key={p.id}>
+                  <td className="ep-account">{p.account_name || "All accounts (global)"}</td>
+                  <td><SevBadge sev={p.severity} /></td>
+                  <td className="mono">{p.ack_sla_minutes} min</td>
+                  <td>{p.group_name}</td>
+                  <td>
+                    <label className="ep-toggle">
+                      <input type="checkbox" checked={!!p.enabled} onChange={() => handleToggleEnabled(p)} />
+                      <span className="ep-toggle-track"><span className="ep-toggle-thumb" /></span>
+                    </label>
+                  </td>
+                  <td className="ep-actions">
+                    <button className="ep-btn-delete" onClick={() => handleDelete(p.id)} title="Delete policy">
+                      <TrashIcon size={13} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );

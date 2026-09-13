@@ -107,3 +107,17 @@ export const getOpEvents = (params = {}) => {
   const qs = new URLSearchParams(params).toString();
   return apiFetch(`/api/op-events${qs ? `?${qs}` : ""}`);
 };
+
+// ── Escalation policies (roadmap phase 9) ─────────────────────────────────
+// NOTE: EscalationPolicies.jsx previously rolled its own local fetch
+// wrapper instead of using apiFetch here, because these five helpers
+// simply didn't exist yet. Added now so it's consistent with every
+// other page's API-call pattern.
+export const getEscalationPolicies = () => apiFetch("/api/escalation-policies");
+export const getEscalationGroups   = () => apiFetch("/api/escalation-policies/groups");
+export const createEscalationPolicy = (data) =>
+  apiFetch("/api/escalation-policies", { method: "POST", body: JSON.stringify(data) });
+export const updateEscalationPolicy = (id, data) =>
+  apiFetch(`/api/escalation-policies/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+export const deleteEscalationPolicy = (id) =>
+  apiFetch(`/api/escalation-policies/${id}`, { method: "DELETE" });

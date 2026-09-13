@@ -1,0 +1,129 @@
+.escpol-page { max-width: 1100px; }
+
+.escpol-page .c-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: var(--space-5); padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.escpol-page .c-header h1 { font-size: 22px; font-weight: 700; }
+.escpol-page .hl  { color: var(--accent); font-weight: 700; }
+.escpol-page .sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; max-width: 640px; line-height: 1.5; }
+
+.ep-error {
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.3); color: var(--red);
+  padding: 10px 14px; border-radius: var(--radius); font-size: 13px; margin-bottom: var(--space-4);
+}
+
+/* Add-policy form card — same visual weight as Settings.jsx's
+   .thresh-card inputs, so this reads as "another config form in this
+   app" instead of a foreign component. */
+.ep-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  margin-bottom: var(--space-5);
+}
+.ep-field { display: flex; flex-direction: column; gap: 6px; min-width: 160px; }
+.ep-field-narrow { min-width: 100px; }
+.ep-field label {
+  font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--text-muted); font-family: var(--font-mono);
+}
+.ep-field select, .ep-field input {
+  background: var(--bg-input);
+  border: 1px solid var(--border-md);
+  color: var(--text-primary);
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+.ep-field select:focus, .ep-field input:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(43,179,172,0.1);
+}
+
+.ep-btn-add {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--accent-dim);
+  border: 1px solid rgba(43,179,172,.3);
+  color: var(--accent);
+  padding: 9px 18px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.ep-btn-add:hover:not(:disabled) { background: rgba(43,179,172,.2); }
+.ep-btn-add:disabled { opacity: .4; cursor: not-allowed; }
+
+/* Policy list card */
+.ep-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.ep-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+}
+.ep-bar .bar-icon  { color: var(--accent); font-size: 14px; line-height: 1; }
+.ep-bar .bar-title { font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--text-secondary); font-family: var(--font-mono); }
+.ep-bar .bar-count { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+
+.ep-empty { padding: 40px 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
+
+.ep-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ep-table thead { background: var(--bg-elevated); }
+.ep-table th {
+  text-align: left; padding: 10px 16px; font-size: 10px; font-weight: 700;
+  letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.ep-table td { padding: 12px 16px; border-bottom: 1px solid var(--border); color: var(--text-primary); }
+.ep-table tr:last-child td { border-bottom: none; }
+.ep-table tr:hover td { background: rgba(43,179,172,.04); }
+.ep-account { color: var(--text-secondary); }
+.ep-table .mono { font-family: var(--font-mono); color: var(--text-secondary); }
+
+.ep-sev {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 700; letter-spacing: .03em;
+  padding: 2px 8px; border-radius: 3px; font-family: var(--font-mono);
+}
+.ep-sev-critical { background: rgba(239,68,68,.12); color: var(--red);    border: 1px solid rgba(239,68,68,.3); }
+.ep-sev-warning  { background: rgba(245,158,11,.12); color: var(--yellow); border: 1px solid rgba(245,158,11,.3); }
+
+/* Enabled toggle — same switch language as Compliance.jsx's auto-refresh
+   toggle (.ar-toggle/.ar-track/.ar-thumb), re-keyed here so this table
+   doesn't need to import that page's stylesheet. */
+.ep-toggle { display: inline-flex; cursor: pointer; }
+.ep-toggle input { display: none; }
+.ep-toggle-track {
+  position: relative; width: 32px; height: 17px;
+  background: var(--border-bright); border-radius: 9px; transition: background .2s;
+}
+.ep-toggle input:checked + .ep-toggle-track { background: var(--accent-green); }
+.ep-toggle-thumb {
+  position: absolute; top: 2px; left: 2px; width: 13px; height: 13px;
+  border-radius: 50%; background: #fff; transition: left .2s;
+}
+.ep-toggle input:checked + .ep-toggle-track .ep-toggle-thumb { left: 17px; }
+
+.ep-actions { text-align: right; }
+.ep-btn-delete {
+  background: transparent; border: 1px solid var(--border-md); color: var(--text-muted);
+  width: 28px; height: 28px; border-radius: var(--radius);
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all .15s;
+}
+.ep-btn-delete:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,.08); }
