@@ -276,7 +276,7 @@
 }
 .ms-discover-hint-sub { font-size: 11px; color: var(--text-muted); font-style: italic; }
 
-/* Metric row â€” CSS grid keeps columns aligned regardless of text length */
+/* Metric row — CSS grid keeps columns aligned regardless of text length */
 .ms-metric-row {
   display: grid;
   grid-template-columns: 18px minmax(140px, 220px) minmax(90px, 130px) 1fr auto;
