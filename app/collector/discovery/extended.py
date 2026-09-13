@@ -82,6 +82,7 @@ must be checked against a real account before relying on it.
 """
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -524,6 +525,27 @@ def _discover_s3(session, account, region, cursor):
     logger.info(f"  S3: {count} buckets in {account['account_name']}")
 
 
+_S3_ORIGIN_RE = re.compile(r"^(?P<bucket>.+?)\.s3[.-]")
+
+
+def _s3_bucket_from_origin_domain(domain: str) -> str | None:
+    """
+    CloudFront origin DomainName -> S3 bucket name, for the topology
+    auto-sync below. Matches the REST endpoint (bucket.s3.amazonaws.com
+    / bucket.s3.region.amazonaws.com) and the static-website endpoint
+    (bucket.s3-website[-.]region.amazonaws.com) shapes; returns None for
+    any custom origin (ALB, EC2, API Gateway, a third-party domain) --
+    those aren't S3 and this function has no business guessing at them.
+    Non-greedy match so a bucket name that itself contains dots (a
+    legal, if uncommon, S3 bucket name) still resolves to the bucket's
+    full name rather than stopping at its first dot.
+    """
+    if not domain:
+        return None
+    m = _S3_ORIGIN_RE.match(domain)
+    return m.group("bucket") if m else None
+
+
 @_safe
 def _discover_cloudfront(session, account, region, cursor):
     # Global service -- must call the CloudFront API in us-east-1
@@ -533,6 +555,7 @@ def _discover_cloudfront(session, account, region, cursor):
     # CloudFront CloudWatch docs) -- stashed in tags for the collector.
     cf = session.client("cloudfront", region_name="us-east-1")
     count = 0
+    origin_pairs = []
     paginator = cf.get_paginator("list_distributions")
     for page in paginator.paginate():
         items = (page.get("DistributionList") or {}).get("Items") or []
@@ -542,6 +565,22 @@ def _discover_cloudfront(session, account, region, cursor):
             _upsert_resource(cursor, account["id"], "cloudfront", dist_id, name,
                               {"cw_extra_dims": {"Region": "Global"}}, "global")
             count += 1
+            # Topology auto-sync follow-up (roadmap phase 4/7,
+            # 2026-09-13): ListDistributions' summary already includes
+            # each distribution's full Origins list -- zero extra API
+            # calls to also capture CloudFront->S3 edges here, same
+            # "the data was already in the response" principle as the
+            # EC2<->EBS attachment sync.
+            for origin in (d.get("Origins") or {}).get("Items") or []:
+                bucket = _s3_bucket_from_origin_domain(origin.get("DomainName"))
+                if bucket:
+                    origin_pairs.append((dist_id, bucket))
+    if origin_pairs:
+        try:
+            from app.topology_sync import sync_auto_edges
+            sync_auto_edges(account["id"], "origin", origin_pairs)
+        except Exception as e:
+            logger.warning(f"  CloudFront origin edge sync failed [{account['account_name']}]: {e}")
     logger.info(f"  CloudFront: {count} distributions in {account['account_name']}")
 
 

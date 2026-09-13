@@ -79,12 +79,48 @@ def install_stub(dotted_name, **attrs):
     packages along the way (e.g. install_stub("app.clients.vm_client",
     vm_query=...) also creates bare "app" and "app.clients" if absent).
     Returns the module object so callers can further customize it.
+
+    Every module this call actually CREATES (didn't already exist --
+    not one it merely mutated attributes on) is marked with a sentinel
+    attribute so clear_stubs() can find and remove exactly those later,
+    regardless of dotted-name prefix. The sentinel lives ON the module
+    object in sys.modules -- a genuine process-wide singleton -- rather
+    than in a separate tracking variable in this file, because THIS
+    file itself gets imported as two distinct module objects in a
+    normal pytest run (once as "conftest" via pytest's own auto-
+    discovery, once as "tests.conftest" via every test file's explicit
+    `from tests.conftest import ...`) with two separate copies of any
+    plain module-level variable. A set-based tracker tried here first
+    silently failed for exactly that reason: install_stub calls (via
+    the "tests.conftest" copy) populated one set, while the autouse
+    clean_sys_modules fixture's clear_stubs() call (bound to whichever
+    copy pytest's fixture machinery resolved) read a different, empty
+    one -- so nothing was ever actually cleared, and a stub installed
+    by one test (e.g. "google.cloud.monitoring_v3" in
+    test_gcp_metrics_collector.py) permanently shadowed the real
+    "google.cloud" package for every later test needing one of its
+    OTHER real submodules (compute_v1 etc, in
+    test_gcp_topology_sync.py) -- only reproducible by running both
+    test files in the same pytest session, never in isolation. A
+    sentinel attribute on the module object itself sidesteps the
+    duplicate-module-instance problem entirely, since sys.modules is
+    the one piece of state here that's truly shared no matter which
+    copy of this file's code is executing.
+
+    This generalizes the old "app.*" prefix-only cleanup this replaced:
+    that version was immune to the duplicate-module-instance problem
+    (it scanned the live sys.modules directly, no separate tracking
+    variable) but only ever cleaned up the "app." tree, leaving any
+    stub outside it (google.*, azure.*, ...) to leak for the rest of
+    the pytest process.
     """
     parts = dotted_name.split(".")
     for i in range(1, len(parts) + 1):
         parent = ".".join(parts[:i])
         if parent not in sys.modules:
-            sys.modules[parent] = types.ModuleType(parent)
+            stub = types.ModuleType(parent)
+            stub._pytest_conftest_stub = True
+            sys.modules[parent] = stub
     mod = sys.modules[dotted_name]
     for k, v in attrs.items():
         setattr(mod, k, v)
@@ -93,13 +129,17 @@ def install_stub(dotted_name, **attrs):
 
 def clear_stubs():
     """
-    Remove every fake module this helper may have installed, so tests in
-    different files don't see each other's stale stubs. Call from a
-    fixture's teardown (see the `clean_sys_modules` fixture below) rather
-    than manually in most tests.
+    Remove every fake module install_stub() actually created, found by
+    the _pytest_conftest_stub sentinel it sets on each one (see
+    install_stub's docstring for why that's a sentinel attribute on the
+    shared sys.modules object rather than a separate tracking
+    variable). Call from a fixture's teardown (see the
+    `clean_sys_modules` fixture below) rather than manually in most
+    tests.
     """
     for name in list(sys.modules):
-        if name == "app" or name.startswith("app."):
+        mod = sys.modules[name]
+        if getattr(mod, "_pytest_conftest_stub", False):
             del sys.modules[name]
 
 

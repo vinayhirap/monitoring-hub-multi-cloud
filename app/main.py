@@ -84,10 +84,18 @@ def _run_multicloud_collector(leader_event):
         logger.error(f"Multi-cloud collector crashed: {e}")
 
 
-def _start_all_collector_threads(leader_event):
-    threading.Thread(target=_run_collector, args=(leader_event,), daemon=True, name="collector").start()
-    threading.Thread(target=_run_describe_poll_loop, args=(leader_event,), daemon=True, name="describe-poll").start()
-    threading.Thread(target=_run_multicloud_collector, args=(leader_event,), daemon=True, name="multicloud-collector").start()
+def _start_all_collector_threads(leader_event, collector_enabled=True, describe_poll_enabled=True):
+    if collector_enabled:
+        threading.Thread(target=_run_collector, args=(leader_event,), daemon=True, name="collector").start()
+    if describe_poll_enabled:
+        threading.Thread(target=_run_describe_poll_loop, args=(leader_event,), daemon=True, name="describe-poll").start()
+    if collector_enabled:
+        # Azure/GCP metric collection calls each provider's own billed
+        # monitoring API (Azure Monitor / GCP Cloud Monitoring) -- the
+        # same cost category as AWS's CloudWatch-based tiered scheduler,
+        # not the free describe-poll loop -- so this stays tied to
+        # collector_enabled, not describe_poll_enabled.
+        threading.Thread(target=_run_multicloud_collector, args=(leader_event,), daemon=True, name="multicloud-collector").start()
 
 
 @asynccontextmanager
@@ -99,20 +107,36 @@ async def lifespan(app):
     # Only the worker that wins the MySQL named lock actually starts the
     # background threads; others stand by and take over automatically if
     # the leader worker dies.
+    #
+    # Two independent flags, not one: the describe-poll loop (EC2 status,
+    # ALB target health, EBS/managed-disk attachment topology sync) makes
+    # zero CloudWatch/GetMetricData calls -- it has always been free to
+    # run continuously regardless of whether the paid tiered collector is
+    # on. Previously it was bundled into COLLECTOR_ENABLED purely because
+    # _start_all_collector_threads() started every thread together, with
+    # no way to turn off just the billed ones. Splitting this out lets a
+    # cost-conscious environment (dev) leave topology/EC2-status/ALB-
+    # health continuously fresh without paying for CloudWatch polling --
+    # see the 2026-09-13 Topology-page conversation this was requested
+    # in. DESCRIBE_POLL_ENABLED defaults to whatever COLLECTOR_ENABLED
+    # resolves to when unset, so an existing .env with only
+    # COLLECTOR_ENABLED set keeps its exact current combined behavior.
     collector_enabled = os.getenv("COLLECTOR_ENABLED", "true").strip().lower() not in ("false", "0", "no")
-    if collector_enabled:
+    describe_poll_enabled = os.getenv("DESCRIBE_POLL_ENABLED", str(collector_enabled)).strip().lower() not in ("false", "0", "no")
+    if collector_enabled or describe_poll_enabled:
         from app.collector.leader import run_when_leader
-        run_when_leader(_start_all_collector_threads)
+        run_when_leader(lambda leader_event: _start_all_collector_threads(leader_event, collector_enabled, describe_poll_enabled))
     else:
         logger.warning(
-            "COLLECTOR_ENABLED=false -- skipping leader election and all collector "
-            "threads (AWS/Azure/GCP scheduler, describe-poll). This process will "
-            "serve UI/API traffic only and make zero cloud provider API calls."
+            "COLLECTOR_ENABLED=false and DESCRIBE_POLL_ENABLED=false -- skipping leader "
+            "election and all collector threads (AWS/Azure/GCP scheduler, describe-poll). "
+            "This process will serve UI/API traffic only and make zero cloud provider API calls."
         )
     redis_task = asyncio.create_task(_safe_redis_listener())
     logger.info(
-        "Startup complete — collector %s, Redis listener started",
-        "leader-election started" if collector_enabled else "disabled (COLLECTOR_ENABLED=false)",
+        "Startup complete — collector %s, describe-poll %s, Redis listener started",
+        "enabled" if collector_enabled else "disabled (COLLECTOR_ENABLED=false)",
+        "enabled" if describe_poll_enabled else "disabled (DESCRIBE_POLL_ENABLED=false)",
     )
     yield
     # ── Shutdown ────────────────────────────────────────────────

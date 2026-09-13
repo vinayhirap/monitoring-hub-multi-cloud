@@ -307,12 +307,36 @@ def _discover_data_factories(cred, sub_id, account_id, cursor) -> int:
 
 def _discover_managed_disks(compute_client, account_id, cursor) -> int:
     count = 0
+    attachments = []
     for disk in compute_client.disks.list():
         _upsert_resource(
             cursor, account_id, "managed_disk", disk.id, disk.name,
             dict(disk.tags or {}), disk.location, "storage",
         )
         count += 1
+        # Topology auto-sync follow-up (roadmap phase 4/7, 2026-09-13),
+        # same "the data was already in the response, just capture it"
+        # principle as the AWS EC2<->EBS attachment sync. disk.managed_by
+        # is the attaching VM's full ARM resource id when the disk is
+        # attached (None otherwise) -- the SAME id shape _discover_vms()
+        # above already stores as vm.id, so this needs no format
+        # normalization the way EventSourceArn->bare-name did for AWS
+        # Lambda mappings.
+        #
+        # Refresh cadence note: unlike AWS's continuous 30s describe-poll
+        # loop, this only runs when discover_account_resources() runs --
+        # account onboarding, or a manual re-discovery trigger (see
+        # app/api/admin/accounts.py) -- there is no periodic Azure
+        # discovery loop in this app today. Real, correctly-detected
+        # edges, just refreshed less often than the AWS equivalent.
+        if disk.managed_by:
+            attachments.append((disk.managed_by, disk.id))
+    if attachments:
+        try:
+            from app.topology_sync import sync_auto_edges
+            sync_auto_edges(account_id, "attached_to", attachments)
+        except Exception as e:
+            logger.warning(f"Azure managed-disk attachment edge sync failed [account {account_id}]: {e}")
     return count
 
 
