@@ -14,6 +14,7 @@ import AccountOnboarding from "./pages/AccountOnboarding";
 import ServiceList       from "./pages/ServiceList";
 import ServiceDetail     from "./pages/ServiceDetail";
 import Topology          from "./pages/Topology";
+import Incidents         from "./pages/Incidents";
 import OpEvents          from "./pages/OpEvents";
 import EscalationPolicies from "./pages/EscalationPolicies";
 
@@ -55,6 +56,7 @@ function AppRoutes() {
         <Route path="settings"                  element={<Settings />} />
         <Route path="accounts/:id/services"     element={<ServiceList />} />
         <Route path="accounts/:id/topology"     element={<Topology />} />
+        <Route path="accounts/:id/incidents"    element={<Incidents />} />
         <Route path="accounts/:id/:service"     element={<ServiceDetail />} />
         <Route path="accounts/:id"              element={<AccountDetail />} />
       </Route>

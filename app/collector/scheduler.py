@@ -184,6 +184,34 @@ def run_once(tier="standard"):
                       f"recompute_baselines failed (non-fatal, static thresholds still apply): {e}",
                       severity="WARNING")
 
+        # AIOps Phase 1 (2026-09-14): real AWS-resource-level RCA data
+        # (CloudTrail, NOT this app's own op_events/audit_logs -- see
+        # cloudtrail_collector.py's docstring for that distinction),
+        # topology-based alert correlation into incidents, and resource
+        # health scoring. All three are pure computation/free-tier API
+        # calls against data already flowing through this tier -- same
+        # cost profile as baseline.py above. Each wrapped independently
+        # so one failing doesn't block the others or this tier's other
+        # existing work.
+        try:
+            from app.aws.cloudtrail_collector import poll_cloud_events
+            poll_cloud_events()
+        except Exception as e:
+            log_event("cloudtrail_poll_failed",
+                      f"poll_cloud_events failed (non-fatal): {e}", severity="WARNING")
+        try:
+            from app.collector.correlate import correlate_alerts_into_incidents
+            correlate_alerts_into_incidents()
+        except Exception as e:
+            log_event("incident_correlation_failed",
+                      f"correlate_alerts_into_incidents failed (non-fatal): {e}", severity="WARNING")
+        try:
+            from app.collector.health_score import recompute_health_scores
+            recompute_health_scores()
+        except Exception as e:
+            log_event("health_score_failed",
+                      f"recompute_health_scores failed (non-fatal): {e}", severity="WARNING")
+
     # Evaluate alerts after every standard cycle
     if tier == "standard":
         if _VM_SYNC_ENABLED:

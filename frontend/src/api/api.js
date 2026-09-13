@@ -108,6 +108,18 @@ export const getOpEvents = (params = {}) => {
   return apiFetch(`/api/op-events${qs ? `?${qs}` : ""}`);
 };
 
+// ── Incidents / health / RCA (AIOps roadmap Phase 1, 2026-09-14) ─────────
+export const getIncidents = (accountId, params = {}) => {
+  const qs = new URLSearchParams(params).toString();
+  return apiFetch(`/api/incidents/${accountId}${qs ? `?${qs}` : ""}`);
+};
+export const getIncidentDetail = (accountId, incidentId) =>
+  apiFetch(`/api/incidents/${accountId}/${incidentId}/detail`);
+export const getResourceHealth = (accountId) =>
+  apiFetch(`/api/incidents/${accountId}/health`);
+export const getCapacityForecast = (accountId, resourceId) =>
+  apiFetch(`/api/incidents/${accountId}/forecast/${encodeURIComponent(resourceId)}`);
+
 // ── Escalation policies (roadmap phase 9) ─────────────────────────────────
 // NOTE: EscalationPolicies.jsx previously rolled its own local fetch
 // wrapper instead of using apiFetch here, because these five helpers
