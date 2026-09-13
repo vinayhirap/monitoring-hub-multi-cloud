@@ -144,6 +144,7 @@ def run_once(tier="standard"):
     from app.collector.metrics.runner  import run_metrics_collection
     from app.collector.alert_evaluator import evaluate_alerts
     from app.collector.metrics_writer  import prune_metric_history
+    from app.collector.op_log          import log_event, prune_op_events
 
     accounts = _get_active_accounts()
     if not accounts:
@@ -153,17 +154,51 @@ def run_once(tier="standard"):
     # Re-enabled (see apply_direct_gmd_metrics_revival.py) -- this was
     # disabled, not deleted, during the VM/YACE cost-avoidance migration.
     # AWS billing for GetMetricData applies again; accepted deliberately.
-    run_metrics_collection(accounts, tier=tier)
+    #
+    # Wrapped (previously unwrapped) so a collection failure for this
+    # tier is captured as a structured op_event (roadmap phase 5) instead
+    # of only a stack trace in server logs -- this is exactly the kind of
+    # cycle-level failure the 2026-08-26 RCA had to reconstruct from raw
+    # logs after the fact. Re-raising after logging: this must not
+    # silently swallow a real collection failure, only make it findable.
+    try:
+        run_metrics_collection(accounts, tier=tier)
+    except Exception as e:
+        log_event("collector_cycle_failed", f"run_metrics_collection failed for tier={tier}: {e}",
+                   severity="ERROR", detail={"tier": tier, "account_count": len(accounts)})
+        raise
 
     if tier == "low":
-        prune_metric_history()
+        # 30 days, not the function's own 7-day default -- dynamic
+        # thresholds (app/collector/baseline.py) need enough history to
+        # see weekly seasonality (Monday-morning batch jobs, weekend
+        # dips). Bumping retention here, not the function default, keeps
+        # any other caller's expectations unchanged.
+        prune_metric_history(retain_days=30)
+        prune_op_events(retain_days=30)
+        try:
+            from app.collector.baseline import recompute_baselines
+            recompute_baselines()
+        except Exception as e:
+            log_event("baseline_recompute_failed",
+                      f"recompute_baselines failed (non-fatal, static thresholds still apply): {e}",
+                      severity="WARNING")
 
     # Evaluate alerts after every standard cycle
     if tier == "standard":
         if _VM_SYNC_ENABLED:
             from app.collector.metrics_vm_sync import sync_metrics_from_vm
             sync_metrics_from_vm()
-        evaluate_alerts()
+        try:
+            evaluate_alerts()
+        except Exception as e:
+            log_event("alert_eval_failed", f"evaluate_alerts failed: {e}", severity="ERROR")
+            raise
+        try:
+            from app.collector.escalation import evaluate_escalations
+            evaluate_escalations()
+        except Exception as e:
+            log_event("escalation_eval_failed", f"evaluate_escalations failed (non-fatal): {e}", severity="WARNING")
         
 
 def run_discovery_once():

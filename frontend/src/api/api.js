@@ -63,6 +63,16 @@ export const muteAlert        = (id) => apiFetch(`/api/alerts/${id}/mute`,     {
 // ── Audit logs ────────────────────────────────────────────────────
 export const getAuditLogs     = (limit=100) => apiFetch(`/api/audit-logs?limit=${limit}`);
 
+// ── Topology / dependency graph (roadmap phase 4/7) ──────────────────────
+export const getTopology      = (accountId) => apiFetch(`/api/topology/${accountId}`);
+export const addManualEdge    = (accountId, sourceId, targetId, relationshipType="depends_on") =>
+  apiFetch(`/api/topology/${accountId}/manual-edge`, {
+    method: "POST",
+    body: JSON.stringify({ source_resource_id: sourceId, target_resource_id: targetId, relationship_type: relationshipType }),
+  });
+export const deleteManualEdge = (accountId, edgeId) =>
+  apiFetch(`/api/topology/${accountId}/manual-edge/${edgeId}`, { method: "DELETE" });
+
 // ── Auth ──────────────────────────────────────────────────────────
 export const login = (username, password) =>
   apiFetch("/api/auth/login", { method:"POST", body: JSON.stringify({ username, password }) });
@@ -91,3 +101,9 @@ export const discoverNamespaceMetrics = (accountId, namespace, region) =>
   apiFetch(`/api/account-metrics/${accountId}/discover?namespace=${encodeURIComponent(namespace)}${region ? `&region=${region}` : ""}`, { method: "POST" });
 export const downloadYaceConfig = (accountId, tier) =>
   `/api/account-metrics/${accountId}/yace-config${tier ? `?tier=${tier}` : ""}`;
+
+// ── Operational events (roadmap phase 5) ─────────────────────────────────
+export const getOpEvents = (params = {}) => {
+  const qs = new URLSearchParams(params).toString();
+  return apiFetch(`/api/op-events${qs ? `?${qs}` : ""}`);
+};

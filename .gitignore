@@ -58,3 +58,4 @@ grant_*_scope.json
 # that encryption entirely, the same class of incident fix_p0_credential_leak.py
 # already had to clean up once for session cookies/passwords. Never commit.
 config/credential.key
+*.patch

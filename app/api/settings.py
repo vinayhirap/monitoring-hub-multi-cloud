@@ -195,7 +195,7 @@ def get_thresholds(
         SELECT
             t.id, t.aws_account_id, t.resource_type, t.metric_id,
             t.warning_value, t.critical_value, t.comparison,
-            t.evaluation_period, t.enabled, t.created_at,
+            t.evaluation_period, t.enabled, t.use_dynamic, t.dynamic_k, t.created_at,
             mc.metric_name, mc.service, mc.namespace, mc.statistic, mc.unit
         FROM thresholds t
         LEFT JOIN metric_catalog mc ON t.metric_id = mc.id
@@ -267,6 +267,41 @@ def toggle_threshold(threshold_id: int, payload: dict = Body(...), current_user:
     cur.execute("UPDATE thresholds SET enabled=%s WHERE id=%s", (enabled, threshold_id))
     conn.commit(); cur.close(); conn.close()
     return {"status": "updated", "enabled": enabled}
+
+
+@router.patch("/thresholds/{threshold_id}/dynamic")
+def toggle_dynamic_threshold(threshold_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("alerts.configure"))):
+    """
+    Opt a single threshold row into/out of dynamic (baseline-derived)
+    bounds -- separate endpoint from /toggle (which controls `enabled`)
+    so this is one focused, low-risk PATCH that only ever touches
+    use_dynamic/dynamic_k, never warning_value/critical_value (those stay
+    exactly as the operator set them -- the STATIC values are what
+    alert_evaluator.py falls back to during cold-start, before
+    metric_baseline has enough history for this resource/metric/hour/
+    weekday bucket, so leaving them untouched here matters).
+    """
+    account_id = _get_threshold_account_id(threshold_id)
+    if account_id is None:
+        raise HTTPException(status_code=404, detail="Threshold not found")
+    _require_account_access(account_id, current_user)
+
+    use_dynamic = int(payload.get("use_dynamic", 0))
+    dynamic_k   = float(payload.get("dynamic_k", 3.0))
+    if dynamic_k <= 0:
+        raise HTTPException(status_code=400, detail="dynamic_k must be positive")
+
+    conn = get_connection(); cur = conn.cursor()
+    cur.execute(
+        "UPDATE thresholds SET use_dynamic=%s, dynamic_k=%s WHERE id=%s",
+        (use_dynamic, dynamic_k, threshold_id),
+    )
+    conn.commit(); cur.close(); conn.close()
+
+    _write_audit(current_user["username"], "Threshold updated",
+                 f"threshold_id={threshold_id} use_dynamic={use_dynamic} dynamic_k={dynamic_k}",
+                 role=current_user["role"].upper())
+    return {"status": "updated", "use_dynamic": bool(use_dynamic), "dynamic_k": dynamic_k}
 
 
 @router.post("/thresholds/seed")

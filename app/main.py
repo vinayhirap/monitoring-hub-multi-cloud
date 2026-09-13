@@ -20,6 +20,9 @@ from app.api.settings       import router as settings_router
 from app.api.live_data      import router as live_data_router
 from app.api.audit_logs     import router as audit_logs_router
 from app.api.metric_catalog import router as metric_catalog_router
+from app.api.topology       import router as topology_router
+from app.api.op_events      import router as op_events_router
+from app.api.escalation     import router as escalation_router
 from app.auth.deps          import get_current_user, COOKIE_NAME
 from app.auth.security      import decode_token
 
@@ -264,3 +267,6 @@ app.include_router(live_data_router,      dependencies=_auth_dep)
 app.include_router(audit_logs_router,     dependencies=_auth_dep)
 app.include_router(settings_router,       dependencies=_auth_dep)
 app.include_router(metric_catalog_router, dependencies=_auth_dep)
+app.include_router(topology_router,       dependencies=_auth_dep)
+app.include_router(op_events_router,      dependencies=_auth_dep)
+app.include_router(escalation_router,     dependencies=_auth_dep)

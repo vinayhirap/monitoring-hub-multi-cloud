@@ -481,6 +481,92 @@ def mute_alert(alert_id: int, minutes: int = 30, current_user: dict = Depends(re
     return {"status": "muted", "minutes": minutes}
 
 
+# ── GROUPED VIEW (dedup/collapse, roadmap phase 10) ────────────
+# Does NOT merge alert rows (see db/migrations/019_alert_grouping.sql
+# docstring for why) -- this is a read-time GROUP BY over the same
+# `alerts` table the ungrouped /alerts endpoint reads, so ack/resolve/
+# mute below still act on individual alert IDs. Frontend shows one card
+# per group ("CPU high — 6 resources") that expands to the individual
+# alerts for per-resource actions, or uses /grouped/{group_key}/ack
+# below to ack everything in the group in one call.
+@router.get("/grouped")
+def get_grouped_alerts(current_user: dict = Depends(require_permission("alerts.view"))):
+    conn   = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT
+            a.group_key,
+            COUNT(*)                                   AS resource_count,
+            MAX(a.severity = 'CRITICAL')               AS has_critical,
+            MIN(a.triggered_at)                        AS first_triggered_at,
+            MAX(a.last_seen_at)                        AS last_seen_at,
+            SUM(a.status = 'active')                   AS active_count,
+            SUM(a.status = 'acknowledged')              AS acknowledged_count,
+            r.resource_type                            AS service,
+            a.metric_name,
+            acc.id                                      AS account_id,
+            acc.account_name
+        FROM alerts a
+        JOIN resources r      ON r.resource_id = a.resource_id
+        JOIN aws_accounts acc ON acc.id = r.aws_account_id
+                               AND acc.status = 'active'
+        WHERE a.group_key IS NOT NULL
+          AND a.status IN ('active', 'acknowledged')
+        GROUP BY a.group_key, r.resource_type, a.metric_name, acc.id, acc.account_name
+        ORDER BY has_critical DESC, resource_count DESC
+    """)
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    rows = _filter_rows_by_scope(rows, current_user)
+    for r in rows:
+        r["has_critical"] = bool(r["has_critical"])
+        for field in ("first_triggered_at", "last_seen_at"):
+            if r.get(field) and isinstance(r[field], datetime.datetime):
+                r[field] = r[field].strftime("%Y-%m-%dT%H:%M:%SZ")
+    return rows
+
+
+@router.post("/grouped/{group_key}/ack")
+def ack_group(group_key: str, current_user: dict = Depends(require_permission("operations.execute"))):
+    """
+    Acks every currently-active alert sharing this group_key, scoped to
+    the caller's accessible accounts -- NOT a bare `WHERE group_key = %s`,
+    since group_key alone doesn't carry an account boundary a
+    non-admin's scope check can apply to without first knowing which
+    accounts they're allowed to touch.
+    """
+    accessible = get_accessible_account_ids(current_user)
+    conn   = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    if accessible is None:
+        cursor.execute(
+            "UPDATE alerts SET acked = 1, status = 'acknowledged' "
+            "WHERE group_key = %s AND status = 'active'",
+            (group_key,)
+        )
+    else:
+        if not accessible:
+            cursor.close(); conn.close()
+            return {"status": "acknowledged", "count": 0}
+        fmt = ",".join(["%s"] * len(accessible))
+        cursor.execute(f"""
+            UPDATE alerts a
+            JOIN resources r      ON r.resource_id = a.resource_id
+            JOIN aws_accounts acc ON acc.id = r.aws_account_id AND acc.id IN ({fmt})
+            SET a.acked = 1, a.status = 'acknowledged'
+            WHERE a.group_key = %s AND a.status = 'active'
+        """, (*accessible, group_key))
+    affected = cursor.rowcount
+    conn.commit()
+    cursor.close()
+    conn.close()
+    _invalidate_cache()
+    invalidate_accounts_cache()
+    return {"status": "acknowledged", "count": affected}
+
+
 # ── CLEAR ─────────────────────────────────────────────────────
 @router.delete("/clear")
 def clear_alerts(current_user: dict = Depends(require_role("admin"))):

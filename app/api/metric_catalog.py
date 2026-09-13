@@ -20,6 +20,7 @@ import datetime
 import json
 import logging
 import yaml
+from app.aws.boto_config import STANDARD_RETRY
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Metric Catalog"])
@@ -55,6 +56,10 @@ def _ser(obj):
 
 
 from app.audit import write_audit as _write_audit
+# NOTE: previously a local copy hardcoding role="ADMIN" as the default.
+# The single call site below that didn't pass role explicitly
+# ("Applied default metric template") also hardcoded the actor as the
+# literal string "admin" instead of the real caller -- both fixed here.
 
 
 # ── Catalog browsing ─────────────────────────────────────────────
@@ -508,7 +513,7 @@ def _discover_aws_metrics(acc: dict, namespace: str, region: str) -> set:
         session = assume_role(acc["role_arn"], acc.get("external_id"))
         cw = session.client("cloudwatch", region_name=resolved_region)
     else:
-        cw = boto3.client("cloudwatch", region_name=resolved_region)
+        cw = boto3.client("cloudwatch", region_name=resolved_region, config=STANDARD_RETRY)
 
     seen = {}
     paginator = cw.get_paginator("list_metrics")
