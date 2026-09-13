@@ -85,16 +85,17 @@ def get_topology(account_id: int, current_user: dict = Depends(require_permissio
 def add_manual_edge(
     account_id: int,
     payload: dict = Body(...),
-    current_user: dict = Depends(require_permission("resources.view")),
+    current_user: dict = Depends(require_permission("topology.manage")),
 ):
     """
     Adds one operator-declared edge -- e.g. "this Lambda calls that RDS
-    instance" -- which no Describe API can tell us. Uses the same
-    resources.view permission as GET (not alerts.configure or similar):
-    this is inventory/documentation metadata about the account's own
-    topology, not an alerting or account-onboarding action, so it's
-    gated the same as viewing the resource list, not a more privileged
-    operation.
+    instance" -- which no Describe API can tell us.
+
+    Gated on topology.manage, NOT resources.view (see
+    db/migrations/024_topology_manage_permission.sql) -- resources.view
+    is granted to the viewer role for the read-only GET below, and
+    declaring/removing a dependency is a write action that shouldn't
+    ride along with a read permission the way it originally did.
 
     Body: { "source_resource_id": "...", "target_resource_id": "...",
             "relationship_type": "depends_on" (optional, default) }
@@ -128,7 +129,7 @@ def add_manual_edge(
 def delete_manual_edge(
     account_id: int,
     edge_id: int,
-    current_user: dict = Depends(require_permission("resources.view")),
+    current_user: dict = Depends(require_permission("topology.manage")),
 ):
     """Only deletes edges with source='manual' -- an 'auto' edge is
     re-derived every describe-poll cycle, so deleting it here would just

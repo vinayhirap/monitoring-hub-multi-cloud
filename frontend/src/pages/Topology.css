@@ -95,6 +95,8 @@
 .topo-node-hovered { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(43,179,172,.15); }
 .topo-node-dimmed  { opacity: .35; }
 .topo-node-ghost   { border-style: dashed; border-color: rgba(245,158,11,.5); background: rgba(245,158,11,.05); }
+.topo-node-clickable { cursor: pointer; }
+.topo-node-clickable:hover { border-color: var(--accent); }
 
 .topo-node-icon {
   flex-shrink: 0; width: 30px; height: 30px; border-radius: 7px;
@@ -141,6 +143,8 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .topo-chip-icon { flex-shrink: 0; display: flex; color: var(--text-muted); }
+.topo-chip-clickable { cursor: pointer; }
+.topo-chip-clickable:hover { border-color: var(--accent); color: var(--accent); }
 
 /* Manual-edges list */
 .topo-manual-list {
