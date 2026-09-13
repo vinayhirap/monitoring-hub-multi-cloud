@@ -28,12 +28,16 @@
 //     graph noise without adding useful topology information for this
 //     view; every account has one per attached interface and they
 //     rarely represent a relationship anyone is trying to understand.
-//   - Clicking a node navigates to that resource's metrics page, same
-//     detailRoute() pattern Alerts.jsx already uses. AWS-only for now,
-//     same as Alerts.jsx and ServiceDetail.jsx -- neither of those
-//     support drilling into a specific Azure/GCP resource yet either,
-//     so a node for one of those providers just isn't clickable rather
-//     than navigating somewhere broken.
+//   - Clicking a node PINS it (persists its connection highlight
+//     regardless of where the mouse moves afterward) rather than
+//     navigating immediately -- the original hover-only highlight
+//     reset the instant the cursor left the node, which made it
+//     impossible to trace a connection down a long column: scrolling
+//     the page moves the node out from under the (stationary) cursor,
+//     clearing the highlight before you could follow it. A dedicated
+//     small link icon on each node with a real detail route (see
+//     detailRoute() below) is the explicit way to navigate now; the
+//     node body itself only pins/unpins.
 //   - Node icons and column placement are provider-aware (AWS/Azure/
 //     GCP resource-type keys all map to a sensible tier), since an
 //     account onboarded as Azure or GCP renders its own topology here
@@ -54,7 +58,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { getTopology, addManualEdge, deleteManualEdge } from "../api/api";
 import { useAuth } from "../auth/AuthContext";
 import { CloudServiceIcon } from "../components/cloud-icons";
-import { AlertTriangleIcon, TrashIcon, PlusIcon, InfoIcon } from "../components/icons";
+import { AlertTriangleIcon, TrashIcon, PlusIcon, InfoIcon, ExternalLinkIcon, XIcon } from "../components/icons";
 import "./Topology.css";
 
 // Which column a resource_type lands in. Anything unlisted falls back
@@ -127,17 +131,16 @@ function StateDot({ state }) {
   return <span className={`td-dot ${cls}`} title={state} />;
 }
 
-function NodeCard({ node, hovered, dimmed, onHover, onLeave, provider, onOpen }) {
+function NodeCard({ node, active, dimmed, pinned, onHover, onLeave, onSelect, provider, onOpen }) {
   const isGhost = node.ghost;
-  const clickable = !!onOpen;
   return (
     <div
-      className={`topo-node ${hovered ? "topo-node-hovered" : ""} ${dimmed ? "topo-node-dimmed" : ""} ${isGhost ? "topo-node-ghost" : ""} ${clickable ? "topo-node-clickable" : ""}`}
+      className={`topo-node topo-node-selectable ${active ? "topo-node-hovered" : ""} ${dimmed ? "topo-node-dimmed" : ""} ${isGhost ? "topo-node-ghost" : ""} ${pinned ? "topo-node-pinned" : ""}`}
       style={{ left: node.x, top: node.y, width: NODE_W, height: NODE_H }}
-      onMouseEnter={() => onHover(node.resource_id)}
+      onMouseEnter={onHover}
       onMouseLeave={onLeave}
-      onClick={clickable ? onOpen : undefined}
-      title={clickable ? `${node.resource_id} — view metrics` : node.resource_id}
+      onClick={onSelect}
+      title={pinned ? "Click to clear selection" : "Click to trace this resource's connections"}
     >
       <span className="topo-node-icon">
         {isGhost
@@ -151,6 +154,15 @@ function NodeCard({ node, hovered, dimmed, onHover, onLeave, provider, onOpen })
         </div>
         <div className="topo-node-name">{isGhost ? node.resource_id : (node.name || node.resource_id)}</div>
       </div>
+      {onOpen && (
+        <button
+          className="topo-node-open"
+          onClick={(e) => { e.stopPropagation(); onOpen(); }}
+          title="View metrics"
+        >
+          <ExternalLinkIcon size={12} />
+        </button>
+      )}
     </div>
   );
 }
@@ -164,6 +176,10 @@ export default function Topology() {
   const [account, setAccount] = useState(null);
   const [error, setError] = useState(null);
   const [hoveredId, setHoveredId] = useState(null);
+  // Persists a highlight regardless of where the mouse moves afterward
+  // -- see file header. Takes precedence over hoveredId wherever both
+  // could apply.
+  const [pinnedId, setPinnedId] = useState(null);
   const [showOthers, setShowOthers] = useState(false);
   const [addingEdge, setAddingEdge] = useState(false);
   const [form, setForm] = useState({ source: "", target: "" });
@@ -241,10 +257,11 @@ export default function Topology() {
   const manualEdges = layout.edges.filter(e => e.source === "manual");
   const provider = account?.provider || "aws";
 
-  const isEdgeActive = (e) => hoveredId && (e.source_resource_id === hoveredId || e.target_resource_id === hoveredId);
-  const isNodeActive = (rid) => hoveredId && (hoveredId === rid || layout.edges.some(e =>
-    (e.source_resource_id === hoveredId && e.target_resource_id === rid) ||
-    (e.target_resource_id === hoveredId && e.source_resource_id === rid)
+  const activeId = pinnedId ?? hoveredId;
+  const isEdgeActive = (e) => activeId && (e.source_resource_id === activeId || e.target_resource_id === activeId);
+  const isNodeActive = (rid) => activeId && (activeId === rid || layout.edges.some(e =>
+    (e.source_resource_id === activeId && e.target_resource_id === rid) ||
+    (e.target_resource_id === activeId && e.source_resource_id === rid)
   ));
 
   const handleAddEdge = async (e) => {
@@ -354,7 +371,7 @@ export default function Topology() {
                     stroke={isManual ? "var(--accent-purple)" : "var(--accent)"}
                     strokeWidth={active ? 2.5 : 1.5}
                     strokeDasharray={isManual ? "5 4" : undefined}
-                    opacity={hoveredId ? (active ? 1 : 0.15) : 0.7}
+                    opacity={activeId ? (active ? 1 : 0.15) : 0.7}
                     markerEnd={`url(#${isManual ? "arrow-manual" : "arrow-auto"})`}
                     style={{ transition: "opacity .15s, stroke-width .15s" }}
                   />
@@ -368,10 +385,12 @@ export default function Topology() {
                   key={n.resource_id}
                   node={n}
                   provider={provider}
-                  hovered={hoveredId === n.resource_id}
-                  dimmed={hoveredId && !isNodeActive(n.resource_id)}
-                  onHover={setHoveredId}
+                  active={activeId === n.resource_id}
+                  pinned={pinnedId === n.resource_id}
+                  dimmed={activeId && !isNodeActive(n.resource_id)}
+                  onHover={() => !pinnedId && setHoveredId(n.resource_id)}
                   onLeave={() => setHoveredId(null)}
+                  onSelect={() => setPinnedId(p => p === n.resource_id ? null : n.resource_id)}
                   onOpen={route ? () => navigate(route) : null}
                 />
               );
@@ -380,6 +399,12 @@ export default function Topology() {
           <div className="topo-legend">
             <span><i className="topo-legend-line topo-legend-auto" /> Auto-detected</span>
             <span><i className="topo-legend-line topo-legend-manual" /> Manually declared</span>
+            <span className="topo-legend-hint">Click a resource to trace its connections while scrolling</span>
+            {pinnedId && (
+              <button className="topo-legend-clear" onClick={() => setPinnedId(null)}>
+                <XIcon size={11} /> Clear selection
+              </button>
+            )}
           </div>
         </div>
       )}
