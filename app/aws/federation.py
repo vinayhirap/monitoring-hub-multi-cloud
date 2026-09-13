@@ -289,26 +289,40 @@ def _write_console_open_audit(requested_by, target_account_id, service, resource
     longer impersonates anyone for console access — AWS-side
     attribution is whatever identity the person is personally signed
     in as, which the app has no visibility into or control over.
+
+    `resource_id` is legitimately None for two different reasons that
+    used to be indistinguishable in the audit payload -- a reviewer
+    reading the raw JSON couldn't tell "console opened for a specific
+    resource, id somehow missing" from "console opened at the
+    service/account level by design, there was never a resource id to
+    record" (e.g. ServiceList's "Open Console" action for a
+    service that has no drill-down detail page, or AccountDetail's
+    top-of-page "Open Console" button before any single instance is
+    selected). The explicit `scope` field below removes that
+    ambiguity: "resource" whenever an id is present, "service"
+    otherwise, so a null resource_id reads as intentional rather than
+    looking like missing data.
+
+    NOTE: role is deliberately not recorded here yet -- doing so
+    requires threading the caller's role down through every provider's
+    get_console_url() signature (app/providers/base.py and each of
+    aws/azure/gcp's implementations), which is out of scope for this
+    fix. The Compliance UI no longer fabricates a role for entries
+    that don't have one (see Compliance.jsx), so this omission now
+    shows as "no role recorded" rather than a misleading "ADMIN".
     """
-    try:
-        from app.db import get_connection
-        conn = get_connection(); cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO audit_logs (actor, action, payload) VALUES (%s,%s,%s)",
-            (
-                requested_by or "unknown",
-                "Opened AWS console link",
-                json.dumps({
-                    "account_id": target_account_id,
-                    "service": service,
-                    "resource_id": resource_id,
-                    "at": datetime.datetime.utcnow().isoformat(),
-                }),
-            ),
-        )
-        conn.commit(); cur.close(); conn.close()
-    except Exception as e:
-        logger.warning("Console-open audit write failed: %s", e)
+    from app.audit import write_audit
+    write_audit(
+        requested_by or "unknown",
+        "Opened AWS console link",
+        payload={
+            "account_id": target_account_id,
+            "service": service,
+            "resource_id": resource_id,
+            "scope": "resource" if resource_id else "service",
+            "at": datetime.datetime.utcnow().isoformat(),
+        },
+    )
 
 
 def build_federated_console_url(role_arn: str | None, external_id: str | None,

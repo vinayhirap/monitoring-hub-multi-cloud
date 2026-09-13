@@ -54,16 +54,7 @@ def _ser(obj):
     return obj
 
 
-def _write_audit(actor, action, detail, role="ADMIN"):
-    try:
-        conn = get_connection(); cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO audit_logs (actor, action, payload) VALUES (%s,%s,%s)",
-            (actor, action, json.dumps({"detail": detail, "role": role}))
-        )
-        conn.commit(); cur.close(); conn.close()
-    except Exception as e:
-        logger.warning(f"Audit: {e}")
+from app.audit import write_audit as _write_audit
 
 
 # ── Catalog browsing ─────────────────────────────────────────────
@@ -397,10 +388,12 @@ def set_account_metrics(account_id: int, payload: dict = Body(...), current_user
     Body: { "enabled_metric_ids": [1, 2, 3, ...] }
     """
     _require_account_access(account_id, current_user)
-    return _set_account_metrics_internal(account_id, payload, actor=current_user["username"])
+    return _set_account_metrics_internal(account_id, payload, actor=current_user["username"],
+                                          actor_role=current_user["role"].upper())
 
 
-def _set_account_metrics_internal(account_id: int, payload: dict, actor: str = "system (onboarding)"):
+def _set_account_metrics_internal(account_id: int, payload: dict, actor: str = "system (onboarding)",
+                                   actor_role: str = "SYSTEM"):
     """
     The actual full-replace logic, split out from the route above so
     app/api/admin/accounts.py's onboarding flow can call it directly
@@ -450,7 +443,8 @@ def _set_account_metrics_internal(account_id: int, payload: dict, actor: str = "
     conn.commit(); cur.close(); conn.close()
 
     _write_audit(actor, "Account metric selection updated",
-                 f"account={account_id} enabled={len(enabled_ids)} added={len(to_add)} removed={len(to_remove)}")
+                 f"account={account_id} enabled={len(enabled_ids)} added={len(to_add)} removed={len(to_remove)}",
+                 role=actor_role)
     return {"status": "saved", "enabled_count": len(enabled_ids)}
 
 
@@ -499,7 +493,9 @@ def apply_default_template(account_id: int, current_user: dict = Depends(require
 
     conn.commit(); cur.close(); conn.close()
 
-    _write_audit("admin", "Applied default metric template", f"account={account_id} provider={provider}")
+    _write_audit(current_user["username"], "Applied default metric template",
+                 f"account={account_id} provider={provider}",
+                 role=current_user["role"].upper())
     return {"status": "applied", "default_metric_count": count, "provider": provider}
 
 

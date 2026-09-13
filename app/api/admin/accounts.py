@@ -33,19 +33,7 @@ def _serialize(obj):
     return obj
 
 
-def _write_audit(actor: str, action: str, detail: str, role: str = "ADMIN"):
-    try:
-        conn   = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO audit_logs (actor, action, payload) VALUES (%s, %s, %s)",
-            (actor, action, json.dumps({"detail": detail, "role": role}))
-        )
-        conn.commit()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        print(f"Audit write error: {e}")
+from app.audit import write_audit as _write_audit
 
 
 def _bust_accounts_cache():
@@ -354,7 +342,8 @@ def add_account(payload: dict = Body(...), current_user: dict = Depends(require_
         if selected_metric_ids:
             from app.api.metric_catalog import _set_account_metrics_internal
             _set_account_metrics_internal(new_id, {"enabled_metric_ids": selected_metric_ids},
-                                           actor=current_user["username"])
+                                           actor=current_user["username"],
+                                           actor_role=current_user["role"].upper())
         elif provider_name == "aws":
             from app.api.metric_catalog import enable_metrics_for_services
             from app.aws.resource_discovery import discover_all_service_keys
