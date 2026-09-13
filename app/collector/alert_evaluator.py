@@ -56,20 +56,48 @@ def compare(value, threshold, op):
     return ops.get(op, False)
 
 
-def _dynamic_bounds(cursor, aws_resource_id, metric_name, comparison, k):
+# A baseline bucket needs at least this many post-clip samples (see
+# app/collector/baseline.py's CLIP_SIGMA) before it's trusted at FULL
+# weight against the static threshold. Below this, the dynamic band is
+# blended with the static threshold in proportion to how much history
+# the bucket actually has -- see the "CONFIDENCE" blending below. This
+# smooths the cold-start transition: a bucket that just crossed
+# baseline.py's MIN_SAMPLES_PER_BUCKET (3) used to jump straight from
+# "100% static" to "100% dynamic" in one nightly recompute, which could
+# visibly move an alert's effective threshold in a single step. Blending
+# means that jump is gradual across the next several weeks of history
+# instead of a one-time cliff.
+CONFIDENT_SAMPLES = 20
+
+
+def _dynamic_bounds(cursor, aws_resource_id, metric_name, comparison, k,
+                     static_warning=None, static_critical=None):
     """
     Looks up this resource+metric's current hour-of-day/day-of-week
     bucket in metric_baseline (populated nightly by
-    app/collector/baseline.py) and returns (dynamic_warning,
-    dynamic_critical), or None if no bucket exists yet (cold start --
-    caller falls back to the static threshold row).
+    app/collector/baseline.py) and returns (warning, critical), or None
+    if no bucket exists yet at all (cold start -- caller falls back to
+    the static threshold row unchanged).
 
-    critical = mean +/- k * stddev (direction depends on `comparison`:
-    ">"/">=" metrics are bad when HIGH, so critical is mean + k*stddev;
-    "<"/"<=" metrics -- e.g. healthy-host-count, free-disk-percent -- are
-    bad when LOW, so critical is mean - k*stddev). warning uses a
-    tighter 0.66*k band so there are still two distinguishable severity
-    levels instead of both firing at once.
+    dynamic critical = mean +/- k * stddev (direction depends on
+    `comparison`: ">"/">=" metrics are bad when HIGH, so critical is
+    mean + k*stddev; "<"/"<=" metrics -- e.g. healthy-host-count,
+    free-disk-percent -- are bad when LOW, so critical is mean -
+    k*stddev). warning uses a tighter 0.66*k band so there are still two
+    distinguishable severity levels instead of both firing at once.
+
+    CONFIDENCE BLENDING: if the bucket's sample_count is below
+    CONFIDENT_SAMPLES and both static_warning/static_critical were
+    passed in, the returned bounds are a weighted blend of the dynamic
+    band and the static threshold (weight = sample_count /
+    CONFIDENT_SAMPLES), not the raw dynamic band on its own -- a bucket
+    with 4 post-clip samples is real signal (baseline.py's own
+    MIN_SAMPLES_PER_BUCKET gate already required 3+), but nowhere near
+    as trustworthy as one with 20+, and shouldn't fully override a
+    human-set static threshold yet. If no static values were passed
+    (caller doesn't have them, or doesn't want blending), the pure
+    dynamic band is returned unchanged -- this keeps the function
+    backward compatible with any other caller.
     """
     cursor.execute("""
         SELECT mean_value, stddev_value, sample_count
@@ -91,9 +119,19 @@ def _dynamic_bounds(cursor, aws_resource_id, metric_name, comparison, k):
 
     warn_k = k * 0.66
     if comparison in (">", ">="):
-        return (mean + warn_k * stddev, mean + k * stddev)
+        dyn_warning, dyn_critical = mean + warn_k * stddev, mean + k * stddev
     else:  # "<", "<="
-        return (mean - warn_k * stddev, mean - k * stddev)
+        dyn_warning, dyn_critical = mean - warn_k * stddev, mean - k * stddev
+
+    sample_count = baseline.get("sample_count") or 0
+    if (static_warning is None or static_critical is None
+            or sample_count >= CONFIDENT_SAMPLES):
+        return (dyn_warning, dyn_critical)
+
+    weight = max(0.0, min(1.0, sample_count / CONFIDENT_SAMPLES))
+    blended_warning  = weight * dyn_warning  + (1 - weight) * float(static_warning)
+    blended_critical = weight * dyn_critical + (1 - weight) * float(static_critical)
+    return (blended_warning, blended_critical)
 
 
 def _required_cycles(evaluation_period_minutes):
@@ -345,13 +383,17 @@ def _evaluate_alerts_body(conn, cursor):
             dynamic = _dynamic_bounds(
                 cursor, aws_resource_id, metric_name,
                 row["comparison"], row["dynamic_k"] or 3.0,
+                static_warning=warning_value, static_critical=critical_value,
             )
             if dynamic is not None:
                 # Cold start / flat-line handled inside _dynamic_bounds by
                 # returning None, in which case the static row values set
                 # above are used unchanged -- dynamic mode never disables
                 # alerting for a resource, it only replaces WHAT counts as
-                # a breach once there's enough history to trust.
+                # a breach once there's enough history to trust. Short of
+                # full cold-start, _dynamic_bounds blends toward the static
+                # values in proportion to bucket confidence (sample_count)
+                # -- see its own docstring for CONFIDENT_SAMPLES.
                 warning_value, critical_value = dynamic
 
         is_critical = compare(metric_value, critical_value, row["comparison"])
