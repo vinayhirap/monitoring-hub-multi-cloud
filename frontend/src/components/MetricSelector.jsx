@@ -156,7 +156,7 @@ export default function MetricSelector({ catalog, selectedIds, onChange, onDisco
           <span className="ms-count-sub"> · {totalGroups} service{totalGroups === 1 ? "" : "s"} shown</span>
         </span>
         <div className="ms-actions">
-          <button type="button" className="ms-btn-ghost" onClick={applyDefaults}>âœ“ Apply recommended</button>
+          <button type="button" className="ms-btn-ghost" onClick={applyDefaults}>✓ Apply recommended</button>
           <button type="button" className="ms-btn-ghost ms-btn-danger" onClick={clearAll}>Clear all</button>
         </div>
       </div>
@@ -164,7 +164,7 @@ export default function MetricSelector({ catalog, selectedIds, onChange, onDisco
       <div className="ms-list">
         {totalGroups === 0 && (
           <div className="ms-empty">
-            <div className="ms-empty-icon">âŒ•</div>
+            <div className="ms-empty-icon">⌕</div>
             No metrics match {search ? `"${search}"` : "this filter"}.
           </div>
         )}
@@ -181,7 +181,7 @@ export default function MetricSelector({ catalog, selectedIds, onChange, onDisco
             <div key={sectionKey} className="ms-section">
               {tab === "all" && (
                 <button type="button" className="ms-section-header" onClick={() => toggleSection(sectionKey)}>
-                  <span className={`ms-section-chevron ${isCollapsed ? "" : "ms-section-chevron-open"}`}>â–¸</span>
+                  <span className={`ms-section-chevron ${isCollapsed ? "" : "ms-section-chevron-open"}`}>▸</span>
                   <span className={`ms-section-dot ms-section-dot-${sectionKey}`} />
                   <span className="ms-section-label">{meta.label}</span>
                   <span className="ms-section-hint">{meta.hint}</span>
@@ -230,7 +230,7 @@ export default function MetricSelector({ catalog, selectedIds, onChange, onDisco
                               </span>
                             </>
                           )}
-                          <span className={`ms-chevron ${isOpen ? "ms-chevron-open" : ""}`}>â–¾</span>
+                          <span className={`ms-chevron ${isOpen ? "ms-chevron-open" : ""}`}>▾</span>
                         </button>
 
                         {isOpen && (
@@ -250,7 +250,7 @@ export default function MetricSelector({ catalog, selectedIds, onChange, onDisco
                                     {discovering === group.namespace ? "Discovering…" : "Discover metrics"}
                                   </button>
                                 ) : (
-                                  <span className="ms-discover-hint-sub">Available after onboarding (Settings â†’ Metrics).</span>
+                                  <span className="ms-discover-hint-sub">Available after onboarding (Settings → Metrics).</span>
                                 )}
                               </div>
                             )}
