@@ -63,11 +63,17 @@ def create_policy(payload: dict = Body(...), current_user: dict = Depends(requir
 
     conn = get_connection(); cur = conn.cursor()
     try:
+        # current_user["id"], not "sub" -- the JWT claim itself is named
+        # "sub", but app/auth/security.py's decode_token() already
+        # unpacks it into current_user["id"] before this function ever
+        # sees it (same as every other endpoint in this codebase reads
+        # the actor's id). Reading "sub" here KeyErrors on every single
+        # policy creation attempt -- this endpoint has never worked.
         cur.execute("""
             INSERT INTO escalation_policies
                 (aws_account_id, severity, ack_sla_minutes, escalate_to_group_id, created_by)
             VALUES (%s, %s, %s, %s, %s)
-        """, (account_id, severity, ack_sla_minutes, escalate_to_group_id, int(current_user["sub"])))
+        """, (account_id, severity, ack_sla_minutes, escalate_to_group_id, int(current_user["id"])))
         conn.commit()
         new_id = cur.lastrowid
     except Exception as e:

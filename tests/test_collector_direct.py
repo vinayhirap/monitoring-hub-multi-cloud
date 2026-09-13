@@ -73,6 +73,16 @@ def _stub_and_load(conn):
     # explicitly stubbed). None of these tests exercise the CWAgent-disk
     # code path, so a stub that returns no mounts is sufficient.
     install_stub("app.collector.disk_mounts", all_cwagent_disk_dims=lambda cw, instance_id: [])
+    # Same class of gap, introduced by the roadmap-phases patch adding
+    # `from app.aws.boto_config import STANDARD_RETRY` to
+    # collector_direct.py without updating this file's stubs to match --
+    # every test here started raising "No module named 'app.aws'; 'app'
+    # is not a package" the moment that import landed, since the fake
+    # `app` module in sys.modules has no __path__ for a real submodule
+    # to resolve against. None of these tests touch actual boto3 client
+    # construction, so the value itself doesn't matter -- it only needs
+    # to exist so the import resolves.
+    install_stub("app.aws.boto_config", STANDARD_RETRY=None)
     return load_module("app/aws/collector_direct.py")
 
 

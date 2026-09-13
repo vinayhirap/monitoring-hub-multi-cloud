@@ -206,6 +206,16 @@ export default function ServiceList() {
             {account?.account_id} · {account?.default_region} · {activeServices.length} service{activeServices.length === 1 ? "" : "s"} selected for monitoring
           </p>
         </div>
+        <button
+          onClick={() => navigate(`/accounts/${id}/topology`)}
+          style={{
+            display:"flex", alignItems:"center", gap:6, background:"var(--accent-dim)",
+            border:"1px solid rgba(43,179,172,.3)", color:"var(--accent)", padding:"8px 16px",
+            borderRadius:"var(--radius)", fontSize:13, fontWeight:600, cursor:"pointer", flexShrink:0,
+          }}
+        >
+          ⛓ Resource Topology
+        </button>
       </div>
 
       {loading ? (
