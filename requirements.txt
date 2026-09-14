@@ -119,3 +119,15 @@ statsmodels==0.14.5
 # one does the job" pattern (see statsmodels above vs. why Prophet was
 # deliberately NOT added).
 fpdf2==2.8.4
+
+# app/auth/saml.py (SAML 2.0 SSO scaffolding, 2026-09-14): the
+# standard, actively-maintained Python SAML toolkit -- deliberately NOT
+# a hand-rolled SAML assertion parser/verifier (a well-known source of
+# authentication-bypass CVEs when done from scratch). OFF BY DEFAULT --
+# every SSO endpoint (app/api/sso.py) returns 503 until
+# SSO_SAML_ENABLED=true is explicitly set in .env. Its xmlsec
+# dependency ships pre-built manylinux wheels for linux x86_64 (this
+# app's Ubuntu 24 dev/prod OS), so plain `pip install` should work with
+# no system package needed -- if it doesn't for your exact environment,
+# see app/auth/saml.py's module docstring for the apt fallback.
+python3-saml==1.16.0
