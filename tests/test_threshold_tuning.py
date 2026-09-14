@@ -180,3 +180,62 @@ def test_noise_path_respects_custom_dynamic_k():
 
     assert mod.auto_tune_static_thresholds() == 0
     assert updates == []
+
+
+# ── count_likely_flapping_alerts (bulk fleet-summary query) ─────────
+
+def test_count_likely_flapping_alerts_returns_query_result():
+    class _Cursor(FakeCursor):
+        def execute(self, sql, params=None):
+            normalized = " ".join(sql.split())
+            if normalized.startswith("SELECT COUNT(*) AS flapping_count"):
+                self._pending = [{"flapping_count": 3}]
+            else:
+                raise AssertionError(f"unexpected query: {normalized!r}")
+
+    class _Conn(FakeConn):
+        def cursor(self, dictionary=True):
+            return _Cursor([])
+
+    install_stub("app.db", get_connection=lambda: _Conn([]))
+    mod = load_module("app/collector/threshold_tuning.py")
+
+    assert mod.count_likely_flapping_alerts() == 3
+
+
+def test_count_likely_flapping_alerts_zero_accounts_skips_query():
+    class _Cursor(FakeCursor):
+        def execute(self, sql, params=None):
+            raise AssertionError("should not query when aws_account_ids is an empty set")
+
+    class _Conn(FakeConn):
+        def cursor(self, dictionary=True):
+            return _Cursor([])
+
+    install_stub("app.db", get_connection=lambda: _Conn([]))
+    mod = load_module("app/collector/threshold_tuning.py")
+
+    assert mod.count_likely_flapping_alerts(aws_account_ids=set()) == 0
+
+
+def test_count_likely_flapping_alerts_scopes_to_accounts():
+    captured = {}
+
+    class _Cursor(FakeCursor):
+        def execute(self, sql, params=None):
+            captured["sql"] = " ".join(sql.split())
+            captured["params"] = params
+            self._pending = [{"flapping_count": 1}]
+
+    class _Conn(FakeConn):
+        def cursor(self, dictionary=True):
+            return _Cursor([])
+
+    install_stub("app.db", get_connection=lambda: _Conn([]))
+    mod = load_module("app/collector/threshold_tuning.py")
+
+    result = mod.count_likely_flapping_alerts(aws_account_ids=[7, 9])
+
+    assert result == 1
+    assert "aws_account_id IN (%s,%s)" in captured["sql"]
+    assert 7 in captured["params"] and 9 in captured["params"]

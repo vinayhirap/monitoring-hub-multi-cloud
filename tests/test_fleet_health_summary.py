@@ -59,7 +59,7 @@ def test_fleet_summary_scoped_to_zero_accounts_returns_empty_without_querying():
     result = mod.fleet_health_summary(current_user={"username": "restricted"})
     assert result == {
         "unhealthy_resource_count": 0, "critical_resource_count": 0,
-        "capacity_risk_count": 0, "worst_resources": [],
+        "capacity_risk_count": 0, "likely_flapping_count": 0, "worst_resources": [],
     }
 
 
@@ -91,6 +91,7 @@ def test_fleet_summary_aggregates_counts_and_parses_score_reason():
     install_stub("app.collector.trend", compute_capacity_forecasts=lambda **kwargs: [
         {"resource_id": "i-c", "metric_name": "DiskSpaceUtilization", "days_to_exhaustion": 5.0},
     ])
+    install_stub("app.collector.threshold_tuning", count_likely_flapping_alerts=lambda **kwargs: 0)
     _install_common_stubs()
     mod = load_module("app/api/incidents.py")
 
@@ -99,6 +100,7 @@ def test_fleet_summary_aggregates_counts_and_parses_score_reason():
     assert result["unhealthy_resource_count"] == 4
     assert result["critical_resource_count"] == 2
     assert result["capacity_risk_count"] == 1
+    assert result["likely_flapping_count"] == 0
     assert len(result["worst_resources"]) == 2
     # score_reason must come back as a real dict, not the raw JSON
     # string the DB driver returns (same bug class as
@@ -134,6 +136,7 @@ def test_fleet_summary_scopes_forecast_query_to_accessible_accounts():
     install_stub("app.db", get_connection=lambda: _Conn([]))
     install_stub("app.auth.authorization", get_accessible_account_ids=lambda user: {7, 9})
     install_stub("app.collector.trend", compute_capacity_forecasts=_fake_forecasts)
+    install_stub("app.collector.threshold_tuning", count_likely_flapping_alerts=lambda **kwargs: 0)
     _install_common_stubs()
     mod = load_module("app/api/incidents.py")
 

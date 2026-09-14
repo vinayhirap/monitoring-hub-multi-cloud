@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { getLiveAccounts } from "../api/api";
-import { AlertOctagonIcon } from "../components/icons";
+import { AlertOctagonIcon, ZapIcon } from "../components/icons";
 import "./Overview.css";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached } from "../utils/dataCache";
@@ -269,6 +269,25 @@ export default function Overview() {
                 color={fleet.critical_resource_count > 0 ? "red" : "default"}
                 pulse={fleet.critical_resource_count > 0}
                 sub={fleet.capacity_risk_count > 0 ? `${fleet.capacity_risk_count} approaching capacity` : null}
+              />
+            )}
+            {/* Flapping-alert count (2026-09-14) -- deliberately a
+                SEPARATE tile from "Need Attention," not folded into
+                its sub-line: this number is expected to trend toward
+                zero on its own as app/collector/threshold_tuning.py's
+                background auto-tuning converts these thresholds to
+                dynamic (see Settings' new "Dynamic" badge for the
+                per-threshold detail) -- it's a "the system is already
+                handling this" signal, not a "something needs fixing"
+                one, so it gets its own neutral-colored tile rather
+                than sharing the red "Need Attention" tile's urgency. */}
+            {fleet && fleet.likely_flapping_count > 0 && (
+              <SummaryTile
+                icon={<ZapIcon size={18} />}
+                label="Flapping (Self-Tuning)"
+                value={fleet.likely_flapping_count}
+                color="default"
+                sub="Auto-tuning is adjusting these"
               />
             )}
           </>
