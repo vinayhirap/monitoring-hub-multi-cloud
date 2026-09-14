@@ -101,3 +101,12 @@ numpy==2.4.4
 # see AI_ML_ROADMAP.md Section 7.
 pandas==3.0.2
 scikit-learn==1.8.0
+
+# app/collector/baseline_stl.py (AIOps roadmap #9, 2026-09-14): STL
+# seasonal decomposition to upgrade dynamic-threshold baselines for
+# metrics with real daily+weekly seasonality. Pure local compute, same
+# cost profile as scikit-learn above -- no external service, no new
+# cloud API calls. Entirely optional at runtime: if this fails to
+# install, baseline_stl.py logs a warning and no-ops, sigma-clipped
+# baselines from baseline.py are unaffected either way.
+statsmodels==0.14.5
