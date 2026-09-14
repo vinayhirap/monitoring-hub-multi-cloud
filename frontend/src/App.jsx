@@ -17,6 +17,8 @@ import Topology          from "./pages/Topology";
 import Incidents         from "./pages/Incidents";
 import OpEvents          from "./pages/OpEvents";
 import EscalationPolicies from "./pages/EscalationPolicies";
+import SyntheticChecks    from "./pages/SyntheticChecks";
+import Slos                from "./pages/Slos";
 
 function SessionCheckingScreen() {
   // Shown only for the brief moment while AuthContext asks the backend
@@ -53,6 +55,8 @@ function AppRoutes() {
         <Route path="compliance"                element={<Compliance />} />
         <Route path="op-events"                 element={<OpEvents />} />
         <Route path="escalation-policies"       element={<EscalationPolicies />} />
+        <Route path="synthetic-checks"          element={<SyntheticChecks />} />
+        <Route path="slos"                      element={<Slos />} />
         <Route path="settings"                  element={<Settings />} />
         <Route path="accounts/:id/services"     element={<ServiceList />} />
         <Route path="accounts/:id/topology"     element={<Topology />} />

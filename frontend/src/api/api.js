@@ -138,3 +138,49 @@ export const updateEscalationPolicy = (id, data) =>
   apiFetch(`/api/escalation-policies/${id}`, { method: "PATCH", body: JSON.stringify(data) });
 export const deleteEscalationPolicy = (id) =>
   apiFetch(`/api/escalation-policies/${id}`, { method: "DELETE" });
+
+// ── Synthetic / uptime monitoring ────────────────────────────────────
+export const getSyntheticChecks   = () => apiFetch("/api/synthetic-checks");
+export const getSyntheticResults  = (id, hours = 24) => apiFetch(`/api/synthetic-checks/${id}/results?hours=${hours}`);
+export const createSyntheticCheck = (data) => apiFetch("/api/synthetic-checks", { method: "POST", body: JSON.stringify(data) });
+export const updateSyntheticCheck = (id, data) => apiFetch(`/api/synthetic-checks/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+export const deleteSyntheticCheck = (id) => apiFetch(`/api/synthetic-checks/${id}`, { method: "DELETE" });
+
+// ── SLO / error-budget tracking ──────────────────────────────────────
+export const getSlos      = () => apiFetch("/api/slo");
+export const createSlo    = (data) => apiFetch("/api/slo", { method: "POST", body: JSON.stringify(data) });
+export const updateSlo    = (id, data) => apiFetch(`/api/slo/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+export const deleteSlo    = (id) => apiFetch(`/api/slo/${id}`, { method: "DELETE" });
+
+// ── Lite CSPM security findings ──────────────────────────────────────
+export const getSecurityFindings = (status = "open", severity = null) =>
+  apiFetch(`/api/security-findings?status=${status}${severity ? `&severity=${severity}` : ""}`);
+export const getSecurityFindingsSummary = () => apiFetch("/api/security-findings/summary");
+
+// ── Maintenance windows ──────────────────────────────────────────────
+export const getMaintenanceWindows   = () => apiFetch("/api/maintenance-windows");
+export const createMaintenanceWindow = (data) => apiFetch("/api/maintenance-windows", { method: "POST", body: JSON.stringify(data) });
+export const updateMaintenanceWindow = (id, data) => apiFetch(`/api/maintenance-windows/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+export const deleteMaintenanceWindow = (id) => apiFetch(`/api/maintenance-windows/${id}`, { method: "DELETE" });
+
+// ── Deploy-risk correlation ───────────────────────────────────────────
+export const getDeployRisk = (days = 7) => apiFetch(`/api/deploy-risk?days=${days}`);
+
+// ── Public status page (admin curation -- authenticated) ─────────────
+export const getStatusPageComponents   = () => apiFetch("/api/status-page/components");
+export const createStatusPageComponent = (data) => apiFetch("/api/status-page/components", { method: "POST", body: JSON.stringify(data) });
+export const updateStatusPageComponent = (id, data) => apiFetch(`/api/status-page/components/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+export const deleteStatusPageComponent = (id) => apiFetch(`/api/status-page/components/${id}`, { method: "DELETE" });
+// The PUBLIC status page itself (no auth) is fetched directly with
+// plain fetch() in pages/StatusPagePublic.jsx, not via apiFetch --
+// apiFetch redirects to /login on a 401, which would be wrong for an
+// endpoint that's supposed to work for a logged-out visitor.
+
+// ── Natural-language alert search ────────────────────────────────────
+export const searchAlerts = (q) => apiFetch(`/api/search?q=${encodeURIComponent(q)}`);
+
+// ── Downloadable postmortems (LLM-polished, alerts.js's explain) ─────
+// Not fetched via apiFetch -- this triggers a file download, see
+// pages/Alerts.jsx's handlePostmortemDownload for why it opens the URL
+// directly instead of parsing a JSON response.
+export const postmortemUrl = (alertId, format = "pdf") => `/api/alerts/${alertId}/postmortem?format=${format}`;
