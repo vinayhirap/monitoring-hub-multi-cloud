@@ -29,6 +29,7 @@ from app.api.synthetic      import router as synthetic_router
 from app.api.webhooks       import router as webhooks_router
 from app.api.deploy_risk    import router as deploy_risk_router
 from app.api.sso            import router as sso_router
+from app.api.slo            import router as slo_router
 from app.auth.deps          import get_current_user, COOKIE_NAME
 from app.auth.security      import decode_token
 
@@ -315,3 +316,4 @@ app.include_router(deploy_risk_router,    dependencies=_auth_dep)
 # app/api/sso.py's module docstring. Every endpoint inside is itself
 # gated on SSO_SAML_ENABLED (503 until explicitly turned on).
 app.include_router(sso_router)
+app.include_router(slo_router,            dependencies=_auth_dep)
