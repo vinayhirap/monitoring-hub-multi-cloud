@@ -3,7 +3,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getAlerts, getAccountMetrics, getResourceCounts, getConsoleUrl } from "../api/api";
 import { CloudServiceIcon, AzureBrandLogo, officialPerService } from "../components/cloud-icons";
-import { LinkIcon, ZapIcon } from "../components/icons";
+import { LinkIcon } from "../components/icons";
 
 // Short blurbs for the services we know about. Anything not listed here
 // (e.g. a directory-tier service the account onboarded via live discovery)
@@ -218,24 +218,16 @@ export default function ServiceList() {
           >
             <LinkIcon size={14} /> Resource Topology
           </button>
-          {/* AIOps roadmap Phase 1 (2026-09-14): correlated incidents +
-              resource health + probable-root-cause analysis. Same
-              discoverability gap Topology's own entry point above was
-              added to fix (this account's service grid had no link to
-              it before either). Uses the app's own icon set (icons.jsx)
-              instead of a raw emoji glyph, matching every other button
-              in this file after the emoji was flagged as inconsistent
-              with the rest of the product's iconography. */}
-          <button
-            onClick={() => navigate(`/accounts/${id}/incidents`)}
-            style={{
-              display:"flex", alignItems:"center", gap:6, background:"var(--accent-dim)",
-              border:"1px solid rgba(43,179,172,.3)", color:"var(--accent)", padding:"8px 16px",
-              borderRadius:"var(--radius)", fontSize:13, fontWeight:600, cursor:"pointer",
-            }}
-          >
-            <ZapIcon size={14} /> Incidents
-          </button>
+          {/* AIOps Incidents button hidden from the UI (2026-09-14) --
+              this product's end users aren't ops/dev people with code
+              access and don't need internal correlation/RCA surfaced
+              to them; product focus stays on cloud/metrics/resource
+              monitoring, matching the same "hidden but not deleted"
+              treatment already applied to Operational Events in
+              Layout.jsx (route/page/API/backend collector jobs all
+              stay fully intact at /accounts/:id/incidents, just not
+              discoverable from here). See Layout.jsx's own comment
+              for the established convention this follows. */}
         </div>
       </div>
 
