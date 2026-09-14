@@ -133,6 +133,13 @@ def evaluate_escalations() -> int:
             WHERE a.status = 'active'
               AND a.acked = 0
               AND a.escalated_at IS NULL
+              -- AND a.silenced = 0: maintenance windows (2026-09-14,
+              -- see app/collector/maintenance.py) mark an alert
+              -- silenced=1 while it's covered by an active maintenance
+              -- window -- the alert row still exists and still feeds
+              -- correlate.py/health_score.py/rca.py, only the page/
+              -- email this function sends is skipped for it.
+              AND a.silenced = 0
               AND a.triggered_at <= DATE_SUB(NOW(), INTERVAL ep.ack_sla_minutes MINUTE)
             ORDER BY a.id, (ep.aws_account_id IS NULL) ASC
         """)

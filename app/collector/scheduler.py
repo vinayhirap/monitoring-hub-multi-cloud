@@ -381,6 +381,16 @@ def run_loop(leader_event=None):
         except Exception as e:
             logger.error(f"Synthetic check tier error: {e}")
 
+        # Maintenance-window silencing sync (2026-09-14) -- see
+        # app/collector/maintenance.py's module docstring. Runs every
+        # 2-min critical-tier tick so silencing activates/deactivates
+        # promptly at a window's exact start/end time.
+        try:
+            from app.collector.maintenance import sync_maintenance_silencing
+            sync_maintenance_silencing()
+        except Exception as e:
+            logger.error(f"Maintenance-window silencing sync error: {e}")
+
         # ── Standard tier (5 min) ─────────────────────────────
         if now - last_standard >= STANDARD_INTERVAL:
             logger.info(f"[Cycle {cycle}] standard tier")

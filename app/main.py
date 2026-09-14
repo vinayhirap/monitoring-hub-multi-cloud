@@ -31,6 +31,7 @@ from app.api.deploy_risk    import router as deploy_risk_router
 from app.api.sso            import router as sso_router
 from app.api.slo            import router as slo_router
 from app.api.security       import router as security_router
+from app.api.maintenance    import router as maintenance_router
 from app.auth.deps          import get_current_user, COOKIE_NAME
 from app.auth.security      import decode_token
 
@@ -319,3 +320,4 @@ app.include_router(deploy_risk_router,    dependencies=_auth_dep)
 app.include_router(sso_router)
 app.include_router(slo_router,            dependencies=_auth_dep)
 app.include_router(security_router,       dependencies=_auth_dep)
+app.include_router(maintenance_router,    dependencies=_auth_dep)
