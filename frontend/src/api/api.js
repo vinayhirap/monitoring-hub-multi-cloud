@@ -59,6 +59,11 @@ export const getAlertCounts = () => apiFetch("/api/alerts/counts");
 export const acknowledgeAlert = (id) => apiFetch(`/api/alerts/${id}/ack`,     { method: "PATCH" });
 export const resolveAlert     = (id) => apiFetch(`/api/alerts/${id}/resolve`,  { method: "PATCH" });
 export const muteAlert        = (id) => apiFetch(`/api/alerts/${id}/mute`,     { method: "PATCH" });
+// Deep RCA (2026-09-14) -- plain-English probable-root-cause
+// explanation for a single alert, fetched lazily (only when the user
+// expands "Why did this happen?" on that row), not preloaded for
+// every alert in the list.
+export const explainAlert     = (id) => apiFetch(`/api/alerts/${id}/explain`);
 
 // ── Audit logs ────────────────────────────────────────────────────
 export const getAuditLogs     = (limit=100) => apiFetch(`/api/audit-logs?limit=${limit}`);

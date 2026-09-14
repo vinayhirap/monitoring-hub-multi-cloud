@@ -1,10 +1,11 @@
 ﻿// monitoring-hub/frontend/src/pages/Alerts.jsx
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useWebSocket } from "../hooks/useWebSocket";
 import "./Alerts.css";
 import { useTimezone, formatInTz } from "../contexts/TimezoneContext";
+import { InfoIcon } from "../components/icons";
 
 const BASE = "";
 
@@ -134,6 +135,12 @@ export default function Alerts() {
   const [acting,  setActing]  = useState(null);
   const [soundOn, setSoundOn] = useState(true);
   const [openingConsole, setOpeningConsole] = useState(null);
+  // Deep RCA (2026-09-14): which alert row (if any) has its "Why did
+  // this happen?" explanation expanded, plus a per-alert-id cache so
+  // re-expanding a row already viewed this session doesn't refetch.
+  const [expandedExplainId, setExpandedExplainId] = useState(null);
+  const [explainCache, setExplainCache] = useState({});
+  const [explainLoading, setExplainLoading] = useState(null);
 
   // IDs already present on page load — never beep for these
   const knownIds = useRef(new Set());
@@ -300,6 +307,28 @@ export default function Alerts() {
     }
   }
 
+  // Deep RCA (2026-09-14): lazy-fetches /alerts/{id}/explain the first
+  // time a row is expanded, caches the result per alert id for the
+  // rest of this session, and toggles the expanded row closed if it's
+  // clicked again.
+  async function toggleExplain(id) {
+    if (expandedExplainId === id) {
+      setExpandedExplainId(null);
+      return;
+    }
+    setExpandedExplainId(id);
+    if (explainCache[id]) return;
+    setExplainLoading(id);
+    try {
+      const data = await apiFetch(`/api/alerts/${id}/explain`);
+      setExplainCache(prev => ({ ...prev, [id]: data }));
+    } catch (e) {
+      setExplainCache(prev => ({ ...prev, [id]: { error: e.message } }));
+    } finally {
+      setExplainLoading(null);
+    }
+  }
+
   const filtered = alerts.filter(a => {
     const s = (a.status || "").toLowerCase();
     // "Active" means confirmed live — a resource still sending fresh data
@@ -432,7 +461,8 @@ export default function Alerts() {
                   const isOpeningAws = openingConsole === a.id;
 
                   return (
-                    <tr key={a.id ?? idx} className={`alert-row sev-row-${sev.toLowerCase()}`}>
+                    <Fragment key={a.id ?? idx}>
+                    <tr className={`alert-row sev-row-${sev.toLowerCase()}`}>
 
                       <td><SevBadge sev={sev} /></td>
 
@@ -506,6 +536,18 @@ export default function Alerts() {
                               {isOpeningAws ? "☁ Opening…" : "☁ Console"}
                             </button>
                           )}
+                          {/* Deep RCA (2026-09-14): plain-English probable-
+                              root-cause explanation for THIS alert, fetched
+                              lazily on first expand. Uses the app's own
+                              icon set (icons.jsx), not an emoji, matching
+                              the earlier fix on ServiceList's buttons. */}
+                          <button
+                            className="btn-console-detail"
+                            onClick={e => { e.stopPropagation(); toggleExplain(a.id); }}
+                            title="Why did this happen?"
+                          >
+                            <InfoIcon size={13} /> Why?
+                          </button>
                         </div>
                       </td>
 
@@ -534,6 +576,28 @@ export default function Alerts() {
                         </td>
                       )}
                     </tr>
+
+                    {expandedExplainId === a.id && (
+                      <tr className="alert-explain-row">
+                        <td colSpan={canAct ? 8 : 7}>
+                          {explainLoading === a.id ? (
+                            <div className="alert-explain-loading">Analyzing…</div>
+                          ) : explainCache[a.id]?.error ? (
+                            <div className="alert-explain-error">
+                              Couldn't load explanation: {explainCache[a.id].error}
+                            </div>
+                          ) : explainCache[a.id] ? (
+                            <div className="alert-explain">
+                              <span className={`explain-confidence explain-confidence-${explainCache[a.id].confidence}`}>
+                                {explainCache[a.id].confidence} confidence
+                              </span>
+                              <p className="explain-summary">{explainCache[a.id].summary}</p>
+                            </div>
+                          ) : null}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 })
               )}

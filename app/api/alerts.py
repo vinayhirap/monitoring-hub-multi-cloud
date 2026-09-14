@@ -403,6 +403,30 @@ def get_console_url(alert_id: int, user: dict = Depends(require_permission("aler
     return {"url": url, "account_id": row["account_id"]}
 
 
+# ── ROOT-CAUSE EXPLANATION (customer-facing) ────────────────────
+@router.get("/{alert_id}/explain")
+def explain_alert(alert_id: int, current_user: dict = Depends(require_permission("alerts.view"))):
+    """
+    Plain-English probable-root-cause explanation for a single alert --
+    deep RCA (real AWS CloudTrail activity, topology context, trend
+    behavior, related alerts), written for the actual customer looking
+    at this alert, not an internal ops console. See
+    app/collector/rca.py's explain_alert() for how each part is derived
+    and why this is deliberately jargon-free.
+
+    GET, not POST: unlike /console-url this has no side effect (no
+    audit-log write, no external API call) -- it's a pure read over
+    data this app already collected, safe to cache/refetch freely.
+    """
+    _require_alert_access(alert_id, current_user)
+
+    from app.collector.rca import explain_alert as _explain_alert
+    result = _explain_alert(alert_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return result
+
+
 # ── ACK ───────────────────────────────────────────────────────
 @router.post("/{alert_id}/ack")
 @router.patch("/{alert_id}/ack")
