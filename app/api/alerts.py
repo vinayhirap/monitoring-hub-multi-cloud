@@ -34,6 +34,25 @@ _counts_cache: dict = {"data": None, "ts": 0}
 # is display-only, the operator decides whether to resolve it.
 _STALE_AFTER_MINUTES = 20
 
+# multivariate_anomaly (see app/collector/multivariate_anomaly.py) is an
+# IsolationForest decision-score, not a real CloudWatch metric -- its
+# "value"/"threshold" (e.g. -0.1 / 0) reads as confusing noise next to
+# genuine metric alerts (Net In, Net Out, etc.) on the end-user Alerts
+# page. Same pattern as patch 0029 (hiding the Incidents button): the
+# detector keeps running and these rows still exist in `alerts` so
+# correlation/health scoring/RCA (correlate.py, health_score.py, rca.py)
+# keep working unchanged -- only the end-user-facing list/count queries
+# below filter it out.
+_HIDDEN_FROM_ALERTS_UI_METRICS = ("multivariate_anomaly",)
+
+
+def _hidden_metrics_sql() -> str:
+    """Comma-separated, quoted SQL literal list for use in a `NOT IN (...)`
+    clause. Safe to inline (not parameterized) because this only ever
+    renders the fixed _HIDDEN_FROM_ALERTS_UI_METRICS constant above, never
+    request input."""
+    return ", ".join(f"'{m}'" for m in _HIDDEN_FROM_ALERTS_UI_METRICS)
+
 
 def _filter_rows_by_scope(rows: list, current_user: dict) -> list:
     """
@@ -138,6 +157,7 @@ def _fetch_alerts_from_db():
         JOIN resources r      ON r.resource_id = a.resource_id
         JOIN aws_accounts acc ON acc.id = r.aws_account_id
                                AND acc.status = 'active'
+        WHERE a.metric_name NOT IN ({hidden})
         ORDER BY
             -- Unresolved rows always sort ahead of resolved ones. Without
             -- this, a burst of alerts that trigger-then-quickly-resolve
@@ -150,7 +170,7 @@ def _fetch_alerts_from_db():
             (a.resolved_at IS NULL) DESC,
             a.triggered_at DESC
         LIMIT 500
-    """.format(stale=_STALE_AFTER_MINUTES))
+    """.format(stale=_STALE_AFTER_MINUTES, hidden=_hidden_metrics_sql()))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -223,11 +243,12 @@ def open_alerts(current_user: dict = Depends(require_permission("alerts.view")))
         JOIN aws_accounts acc ON acc.id = r.aws_account_id
                                AND acc.status = 'active'
         WHERE a.resolved_at IS NULL
+          AND a.metric_name NOT IN ({hidden})
             ORDER BY
             FIELD(a.severity, 'CRITICAL', 'WARNING', 'INFO'),
             a.triggered_at DESC
         LIMIT 2000
-    """.format(stale=_STALE_AFTER_MINUTES))
+    """.format(stale=_STALE_AFTER_MINUTES, hidden=_hidden_metrics_sql()))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -289,8 +310,9 @@ def _fetch_counts_from_db() -> list:
         JOIN resources r      ON r.resource_id = a.resource_id
         JOIN aws_accounts acc ON acc.id = r.aws_account_id
                                AND acc.status = 'active'
+        WHERE a.metric_name NOT IN ({hidden})
         GROUP BY acc.id
-    """.format(stale=_STALE_AFTER_MINUTES))
+    """.format(stale=_STALE_AFTER_MINUTES, hidden=_hidden_metrics_sql()))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
