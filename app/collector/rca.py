@@ -376,11 +376,45 @@ def explain_alert(alert_id: int):
                 "in the surrounding window \u2014 this may be an isolated fluctuation."
             )
 
+        deterministic_summary = " ".join(summary_parts)
+
+        # AIOps roadmap #13/#15 (2026-09-14): if app/collector/
+        # llm_summarizer.py's background job already polished this
+        # exact deterministic summary (hash match -- see migration 030
+        # and app/llm/summarizer.py's source_hash()), serve the
+        # polished paragraph instead. Pure read, no API call happens
+        # here -- if the cache is missing or stale (facts changed since
+        # the last background cycle), this silently falls back to the
+        # deterministic text above, same as always. summary_source lets
+        # the frontend show a subtle "AI-polished" affordance without
+        # the API needing a second round trip to know which it got.
+        summary = deterministic_summary
+        summary_source = "template"
+        cursor.execute("""
+            SELECT llm_summary, llm_summary_source_hash
+            FROM alerts WHERE id = %s
+        """, (alert_id,))
+        cached = cursor.fetchone()
+        if cached and cached["llm_summary"]:
+            from app.llm.summarizer import source_hash
+            if cached["llm_summary_source_hash"] == source_hash(deterministic_summary):
+                summary = cached["llm_summary"]
+                summary_source = "llm"
+
         return {
             "alert_id": alert_id,
             "resource_id": resource_id,
             "confidence": confidence,
-            "summary": " ".join(summary_parts),
+            "summary": summary,
+            "summary_source": summary_source,
+            # ALWAYS the raw deterministic template text, never the
+            # LLM-polished version above, regardless of summary_source
+            # -- app/collector/llm_summarizer.py's background job hashes
+            # THIS field (never `summary`) to decide whether the cache
+            # is stale. Hashing `summary` instead would hash an
+            # already-polished paragraph on the second cycle onward,
+            # so the cache could never detect real fact changes again.
+            "template_summary": deterministic_summary,
             "trend": trend,
             "is_likely_flapping": is_flapping,
             "probable_trigger": cloud_events[0] if cloud_events else None,
