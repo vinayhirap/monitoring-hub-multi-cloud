@@ -130,6 +130,7 @@
   white-space: nowrap;
 }
 .btn-console-detail:hover { background: rgba(43,179,172,0.15); }
+.btn-console-detail svg { flex-shrink: 0; }
 
 .btn-console-aws {
   font-size: 10px; font-weight: 600; border-radius: 4px;
@@ -179,4 +180,27 @@
   .console-links { flex-wrap: wrap; }
   .alert-actions { flex-wrap: wrap; }
 }
+
+/* ── Deep RCA explain row (2026-09-14) ─────────────────────────
+   Customer-facing "Why did this happen?" panel, expanded inline under
+   the alert row it explains -- deliberately plain, non-dashboard-y
+   styling (a paragraph and a confidence chip, not a data table) since
+   this is meant to read like an explanation, not another ops report. */
+.alert-explain-row td {
+  background: rgba(43,179,172,0.04);
+  border-top: 1px dashed rgba(43,179,172,0.2);
+  padding: 12px 16px !important;
+}
+.alert-explain-loading,
+.alert-explain-error { font-size: 12px; color: var(--text-muted, #888); }
+.alert-explain-error { color: #e05252; }
+.alert-explain { display: flex; flex-direction: column; gap: 6px; }
+.explain-summary { font-size: 13px; line-height: 1.5; color: var(--text-secondary, #ccc); margin: 0; }
+.explain-confidence {
+  display: inline-block; width: fit-content; font-size: 10px; font-weight: 700;
+  letter-spacing: 0.04em; text-transform: uppercase; padding: 2px 8px; border-radius: 10px;
+}
+.explain-confidence-high   { background: rgba(34,197,94,0.12);  color: #22c55e; }
+.explain-confidence-medium { background: rgba(234,179,8,0.12);  color: #eab308; }
+.explain-confidence-low    { background: rgba(148,163,184,0.15); color: #94a3b8; }
 
