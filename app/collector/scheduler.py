@@ -184,6 +184,24 @@ def run_once(tier="standard"):
                       f"recompute_baselines failed (non-fatal, static thresholds still apply): {e}",
                       severity="WARNING")
 
+        # AIOps roadmap #9 (2026-09-14): STL seasonal-decomposition
+        # upgrade pass -- runs immediately after recompute_baselines()
+        # above, reads the sigma-clipped buckets that call just wrote
+        # and upgrades whichever ones pass its own safety gates to a
+        # tighter STL-derived mean/stddev. Never runs instead of
+        # recompute_baselines(), only after -- see
+        # app/collector/baseline_stl.py's module docstring for why this
+        # ordering makes it impossible for this pass to leave a bucket
+        # worse than sigma-clip alone would have.
+        try:
+            from app.collector.baseline_stl import upgrade_baselines_with_stl
+            upgrade_baselines_with_stl()
+        except Exception as e:
+            log_event("baseline_stl_upgrade_failed",
+                      f"upgrade_baselines_with_stl failed (non-fatal, sigma-clipped "
+                      f"baselines from recompute_baselines() still apply): {e}",
+                      severity="WARNING")
+
         # Auto-tuning for chronically-miscalibrated static thresholds
         # (2026-09-14) -- runs right after recompute_baselines() above,
         # since it reads the metric_baseline rows that call just wrote.
