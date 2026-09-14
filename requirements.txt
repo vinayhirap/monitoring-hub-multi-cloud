@@ -93,3 +93,11 @@ pytest>=9,<10
 # heavier ML dependency (scikit-learn/statsmodels/Prophet) needed for
 # this phase. Pinned to match this environment's already-tested version.
 numpy==2.4.4
+
+# app/collector/multivariate_anomaly.py (AIOps roadmap Phase 2,
+# 2026-09-14): IsolationForest (scikit-learn) for cross-metric anomaly
+# detection, pandas for pivoting metric_history into a per-resource
+# time x metric matrix before fitting. Both free/local-compute only --
+# see AI_ML_ROADMAP.md Section 7.
+pandas==3.0.2
+scikit-learn==1.8.0
