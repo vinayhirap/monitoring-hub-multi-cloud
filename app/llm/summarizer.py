@@ -78,7 +78,70 @@ def source_hash(deterministic_summary: str) -> str:
     return hashlib.sha256(deterministic_summary.encode("utf-8")).hexdigest()
 
 
-def polish_summary(facts: dict, deterministic_summary: str) -> str:
+def generate_postmortem_narrative(facts: dict) -> str:
+    """
+    Used by app/llm/postmortem.py -- writes the "Executive Summary" and
+    "Recommendations" prose sections of a downloadable postmortem
+    document. Everything else in a generated postmortem (the timeline
+    table, resource/severity/duration fields) is assembled
+    DETERMINISTICALLY by postmortem.py from real rows, never touched by
+    this function -- this is scoped ONLY to prose, under the exact same
+    fact-grounding system prompt discipline as polish_summary() above.
+
+    Returns None (not a fallback string) on any failure -- the CALLER
+    decides what to show instead (postmortem.py falls back to a plain
+    bullet-point rendering of the same facts), since "no narrative
+    available" reads differently in a formal document than it does in
+    a one-line alert explanation.
+    """
+    if not is_enabled():
+        return None
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    model = os.getenv("LLM_SUMMARY_MODEL", _DEFAULT_MODEL)
+    timeout = float(os.getenv("LLM_SUMMARY_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT_SECONDS))
+
+    system_prompt = (
+        "You write the Executive Summary and Recommendations sections of an "
+        "incident postmortem document for a cloud-operations team. STRICT RULES: "
+        "(1) Do not introduce any fact, number, name, resource ID, or timestamp "
+        "not already present in the input JSON. (2) Do not speculate about root "
+        "cause beyond what the input's probable_trigger/recent_deployment/trend "
+        "fields state -- if those are empty, say the cause is undetermined. "
+        "(3) Recommendations must be concrete and directly tied to facts present "
+        "in the input (e.g. only recommend a deploy-process change if "
+        "recent_deployment is non-null). (4) Output ONLY these two sections as "
+        "markdown, in this exact format, no other text:\n\n"
+        "## Executive Summary\n<2-4 sentences>\n\n## Recommendations\n<2-4 bullet points>"
+    )
+
+    try:
+        response = requests.post(
+            _API_URL,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": _ANTHROPIC_VERSION,
+                "content-type": "application/json",
+            },
+            json={
+                "model": model,
+                "max_tokens": 500,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": json.dumps(facts, default=str)}],
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        text_blocks = [
+            block.get("text", "") for block in data.get("content", [])
+            if block.get("type") == "text"
+        ]
+        narrative = "".join(text_blocks).strip()
+        return narrative or None
+    except Exception as e:
+        logger.warning(f"[llm_summarizer] postmortem narrative generation failed ({e})")
+        return None
     """
     Returns a polished paragraph, or the ORIGINAL deterministic_summary
     unchanged if the feature is disabled, misconfigured, or the API

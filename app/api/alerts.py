@@ -3,7 +3,7 @@ from typing import Optional
 import datetime
 import time
 import logging
-from fastapi import APIRouter, HTTPException, Depends, Body
+from fastapi import APIRouter, HTTPException, Depends, Body, Response
 from app.db import get_connection
 from app.auth.deps import get_current_user, require_role
 from app.auth.permissions import require_permission
@@ -450,6 +450,58 @@ def explain_alert(alert_id: int, current_user: dict = Depends(require_permission
     if result is None:
         raise HTTPException(status_code=404, detail="Alert not found")
     return result
+
+
+@router.get("/{alert_id}/postmortem")
+def get_postmortem(
+    alert_id: int,
+    format: str = "md",
+    current_user: dict = Depends(require_permission("alerts.view")),
+):
+    """
+    Downloadable incident postmortem -- works for any alert, standalone
+    or part of a multi-alert incident. format=md (default) or format=pdf.
+    See app/llm/postmortem.py's module docstring: the timeline and
+    resource/severity/duration facts are always deterministic (real
+    rows), only the Executive Summary/Recommendations prose is
+    optionally LLM-written, with a deterministic bullet-point fallback
+    when the LLM is disabled or its call fails -- a postmortem is
+    ALWAYS produced either way.
+
+    GET, not POST: read-only, generates on demand (postmortems are
+    requested rarely, unlike /explain which loads on every alert page
+    view -- so this is NOT cached the way /explain's LLM summary is,
+    see app/collector/llm_summarizer.py for why that one needed a
+    background cache and this one doesn't).
+    """
+    if format not in ("md", "pdf"):
+        raise HTTPException(status_code=400, detail="format must be 'md' or 'pdf'")
+
+    _require_alert_access(alert_id, current_user)
+
+    from app.llm.postmortem import generate_postmortem, render_markdown
+    postmortem = generate_postmortem(alert_id)
+    if postmortem is None:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    markdown_text = render_markdown(postmortem)
+    title = f"postmortem-alert-{alert_id}"
+
+    if format == "md":
+        return Response(
+            content=markdown_text,
+            media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="{title}.md"'},
+        )
+
+    from app.llm.postmortem_pdf import render_pdf
+    pdf_title = f"Postmortem: {postmortem['facts']['metric_name']} on {postmortem['facts']['resource_name'] or postmortem['facts']['resource_id']}"
+    pdf_bytes = render_pdf(markdown_text, pdf_title)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{title}.pdf"'},
+    )
 
 
 # ── MARK / UNMARK FALSE POSITIVE (2026-09-14) ────────────────────

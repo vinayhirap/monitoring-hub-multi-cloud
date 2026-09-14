@@ -1,0 +1,153 @@
+# app/llm/postmortem.py
+"""
+Downloadable incident postmortem generation (2026-09-14). Works for
+ANY alert (standalone or part of a multi-alert incident) -- reuses
+app/collector/rca.py's explain_alert() for all of its signal-gathering
+(deployment correlation, CloudTrail events, config changes, trend,
+flapping, related alerts) rather than re-querying the database itself,
+so a postmortem's facts are always identical to what the Alerts page's
+own RCA panel already shows for that alert.
+
+STRUCTURE: the timeline, resource info, severity, and duration are
+assembled DETERMINISTICALLY from real rows -- never touched by an LLM.
+Only the "Executive Summary" and "Recommendations" sections are
+optionally LLM-written (app/llm/summarizer.py's
+generate_postmortem_narrative(), same strict fact-grounding contract as
+every other LLM feature in this app). If the LLM is disabled or the
+call fails, those two sections fall back to a plain bullet-point
+rendering of the same facts -- a postmortem is ALWAYS produced, with or
+without the LLM configured.
+"""
+import logging
+
+from app.db import get_connection
+from app.collector.rca import explain_alert
+from app.llm.summarizer import generate_postmortem_narrative
+
+logger = logging.getLogger(__name__)
+
+
+def _gather_facts(alert_id: int) -> dict:
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT a.id, a.resource_id, a.metric_name, a.severity, a.status,
+                   a.triggered_at, a.resolved_at, a.current_value, a.threshold,
+                   r.name AS resource_name, r.resource_type, acc.account_name
+            FROM alerts a
+            JOIN resources r      ON r.resource_id = a.resource_id
+            JOIN aws_accounts acc ON acc.id = r.aws_account_id
+            WHERE a.id = %s
+        """, (alert_id,))
+        alert = cursor.fetchone()
+        if not alert:
+            return None
+
+        explanation = explain_alert(alert_id) or {}
+
+        duration_minutes = None
+        if alert["resolved_at"] and alert["triggered_at"]:
+            duration_minutes = round((alert["resolved_at"] - alert["triggered_at"]).total_seconds() / 60, 1)
+
+        timeline = []
+        if explanation.get("recent_deployment"):
+            d = explanation["recent_deployment"]
+            timeline.append({"time": str(d["created_at"]), "event": f"Deployment: {d['message']}"})
+        for ce in (explanation.get("probable_trigger") and [explanation["probable_trigger"]] or []):
+            timeline.append({
+                "time": str(ce["event_time"]),
+                "event": f"AWS activity: {ce['event_name']} by {ce['username'] or 'unknown'}",
+            })
+        timeline.append({"time": str(alert["triggered_at"]), "event": f"Alert triggered: {alert['metric_name']} on {alert['resource_name'] or alert['resource_id']}"})
+        if alert["resolved_at"]:
+            timeline.append({"time": str(alert["resolved_at"]), "event": "Alert resolved"})
+        timeline.sort(key=lambda e: e["time"])
+
+        return {
+            "alert_id": alert["id"],
+            "resource_id": alert["resource_id"],
+            "resource_name": alert["resource_name"],
+            "resource_type": alert["resource_type"],
+            "account_name": alert["account_name"],
+            "metric_name": alert["metric_name"],
+            "severity": alert["severity"],
+            "status": alert["status"],
+            "triggered_at": str(alert["triggered_at"]),
+            "resolved_at": str(alert["resolved_at"]) if alert["resolved_at"] else None,
+            "duration_minutes": duration_minutes,
+            "current_value": alert["current_value"],
+            "threshold": alert["threshold"],
+            "confidence": explanation.get("confidence"),
+            "trend": explanation.get("trend"),
+            "is_likely_flapping": explanation.get("is_likely_flapping"),
+            "probable_trigger": explanation.get("probable_trigger"),
+            "recent_deployment": explanation.get("recent_deployment"),
+            "related_alert_count": explanation.get("related_alert_count"),
+            "template_summary": explanation.get("template_summary"),
+            "timeline": timeline,
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _fallback_narrative(facts: dict) -> str:
+    """Deterministic Executive Summary + Recommendations, used when the
+    LLM is disabled or its call fails -- see module docstring."""
+    lines = ["## Executive Summary", "", facts["template_summary"] or "No summary available.", "", "## Recommendations", ""]
+    if facts.get("recent_deployment"):
+        lines.append("- Review the deployment listed in the timeline above for a possible causal link.")
+    if facts.get("is_likely_flapping"):
+        lines.append("- Consider widening this metric's threshold -- this alert shows signs of flapping on normal variance.")
+    if facts.get("related_alert_count"):
+        lines.append("- This alert was part of a wider correlated incident -- review related alerts for a shared root cause.")
+    if not facts.get("resolved_at"):
+        lines.append("- This alert is still active -- prioritize resolution before drawing final conclusions.")
+    if len(lines) == 6:  # no bullets were added above
+        lines.append("- No specific recommendation could be derived automatically from the signals gathered for this alert.")
+    return "\n".join(lines)
+
+
+def generate_postmortem(alert_id: int) -> dict:
+    """
+    Returns None if the alert doesn't exist, otherwise:
+        {"facts": {...}, "narrative_markdown": "## Executive Summary...",
+         "narrative_source": "llm" | "template"}
+    """
+    facts = _gather_facts(alert_id)
+    if facts is None:
+        return None
+
+    narrative = generate_postmortem_narrative(facts)
+    if narrative:
+        return {"facts": facts, "narrative_markdown": narrative, "narrative_source": "llm"}
+    return {"facts": facts, "narrative_markdown": _fallback_narrative(facts), "narrative_source": "template"}
+
+
+def render_markdown(postmortem: dict) -> str:
+    f = postmortem["facts"]
+    duration = f"{f['duration_minutes']} minutes" if f["duration_minutes"] is not None else "still active"
+    lines = [
+        f"# Postmortem: {f['metric_name']} on {f['resource_name'] or f['resource_id']}",
+        "",
+        f"- **Account:** {f['account_name']}",
+        f"- **Resource:** {f['resource_name'] or f['resource_id']} ({f['resource_type']})",
+        f"- **Severity:** {f['severity']}",
+        f"- **Status:** {f['status']}",
+        f"- **Triggered:** {f['triggered_at']}",
+        f"- **Duration:** {duration}",
+        f"- **RCA confidence:** {f['confidence']}",
+        "",
+        postmortem["narrative_markdown"],
+        "",
+        "## Timeline",
+        "",
+    ]
+    for event in f["timeline"]:
+        lines.append(f"- **{event['time']}** \u2014 {event['event']}")
+    lines += [
+        "",
+        f"*Generated automatically ({postmortem['narrative_source']} narrative) -- verify before external distribution.*",
+    ]
+    return "\n".join(lines)

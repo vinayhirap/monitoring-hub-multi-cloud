@@ -26,6 +26,8 @@ from app.api.escalation     import router as escalation_router
 from app.api.incidents      import router as incidents_router
 from app.api.nlquery        import router as nlquery_router
 from app.api.synthetic      import router as synthetic_router
+from app.api.webhooks       import router as webhooks_router
+from app.api.deploy_risk    import router as deploy_risk_router
 from app.auth.deps          import get_current_user, COOKIE_NAME
 from app.auth.security      import decode_token
 
@@ -300,3 +302,9 @@ app.include_router(escalation_router,     dependencies=_auth_dep)
 app.include_router(incidents_router,      dependencies=_auth_dep)
 app.include_router(nlquery_router,        prefix="/api", dependencies=_auth_dep)
 app.include_router(synthetic_router,      dependencies=_auth_dep)
+# NOTE: webhooks_router deliberately has NO _auth_dep -- it's called by
+# an external CI/CD system with no browser session, authenticated via
+# its own X-Webhook-Token header check (see app/api/webhooks.py's
+# _check_webhook_token()), not get_current_user()'s cookie/JWT flow.
+app.include_router(webhooks_router)
+app.include_router(deploy_risk_router,    dependencies=_auth_dep)
