@@ -257,8 +257,8 @@ def auto_tune_static_thresholds() -> int:
                 write_audit(
                     actor="system:threshold_tuning",
                     action="auto_enable_dynamic_threshold",
-                    detail=note,
                     payload={
+                        "detail": note,
                         "threshold_id": th["id"], "metric_name": th["metric_name"],
                         "resource_type": th["resource_type"], "aws_account_id": th["aws_account_id"],
                         "trigger_path": trigger_path,

@@ -10,7 +10,7 @@ import {
   ServerIcon, SaveIcon, ScaleIcon, DatabaseIcon, BucketIcon, SettingsIcon,
   MailIcon, InfoIcon, ArrowRightIcon, BarChartIcon, TrashIcon, AlertTriangleIcon,
   RedDotIcon, CheckIcon, CompassIcon, RotateCcwIcon, DownloadIcon, LockIcon,
-  XIcon,
+  XIcon, ZapIcon,
 } from "../components/icons";
 
 const BASE = "";
@@ -522,6 +522,27 @@ function ServiceThresholdSection({ svc, items, onToggle, onUpdate, onSave, savin
 }
 
 function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState }) {
+  // Auto-tune history (2026-09-14) -- lazy-fetched only when the badge
+  // is clicked, so a page with many thresholds doesn't fire N extra
+  // requests on load for something most rows won't have anyway.
+  const [autoTuneHistory, setAutoTuneHistory] = useState(null);
+  const [autoTuneExpanded, setAutoTuneExpanded] = useState(false);
+  const [autoTuneLoading, setAutoTuneLoading] = useState(false);
+
+  function toggleAutoTuneHistory() {
+    if (autoTuneExpanded) {
+      setAutoTuneExpanded(false);
+      return;
+    }
+    setAutoTuneExpanded(true);
+    if (autoTuneHistory !== null) return;
+    setAutoTuneLoading(true);
+    fetch(`${BASE}/api/settings/thresholds/${t.id}/auto-tune-history`)
+      .then(r => r.ok ? r.json() : [])
+      .then(setAutoTuneHistory)
+      .catch(() => setAutoTuneHistory([]))
+      .finally(() => setAutoTuneLoading(false));
+  }
   const ideal      = IDEAL[t.metric_name] || {};
   const isBinary   = ONE_BOUNDARY.has(t.metric_name);
   const isInverted = INVERTED_WARN.has(t.metric_name);
@@ -541,10 +562,43 @@ function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState }) {
     <div className={`threshold-item ${t.enabled ? "" : "disabled"}`}>
       <div className="thresh-header">
         <div>
-          <div className="thresh-label">{t.metric_name}</div>
+          <div className="thresh-label">
+            {t.metric_name}
+            {/* Dynamic-threshold badge (2026-09-14) -- previously
+                use_dynamic was returned by the API but never shown
+                anywhere in this UI at all. Clicking it lazy-loads
+                WHY, if app/collector/threshold_tuning.py auto-switched
+                it (vs an admin manually enabling dynamic mode via the
+                toggle below, which has no history to show). */}
+            {t.use_dynamic ? (
+              <span
+                className="dynamic-badge"
+                onClick={toggleAutoTuneHistory}
+                title="This threshold uses a per-resource dynamic band instead of one fixed number. Click for why."
+              >
+                <ZapIcon size={10} /> Dynamic
+              </span>
+            ) : null}
+          </div>
           {ideal.desc && (
             <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2, lineHeight: 1.3 }}>
               {ideal.desc}
+            </div>
+          )}
+          {autoTuneExpanded && (
+            <div className="dynamic-history">
+              {autoTuneLoading ? (
+                <span className="dynamic-history-loading">Loading…</span>
+              ) : autoTuneHistory && autoTuneHistory.length > 0 ? (
+                <>
+                  <div className="dynamic-history-label">Auto-tuned by the system:</div>
+                  <p className="dynamic-history-detail">{autoTuneHistory[0].detail}</p>
+                </>
+              ) : (
+                <span className="dynamic-history-manual">
+                  Enabled manually — no automatic tuning history for this threshold.
+                </span>
+              )}
             </div>
           )}
         </div>

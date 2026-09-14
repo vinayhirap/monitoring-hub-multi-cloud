@@ -77,6 +77,27 @@
 .thresh-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; gap: 8px; }
 .thresh-label  { font-size: 12px; font-weight: 600; color: var(--text-primary); line-height: 1.3; }
 
+/* ── Dynamic-threshold badge + auto-tune history (2026-09-14) ─────
+   Previously use_dynamic was returned by the API but never shown
+   anywhere in this page at all -- an admin had no way to see which
+   thresholds were self-tuning, or why, without a DB/journalctl check. */
+.dynamic-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  margin-left: 8px; padding: 1px 7px; border-radius: 9px;
+  font-size: 9px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  background: rgba(43,179,172,0.12); color: var(--accent, #2bb3ac);
+  border: 1px solid rgba(43,179,172,0.3); cursor: pointer; vertical-align: middle;
+}
+.dynamic-badge:hover { background: rgba(43,179,172,0.2); }
+.dynamic-history {
+  margin-top: 6px; padding: 6px 8px; border-radius: var(--radius, 4px);
+  background: rgba(43,179,172,0.06); border: 1px dashed rgba(43,179,172,0.25);
+  font-size: 11px;
+}
+.dynamic-history-loading, .dynamic-history-manual { color: var(--text-muted); }
+.dynamic-history-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--accent, #2bb3ac); margin-bottom: 3px; }
+.dynamic-history-detail { margin: 0; color: var(--text-secondary); line-height: 1.5; }
+
 .toggle-sm { display: flex; align-items: center; gap: 5px; cursor: pointer; flex-shrink: 0; }
 .toggle-sm input { display: none; }
 .sm-track {

@@ -304,6 +304,51 @@ def toggle_dynamic_threshold(threshold_id: int, payload: dict = Body(...), curre
     return {"status": "updated", "use_dynamic": bool(use_dynamic), "dynamic_k": dynamic_k}
 
 
+@router.get("/thresholds/{threshold_id}/auto-tune-history")
+def get_threshold_auto_tune_history(threshold_id: int, current_user: dict = Depends(require_permission("alerts.view"))):
+    """
+    Whether/why THIS threshold was auto-switched to dynamic by
+    app/collector/threshold_tuning.py, straight from audit_logs (actor
+    "system:threshold_tuning") -- previously the only way to see this
+    was grepping journalctl or querying audit_logs directly. Returns
+    an empty list if this threshold has never been auto-tuned (e.g. an
+    admin flipped use_dynamic manually via PATCH .../dynamic above, or
+    it's still static) -- that's a normal, common case, not an error.
+    """
+    account_id = _get_threshold_account_id(threshold_id)
+    if account_id is None:
+        raise HTTPException(status_code=404, detail="Threshold not found")
+    _require_account_access(account_id, current_user)
+
+    conn = get_connection(); cur = conn.cursor(dictionary=True)
+    cur.execute("""
+        SELECT created_at, payload
+        FROM audit_logs
+        WHERE actor = 'system:threshold_tuning'
+          AND action = 'auto_enable_dynamic_threshold'
+          AND JSON_EXTRACT(payload, '$.threshold_id') = %s
+        ORDER BY created_at DESC
+        LIMIT 5
+    """, (threshold_id,))
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+
+    history = []
+    for row in rows:
+        payload = row["payload"]
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {}
+        history.append({
+            "created_at": row["created_at"],
+            "detail": (payload or {}).get("detail", ""),
+            "trigger_path": (payload or {}).get("trigger_path"),
+        })
+    return history
+
+
 @router.post("/thresholds/seed")
 def seed_default_thresholds(account_id: int = Query(3), current_user: dict = Depends(require_permission("alerts.configure"))):
     _require_account_access(account_id, current_user)
