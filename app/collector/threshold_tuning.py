@@ -1,9 +1,40 @@
 # app/collector/threshold_tuning.py
 """
 Auto-tuning for chronically-miscalibrated static thresholds
-(2026-09-14, twice-revised same day after production diagnosis).
+(2026-09-14, three revisions same day, each from a live production
+diagnosis).
 
-REVISION 2 (this version) -- FLAPPING: diagnosed live in production
+REVISION 3 (this version) -- WARNING-ONLY CHRONIC ALERTS WERE INVISIBLE:
+diagnosed live after Revisions 1+2 correctly did NOT switch
+Aurionpro-Finops's NetworkOut threshold, yet its `Net Out` alert had
+been open continuously since 2026-09-13 (well past CHRONIC_ALERT_AGE_HOURS).
+Root cause: this account's `critical_value` had separately been raised
+to 5,000,000 (to quiet CRITICAL-level noise), but `warning_value` was
+never touched and stayed at 1,000,000. The resource's baseline mean
+(~1.78M, 1625 confident samples) sits comfortably UNDER the 5M critical
+line -- so majority/chronic-mean/chronic-noise, which ALL compared only
+against critical_value, correctly saw nothing wrong -- while the same
+alert kept re-triggering at WARNING severity every single evaluation
+cycle against the untouched 1M line, forever, with no automatic path
+that would ever catch it.
+
+FIX: every breach comparison in this module (majority/chronic-mean/
+chronic-noise) now checks against `warning_value`, not `critical_value`.
+This is a strict broadening, not a behavior change for existing cases:
+warning_value is always the closer-to-normal, first-crossed line (see
+alert_evaluator.py's _dynamic_bounds, which already assumes this -- its
+dynamic warning band is a *tighter* 0.66*k fraction of the same
+critical-side k*stddev), so anything that used to qualify by crossing
+critical_value still qualifies now (crossing critical implies crossing
+warning first). The only NEW resources this can affect are ones like
+Aurionpro-Finops's NetworkOut -- chronically breaching WARNING while
+staying under CRITICAL -- which is exactly the gap this revision closes.
+The existing confidence gates (MIN_CONFIDENT_SAMPLES, CHRONIC_BREACH_FRACTION,
+CHRONIC_ALERT_AGE_HOURS, MIN_RESOURCES_FOR_DECISION) are all unchanged --
+broadening WHICH line counts as "breaching" doesn't loosen how much
+evidence is required before switching.
+
+REVISION 2 -- FLAPPING: diagnosed live in production
 after Revision 1 correctly did NOT switch Aurionpro-Finops's
 NetworkOut threshold. That resource's baseline showed a TYPICAL value
 of 1.78M against a 5M critical line (genuinely healthy on average, with
@@ -18,14 +49,14 @@ correctly left this alone -- but "correctly left alone" here still
 meant a 30-hour-and-counting stuck alert with no real per-mean
 miscalibration to blame it on.
 
-FIX (NOISE_CROSSES_CRITICAL path, NEW): a resource's own baseline
+FIX (NOISE_CROSSES_LINE path): a resource's own baseline
 STDDEV, not just its mean, is now also checked. If mean + k*stddev
 (the same upper edge dynamic mode would actually compute --
 k = the threshold's own dynamic_k, defaulting to NOISE_K) reaches past
-the critical line even though the mean itself doesn't, that is real
-evidence this resource's normal variability legitimately brushes the
-static line -- exactly the flapping pattern. Dynamic mode's per-
-hour-of-day, per-day-of-week band (see baseline.py) handles this far
+the (as of Revision 3) warning line even though the mean itself doesn't,
+that is real evidence this resource's normal variability legitimately
+brushes the static line -- exactly the flapping pattern. Dynamic mode's
+per-hour-of-day, per-day-of-week band (see baseline.py) handles this far
 better than one flat 24/7 number: it widens or narrows to match each
 time slot's actual observed noise, instead of treating every hour as
 equally noisy.
@@ -41,16 +72,19 @@ path: one confidently-mean-breaching resource with a real, sustained
 dynamic never hurts the OTHER resources under it, since each gets its
 own personalized band regardless.
 
-REAL PROBLEM (both revisions address different facets of this): a
-static threshold (thresholds.warning_value/critical_value) is ONE
-number shared by every resource of a given type+metric in an account.
-It can be wrong for a resource in two distinct ways: (a) the resource's
-typical level has simply outgrown it (Revision 1's case), or (b) the
-resource is naturally noisy/bursty and the static line sits inside that
-normal noise band rather than above it (Revision 2's case, this one).
-Both produce the same symptom -- an alert that won't stop firing/
+REAL PROBLEM (all three revisions address different facets of this): a
+static threshold (thresholds.warning_value/critical_value) is TWO
+numbers shared by every resource of a given type+metric in an account.
+Either number can be wrong for a resource in three distinct ways: (a)
+the resource's typical level has simply outgrown it (Revision 1's
+case), (b) the resource is naturally noisy/bursty and the static line
+sits inside that normal noise band rather than above it (Revision 2's
+case), or (c) only ONE of the two configured lines was ever corrected,
+leaving the other to keep firing forever even though the resource is
+statistically fine relative to it (Revision 3's case). All three
+produce the same symptom -- an alert that won't stop firing/
 re-triggering with no genuine incident behind it -- but need different
-detection logic, since (b) can be true even when the mean is fine.
+detection logic.
 
 FIX: this app already has a statistically-grounded, per-RESOURCE
 alternative -- sigma-clipped baselines + confidence-blended dynamic
@@ -61,19 +95,19 @@ switches a STATIC threshold row to dynamic (use_dynamic=1) when ANY of:
 
   1. MAJORITY PATH: a confident majority (CHRONIC_BREACH_FRACTION) of
      the resources it governs have a baseline MEAN already past the
-     critical line.
-  2. MANUALLY-CONFIRMED PATH (2026-09-14, latest revision): a human has
+     warning line.
+  2. MANUALLY-CONFIRMED PATH (2026-09-14): a human has
      directly marked MIN_FALSE_POSITIVE_MARKS+ of a resource's past
      alerts on this exact metric as false positives (see
      PATCH /alerts/{id}/false-positive in app/api/alerts.py) -- the
      strongest, fastest evidence of the four; doesn't need
      CHRONIC_ALERT_AGE_HOURS or even a current mean/noise breach.
   3. CHRONIC-MEAN PATH: at least one resource has a confident baseline
-     MEAN past the critical line AND a currently-active alert on that
+     MEAN past the warning line AND a currently-active alert on that
      exact metric that has been continuously breaching for at least
      CHRONIC_ALERT_AGE_HOURS.
   4. CHRONIC-NOISE PATH: at least one resource has a confident
-     baseline whose MEAN + k*STDDEV crosses the critical line (even
+     baseline whose MEAN + k*STDDEV crosses the warning line (even
      though the mean alone doesn't) AND a currently-active alert on
      that exact metric that has been continuously breaching for at
      least CHRONIC_ALERT_AGE_HOURS -- the flapping case.
@@ -92,8 +126,9 @@ of the four paths fired -- nothing happens silently.
 
 CADENCE: "low" tier (15 min, see scheduler.py), same slot as
 baseline.py -- deliberately recomputed each cycle, since a threshold
-that's fine today can drift into being chronically wrong (by either
-mean or noise) months from now, and should self-correct continuously.
+that's fine today can drift into being chronically wrong (by mean,
+noise, or a half-updated warning/critical pair) months from now, and
+should self-correct continuously.
 """
 import logging
 from app.db import get_connection
@@ -125,7 +160,7 @@ CHRONIC_ALERT_AGE_HOURS = 6
 
 # CHRONIC-NOISE PATH: sigma multiplier used to test whether a
 # resource's own normal VARIABILITY (not just its mean) would already
-# cross the critical line -- i.e. whether dynamic mode's own band
+# cross the warning line -- i.e. whether dynamic mode's own band
 # (mean +/- k*stddev) reaches past the static number even though the
 # mean alone doesn't. Matches alert_evaluator.py's own default dynamic_k
 # for any threshold that hasn't set a custom one, so this asks exactly
@@ -159,17 +194,22 @@ def _has_chronic_active_alert(cursor, resource_id, metric_name):
     return cursor.fetchone() is not None
 
 
-def _noise_band_crosses_critical(resource, th):
+def _noise_band_crosses_line(resource, th):
     """True if this resource's own normal variability (mean +/-
-    k*stddev) reaches past the critical line even though its mean
+    k*stddev) reaches past the warning line even though its mean
     alone doesn't -- the flapping signature: a metric that's healthy on
     average but noisy enough to keep brushing a static line placed
-    inside its normal range rather than above it."""
+    inside its normal range rather than above it.
+
+    Checks warning_value, not critical_value (Revision 3, 2026-09-14):
+    warning is always the closer/first-crossed line, so this is a
+    strict broadening -- anything whose noise band used to cross
+    critical still crosses warning too."""
     k = th.get("dynamic_k") or NOISE_K
     stddev = resource.get("typical_stddev") or 0
     if th["comparison"] in (">", ">="):
-        return (resource["typical_value"] + k * stddev) > th["critical_value"]
-    return (resource["typical_value"] - k * stddev) < th["critical_value"]
+        return (resource["typical_value"] + k * stddev) > th["warning_value"]
+    return (resource["typical_value"] - k * stddev) < th["warning_value"]
 
 
 def _false_positive_mark_count(cursor, resource_id, metric_name):
@@ -291,10 +331,20 @@ def auto_tune_static_thresholds() -> int:
             if not resource_baselines:
                 continue
 
+            # Compares against warning_value, not critical_value
+            # (Revision 3, 2026-09-14): warning is always the closer/
+            # first-crossed line, so this is a strict broadening -- a
+            # resource whose mean crosses critical necessarily crosses
+            # warning too, so nothing that qualified before stops
+            # qualifying now. It also catches the case that motivated
+            # this revision: chronically breaching warning while
+            # staying under critical (real production example:
+            # Aurionpro-Finops's NetworkOut, critical raised to 5M but
+            # warning left at 1M -- see module docstring).
             if th["comparison"] in (">", ">="):
-                mean_breaching = [r for r in resource_baselines if r["typical_value"] > th["critical_value"]]
+                mean_breaching = [r for r in resource_baselines if r["typical_value"] > th["warning_value"]]
             else:
-                mean_breaching = [r for r in resource_baselines if r["typical_value"] < th["critical_value"]]
+                mean_breaching = [r for r in resource_baselines if r["typical_value"] < th["warning_value"]]
 
             fraction = len(mean_breaching) / len(resource_baselines)
             majority_path = (len(resource_baselines) >= MIN_RESOURCES_FOR_DECISION
@@ -314,7 +364,7 @@ def auto_tune_static_thresholds() -> int:
                             break
                 if chronic_example is None:
                     noisy_candidates = [r for r in resource_baselines
-                                         if r not in mean_breaching and _noise_band_crosses_critical(r, th)]
+                                         if r not in mean_breaching and _noise_band_crosses_line(r, th)]
                     for candidate in noisy_candidates:
                         if _has_chronic_active_alert(cursor, candidate["resource_id"], th["metric_name"]):
                             chronic_example, chronic_path = candidate, "chronic_noise"
@@ -329,7 +379,7 @@ def auto_tune_static_thresholds() -> int:
             if majority_path:
                 trigger_path, trigger_desc = "majority", (
                     f"{len(mean_breaching)}/{len(resource_baselines)} resources have a normal operating "
-                    f"range past the configured critical value"
+                    f"range past the configured warning value"
                 )
             elif chronic_path == "manually_confirmed":
                 trigger_desc = (
@@ -341,20 +391,21 @@ def auto_tune_static_thresholds() -> int:
                 trigger_desc = (
                     f"{example['resource_id']} alone has been continuously alerting on this metric "
                     f"for {CHRONIC_ALERT_AGE_HOURS}+ hours with a confidently-baselined normal range "
-                    f"past the configured critical value (no majority of peer resources needed)"
+                    f"past the configured warning value (no majority of peer resources needed)"
                 )
                 trigger_path = "chronic_mean"
             else:
                 trigger_desc = (
                     f"{example['resource_id']}'s average is healthy, but it has been continuously "
                     f"alerting on this metric for {CHRONIC_ALERT_AGE_HOURS}+ hours -- its normal "
-                    f"variability alone already crosses the configured critical value"
+                    f"variability alone already crosses the configured warning value"
                 )
                 trigger_path = "chronic_noise"
             note = (
                 f"Auto-switched {th['metric_name']} threshold for {th['resource_type']} "
                 f"(account {th['aws_account_id']}) from static to dynamic: {trigger_desc} "
-                f"of {th['critical_value']} (e.g. {example['resource_id']} typically runs around "
+                f"of {th['warning_value']} (critical is {th['critical_value']}; e.g. "
+                f"{example['resource_id']} typically runs around "
                 f"{round(example['typical_value'], 1)}). This was producing repeated alerts with no "
                 f"genuine cause -- switched to a per-resource dynamic band based on each resource's "
                 f"own history."
