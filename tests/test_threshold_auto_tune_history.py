@@ -50,6 +50,8 @@ def test_threshold_tuning_note_lands_in_payload_detail_not_dropped():
             elif normalized.startswith("SELECT b.resource_id, AVG"):
                 self._pending = [{"resource_id": "i-loud", "typical_value": 9_000_000,
                                   "typical_stddev": 500_000, "total_samples": 40}]
+            elif normalized.startswith("SELECT COUNT(*) AS cnt FROM alerts"):
+                self._pending = [{"cnt": 0}]  # no manual false-positive marks in this test
             elif normalized.startswith("SELECT id FROM alerts"):
                 self._pending = [{"id": 1}]
             elif normalized.startswith("UPDATE thresholds SET use_dynamic"):

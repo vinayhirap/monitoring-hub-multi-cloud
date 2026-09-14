@@ -62,11 +62,17 @@ switches a STATIC threshold row to dynamic (use_dynamic=1) when ANY of:
   1. MAJORITY PATH: a confident majority (CHRONIC_BREACH_FRACTION) of
      the resources it governs have a baseline MEAN already past the
      critical line.
-  2. CHRONIC-MEAN PATH: at least one resource has a confident baseline
+  2. MANUALLY-CONFIRMED PATH (2026-09-14, latest revision): a human has
+     directly marked MIN_FALSE_POSITIVE_MARKS+ of a resource's past
+     alerts on this exact metric as false positives (see
+     PATCH /alerts/{id}/false-positive in app/api/alerts.py) -- the
+     strongest, fastest evidence of the four; doesn't need
+     CHRONIC_ALERT_AGE_HOURS or even a current mean/noise breach.
+  3. CHRONIC-MEAN PATH: at least one resource has a confident baseline
      MEAN past the critical line AND a currently-active alert on that
      exact metric that has been continuously breaching for at least
      CHRONIC_ALERT_AGE_HOURS.
-  3. CHRONIC-NOISE PATH (NEW): at least one resource has a confident
+  4. CHRONIC-NOISE PATH: at least one resource has a confident
      baseline whose MEAN + k*STDDEV crosses the critical line (even
      though the mean alone doesn't) AND a currently-active alert on
      that exact metric that has been continuously breaching for at
@@ -82,7 +88,7 @@ on its own real anomalies exactly as before.
 
 TRANSPARENCY: every change is written to audit_logs (actor
 "system:threshold_tuning") AND logged as an op_event, including which
-of the three paths fired -- nothing happens silently.
+of the four paths fired -- nothing happens silently.
 
 CADENCE: "low" tier (15 min, see scheduler.py), same slot as
 baseline.py -- deliberately recomputed each cycle, since a threshold
@@ -127,6 +133,17 @@ CHRONIC_ALERT_AGE_HOURS = 6
 # this resource" using the same math dynamic mode itself would use.
 NOISE_K = 3.0
 
+# MANUALLY-CONFIRMED PATH: how many of a resource+metric's PAST alerts
+# (see db/migrations/027_alert_false_positive_marking.sql) must have
+# been directly marked "not genuine" by a human via
+# PATCH /alerts/{id}/false-positive before that alone is sufficient
+# evidence to switch the threshold -- no need to wait for
+# CHRONIC_ALERT_AGE_HOURS, and no need for the resource to even be
+# statistically breaching by mean or noise right now. A person
+# confirming an alert wasn't real, twice, is stronger and faster
+# evidence than either automatic statistical path alone.
+MIN_FALSE_POSITIVE_MARKS = 2
+
 
 def _has_chronic_active_alert(cursor, resource_id, metric_name):
     """True if there's a currently-active alert on this exact
@@ -153,6 +170,20 @@ def _noise_band_crosses_critical(resource, th):
     if th["comparison"] in (">", ">="):
         return (resource["typical_value"] + k * stddev) > th["critical_value"]
     return (resource["typical_value"] - k * stddev) < th["critical_value"]
+
+
+def _false_positive_mark_count(cursor, resource_id, metric_name):
+    """How many of this resource+metric's alerts, ever, have been
+    manually marked false positive by a human (any status -- past
+    resolved ones count too, not just the current active one, since
+    the marking is about whether the THRESHOLD is wrong, not whether
+    any one specific alert instance is still open)."""
+    cursor.execute("""
+        SELECT COUNT(*) AS cnt FROM alerts
+        WHERE resource_id = %s AND metric_name = %s AND marked_false_positive = 1
+    """, (resource_id, metric_name))
+    row = cursor.fetchone()
+    return row["cnt"] if row else 0
 
 
 def count_likely_flapping_alerts(aws_account_ids=None) -> int:
@@ -272,10 +303,15 @@ def auto_tune_static_thresholds() -> int:
             chronic_example = None
             chronic_path = None
             if not majority_path:
-                for candidate in mean_breaching:
-                    if _has_chronic_active_alert(cursor, candidate["resource_id"], th["metric_name"]):
-                        chronic_example, chronic_path = candidate, "chronic_mean"
+                for candidate in resource_baselines:
+                    if _false_positive_mark_count(cursor, candidate["resource_id"], th["metric_name"]) >= MIN_FALSE_POSITIVE_MARKS:
+                        chronic_example, chronic_path = candidate, "manually_confirmed"
                         break
+                if chronic_example is None:
+                    for candidate in mean_breaching:
+                        if _has_chronic_active_alert(cursor, candidate["resource_id"], th["metric_name"]):
+                            chronic_example, chronic_path = candidate, "chronic_mean"
+                            break
                 if chronic_example is None:
                     noisy_candidates = [r for r in resource_baselines
                                          if r not in mean_breaching and _noise_band_crosses_critical(r, th)]
@@ -295,6 +331,12 @@ def auto_tune_static_thresholds() -> int:
                     f"{len(mean_breaching)}/{len(resource_baselines)} resources have a normal operating "
                     f"range past the configured critical value"
                 )
+            elif chronic_path == "manually_confirmed":
+                trigger_desc = (
+                    f"a person has directly marked {MIN_FALSE_POSITIVE_MARKS}+ past alerts on "
+                    f"{example['resource_id']} for this metric as false positives"
+                )
+                trigger_path = "manually_confirmed"
             elif chronic_path == "chronic_mean":
                 trigger_desc = (
                     f"{example['resource_id']} alone has been continuously alerting on this metric "
