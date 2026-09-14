@@ -184,6 +184,20 @@ def run_once(tier="standard"):
                       f"recompute_baselines failed (non-fatal, static thresholds still apply): {e}",
                       severity="WARNING")
 
+        # Auto-tuning for chronically-miscalibrated static thresholds
+        # (2026-09-14) -- runs right after recompute_baselines() above,
+        # since it reads the metric_baseline rows that call just wrote.
+        # See app/collector/threshold_tuning.py's own docstring for the
+        # real production case this fixes (EC2 NetIn/NetOut alerting
+        # repeatedly at a threshold below these resources' normal
+        # traffic level).
+        try:
+            from app.collector.threshold_tuning import auto_tune_static_thresholds
+            auto_tune_static_thresholds()
+        except Exception as e:
+            log_event("threshold_tuning_failed",
+                      f"auto_tune_static_thresholds failed (non-fatal): {e}", severity="WARNING")
+
         # AIOps Phase 1 (2026-09-14): real AWS-resource-level RCA data
         # (CloudTrail, NOT this app's own op_events/audit_logs -- see
         # cloudtrail_collector.py's docstring for that distinction),
