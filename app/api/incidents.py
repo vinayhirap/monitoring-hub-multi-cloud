@@ -85,12 +85,12 @@ def get_incident_detail(
             raise HTTPException(status_code=404, detail="Incident not found")
 
         cur.execute("""
-            SELECT a.id, a.resource_id, a.metric_name, a.value, a.severity,
-                   a.status, a.created_at
+            SELECT a.id, a.resource_id, a.metric_name, a.current_value AS value, a.severity,
+                   a.status, a.triggered_at AS created_at
             FROM incident_alerts ia
             JOIN alerts a ON a.id = ia.alert_id
             WHERE ia.incident_id = %s
-            ORDER BY a.created_at ASC
+            ORDER BY a.triggered_at ASC
         """, (incident_id,))
         incident["alerts"] = cur.fetchall()
     finally:

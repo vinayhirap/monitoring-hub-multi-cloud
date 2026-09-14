@@ -53,11 +53,11 @@ def rank_probable_cause(incident_id: int):
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT a.id, a.resource_id, a.metric_name, a.created_at, a.severity
+            SELECT a.id, a.resource_id, a.metric_name, a.triggered_at AS created_at, a.severity
             FROM incident_alerts ia
             JOIN alerts a ON a.id = ia.alert_id
             WHERE ia.incident_id = %s
-            ORDER BY a.created_at ASC
+            ORDER BY a.triggered_at ASC
         """, (incident_id,))
         alerts = cursor.fetchall()
         if not alerts:

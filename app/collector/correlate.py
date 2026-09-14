@@ -51,7 +51,7 @@ def correlate_alerts_into_incidents():
     _new_incident_ids = []
     try:
         cursor.execute("""
-            SELECT a.id, a.resource_id, a.severity, a.created_at,
+            SELECT a.id, a.resource_id, a.severity, a.triggered_at AS created_at,
                    r.aws_account_id
             FROM alerts a
             JOIN resources r ON r.resource_id = a.resource_id
@@ -107,7 +107,7 @@ def correlate_alerts_into_incidents():
                 WHERE a2.status = 'active'
                   AND a2.id != %s
                   AND ia2.alert_id IS NULL
-                  AND ABS(TIMESTAMPDIFF(MINUTE, a2.created_at, %s)) <= %s
+                  AND ABS(TIMESTAMPDIFF(MINUTE, a2.triggered_at, %s)) <= %s
                 LIMIT 1
             """, (alert["resource_id"], alert["resource_id"], alert["id"],
                   alert["created_at"], CORRELATION_WINDOW_MINUTES))

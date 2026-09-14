@@ -199,6 +199,24 @@ def run_once(tier="standard"):
         except Exception as e:
             log_event("cloudtrail_poll_failed",
                       f"poll_cloud_events failed (non-fatal): {e}", severity="WARNING")
+
+        # AIOps Phase 2 (2026-09-14): cross-metric (multivariate)
+        # anomaly detection via IsolationForest -- catches a pattern
+        # shift across several metrics at once that no single metric's
+        # own threshold/baseline would flag. Writes a real `alerts` row
+        # (metric_name='multivariate_anomaly'). Deliberately runs
+        # BEFORE correlate_alerts_into_incidents/recompute_health_scores
+        # below, so a newly-created anomaly alert is picked up by
+        # topology correlation and health scoring in THIS cycle rather
+        # than waiting for the next one. Free/local-compute only
+        # (scikit-learn + pandas, no cloud API calls) -- see
+        # AI_ML_ROADMAP.md Section 7.
+        try:
+            from app.collector.multivariate_anomaly import detect_multivariate_anomalies
+            detect_multivariate_anomalies()
+        except Exception as e:
+            log_event("multivariate_anomaly_failed",
+                      f"detect_multivariate_anomalies failed (non-fatal): {e}", severity="WARNING")
         try:
             from app.collector.correlate import correlate_alerts_into_incidents
             correlate_alerts_into_incidents()
