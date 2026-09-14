@@ -1,9 +1,15 @@
 # tests/test_threshold_tuning.py
 """
 Coverage for app/collector/threshold_tuning.py -- the fix for
-chronically-miscalibrated static thresholds (2026-09-14), the real
-production case being: EC2 NetIn/NetOut alerting repeatedly at a
-threshold of 1,000,000 while normal traffic runs 1.3M-4.3M.
+chronically-miscalibrated static thresholds (2026-09-14), and its
+same-day revision after a real production diagnosis showed the
+original majority-only trigger never fired for the exact case it was
+built for: only 2 of ~19 EC2 instances in the account ran genuinely
+high NetIn/NetOut traffic, so the 60% majority bar was never met and
+those two alerts stayed active for over a week. This suite now covers
+both trigger paths: the original majority path, and the new
+chronic-single-resource path that doesn't need a majority of peers to
+also be loud.
 """
 import sys
 
@@ -11,7 +17,12 @@ sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
 from tests.conftest import load_module, install_stub, FakeCursor, FakeConn
 
 
-def _install_stub(threshold_rows, baseline_rows_by_threshold_id):
+def _install_stub(threshold_rows, baseline_rows, chronic_alert_resource_ids=None):
+    """chronic_alert_resource_ids: resource_ids for which
+    _has_chronic_active_alert() should report a qualifying (6h+) active
+    alert exists. Defaults to none -- no resource has one unless a test
+    explicitly opts in."""
+    chronic_alert_resource_ids = set(chronic_alert_resource_ids or [])
     updates = []
 
     class _Cursor(FakeCursor):
@@ -20,10 +31,11 @@ def _install_stub(threshold_rows, baseline_rows_by_threshold_id):
             if normalized.startswith("SELECT t.id, t.aws_account_id"):
                 self._pending = threshold_rows
             elif normalized.startswith("SELECT b.resource_id, AVG"):
-                # params[0]=account_id is not used to key our fixture --
-                # tests here use one threshold row at a time, so map by
-                # whatever fixture was configured for "the" threshold.
-                self._pending = baseline_rows_by_threshold_id
+                self._pending = baseline_rows
+            elif normalized.startswith("SELECT id FROM alerts"):
+                # _has_chronic_active_alert()'s own query -- params[0] is
+                # the resource_id being checked.
+                self._pending = [{"id": 1}] if params[0] in chronic_alert_resource_ids else []
             elif normalized.startswith("UPDATE thresholds SET use_dynamic"):
                 updates.append(params)
                 self._pending = []
@@ -50,9 +62,11 @@ def _threshold_row(**overrides):
     return row
 
 
-def test_chronic_breach_switches_threshold_to_dynamic():
-    """The real production case: 2 of 2 confidently-baselined resources
-    typically run well past the critical value -- should auto-switch."""
+# ── Majority path ────────────────────────────────────────────────────
+
+def test_majority_breach_switches_threshold_to_dynamic():
+    """2 of 2 confidently-baselined resources typically run well past
+    the critical value -- majority path should switch."""
     threshold = _threshold_row()
     baselines = [
         {"resource_id": "i-dev-finops", "typical_value": 2_300_000, "total_samples": 40},
@@ -65,35 +79,25 @@ def test_chronic_breach_switches_threshold_to_dynamic():
 
     assert switched == 1
     assert len(updates) == 1
-    assert updates[0][0] == 501  # threshold id passed to UPDATE ... WHERE id = %s
+    assert updates[0][0] == 501
 
 
-def test_occasional_outlier_does_not_switch_threshold():
-    """Only 1 of 3 resources runs hot -- below CHRONIC_BREACH_FRACTION,
-    should NOT switch (dynamic mode would have caught that one resource
-    fine on its own merits without touching the other two)."""
+def test_occasional_outlier_without_chronic_alert_does_not_switch():
+    """1 of 3 resources runs hot (below CHRONIC_BREACH_FRACTION for the
+    majority path) and has NO qualifying chronic active alert either --
+    neither path should fire."""
     threshold = _threshold_row()
     baselines = [
         {"resource_id": "i-loud", "typical_value": 2_000_000, "total_samples": 40},
         {"resource_id": "i-normal-1", "typical_value": 400_000, "total_samples": 40},
         {"resource_id": "i-normal-2", "typical_value": 350_000, "total_samples": 40},
     ]
-    updates = _install_stub([threshold], baselines)
+    updates = _install_stub([threshold], baselines, chronic_alert_resource_ids=[])
     mod = load_module("app/collector/threshold_tuning.py")
 
     switched = mod.auto_tune_static_thresholds()
 
     assert switched == 0
-    assert updates == []
-
-
-def test_too_few_confident_resources_makes_no_decision():
-    threshold = _threshold_row()
-    baselines = [{"resource_id": "i-only-one", "typical_value": 5_000_000, "total_samples": 40}]
-    updates = _install_stub([threshold], baselines)
-    mod = load_module("app/collector/threshold_tuning.py")
-
-    assert mod.auto_tune_static_thresholds() == 0
     assert updates == []
 
 
@@ -115,5 +119,76 @@ def test_low_direction_comparison():
 def test_no_static_thresholds_returns_zero():
     updates = _install_stub([], [])
     mod = load_module("app/collector/threshold_tuning.py")
+    assert mod.auto_tune_static_thresholds() == 0
+    assert updates == []
+
+
+# ── Chronic-single-resource path (the actual production fix) ────────
+
+def test_single_chronic_resource_switches_without_a_majority():
+    """THE REAL PRODUCTION CASE: only 1 of many resources runs hot
+    (nowhere near the 60% majority bar), but it has been continuously
+    alerting for 6+ hours with a confident baseline -- must switch on
+    its own, without needing any peer to also be loud."""
+    threshold = _threshold_row()
+    baselines = [
+        {"resource_id": "i-aurionpro-dev-finops", "typical_value": 2_300_000, "total_samples": 40},
+        {"resource_id": "i-normal-1", "typical_value": 400_000, "total_samples": 40},
+        {"resource_id": "i-normal-2", "typical_value": 350_000, "total_samples": 40},
+        {"resource_id": "i-normal-3", "typical_value": 500_000, "total_samples": 40},
+        {"resource_id": "i-normal-4", "typical_value": 450_000, "total_samples": 40},
+    ]
+    updates = _install_stub([threshold], baselines,
+                             chronic_alert_resource_ids=["i-aurionpro-dev-finops"])
+    mod = load_module("app/collector/threshold_tuning.py")
+
+    switched = mod.auto_tune_static_thresholds()
+
+    assert switched == 1
+    assert len(updates) == 1
+    assert updates[0][0] == 501
+
+
+def test_single_loud_resource_without_chronic_active_alert_does_not_switch():
+    """A resource can have a confidently-high BASELINE (its typical
+    traffic is high) without currently having an alert stuck active on
+    it -- e.g. if the static threshold sits just above its normal range
+    most of the time. That alone should NOT trigger the single-resource
+    path; only an ACTUAL long-running active alert does."""
+    threshold = _threshold_row()
+    baselines = [
+        {"resource_id": "i-loud-but-not-alerting", "typical_value": 2_000_000, "total_samples": 40},
+    ]
+    updates = _install_stub([threshold], baselines, chronic_alert_resource_ids=[])
+    mod = load_module("app/collector/threshold_tuning.py")
+
+    assert mod.auto_tune_static_thresholds() == 0
+    assert updates == []
+
+
+def test_fresh_active_alert_not_yet_chronic_does_not_switch():
+    """An active alert that hasn't been breaching long enough yet
+    (< CHRONIC_ALERT_AGE_HOURS) should not trigger the single-resource
+    path -- _has_chronic_active_alert() itself only returns True for
+    alerts old enough to query for, so a fresh one (not in
+    chronic_alert_resource_ids) correctly does not switch."""
+    threshold = _threshold_row()
+    baselines = [{"resource_id": "i-just-started-alerting", "typical_value": 2_000_000, "total_samples": 40}]
+    updates = _install_stub([threshold], baselines, chronic_alert_resource_ids=[])
+    mod = load_module("app/collector/threshold_tuning.py")
+
+    assert mod.auto_tune_static_thresholds() == 0
+    assert updates == []
+
+
+def test_single_resource_no_confident_baseline_makes_no_decision():
+    """A resource with too few samples for a confident baseline is
+    filtered out before ever reaching either trigger path (HAVING
+    total_samples >= MIN_CONFIDENT_SAMPLES in the SQL itself) -- this
+    test simulates that filtering having already excluded everyone."""
+    threshold = _threshold_row()
+    updates = _install_stub([threshold], baseline_rows=[])
+    mod = load_module("app/collector/threshold_tuning.py")
+
     assert mod.auto_tune_static_thresholds() == 0
     assert updates == []
