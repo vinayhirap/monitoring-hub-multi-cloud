@@ -788,6 +788,17 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
 
 function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange, onTimeRangeChange, allRows, onClose, onSelectRelated, accountId }) {
   const [thresholdMap, setThresholdMap] = useState({});
+  // Resource health score + capacity forecast (2026-09-14) -- this
+  // data has existed on the backend since the AIOps work (
+  // app/collector/health_score.py, app/collector/trend.py) but had no
+  // customer-facing home once the Incidents console was hidden from
+  // navigation. Surfacing it here instead -- on the actual
+  // metrics/resource page customers use -- rather than resurrecting a
+  // separate ops console. The API endpoints themselves
+  // (/api/incidents/{account}/health, /forecast/{resource}) were never
+  // removed, only the Incidents *page* was hidden from ServiceList.
+  const [health, setHealth] = useState(null);
+  const [forecasts, setForecasts] = useState([]);
 
   // Real, currently-configured thresholds for this account -- charts
   // used to draw a hardcoded, unrelated example number as the dashed
@@ -826,6 +837,25 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
       })
       .catch(() => {});
   }, [accountId]);
+
+  const resourceId = consoleParamsFor(service, row)?.resource_id;
+
+  useEffect(() => {
+    if (!accountId || !resourceId) return;
+    let cancelled = false;
+    fetch(`/api/incidents/${accountId}/health`)
+      .then(r => r.ok ? r.json() : [])
+      .then(list => {
+        if (cancelled) return;
+        setHealth((list || []).find(h => h.resource_id === resourceId) || { health_score: 100 });
+      })
+      .catch(() => { if (!cancelled) setHealth(null); });
+    fetch(`/api/incidents/${accountId}/forecast/${encodeURIComponent(resourceId)}`)
+      .then(r => r.ok ? r.json() : [])
+      .then(data => { if (!cancelled) setForecasts(Array.isArray(data) ? data : []); })
+      .catch(() => { if (!cancelled) setForecasts([]); });
+    return () => { cancelled = true; };
+  }, [accountId, resourceId]);
 
   // Looks up the REAL warning + critical thresholds configured in
   // Settings for this exact (resourceType, metricName) pair -- returns
@@ -873,6 +903,32 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
           <QuickStat key={s.label} label={s.label} value={s.value} color={s.color} mono={s.mono} />
         ))}
       </div>
+
+      {/* Resource health + capacity forecast (2026-09-14) -- see this
+          component's own top-of-function comment for why this lives
+          here now instead of a separate Incidents console. */}
+      {(health && health.health_score < 100) || forecasts.length > 0 ? (
+        <div className="id-section">
+          <div className="id-section-title"><AlertTriangleIcon size={12} /> HEALTH &amp; FORECAST</div>
+          {health && health.health_score < 100 && (
+            <div className={`health-score-row health-score-${health.health_score >= 70 ? "warn" : "critical"}`}>
+              <span className="health-score-number">{health.health_score}</span>
+              <span className="health-score-label">
+                Health score — lowered by {health.score_reason?.critical_alerts ? `${health.score_reason.critical_alerts} critical` : ""}
+                {health.score_reason?.critical_alerts && health.score_reason?.warning_alerts ? " and " : ""}
+                {health.score_reason?.warning_alerts ? `${health.score_reason.warning_alerts} warning` : ""} alert(s) on this resource
+                {health.score_reason?.blast_radius_fan_out ? `, plus ${health.score_reason.blast_radius_fan_out} dependent resource(s)` : ""}.
+              </span>
+            </div>
+          )}
+          {forecasts.map((f, i) => (
+            <div key={i} className="capacity-forecast-row">
+              <span className="capacity-forecast-metric">{f.metric_name}</span> is trending toward its limit —
+              at the current rate, expect it to run out in <strong>~{f.days_to_exhaustion} day{f.days_to_exhaustion === 1 ? "" : "s"}</strong>.
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {service === "S3" && (
         <div className="id-section">
