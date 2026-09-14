@@ -12,6 +12,7 @@ Scoped per-account like alerts/resources (not global like op-events),
 since incidents are tied to a specific AWS account's resources.
 """
 from fastapi import APIRouter, HTTPException, Query, Depends
+import json
 from app.db import get_connection
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
@@ -122,7 +123,25 @@ def list_resource_health(
             WHERE aws_account_id = %s
             ORDER BY health_score ASC
         """, (account_id,))
-        return cur.fetchall()
+        rows = cur.fetchall()
+        # BUG FIX (2026-09-14): score_reason is a JSON column -- this
+        # driver (mysql-connector, use_pure=True, see app/db.py) returns
+        # JSON columns as raw strings, not parsed dicts, same as every
+        # other JSON column in this app (resources.tags, always
+        # json.loads()'d before use -- see alert_evaluator.py,
+        # multivariate_anomaly.py). This endpoint skipped that step, so
+        # the frontend received a STRING it couldn't dot-access
+        # (health.score_reason.critical_alerts on a string is
+        # undefined), silently falling back to the generic "lowered by
+        # alert(s)" text instead of the real breakdown -- exactly what
+        # showed up in production.
+        for row in rows:
+            if isinstance(row.get("score_reason"), str):
+                try:
+                    row["score_reason"] = json.loads(row["score_reason"])
+                except Exception:
+                    row["score_reason"] = {}
+        return rows
     finally:
         cur.close()
         conn.close()
