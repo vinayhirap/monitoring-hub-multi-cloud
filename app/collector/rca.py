@@ -175,6 +175,63 @@ def _trend_context(cursor, resource_id, metric_name, breach_time):
     }
 
 
+def _check_flapping(cursor, resource_id, metric_name):
+    """
+    True if this resource+metric's normal variability (mean +/-
+    k*stddev) already crosses its own account's STATIC critical
+    threshold, even though the mean itself doesn't -- the flapping
+    signature diagnosed in production (2026-09-14, see
+    app/collector/threshold_tuning.py's own docstring for the full
+    story): a metric that's healthy on average but noisy enough to
+    keep tripping a threshold placed inside its normal range rather
+    than above it. threshold_tuning.py's background job eventually
+    self-corrects this by switching the threshold to dynamic, but that
+    can take a few cycles to confidently trigger -- this lets a
+    customer see the same explanation on THIS alert immediately,
+    without waiting for that job to catch up. Returns False (not an
+    error) if there's no static threshold configured for this
+    resource+metric (e.g. it's already dynamic, in which case this
+    exact failure mode can't happen) or not enough baseline confidence
+    to judge -- flapping detection is a bonus signal, never a hard
+    requirement of a useful explanation.
+    """
+    cursor.execute("""
+        SELECT t.critical_value, t.comparison, t.dynamic_k
+        FROM alerts a
+        JOIN resources r ON r.resource_id = a.resource_id
+        JOIN thresholds t ON t.aws_account_id = r.aws_account_id
+                          AND t.resource_type = r.resource_type AND t.use_dynamic = 0
+        JOIN metric_catalog mc ON mc.id = t.metric_id AND mc.metric_name = a.metric_name
+        WHERE a.resource_id = %s AND a.metric_name = %s
+        LIMIT 1
+    """, (resource_id, metric_name))
+    threshold = cursor.fetchone()
+    if not threshold or threshold.get("critical_value") is None:
+        return False
+
+    cursor.execute("""
+        SELECT AVG(mean_value) AS typical_value, AVG(stddev_value) AS typical_stddev,
+               SUM(sample_count) AS total_samples
+        FROM metric_baseline WHERE resource_id = %s AND metric_name = %s
+    """, (resource_id, metric_name))
+    baseline = cursor.fetchone()
+    if not baseline or not baseline.get("total_samples") or baseline["total_samples"] < 20:
+        return False
+
+    k = threshold.get("dynamic_k") or 3.0
+    mean = baseline["typical_value"]
+    stddev = baseline["typical_stddev"] or 0
+    critical = threshold["critical_value"]
+    if threshold["comparison"] in (">", ">="):
+        mean_breaches = mean > critical
+        noise_crosses = (mean + k * stddev) > critical
+    else:
+        mean_breaches = mean < critical
+        noise_crosses = (mean - k * stddev) < critical
+
+    return bool(noise_crosses and not mean_breaches)
+
+
 def rank_probable_cause(incident_id: int):
     """
     INTERNAL USE -- analyzes a topology-correlated incident (2+ member
@@ -266,6 +323,7 @@ def explain_alert(alert_id: int):
 
         in_degree, cloud_events, config_changes = _gather_signals(cursor, resource_id, breach_time)
         trend = _trend_context(cursor, resource_id, alert["metric_name"], breach_time)
+        is_flapping = _check_flapping(cursor, resource_id, alert["metric_name"])
 
         cursor.execute("""
             SELECT ia.incident_id, COUNT(*) AS other_count
@@ -284,6 +342,12 @@ def explain_alert(alert_id: int):
         confidence = "high" if signal_count >= 2 else ("medium" if signal_count == 1 else "low")
 
         summary_parts = []
+        if is_flapping:
+            summary_parts.append(
+                "This metric's typical value is within a healthy range, but its normal variability "
+                "occasionally pushes it across the configured threshold \u2014 this looks like a "
+                "flapping alert caused by natural noise rather than a genuine incident."
+            )
         if cloud_events:
             top = cloud_events[0]
             summary_parts.append(
@@ -306,7 +370,7 @@ def explain_alert(alert_id: int):
                 "Note: a monitoring configuration change was also made in this window \u2014 worth "
                 "double-checking this isn't a false alarm from a threshold edit."
             )
-        if not cloud_events and not config_changes and not in_degree and not related:
+        if not cloud_events and not config_changes and not in_degree and not related and not is_flapping:
             summary_parts.append(
                 "No related AWS activity, configuration change, or dependent resource was found "
                 "in the surrounding window \u2014 this may be an isolated fluctuation."
@@ -318,6 +382,7 @@ def explain_alert(alert_id: int):
             "confidence": confidence,
             "summary": " ".join(summary_parts),
             "trend": trend,
+            "is_likely_flapping": is_flapping,
             "probable_trigger": cloud_events[0] if cloud_events else None,
             "related_alert_count": related["other_count"] if related else 0,
         }

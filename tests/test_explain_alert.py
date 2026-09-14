@@ -12,7 +12,7 @@ from tests.conftest import load_module, install_stub, FakeCursor, FakeConn
 
 
 def _install_stub(alert_row, in_degree=0, cloud_events=None, config_changes=None,
-                   trend_points=None, related=None):
+                   trend_points=None, related=None, flapping_threshold=None, flapping_baseline=None):
     cloud_events = cloud_events or []
     config_changes = config_changes or []
     trend_points = trend_points if trend_points is not None else []
@@ -32,6 +32,14 @@ def _install_stub(alert_row, in_degree=0, cloud_events=None, config_changes=None
                 self._pending = trend_points
             elif normalized.startswith("SELECT ia.incident_id, COUNT(*)"):
                 self._pending = [related] if related else []
+            elif normalized.startswith("SELECT t.critical_value, t.comparison, t.dynamic_k"):
+                # _check_flapping()'s threshold lookup -- defaults to "no
+                # static threshold configured" so existing tests that
+                # don't care about flapping are unaffected.
+                self._pending = [flapping_threshold] if flapping_threshold else []
+            elif normalized.startswith("SELECT AVG(mean_value) AS typical_value"):
+                # _check_flapping()'s baseline lookup.
+                self._pending = [flapping_baseline] if flapping_baseline else []
             else:
                 raise AssertionError(f"unexpected query: {normalized!r}")
 
@@ -50,6 +58,49 @@ def _base_alert(**overrides):
     }
     row.update(overrides)
     return row
+
+
+def test_explain_alert_detects_flapping():
+    """THE REAL PRODUCTION CASE: mean healthy (1.78M), but mean +
+    3*stddev crosses the 5M critical line -- explain_alert() must
+    surface this in plain language, and must NOT fall back to the
+    generic 'isolated fluctuation' text even though no cloud event/
+    config change/dependent/related-alert signal exists either."""
+    flapping_threshold = {"critical_value": 5_000_000, "comparison": ">", "dynamic_k": None}
+    flapping_baseline = {"typical_value": 1_780_000, "typical_stddev": 1_200_000, "total_samples": 1553}
+    _install_stub(_base_alert(metric_name="NetworkOut"),
+                   flapping_threshold=flapping_threshold, flapping_baseline=flapping_baseline)
+    mod = load_module("app/collector/rca.py")
+
+    result = mod.explain_alert(42)
+
+    assert result["is_likely_flapping"] is True
+    assert "flapping" in result["summary"].lower()
+    assert "isolated fluctuation" not in result["summary"]
+
+
+def test_explain_alert_no_flapping_when_mean_itself_breaches():
+    """If the mean ALREADY breaches critical, this isn't flapping --
+    it's a genuine chronic-mean case (a different, already-existing
+    concept) -- _check_flapping() must return False here."""
+    flapping_threshold = {"critical_value": 1_000_000, "comparison": ">", "dynamic_k": None}
+    flapping_baseline = {"typical_value": 2_300_000, "typical_stddev": 300_000, "total_samples": 40}
+    _install_stub(_base_alert(metric_name="NetworkIn"),
+                   flapping_threshold=flapping_threshold, flapping_baseline=flapping_baseline)
+    mod = load_module("app/collector/rca.py")
+
+    result = mod.explain_alert(42)
+    assert result["is_likely_flapping"] is False
+
+
+def test_explain_alert_no_flapping_when_no_static_threshold_configured():
+    """No threshold row at all (e.g. already dynamic) -- flapping check
+    must degrade to False, not error."""
+    _install_stub(_base_alert(), flapping_threshold=None)
+    mod = load_module("app/collector/rca.py")
+
+    result = mod.explain_alert(42)
+    assert result["is_likely_flapping"] is False
 
 
 def test_explain_alert_returns_none_for_missing_alert():
