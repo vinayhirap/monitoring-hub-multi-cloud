@@ -28,6 +28,8 @@ const NAV_ITEMS = [
   // linked from the sidebar for now. Uncomment to re-enable.
   // { to: "/op-events",          label: "Operational Events", icon: OpEventsIcon,   roles: ["admin","editor","viewer"], perm: "operations.view" },
   { to: "/escalation-policies", label: "Escalation Policies", icon: EscalationIcon, roles: ["admin","editor","viewer"], perm: "alerts.configure" },
+  { to: "/synthetic-checks",    label: "Synthetic Checks",    icon: SyntheticIcon,  roles: ["admin","editor","viewer"], perm: "synthetic.view" },
+  { to: "/slos",                label: "SLOs",                icon: SloIcon,        roles: ["admin","editor","viewer"], perm: "slo.view" },
   { to: "/settings",   label: "Settings",           icon: SettingsIcon,   roles: ["admin","editor"] },
 ];
 
@@ -232,3 +234,5 @@ function SettingsIcon()    { return <svg width="16" height="16" viewBox="0 0 24 
 // entry at all, so they were only reachable by typing the URL directly.
 function OpEventsIcon()    { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>; }
 function EscalationIcon()  { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>; }
+function SyntheticIcon()   { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>; }
+function SloIcon()         { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="3" x2="12" y2="21"/><path d="M5 8 2 15a3 3 0 0 0 6 0Z"/><path d="M19 8l-3 7a3 3 0 0 0 6 0Z"/><path d="M7 8h10"/><path d="M12 3 7 8"/><path d="M12 3l5 5"/></svg>; }
