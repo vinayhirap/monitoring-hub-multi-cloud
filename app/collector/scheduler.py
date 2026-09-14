@@ -177,6 +177,12 @@ def run_once(tier="standard"):
         prune_metric_history(retain_days=30)
         prune_op_events(retain_days=30)
         try:
+            from app.collector.synthetic import prune_synthetic_results
+            prune_synthetic_results()
+        except Exception as e:
+            log_event("synthetic_prune_failed",
+                      f"prune_synthetic_results failed (non-fatal): {e}", severity="WARNING")
+        try:
             from app.collector.baseline import recompute_baselines
             recompute_baselines()
         except Exception as e:
@@ -344,6 +350,18 @@ def run_loop(leader_event=None):
             run_once("critical")
         except Exception as e:
             logger.error(f"Critical tier error: {e}")
+
+        # Synthetic/uptime checks -- deliberately its own call, not
+        # inside run_once("critical"), since it has nothing to do with
+        # cloud-account metric collection (run_once's whole purpose).
+        # Only probes checks that are actually due (see synthetic.py's
+        # run_due_checks() docstring) -- cheap to call every 2-min tick
+        # even when nothing is due yet.
+        try:
+            from app.collector.synthetic import run_due_checks
+            run_due_checks()
+        except Exception as e:
+            logger.error(f"Synthetic check tier error: {e}")
 
         # ── Standard tier (5 min) ─────────────────────────────
         if now - last_standard >= STANDARD_INTERVAL:
