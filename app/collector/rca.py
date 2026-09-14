@@ -116,6 +116,51 @@ def _gather_signals(cursor, resource_id, around_time, lookback_minutes=TRIGGER_L
     return in_degree, cloud_events, config_changes
 
 
+# AIOps: deploy-risk correlation (2026-09-14). See app/api/webhooks.py's
+# module docstring for how deployment events get INTO op_events in the
+# first place (a generic CI/CD webhook -- this app has no other way to
+# know a code deploy happened, since it's invisible to cloud metrics
+# and usually to CloudTrail too). Deliberately a slightly WIDER window
+# than TRIGGER_LOOKBACK_MINUTES: a deploy's effects (a bad config
+# rollout, a slow memory leak introduced by new code) often take a bit
+# longer to breach a threshold than a direct infrastructure change
+# (CloudTrail event) does.
+DEPLOY_LOOKBACK_MINUTES = 45
+
+
+def _gather_deployment_signal(cursor, resource_id, around_time, lookback_minutes=DEPLOY_LOOKBACK_MINUTES):
+    """Returns the most recent 'deployment' op_event (see
+    app/api/webhooks.py) in the window before around_time, for this
+    resource's account -- matching either the exact resource_id the
+    deploy targeted, or an account-wide deploy that didn't name a
+    specific resource (still a real risk factor for anything alerting
+    on that account shortly after). Returns None if no resources row
+    matches (shouldn't happen for a real alert) or no deployment is
+    found in the window."""
+    cursor.execute("""
+        SELECT acc.id AS account_id
+        FROM resources r
+        JOIN aws_accounts acc ON acc.id = r.aws_account_id
+        WHERE r.resource_id = %s
+        LIMIT 1
+    """, (resource_id,))
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    cursor.execute("""
+        SELECT message, detail, created_at
+        FROM op_events
+        WHERE event_type = 'deployment'
+          AND aws_account_id = %s
+          AND created_at BETWEEN DATE_SUB(%s, INTERVAL %s MINUTE) AND %s
+          AND (resource_id = %s OR resource_id IS NULL)
+        ORDER BY created_at DESC
+        LIMIT 1
+    """, (row["account_id"], around_time, lookback_minutes, around_time, resource_id))
+    return cursor.fetchone()
+
+
 def _trend_context(cursor, resource_id, metric_name, breach_time):
     """Characterizes the metric's own behavior in the hours leading up
     to the breach -- sudden spike vs gradual climb vs flat-then-breach.
@@ -261,11 +306,18 @@ def rank_probable_cause(incident_id: int):
         in_degree, cloud_trigger_events, config_changes = _gather_signals(
             cursor, candidate_resource, earliest["created_at"]
         )
+        recent_deployment = _gather_deployment_signal(cursor, candidate_resource, earliest["created_at"])
 
         reason_parts = [
             f"Earliest breach in this incident: {earliest['metric_name']} on "
             f"{candidate_resource} at {earliest['created_at']}."
         ]
+        if recent_deployment:
+            reason_parts.append(
+                f"A deployment was made shortly before this incident started "
+                f"({recent_deployment['message']}) -- this is the most likely trigger, "
+                f"though not confirmed."
+            )
         if in_degree:
             reason_parts.append(f"{in_degree} other resource(s) depend on it in the topology graph.")
         if cloud_trigger_events:
@@ -286,6 +338,7 @@ def rank_probable_cause(incident_id: int):
             "reason": " ".join(reason_parts),
             "cloud_events": cloud_trigger_events,
             "config_changes": config_changes,
+            "recent_deployment": recent_deployment,
         }
 
         cursor.execute("""
@@ -322,6 +375,7 @@ def explain_alert(alert_id: int):
         breach_time = alert["triggered_at"]
 
         in_degree, cloud_events, config_changes = _gather_signals(cursor, resource_id, breach_time)
+        recent_deployment = _gather_deployment_signal(cursor, resource_id, breach_time)
         trend = _trend_context(cursor, resource_id, alert["metric_name"], breach_time)
         is_flapping = _check_flapping(cursor, resource_id, alert["metric_name"])
 
@@ -338,6 +392,7 @@ def explain_alert(alert_id: int):
 
         signal_count = sum([
             bool(cloud_events), bool(config_changes), in_degree > 0, related is not None,
+            recent_deployment is not None,
         ])
         confidence = "high" if signal_count >= 2 else ("medium" if signal_count == 1 else "low")
 
@@ -348,13 +403,32 @@ def explain_alert(alert_id: int):
                 "occasionally pushes it across the configured threshold \u2014 this looks like a "
                 "flapping alert caused by natural noise rather than a genuine incident."
             )
-        if cloud_events:
-            top = cloud_events[0]
+        if recent_deployment:
+            # A deployment is a MORE specific, more actionable signal
+            # than a generic CloudTrail event ("someone deployed
+            # payment-api v2.14.0" beats "someone called an AWS API") --
+            # surfaced first, ahead of cloud_events below, when both are
+            # present.
             summary_parts.append(
-                f"A change was made on AWS shortly before this alert \u2014 {top['event_name']} "
-                f"by {top['username'] or 'an unknown user'} at {top['event_time']}. "
+                f"A deployment was made shortly before this alert \u2014 "
+                f"{recent_deployment['message']} at {recent_deployment['created_at']}. "
                 f"This is the most likely trigger, though not confirmed."
             )
+        if cloud_events:
+            top = cloud_events[0]
+            if recent_deployment:
+                # Deployment already claimed as the likely trigger above --
+                # avoid two sentences both claiming "most likely trigger".
+                summary_parts.append(
+                    f"An AWS change was also made around this time \u2014 {top['event_name']} "
+                    f"by {top['username'] or 'an unknown user'} at {top['event_time']}."
+                )
+            else:
+                summary_parts.append(
+                    f"A change was made on AWS shortly before this alert \u2014 {top['event_name']} "
+                    f"by {top['username'] or 'an unknown user'} at {top['event_time']}. "
+                    f"This is the most likely trigger, though not confirmed."
+                )
         summary_parts.append(trend["description"])
         if in_degree:
             summary_parts.append(
@@ -370,7 +444,7 @@ def explain_alert(alert_id: int):
                 "Note: a monitoring configuration change was also made in this window \u2014 worth "
                 "double-checking this isn't a false alarm from a threshold edit."
             )
-        if not cloud_events and not config_changes and not in_degree and not related and not is_flapping:
+        if not cloud_events and not config_changes and not in_degree and not related and not is_flapping and not recent_deployment:
             summary_parts.append(
                 "No related AWS activity, configuration change, or dependent resource was found "
                 "in the surrounding window \u2014 this may be an isolated fluctuation."
@@ -418,6 +492,7 @@ def explain_alert(alert_id: int):
             "trend": trend,
             "is_likely_flapping": is_flapping,
             "probable_trigger": cloud_events[0] if cloud_events else None,
+            "recent_deployment": recent_deployment,
             "related_alert_count": related["other_count"] if related else 0,
         }
     finally:
