@@ -303,6 +303,24 @@ def run_once(tier="standard"):
             log_event("escalation_eval_failed", f"evaluate_escalations failed (non-fatal): {e}", severity="WARNING")
         
 
+    # AIOps: lite CSPM security checks (2026-09-14) -- run on the
+    # "extended" tier (60-min cadence, see run_loop's docstring).
+    # Security configuration (public buckets, open security groups,
+    # IAM hygiene) changes far less often than metrics, and the
+    # underlying IAM/S3 describe calls are broader-scoped than this
+    # app's normal CloudWatch/Describe-only permissions -- a slower
+    # cadence is kinder to both AWS API rate limits and the extra
+    # trust this grants the monitoring role. See app/collector/cspm.py's
+    # module docstring for the exact IAM permissions this needs and
+    # what happens (a skipped check, not a crash) if they're missing.
+    if tier == "extended":
+        try:
+            from app.collector.cspm import run_security_checks
+            run_security_checks()
+        except Exception as e:
+            log_event("cspm_check_failed",
+                      f"run_security_checks failed (non-fatal): {e}", severity="WARNING")
+
 def run_discovery_once():
     from app.collector.discovery.runner import run_discovery
     run_discovery()
