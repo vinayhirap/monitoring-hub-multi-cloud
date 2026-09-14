@@ -58,6 +58,7 @@
 .sum-body  { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .sum-label { font-size: 11px; color: var(--text-muted); letter-spacing: .01em; }
 .sum-value { font-size: 26px; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); line-height: 1; letter-spacing: -0.01em; }
+.sum-sub { font-size: 10px; color: var(--text-muted); margin-top: 3px; }
 .sum-sub   { font-size: 11px; color: var(--text-muted); }
 
 .sum-tile.sum-yellow .sum-value { color: var(--yellow, #f59e0b); }

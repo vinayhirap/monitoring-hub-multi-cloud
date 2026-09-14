@@ -62,14 +62,17 @@ def _linear_trend(timestamps_seconds, values):
     return float(slope), float(intercept)
 
 
-def compute_capacity_forecasts(aws_resource_id: str = None) -> list:
+def compute_capacity_forecasts(aws_resource_id: str = None, aws_account_ids=None) -> list:
     """
     Fits a linear trend for every (resource, metric) pair in
     CAPACITY_METRICS with enough recent history, and returns forecasts
     for any that are heading toward exhaustion within
     MAX_REPORTABLE_DAYS. Pass aws_resource_id to scope to one resource
-    (the resource-detail view's normal use); omit to scan every
-    resource (used by the "low" tier's own periodic scan, if wired in).
+    (the resource-detail view's normal use); pass aws_account_ids (an
+    iterable of ints) to scope to a set of accounts (the fleet-summary
+    endpoint's use, added 2026-09-14, so a viewer with restricted
+    account access never sees another account's capacity-risk count in
+    the aggregate); omit both to scan every resource.
     """
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -89,6 +92,10 @@ def compute_capacity_forecasts(aws_resource_id: str = None) -> list:
             if aws_resource_id:
                 query += " AND r.resource_id = %s"
                 params.append(aws_resource_id)
+            if aws_account_ids:
+                placeholders = ",".join(["%s"] * len(aws_account_ids))
+                query += f" AND r.aws_account_id IN ({placeholders})"
+                params.extend(aws_account_ids)
             query += " ORDER BY r.resource_id, h.metric_timestamp"
 
             cursor.execute(query, params)

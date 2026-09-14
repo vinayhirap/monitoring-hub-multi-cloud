@@ -26,6 +26,77 @@ def _require_account_access(account_id: int, current_user: dict) -> None:
         raise HTTPException(status_code=403, detail="You do not have access to this account")
 
 
+# ── FLEET-WIDE HEALTH SUMMARY (2026-09-14) ───────────────────────────
+# Registered BEFORE /{account_id} below -- FastAPI/Starlette match
+# routes in registration order, and "fleet-summary" would otherwise
+# match the /{account_id} pattern first (any string matches a path
+# param at the routing layer; the int-cast failure only surfaces
+# AFTER matching, as a 422, never falling through to try this route).
+@router.get("/fleet-summary")
+def fleet_health_summary(current_user: dict = Depends(require_permission("incidents.view"))):
+    """
+    One-call aggregate across every account this user can see: how many
+    resources are currently unhealthy (any active alert), how many are
+    critically unhealthy (health_score < 70), the 5 worst-scoring
+    resources, and how many resources are trending toward a capacity
+    limit. Built for a top-of-page executive summary (Overview.jsx) --
+    computing this client-side would mean one API call per account;
+    this does it server-side in one round trip, correctly scoped to
+    exactly the accounts this user is allowed to see (get_accessible_
+    account_ids), not a superset.
+    """
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is not None and not accessible:
+        # Explicitly scoped to zero accounts -- nothing to aggregate,
+        # and no reason to run any query at all.
+        return {"unhealthy_resource_count": 0, "critical_resource_count": 0,
+                "capacity_risk_count": 0, "worst_resources": []}
+
+    conn = get_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        where_clause = ""
+        params = []
+        if accessible is not None:
+            placeholders = ",".join(["%s"] * len(accessible))
+            where_clause = f" WHERE aws_account_id IN ({placeholders})"
+            params = list(accessible)
+
+        cur.execute(f"""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN health_score < 70 THEN 1 ELSE 0 END) AS critical
+            FROM resource_health{where_clause}
+        """, params)
+        counts = cur.fetchone()
+
+        cur.execute(f"""
+            SELECT resource_id, aws_account_id, health_score, score_reason
+            FROM resource_health{where_clause}
+            ORDER BY health_score ASC
+            LIMIT 5
+        """, params)
+        worst = cur.fetchall()
+        for row in worst:
+            if isinstance(row.get("score_reason"), str):
+                try:
+                    row["score_reason"] = json.loads(row["score_reason"])
+                except Exception:
+                    row["score_reason"] = {}
+    finally:
+        cur.close()
+        conn.close()
+
+    from app.collector.trend import compute_capacity_forecasts
+    forecasts = compute_capacity_forecasts(aws_account_ids=accessible)
+
+    return {
+        "unhealthy_resource_count": counts["total"] or 0,
+        "critical_resource_count": counts["critical"] or 0,
+        "capacity_risk_count": len(forecasts),
+        "worst_resources": worst,
+    }
+
+
 @router.get("/{account_id}")
 def list_incidents(
     account_id: int,
