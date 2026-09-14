@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { getLiveAccounts } from "../api/api";
+import { AlertOctagonIcon } from "../components/icons";
 import "./Overview.css";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached } from "../utils/dataCache";
@@ -85,6 +86,17 @@ export default function Overview() {
   const [filter,      setFilter]      = useState("All");
   const [lastSync,    setLastSync]    = useState(null);
   const [expandedIds, setExpandedIds] = useState(new Set());
+
+  // Fleet-wide health summary (2026-09-14) -- one server-side aggregate
+  // call across every account, not N per-account calls from here. See
+  // GET /api/incidents/fleet-summary's own docstring.
+  const [fleet, setFleet] = useState(null);
+  useEffect(() => {
+    fetch("/api/incidents/fleet-summary")
+      .then(r => r.ok ? r.json() : null)
+      .then(setFleet)
+      .catch(() => setFleet(null));
+  }, []);
 
   const deletedIds = useRef(new Set());
   const { lastMessage: alertMsg } = useWebSocket("alerts");
@@ -242,6 +254,23 @@ export default function Overview() {
             <SummaryTile icon={<IconHealthy />}  label="Healthy"  value={healthyCount}  color="green" />
             <SummaryTile icon={<IconWarning />}  label="Warning"  value={warningCount}  color={warningCount  > 0 ? "yellow" : "default"} pulse={warningCount  > 0} />
             <SummaryTile icon={<IconCritical />} label="Critical" value={criticalCount} color={criticalCount > 0 ? "red"    : "default"} pulse={criticalCount > 0} />
+            {/* Fleet health (2026-09-14): a genuine "is everything OK
+                right now" glance -- aggregates app/collector/
+                health_score.py + trend.py's capacity forecasts across
+                every account, computed server-side in one call. Only
+                shown once the fetch resolves; silently omitted (not a
+                skeleton) if it fails, so a slow/unavailable AIOps
+                endpoint never blocks the rest of this page rendering. */}
+            {fleet && (fleet.critical_resource_count > 0 || fleet.capacity_risk_count > 0) && (
+              <SummaryTile
+                icon={<AlertOctagonIcon size={18} />}
+                label="Need Attention"
+                value={fleet.critical_resource_count}
+                color={fleet.critical_resource_count > 0 ? "red" : "default"}
+                pulse={fleet.critical_resource_count > 0}
+                sub={fleet.capacity_risk_count > 0 ? `${fleet.capacity_risk_count} approaching capacity` : null}
+              />
+            )}
           </>
         )}
       </div>
@@ -681,7 +710,7 @@ function SkeletonAccountCard() {
   );
 }
 
-function SummaryTile({ icon, label, value, color, pulse }) {
+function SummaryTile({ icon, label, value, color, pulse, sub }) {
   return (
     <div className={`sum-tile sum-${color || "default"}`} style={{ position: "relative" }}>
       {pulse && <span className="pulse-ring" />}
@@ -689,6 +718,7 @@ function SummaryTile({ icon, label, value, color, pulse }) {
       <div className="sum-body">
         <div className="sum-label">{label}</div>
         <div className="sum-value">{value}</div>
+        {sub && <div className="sum-sub">{sub}</div>}
       </div>
     </div>
   );
