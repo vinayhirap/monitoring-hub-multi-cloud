@@ -24,6 +24,7 @@ from app.api.topology       import router as topology_router
 from app.api.op_events      import router as op_events_router
 from app.api.escalation     import router as escalation_router
 from app.api.incidents      import router as incidents_router
+from app.api.nlquery        import router as nlquery_router
 from app.auth.deps          import get_current_user, COOKIE_NAME
 from app.auth.security      import decode_token
 
@@ -296,3 +297,4 @@ app.include_router(topology_router,       dependencies=_auth_dep)
 app.include_router(op_events_router,      dependencies=_auth_dep)
 app.include_router(escalation_router,     dependencies=_auth_dep)
 app.include_router(incidents_router,      dependencies=_auth_dep)
+app.include_router(nlquery_router,        prefix="/api", dependencies=_auth_dep)
