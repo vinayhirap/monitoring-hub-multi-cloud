@@ -3,7 +3,7 @@ from typing import Optional
 import datetime
 import time
 import logging
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Body
 from app.db import get_connection
 from app.auth.deps import get_current_user, require_role
 from app.auth.permissions import require_permission
@@ -11,6 +11,7 @@ from app.aws.federation import NoConsoleCredentialsError
 from app.ws.publisher import publish_alert_resolved
 from app.api.live_data import invalidate_accounts_cache
 from app.auth.authorization import get_accessible_account_ids
+from app.audit import write_audit
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ def _fetch_alerts_from_db():
             a.acked,
             a.muted_until,
             a.environment,
+            a.marked_false_positive,
             r.resource_type                        AS service,
             COALESCE(r.name, a.resource_id)        AS resource_name,
             acc.account_name,
@@ -210,6 +212,7 @@ def open_alerts(current_user: dict = Depends(require_permission("alerts.view")))
             ) AS stale,
             a.acked,
             a.environment,
+            a.marked_false_positive,
             r.resource_type                        AS service,
             COALESCE(r.name, a.resource_id)        AS resource_name,
             acc.account_name,
@@ -425,6 +428,72 @@ def explain_alert(alert_id: int, current_user: dict = Depends(require_permission
     if result is None:
         raise HTTPException(status_code=404, detail="Alert not found")
     return result
+
+
+# ── MARK / UNMARK FALSE POSITIVE (2026-09-14) ────────────────────
+@router.patch("/{alert_id}/false-positive")
+def mark_false_positive(alert_id: int, payload: dict = Body(default={}),
+                         current_user: dict = Depends(require_permission("operations.execute"))):
+    """
+    Closes the loop on this session's false-alert-reduction work: the
+    system already self-corrects chronic/flapping thresholds
+    automatically (app/collector/threshold_tuning.py), but until now
+    there was no way for a HUMAN to directly say "this alert wasn't
+    genuine" and have that recorded. A person confirming an alert is
+    noise is stronger evidence than the automatic detector's own
+    inference alone -- app/collector/threshold_tuning.py's new
+    manually-confirmed path (see its own docstring) uses a history of
+    these markings to switch a threshold to dynamic faster than the
+    chronic-mean/chronic-noise paths would on statistical inference
+    alone.
+
+    payload: {"marked": true|false} -- true to mark (default if the
+    body is omitted/empty), false to un-mark (undoing an accidental
+    click; also settable so a reviewer correcting someone else's
+    marking doesn't need a separate endpoint).
+
+    Same security/permission bar as ack/resolve (operations.execute +
+    account-scope check) -- this is an operational action on a specific
+    alert, not a read.
+    """
+    _require_alert_access(alert_id, current_user)
+
+    marked = bool(payload.get("marked", True))
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT resource_id, metric_name, severity FROM alerts WHERE id = %s", (alert_id,))
+        alert = cursor.fetchone()
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert not found")
+
+        if marked:
+            cursor.execute("""
+                UPDATE alerts
+                SET marked_false_positive = 1, false_positive_marked_by = %s, false_positive_marked_at = NOW()
+                WHERE id = %s
+            """, (current_user["username"], alert_id))
+        else:
+            cursor.execute("""
+                UPDATE alerts
+                SET marked_false_positive = 0, false_positive_marked_by = NULL, false_positive_marked_at = NULL
+                WHERE id = %s
+            """, (alert_id,))
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+    write_audit(
+        current_user["username"],
+        "Alert marked false positive" if marked else "Alert false-positive marking removed",
+        f"alert_id={alert_id} resource={alert['resource_id']} metric={alert['metric_name']} "
+        f"severity={alert['severity']}",
+        role=current_user["role"].upper(),
+    )
+    _invalidate_cache()
+    return {"status": "updated", "marked_false_positive": marked}
 
 
 # ── ACK ───────────────────────────────────────────────────────

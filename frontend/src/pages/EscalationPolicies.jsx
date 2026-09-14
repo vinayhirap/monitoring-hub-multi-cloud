@@ -1,8 +1,12 @@
 // src/pages/EscalationPolicies.jsx
 // Roadmap phase 9 (2026-09-13). CRUD for escalation_policies.
-// See app/collector/escalation.py's docstring: escalating here changes
-// what the Alerts page shows, it does not send a notification yet
-// (SMTP wiring, item #3, is deferred).
+// See app/collector/escalation.py's docstring: escalating here reassigns
+// the alert to the target group AND emails its members (wired
+// 2026-09-14, app/email/mailer.py) -- provided SMTP_HOST/SMTP_PORT/
+// SMTP_USERNAME/SMTP_PASSWORD/MAIL_FROM are set in .env. If SMTP isn't
+// configured yet, the reassignment still happens and is shown here and
+// on the Alerts page, but no email goes out (logged as an
+// Operational Event either way, so delivery is always auditable).
 //
 // Rebuilt from the original Tailwind-utility-class scaffold for the same
 // reason as OpEvents.jsx (raw bg-white/border classes ignoring this
@@ -84,7 +88,7 @@ export default function EscalationPolicies() {
       <div className="c-header">
         <div>
           <h1>Escalation <span className="hl">Policies</span></h1>
-          <p className="sub">An unacked alert past its SLA is reassigned to the target group and logged — no notification is sent yet (SMTP not wired)</p>
+          <p className="sub">An unacked alert past its SLA is reassigned to the target group and its members are emailed (if SMTP is configured)</p>
         </div>
       </div>
 

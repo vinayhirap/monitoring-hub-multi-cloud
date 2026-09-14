@@ -329,6 +329,21 @@ export default function Alerts() {
     }
   }
 
+  // Not-genuine feedback (2026-09-14) -- optimistic UI update (flip the
+  // badge immediately), reverted if the request actually fails, same
+  // pattern as handleAck/handleResolve's optimistic status updates
+  // above.
+  async function handleMarkFalsePositive(id, marked) {
+    if (!canAct) return;
+    setAlerts(prev => prev.map(a => a.id === id ? { ...a, marked_false_positive: marked } : a));
+    try {
+      await apiFetch(`/api/alerts/${id}/false-positive`, "PATCH", { marked });
+    } catch (e) {
+      setAlerts(prev => prev.map(a => a.id === id ? { ...a, marked_false_positive: !marked } : a));
+      alert("Couldn't update: " + e.message);
+    }
+  }
+
   const filtered = alerts.filter(a => {
     const s = (a.status || "").toLowerCase();
     // "Active" means confirmed live — a resource still sending fresh data
@@ -572,6 +587,24 @@ export default function Alerts() {
                                 {isActing ? "…" : "Resolve"}
                               </button>
                             )}
+                            {/* Not-genuine feedback (2026-09-14) -- closes
+                                the loop with app/collector/
+                                threshold_tuning.py's manually_confirmed
+                                path: marking a chronic false alert here
+                                lets the system switch that threshold to
+                                dynamic faster than waiting for the
+                                automatic chronic-mean/chronic-noise
+                                detection alone. */}
+                            <button
+                              className={`btn-false-positive ${a.marked_false_positive ? "is-marked" : ""}`}
+                              disabled={isActing}
+                              title={a.marked_false_positive
+                                ? "Marked as not genuine — click to undo"
+                                : "This alert isn't a real issue (helps the system self-tune)"}
+                              onClick={e => { e.stopPropagation(); handleMarkFalsePositive(a.id, !a.marked_false_positive); }}
+                            >
+                              {a.marked_false_positive ? "✓ Not genuine" : "Not genuine?"}
+                            </button>
                           </div>
                         </td>
                       )}

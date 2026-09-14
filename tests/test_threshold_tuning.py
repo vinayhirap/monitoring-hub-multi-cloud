@@ -20,8 +20,10 @@ sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
 from tests.conftest import load_module, install_stub, FakeCursor, FakeConn
 
 
-def _install_stub(threshold_rows, baseline_rows, chronic_alert_resource_ids=None):
+def _install_stub(threshold_rows, baseline_rows, chronic_alert_resource_ids=None,
+                   false_positive_marked_resource_ids=None):
     chronic_alert_resource_ids = set(chronic_alert_resource_ids or [])
+    false_positive_marked_resource_ids = set(false_positive_marked_resource_ids or [])
     updates = []
 
     class _Cursor(FakeCursor):
@@ -31,6 +33,12 @@ def _install_stub(threshold_rows, baseline_rows, chronic_alert_resource_ids=None
                 self._pending = threshold_rows
             elif normalized.startswith("SELECT b.resource_id, AVG"):
                 self._pending = baseline_rows
+            elif normalized.startswith("SELECT COUNT(*) AS cnt FROM alerts"):
+                # _false_positive_mark_count()'s query -- defaults to 0
+                # marks (below MIN_FALSE_POSITIVE_MARKS) unless a test
+                # explicitly opts a resource in.
+                count = 2 if params[0] in false_positive_marked_resource_ids else 0
+                self._pending = [{"cnt": count}]
             elif normalized.startswith("SELECT id FROM alerts"):
                 self._pending = [{"id": 1}] if params[0] in chronic_alert_resource_ids else []
             elif normalized.startswith("UPDATE thresholds SET use_dynamic"):
@@ -83,6 +91,65 @@ def test_low_direction_comparison():
     mod = load_module("app/collector/threshold_tuning.py")
 
     assert mod.auto_tune_static_thresholds() == 1
+
+
+def test_manually_confirmed_false_positives_switch_without_chronic_wait():
+    """A resource with NO chronic active alert and a mean that isn't
+    even breaching -- but 2+ of its past alerts on this metric were
+    manually marked false positive -- must switch via the
+    manually_confirmed path, bypassing the 6h wait entirely."""
+    threshold = _threshold_row()
+    # typical_value 400_000 is well UNDER the 1_000_000 critical line --
+    # would not qualify for ANY of the other three paths on its own.
+    baselines = [_baseline("i-confirmed-noisy", 400_000, stddev=50_000)]
+    updates = _install_stub([threshold], baselines,
+                             chronic_alert_resource_ids=[],
+                             false_positive_marked_resource_ids=["i-confirmed-noisy"])
+    mod = load_module("app/collector/threshold_tuning.py")
+
+    switched = mod.auto_tune_static_thresholds()
+
+    assert switched == 1
+    assert updates[0][0] == 501
+
+
+def test_single_false_positive_mark_is_not_enough():
+    """Below MIN_FALSE_POSITIVE_MARKS (2) -- a single mark alone must
+    not be sufficient."""
+    threshold = _threshold_row()
+    baselines = [_baseline("i-one-mark", 400_000, stddev=50_000)]
+    # _install_stub's fake always returns count=2 for any resource in
+    # the marked set -- to test "1 mark," stub the count query directly.
+    updates = []
+
+    class _Cursor(FakeCursor):
+        def execute(self, sql, params=None):
+            normalized = " ".join(sql.split())
+            if normalized.startswith("SELECT t.id, t.aws_account_id"):
+                self._pending = [threshold]
+            elif normalized.startswith("SELECT b.resource_id, AVG"):
+                self._pending = baselines
+            elif normalized.startswith("SELECT COUNT(*) AS cnt FROM alerts"):
+                self._pending = [{"cnt": 1}]  # only 1 mark, below the bar of 2
+            elif normalized.startswith("SELECT id FROM alerts"):
+                self._pending = []
+            elif normalized.startswith("UPDATE thresholds SET use_dynamic"):
+                updates.append(params)
+                self._pending = []
+            else:
+                raise AssertionError(f"unexpected query: {normalized!r}")
+
+    class _Conn(FakeConn):
+        def cursor(self, dictionary=True):
+            return _Cursor([])
+
+    install_stub("app.db", get_connection=lambda: _Conn([]))
+    install_stub("app.audit", write_audit=lambda **kwargs: None)
+    install_stub("app.collector.op_log", log_event=lambda *a, **k: None)
+    mod = load_module("app/collector/threshold_tuning.py")
+
+    assert mod.auto_tune_static_thresholds() == 0
+    assert updates == []
 
 
 def test_no_static_thresholds_returns_zero():
