@@ -262,6 +262,24 @@ def run_once(tier="standard"):
             log_event("health_score_failed",
                       f"recompute_health_scores failed (non-fatal): {e}", severity="WARNING")
 
+        # AIOps roadmap #13/#15 (2026-09-14): background LLM summary
+        # cache population -- runs LAST in this tier, after
+        # correlate/health_score above, so it reads this cycle's
+        # freshest related-alert-count/health context via
+        # rca.explain_alert(). Entirely no-op (zero API calls, zero DB
+        # writes) unless LLM_SUMMARY_ENABLED=true and ANTHROPIC_API_KEY
+        # are both set in .env -- see app/llm/summarizer.py's module
+        # docstring. Never blocks a user-facing request either way: the
+        # GET /alerts/{id}/explain endpoint only ever reads whatever
+        # this job last wrote.
+        try:
+            from app.collector.llm_summarizer import refresh_llm_summaries
+            refresh_llm_summaries()
+        except Exception as e:
+            log_event("llm_summary_refresh_failed",
+                      f"refresh_llm_summaries failed (non-fatal, template summaries "
+                      f"from rca.py still apply): {e}", severity="WARNING")
+
     # Evaluate alerts after every standard cycle
     if tier == "standard":
         if _VM_SYNC_ENABLED:
