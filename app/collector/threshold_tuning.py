@@ -155,6 +155,72 @@ def _noise_band_crosses_critical(resource, th):
     return (resource["typical_value"] - k * stddev) < th["critical_value"]
 
 
+def count_likely_flapping_alerts(aws_account_ids=None) -> int:
+    """
+    One efficient bulk query (not N per-resource lookups) counting
+    currently-active alerts whose resource is genuinely flapping --
+    same definition as this module's own chronic-noise path and
+    app/collector/rca.py's _check_flapping(): the resource's baseline
+    MEAN is healthy, but mean +/- k*stddev already crosses the STATIC
+    critical line. Used by app/api/incidents.py's fleet-summary
+    endpoint to surface a fleet-wide "how much of what's currently
+    alerting is probably just noise, not a genuine issue" count --
+    a number that should trend toward zero over time as
+    auto_tune_static_thresholds() converts these thresholds to dynamic.
+
+    Does NOT require the CHRONIC_ALERT_AGE_HOURS bar
+    _has_chronic_active_alert() checks -- that gate exists in
+    auto_tune_static_thresholds() to avoid switching a threshold on a
+    single brand-new alert that might resolve on its own in minutes.
+    This count is a read-only fleet-health signal, not a threshold-
+    mutating decision, so a fresher, more responsive count (any
+    currently-active alert matching the pattern) is more useful here
+    than an artificially delayed one.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        where_clause = ""
+        params = []
+        if aws_account_ids is not None:
+            if not aws_account_ids:
+                return 0
+            placeholders = ",".join(["%s"] * len(aws_account_ids))
+            where_clause = f" AND r.aws_account_id IN ({placeholders})"
+            params = list(aws_account_ids)
+
+        cursor.execute(f"""
+            SELECT COUNT(*) AS flapping_count
+            FROM alerts a
+            JOIN resources r ON r.resource_id = a.resource_id
+            JOIN thresholds t ON t.aws_account_id = r.aws_account_id
+                              AND t.resource_type = r.resource_type AND t.use_dynamic = 0
+            JOIN metric_catalog mc ON mc.id = t.metric_id AND mc.metric_name = a.metric_name
+            JOIN (
+                SELECT resource_id, metric_name,
+                       AVG(mean_value) AS typical_value, AVG(stddev_value) AS typical_stddev,
+                       SUM(sample_count) AS total_samples
+                FROM metric_baseline
+                GROUP BY resource_id, metric_name
+            ) b ON b.resource_id = a.resource_id AND b.metric_name = a.metric_name
+            WHERE a.status = 'active' AND b.total_samples >= %s{where_clause}
+              AND (
+                  (t.comparison IN ('>', '>=')
+                    AND b.typical_value <= t.critical_value
+                    AND (b.typical_value + COALESCE(t.dynamic_k, %s) * b.typical_stddev) > t.critical_value)
+                  OR
+                  (t.comparison NOT IN ('>', '>=')
+                    AND b.typical_value >= t.critical_value
+                    AND (b.typical_value - COALESCE(t.dynamic_k, %s) * b.typical_stddev) < t.critical_value)
+              )
+        """, [MIN_CONFIDENT_SAMPLES] + params + [NOISE_K, NOISE_K])
+        row = cursor.fetchone()
+        return row["flapping_count"] or 0
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def auto_tune_static_thresholds() -> int:
     """
     Scans every STATIC (use_dynamic=0), ENABLED threshold row and

@@ -50,7 +50,7 @@ def fleet_health_summary(current_user: dict = Depends(require_permission("incide
         # Explicitly scoped to zero accounts -- nothing to aggregate,
         # and no reason to run any query at all.
         return {"unhealthy_resource_count": 0, "critical_resource_count": 0,
-                "capacity_risk_count": 0, "worst_resources": []}
+                "capacity_risk_count": 0, "likely_flapping_count": 0, "worst_resources": []}
 
     conn = get_connection()
     cur = conn.cursor(dictionary=True)
@@ -89,10 +89,14 @@ def fleet_health_summary(current_user: dict = Depends(require_permission("incide
     from app.collector.trend import compute_capacity_forecasts
     forecasts = compute_capacity_forecasts(aws_account_ids=accessible)
 
+    from app.collector.threshold_tuning import count_likely_flapping_alerts
+    flapping_count = count_likely_flapping_alerts(aws_account_ids=accessible)
+
     return {
         "unhealthy_resource_count": counts["total"] or 0,
         "critical_resource_count": counts["critical"] or 0,
         "capacity_risk_count": len(forecasts),
+        "likely_flapping_count": flapping_count,
         "worst_resources": worst,
     }
 
