@@ -250,10 +250,11 @@ export default function ServiceList() {
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))", gap:10 }}>
           {activeServices.map(svc => {
             const routable = CORE_AWS_SERVICES.has(svc.id);
+            const svcAlerts = alertsForService(svc.id);
             return (
               <ServiceCard key={svc.id} svc={svc} provider={provider}
-                alertCount={alertsForService(svc.id).length}
-                hasCritical={alertsForService(svc.id).some(a => a.severity?.toUpperCase() === "CRITICAL")}
+                criticalCount={svcAlerts.filter(a => a.severity?.toUpperCase() === "CRITICAL").length}
+                warningCount={svcAlerts.filter(a => a.severity?.toUpperCase() !== "CRITICAL").length}
                 routable={routable}
                 isConsoleLoading={consoleLoading === svc.id}
                 onClick={() => routable ? navigate(`/accounts/${id}/${svc.id}`) : openInConsole(svc.id)} />
@@ -265,9 +266,22 @@ export default function ServiceList() {
   );
 }
 
-function ServiceCard({ svc, provider, onClick, alertCount, hasCritical, routable = true, isConsoleLoading = false }) {
+function ServiceCard({ svc, provider, onClick, criticalCount, warningCount, routable = true, isConsoleLoading = false }) {
   const [hovered, setHovered] = useState(false);
+  const alertCount = criticalCount + warningCount;
+  const hasCritical = criticalCount > 0;
   const alertColor = hasCritical ? "var(--red)" : "var(--yellow)";
+  // Was a single combined count labeled with just one severity word (e.g.
+  // "4 critical" when only 1 of those 4 was actually critical and the
+  // other 3 were warnings) -- see 2026-09-15 fix. Now shows both counts
+  // whenever both are present, matching the "N CRITICAL · M WARNING"
+  // pattern the Overview banner and account card already use, so this
+  // badge can never overstate (or understate) either severity.
+  const badgeLabel = criticalCount > 0 && warningCount > 0
+    ? `${criticalCount} critical · ${warningCount} warning`
+    : criticalCount > 0
+      ? `${criticalCount} critical`
+      : `${warningCount} warning`;
   return (
     <div onClick={onClick}
       onMouseEnter={() => setHovered(true)}
@@ -295,7 +309,7 @@ function ServiceCard({ svc, provider, onClick, alertCount, hasCritical, routable
               fontSize:10, fontWeight:700, borderRadius:4, padding:"1px 6px",
               fontFamily:"var(--font-mono)", color: alertColor, background: alertColor+"1a",
             }}>
-              {alertCount} {hasCritical ? "critical" : "warning"}
+              {badgeLabel}
             </span>
           )}
         </div>

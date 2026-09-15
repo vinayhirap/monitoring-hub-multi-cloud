@@ -34,24 +34,15 @@ _counts_cache: dict = {"data": None, "ts": 0}
 # is display-only, the operator decides whether to resolve it.
 _STALE_AFTER_MINUTES = 20
 
-# multivariate_anomaly (see app/collector/multivariate_anomaly.py) is an
-# IsolationForest decision-score, not a real CloudWatch metric -- its
-# "value"/"threshold" (e.g. -0.1 / 0) reads as confusing noise next to
-# genuine metric alerts (Net In, Net Out, etc.) on the end-user Alerts
-# page. Same pattern as patch 0029 (hiding the Incidents button): the
-# detector keeps running and these rows still exist in `alerts` so
-# correlation/health scoring/RCA (correlate.py, health_score.py, rca.py)
-# keep working unchanged -- only the end-user-facing list/count queries
-# below filter it out.
-_HIDDEN_FROM_ALERTS_UI_METRICS = ("multivariate_anomaly",)
-
-
-def _hidden_metrics_sql() -> str:
-    """Comma-separated, quoted SQL literal list for use in a `NOT IN (...)`
-    clause. Safe to inline (not parameterized) because this only ever
-    renders the fixed _HIDDEN_FROM_ALERTS_UI_METRICS constant above, never
-    request input."""
-    return ", ".join(f"'{m}'" for m in _HIDDEN_FROM_ALERTS_UI_METRICS)
+# multivariate_anomaly hiding: moved to app/alert_visibility.py (2026-09-15)
+# so app/api/live_data.py's _get_active_alert_counts_by_account() can apply
+# the identical filter too. This file already imports FROM live_data.py
+# (invalidate_accounts_cache, below) -- live_data.py importing the filter
+# back from here would be a circular import, so both files import it from
+# a third, dependency-free module instead. See alert_visibility.py's
+# docstring for the drift this fixes. _hidden_metrics_sql kept as a thin
+# alias so nothing below in this file needs to change.
+from app.alert_visibility import hidden_metrics_sql as _hidden_metrics_sql
 
 
 def _filter_rows_by_scope(rows: list, current_user: dict) -> list:
