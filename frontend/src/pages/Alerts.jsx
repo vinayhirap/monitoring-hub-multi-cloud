@@ -5,7 +5,8 @@ import { useAuth } from "../auth/AuthContext";
 import { useWebSocket } from "../hooks/useWebSocket";
 import "./Alerts.css";
 import { useTimezone, formatInTz } from "../contexts/TimezoneContext";
-import { InfoIcon } from "../components/icons";
+import { InfoIcon, DownloadIcon } from "../components/icons";
+import { postmortemUrl } from "../api/api";
 
 const BASE = "";
 
@@ -621,9 +622,25 @@ export default function Alerts() {
                             </div>
                           ) : explainCache[a.id] ? (
                             <div className="alert-explain">
-                              <span className={`explain-confidence explain-confidence-${explainCache[a.id].confidence}`}>
-                                {explainCache[a.id].confidence} confidence
-                              </span>
+                              <div className="alert-explain-head">
+                                <span className={`explain-confidence explain-confidence-${explainCache[a.id].confidence}`}>
+                                  {explainCache[a.id].confidence} confidence
+                                </span>
+                                {explainCache[a.id].summary_source === "llm" && (
+                                  <span className="explain-ai-badge" title="This summary was polished by an LLM from the facts below -- it never adds facts not already gathered">
+                                    ✨ AI-polished
+                                  </span>
+                                )}
+                                <a
+                                  className="explain-postmortem-link"
+                                  href={postmortemUrl(a.id, "pdf")}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title="Download a full postmortem (timeline, probable cause, recommendations) as a PDF"
+                                >
+                                  <DownloadIcon size={12} /> Postmortem
+                                </a>
+                              </div>
                               <p className="explain-summary">{explainCache[a.id].summary}</p>
                             </div>
                           ) : null}
