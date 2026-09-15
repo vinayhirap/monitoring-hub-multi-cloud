@@ -74,10 +74,15 @@ CREATE TABLE IF NOT EXISTS roles (
     -- is_builtin rows cannot be deleted or have their key changed;
     -- their permission set CAN still be edited, same as today.
     is_builtin   TINYINT(1) NOT NULL DEFAULT 0,
-    -- rank orders roles for the delegation check ("you may not grant a
-    -- role stronger than your own"). Higher = stronger. Custom roles
-    -- default to 0 so they can never out-rank a builtin by accident.
-    rank         INT NOT NULL DEFAULT 0,
+    -- role_rank orders roles for the delegation check ("you may not
+    -- grant a role stronger than your own"). Higher = stronger. Custom
+    -- roles default to 0 so they can never out-rank a builtin.
+    -- NOT named `rank`: RANK is a reserved word in MySQL 8.0 (window
+    -- function), so an unquoted `rank INT NOT NULL` is a 1064 syntax
+    -- error. Renamed rather than backticked -- a backticked reserved
+    -- word only defers the problem to the next person who writes a
+    -- query against it without quoting.
+    role_rank    INT NOT NULL DEFAULT 0,
     created_by   BIGINT NULL,
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -87,7 +92,7 @@ CREATE TABLE IF NOT EXISTS roles (
         FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
-INSERT IGNORE INTO roles (role_key, name, description, is_builtin, rank) VALUES
+INSERT IGNORE INTO roles (role_key, name, description, is_builtin, role_rank) VALUES
   ('viewer', 'Viewer', 'Read-only access to monitoring surfaces within scope', 1, 10),
   ('editor', 'Editor', 'Operational actions and configuration within scope',  1, 20),
   ('admin',  'Administrator', 'Full administrative access within scope',      1, 30);
