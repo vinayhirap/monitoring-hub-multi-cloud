@@ -30,6 +30,22 @@ from datetime import datetime
 from app.db import get_connection
 from app.ws.publisher import publish_alert, publish_alert_resolved
 
+# 2026-09-15 fix: this background evaluator resolves alerts directly via SQL
+# (both the stale/stopped-instance sweep in _auto_resolve_stale_alerts() and
+# the normal healthy-streak recovery path below) and, until this patch,
+# never told either API-layer cache that anything changed. Every alerts.py
+# mutation endpoint (ack/resolve/mute/bulk-ack) already calls BOTH of these
+# together -- see alerts.py's own comment above _invalidate_cache() and
+# live_data.py's docstring on invalidate_accounts_cache() for the exact
+# "Overview banner says 3 WARNING, Alerts page says 0 Active" symptom this
+# omission produces: live_data.py's _accounts_cache (up to 60s TTL) and
+# alerts.py's own _alerts_cache/_counts_cache kept serving pre-resolve
+# critical/warning counts after a bulk auto-resolve, because nothing here
+# ever called the one function that clears them. Importing both here mirrors
+# exactly what every API-triggered resolve path already does.
+from app.api.live_data import invalidate_accounts_cache
+from app.api.alerts import _invalidate_cache
+
 logger = logging.getLogger(__name__)
 
 # Must track app/collector/scheduler.py's STANDARD_INTERVAL. Kept as a
@@ -306,6 +322,14 @@ def _evaluate_alerts_body(conn, cursor):
             f"({stale_accounts} account removed, {stale_orphans} orphaned resource_id, "
             f"{stale_stopped} stopped/terminated EC2 instance)"
         )
+        # Without this, the Overview page's account tiles/banner (read from
+        # live_data.py's _accounts_cache) and the Alerts page's own tab
+        # counts (_alerts_cache/_counts_cache) can keep showing pre-resolve
+        # warning/critical counts for up to that cache's TTL after a bulk
+        # sweep like this one resolves hundreds of alerts at once -- see
+        # this file's import comment above for the exact symptom.
+        invalidate_accounts_cache()
+        _invalidate_cache()
         try:
             publish_alert_resolved(alert_id=None, account_id=None, bulk=True)
         except Exception as e:
@@ -543,6 +567,13 @@ def _evaluate_alerts_body(conn, cursor):
             logger.warning(f"Alert publish failed: {e}")
 
     conn.commit()
+
+    if resolved:
+        # Same reasoning as the stale-sweep invalidation above -- this
+        # cycle's healthy-streak recovery path also resolves alerts
+        # directly via SQL and needs to tell both API-layer caches.
+        invalidate_accounts_cache()
+        _invalidate_cache()
 
     logger.info(
         f"Alert evaluation complete — "
