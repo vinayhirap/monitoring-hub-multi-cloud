@@ -113,11 +113,29 @@ def _has_statsmodels():
     try:
         import statsmodels.api  # noqa: F401
         return True
-    except ImportError:
+    except Exception:
+        # Broad except, not just ImportError -- on 2026-09-15 this
+        # caught a REAL production incident: statsmodels 0.14.5 (the
+        # version originally pinned here) raised TypeError at import
+        # time under pandas==3.0.2 (an upstream statsmodels/pandas
+        # incompatibility -- see requirements.txt's updated comment,
+        # fixed by bumping to statsmodels==0.15.0). With only
+        # `except ImportError` here, that TypeError propagated straight
+        # through this function uncaught, and then through
+        # upgrade_baselines_with_stl()'s own top-level try (which has
+        # no wrapper around this specific call), crashing the ENTIRE
+        # job every single 2-minute scheduler cycle instead of the
+        # single graceful "not installed" warning this function is
+        # supposed to produce. A dependency import can fail in more
+        # ways than "not installed" -- this now degrades safely no
+        # matter which way it breaks.
         logger.warning(
-            "[baseline_stl] statsmodels not installed -- skipping STL upgrade pass "
+            "[baseline_stl] statsmodels import failed -- skipping STL upgrade pass "
             "entirely this cycle (sigma-clipped baselines from baseline.py are "
-            "unaffected). Install with: pip install statsmodels --break-system-packages"
+            "unaffected). If this persists, check for a statsmodels/pandas version "
+            "incompatibility (see requirements.txt's comment on this dependency) "
+            "rather than assuming it's simply uninstalled.",
+            exc_info=True,
         )
         return False
 
