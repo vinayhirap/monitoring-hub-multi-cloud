@@ -387,7 +387,7 @@ def _load(user: dict) -> ResolvedAccess:
     try:
         cursor = conn.cursor(dictionary=True)
 
-        cursor.execute("SELECT id, role_key, rank FROM roles")
+        cursor.execute("SELECT id, role_key, role_rank FROM roles")
         role_rows = cursor.fetchall()
         role_by_id = {r["id"]: r for r in role_rows}
         perms_by_role_id = _role_permission_map(conn)
@@ -432,7 +432,7 @@ def _load(user: dict) -> ResolvedAccess:
                 continue
             bindings.append(Binding(
                 role_key=role["role_key"],
-                role_rank=role["rank"],
+                role_rank=role["role_rank"],
                 permissions=perms_by_role_id.get(r["role_id"], frozenset()),
                 scope=_scope_from_row(r),
                 source="group" if r["principal_type"] == "group" else "user",
@@ -799,10 +799,10 @@ def _role_rank(role_key: str) -> int:
     conn = get_connection()
     try:
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT rank FROM roles WHERE role_key = %s", (role_key,))
+        cursor.execute("SELECT role_rank FROM roles WHERE role_key = %s", (role_key,))
         row = cursor.fetchone()
         cursor.close()
-        return row["rank"] if row else 0
+        return row["role_rank"] if row else 0
     finally:
         conn.close()
 
