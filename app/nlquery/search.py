@@ -91,8 +91,8 @@ def run_nl_search(query_text: str, current_user: dict) -> dict:
         sql = f"""
             SELECT a.id, a.resource_id AS aws_resource_id, r.name AS resource_name,
                    r.resource_type, a.metric_name, a.severity, a.status,
-                   a.value, a.threshold, a.created_at, acc.id AS account_id,
-                   acc.name AS account_name
+                   a.current_value, a.threshold, a.created_at, acc.id AS account_id,
+                   acc.account_name
             FROM alerts a
             JOIN resources r      ON r.resource_id = a.resource_id
             JOIN aws_accounts acc ON acc.id = r.aws_account_id
