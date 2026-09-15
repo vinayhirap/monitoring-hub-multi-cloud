@@ -632,86 +632,107 @@ def live_ecs(account_db_id: int, current_user: dict = Depends(require_permission
     return _serialize(collect_ecs_clusters(region))
 
 
-# ── Real-time per-service resource counts ─────────────────────
-# Used by the Services page to decide whether a tile should be shown
-# at all — dynamically, based on whether the account actually HAS any
-# resources of that type right now, instead of only whether a metric
-# is selected for it. All 41 curated services (core + extended) have
-# a collector here. The frontend now treats anything OTHER than a
-# confirmed positive count — a missing key, a null from a failed/
-# unauthorized collector, or a real zero — as "hide this tile". That
-# means a collector that throws (e.g. AccessDenied on one service's
-# IAM permissions) will make its tile disappear even if the service
-# secretly has resources; check the "resource-counts: <svc> failed"
-# warning below if a tile you expect to see is missing.
-_RESOURCE_COLLECTORS = {
-    "ec2":            collect_ec2_instances,
-    "ebs":            collect_ebs_volumes,
-    "rds":            collect_rds_instances,
-    "lambda":         collect_lambda_functions,
-    "s3":             collect_s3_buckets,
-    "elb":            collect_elb,
-    "alb":            collect_elb,
-    "nlb":            collect_nlb,
-    "ecs":            collect_ecs_clusters,
-    "certificatemanager": collect_acm_certificates,
-    "backup":         collect_backup_resources,
-    "dms":            collect_dms_instances,
-    "directconnect":  collect_direct_connections,
-    "states":         collect_state_machines,
-    "apigateway":     collect_apigateway,
-    "dynamodb":       collect_dynamodb_tables,
-    "sqs":            collect_sqs_queues,
-    "sns":            collect_sns_topics,
-    "cloudfront":     collect_cloudfront_distributions,
-    "elasticache":    collect_elasticache_clusters,
-    "opensearch":     collect_opensearch_domains,
-    "eks":            collect_eks_clusters,
-    "efs":            collect_efs_filesystems,
-    "documentdb":     collect_documentdb_clusters,
-    "neptune":        collect_neptune_clusters,
-    "msk":            collect_msk_clusters,
-    "kinesis":        collect_kinesis_streams,
-    "firehose":       collect_firehose_streams,
-    "autoscaling":    collect_autoscaling_groups,
-    "natgateway":     collect_nat_gateways,
-    "transitgateway": collect_transit_gateways,
-    "route53":        collect_route53_zones,
-    "wafv2":          collect_waf_web_acls,
-    "redshift":       collect_redshift_clusters,
-    "memorydb":       collect_memorydb_clusters,
-    "dax":            collect_dax_clusters,
-    "events":         collect_eventbridge_rules,
-    "kms":            collect_kms_keys,
-    "logs":           collect_cloudwatch_log_groups,
-    "vpn":            collect_vpn_connections,
-    "cognito":        collect_cognito_user_pools,
-    "globalaccelerator": collect_global_accelerator_accelerators,
-}
-
-
+# ── Real-time per-service resource counts (ALL providers, ALL tiers) ──
+# Used by the Services page to decide whether a tile should be shown at
+# all — dynamically, per account, per service — instead of a hardcoded
+# list anywhere in the app.
+#
+# PREVIOUSLY: AWS-only, 41 separate live boto3 calls per page load via
+# _RESOURCE_COLLECTORS (one per curated AWS service), with GCP/Azure
+# accounts getting no count at all (frontend comment: "no resource-count
+# data source yet for GCP/Azure — they always show"). Two real problems
+# with that: (1) a transient AWS error on any ONE of those 41 live calls
+# (timeout, AccessDenied) came back as None, and the frontend treated
+# None exactly like a real zero -- so a broken/under-permissioned
+# collector silently hid a service instead of surfacing that it wasn't
+# being checked; (2) GCP/Azure had zero presence-checking at all.
+#
+# NOW: every provider's discovery pipeline — app/collector/discovery/
+# runner.py (AWS core), app/collector/discovery/extended.py (AWS
+# extended-tier), app/providers/gcp/discovery.py, app/providers/azure/
+# discovery.py — already upserts every resource it finds into the same
+# shared `resources` table (aws_account_id, resource_type), regardless
+# of cloud. So instead of live-calling 41 AWS APIs and leaving GCP/Azure
+# uncovered, this does ONE query against data that's already collected,
+# for whichever provider the account actually is. That means:
+#   - No live-call failure mode left to confuse with "genuinely zero" —
+#     a resource_type with no rows IS zero, not "unknown".
+#   - Automatically covers every resource_type any collector has ever
+#     written for this account, core or extended, AWS or GCP or Azure —
+#     no per-service allowlist to maintain here.
+#   - One fast DB read instead of up to 41 parallel live API calls.
+#
+# Trade-off worth knowing: this is only as fresh as the last discovery
+# cycle for that account (typically within a few minutes), not
+# live-to-the-second. A resource created seconds ago in the AWS/GCP/
+# Azure console won't show a count bump until the next discovery run.
+# It also does NOT prune a resource row when the underlying cloud
+# resource is deleted (no reconciliation/delete step currently exists in
+# any of the four discovery modules above) — a resource removed in the
+# cloud console can keep showing here until that gap is closed
+# separately; flagging it rather than silently accepting stale counts.
 @router.get("/resource-counts/{account_db_id}")
 def live_resource_counts(account_db_id: int, current_user: dict = Depends(require_permission("resources.view"))):
     _check_account_scope(current_user, account_db_id)
-    acc    = _get_db_account(account_db_id)
-    region = acc.get("default_region")
-    counts = {}
+    _get_db_account(account_db_id)  # 404s if the account doesn't exist / isn't accessible
 
-    def _one(svc, collector):
-        try:
-            return svc, len(collector(region))
-        except Exception as e:
-            # Unknown, not zero — a transient AWS/permissions error
-            # shouldn't hide a tile that may well have real resources.
-            logger.warning(f"resource-counts: {svc} failed for account {account_db_id}: {e}")
-            return svc, None
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT resource_type, COUNT(*) AS cnt FROM resources WHERE aws_account_id = %s GROUP BY resource_type",
+            (account_db_id,),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+    finally:
+        conn.close()
 
-    with ThreadPoolExecutor(max_workers=len(_RESOURCE_COLLECTORS)) as ex:
-        futures = [ex.submit(_one, svc, collector) for svc, collector in _RESOURCE_COLLECTORS.items()]
-        for f in as_completed(futures):
-            svc, count = f.result()
-            counts[svc] = count
-    return counts
+    return {row["resource_type"]: row["cnt"] for row in rows}
+
+
+# ── Generic resource listing (any service, any provider, any tier) ────
+# Backs the "Services" page's generic detail view for the ~30+ services
+# that don't have a bespoke page like ServiceDetail.jsx's EC2/EBS/RDS/S3/
+# ECS/ELB/Lambda views. Same `resources` table this file's resource-
+# counts endpoint above now reads from, filtered to one resource_type —
+# works identically for an AWS-extended service, a GCP service, or an
+# Azure service, since discovery for all of them upserts into this one
+# table (see the comment above live_resource_counts for the full list of
+# discovery modules this relies on). No per-provider branching needed.
+@router.get("/resources-list/{account_db_id}/{service}")
+def live_resources_list(
+    account_db_id: int,
+    service: str,
+    current_user: dict = Depends(require_permission("resources.view")),
+):
+    _check_account_scope(current_user, account_db_id)
+    _get_db_account(account_db_id)
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT resource_id, name, region, tags, instance_state, created_at
+            FROM resources
+            WHERE aws_account_id = %s AND resource_type = %s
+            ORDER BY name
+            """,
+            (account_db_id, service),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+    finally:
+        conn.close()
+
+    for r in rows:
+        if isinstance(r.get("tags"), str):
+            try:
+                r["tags"] = json.loads(r["tags"])
+            except (TypeError, ValueError):
+                r["tags"] = {}
+    return _serialize(rows)
 
 
 # ── CloudWatch metric series endpoints ───────────────────────

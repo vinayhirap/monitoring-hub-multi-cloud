@@ -12,7 +12,7 @@ import Compliance        from "./pages/Compliance";
 import Settings          from "./pages/Settings";
 import AccountOnboarding from "./pages/AccountOnboarding";
 import ServiceList       from "./pages/ServiceList";
-import ServiceDetail     from "./pages/ServiceDetail";
+import ServiceDetailRouter from "./pages/ServiceDetailRouter";
 import Topology          from "./pages/Topology";
 import Incidents         from "./pages/Incidents";
 import OpEvents          from "./pages/OpEvents";
@@ -79,7 +79,7 @@ function AppRoutes() {
         <Route path="accounts/:id/services"     element={<ServiceList />} />
         <Route path="accounts/:id/topology"     element={<Topology />} />
         <Route path="accounts/:id/incidents"    element={<Incidents />} />
-        <Route path="accounts/:id/:service"     element={<ServiceDetail />} />
+        <Route path="accounts/:id/:service"     element={<ServiceDetailRouter />} />
         <Route path="accounts/:id"              element={<AccountDetail />} />
       </Route>
       <Route path="*" element={<Navigate to="/overview" replace />} />

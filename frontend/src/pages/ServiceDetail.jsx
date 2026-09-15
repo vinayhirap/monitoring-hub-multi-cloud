@@ -25,6 +25,15 @@ function normalizeService(rawParam) {
   return KNOWN_SERVICE_KEYS[(rawParam || "").toLowerCase()] || null;
 }
 
+// Exported so ServiceDetailRouter.jsx can decide, for ANY service key
+// (any provider, any tier), whether this bespoke chart-heavy page
+// applies or whether to render GenericServiceDetail.jsx instead —
+// single source of truth for "which services get the custom page",
+// instead of a second hardcoded copy of this list living elsewhere.
+export function hasCoreDetailPage(rawParam) {
+  return normalizeService(rawParam) !== null;
+}
+
 const SERVICE_META = {
   EC2:    { icon: ServerIcon,   color: "#2bb3ac", label: "EC2 Instances" },
   EBS:    { icon: SaveIcon,     color: "#38bdf8", label: "EBS Volumes" },

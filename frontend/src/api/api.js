@@ -36,6 +36,7 @@ async function apiFetch(path, options = {}) {
 // ── Live real AWS data ──────────────────────────────────────────────────────
 export const getLiveAccounts  = ()   => apiFetch("/api/live/accounts");
 export const getResourceCounts = (id) => apiFetch(`/api/live/resource-counts/${id}`);
+export const getResourcesList  = (id, service) => apiFetch(`/api/live/resources-list/${id}/${service}`);
 export const getLiveEC2       = (id) => apiFetch(`/api/live/ec2/${id}`);
 export const getLiveRDS       = (id) => apiFetch(`/api/live/rds/${id}`);
 export const getLiveLambda    = (id) => apiFetch(`/api/live/lambda/${id}`);
