@@ -23,7 +23,7 @@ how that's surfaced.
 AUTH: machine-to-machine, not a logged-in user -- there is no browser
 session here, just a CI job's curl call. Uses a single shared-secret
 bearer token (DEPLOY_WEBHOOK_TOKEN in .env), same "off unless
-explicitly configured" pattern as LLM_SUMMARY_ENABLED/ANTHROPIC_API_KEY
+explicitly configured" pattern as LLM_SUMMARY_ENABLED
 -- if the token isn't set in .env, this endpoint refuses every request
 with 503, never silently accepts unauthenticated writes.
 """

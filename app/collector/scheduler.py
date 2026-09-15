@@ -273,8 +273,9 @@ def run_once(tier="standard"):
         # correlate/health_score above, so it reads this cycle's
         # freshest related-alert-count/health context via
         # rca.explain_alert(). Entirely no-op (zero API calls, zero DB
-        # writes) unless LLM_SUMMARY_ENABLED=true and ANTHROPIC_API_KEY
-        # are both set in .env -- see app/llm/summarizer.py's module
+        # writes) unless LLM_SUMMARY_ENABLED=true (and, for the default
+        # free local provider, Ollama is actually running --
+        # see app/llm/summarizer.py's module
         # docstring. Never blocks a user-facing request either way: the
         # GET /alerts/{id}/explain endpoint only ever reads whatever
         # this job last wrote.
