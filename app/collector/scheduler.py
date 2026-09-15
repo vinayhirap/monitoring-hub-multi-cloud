@@ -428,6 +428,19 @@ def run_loop(leader_event=None):
             except Exception as e:
                 logger.error(f"Slow-extended tier error: {e}")
 
+            # Daily Ollama model refresh (2026-09-15) -- re-pulls
+            # whatever model OLLAMA_MODEL names, picking up any weight
+            # update the publisher has pushed to that SAME tag. Never
+            # switches to a different model automatically -- see
+            # app/llm/summarizer.py's refresh_ollama_model() docstring
+            # for why a full auto-upgrade policy is a real production
+            # risk this app intentionally doesn't take.
+            try:
+                from app.llm.summarizer import refresh_ollama_model
+                refresh_ollama_model()
+            except Exception as e:
+                logger.error(f"Ollama model refresh error (non-fatal): {e}")
+
         if now - last_discovery >= DISCOVERY_INTERVAL:
             logger.info(f"[Cycle {cycle}] discovery")
             try:

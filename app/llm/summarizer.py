@@ -32,17 +32,26 @@ TWO PROVIDERS, chosen via LLM_PROVIDER in .env:
 
 OLLAMA SETUP (do this once, on whichever box runs this app):
     curl -fsSL https://ollama.com/install.sh | sh
-    ollama pull llama3.2:3b
-    ollama serve &          # or: sudo systemctl enable --now ollama
-That's the whole cost: a one-time download (~2GB) and some disk/RAM,
-never a bill. llama3.2:3b is a good default for a CPU-only box (small
-enough to run without a GPU, still fluent enough for rewriting
-already-verified facts into a paragraph -- this task needs good
-phrasing, not deep reasoning). If the server is memory-constrained,
-`ollama pull llama3.2:1b` is smaller/faster with a small quality
-tradeoff; if it has more headroom, `phi3:mini` or `qwen2.5:7b` write
-noticeably more polished prose. Swap the model with
-OLLAMA_MODEL=<name> in .env -- no code change needed.
+    ollama pull qwen3:4b
+    sudo systemctl enable --now ollama
+That's the whole cost: a one-time download and some disk/RAM, never a
+bill. As of 2026-09-15, Qwen3:4b is the best all-round pick for a
+CPU-only box with 8GB+ RAM free; on tighter RAM (~4GB), pull
+`phi4-mini` instead and set OLLAMA_MODEL=phi4-mini -- this changes
+every few months as new models ship, so re-check before assuming this
+comment is still current. Swap models anytime with OLLAMA_MODEL=<name>
+in .env -- no code change needed.
+
+AUTO-REFRESH, NOT AUTO-UPGRADE: refresh_ollama_model() below runs once
+a day (scheduler.py's slow_extended tier) and re-pulls whatever model
+OLLAMA_MODEL names -- if the publisher has pushed new weights to that
+exact tag, this picks them up automatically, with zero intervention.
+It deliberately does NOT switch to a newer/different model
+automatically (e.g. moving qwen3:4b -> qwen3:8b on its own) -- a
+different model could need more RAM than the box has, or change every
+alert explanation's tone with no review. Changing which model this
+uses is a one-line .env edit + restart, same as any other config
+change in this app.
 
 OFF BY DEFAULT: LLM_SUMMARY_ENABLED must be explicitly set to "true"
 in .env, or every call below is a no-op regardless of provider. With
@@ -61,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 # ── Ollama (free, local, default) ────────────────────────────────────
 _OLLAMA_DEFAULT_HOST = "http://localhost:11434"
-_OLLAMA_DEFAULT_MODEL = "llama3.2:3b"
+_OLLAMA_DEFAULT_MODEL = "qwen3:4b"
 
 # ── Anthropic (optional, paid, opt-in only) ──────────────────────────
 _ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
@@ -210,7 +219,51 @@ def _call_llm(system_prompt: str, user_content: str, max_tokens: int = _DEFAULT_
         return ""
 
 
-def polish_summary(facts: dict, deterministic_summary: str) -> str:
+def refresh_ollama_model() -> bool:
+    """
+    Re-pulls the currently-configured OLLAMA_MODEL tag once a day (see
+    scheduler.py's slow_extended tier hook) -- Ollama's own pull
+    endpoint is a no-op download-wise if the tag hasn't actually
+    changed server-side, so this is safe to call daily regardless of
+    whether the model publisher has actually pushed an update.
+
+    DELIBERATELY DOES NOT switch to a different model family or a
+    newer major version automatically -- only refreshes the SAME
+    named tag the person chose in .env (e.g. re-pulling "qwen3:4b"
+    picks up new weights if Alibaba pushes an update to that exact
+    tag, but never silently moves someone from "qwen3:4b" to
+    "qwen3:8b" or a different model entirely). A full auto-upgrade-to-
+    whatever-is-newest policy is a genuine production risk for this
+    feature -- a bigger/different model could need more RAM than the
+    box has, or change the tone of every alert explanation with zero
+    review -- so this intentionally stops short of that. Changing
+    OLLAMA_MODEL to a different model is a deliberate one-line .env
+    edit + restart, same as any other config change in this app.
+    """
+    if not is_enabled() or _provider() != "ollama":
+        return False
+
+    host = os.getenv("OLLAMA_HOST", _OLLAMA_DEFAULT_HOST).rstrip("/")
+    model = os.getenv("OLLAMA_MODEL", _OLLAMA_DEFAULT_MODEL)
+    try:
+        response = requests.post(
+            f"{host}/api/pull",
+            json={"model": model, "stream": False},
+            timeout=600,  # a real re-download can take minutes on a slow link; this runs once/day, off the request path
+        )
+        response.raise_for_status()
+        status = (response.json() or {}).get("status", "unknown")
+        logger.info(f"[llm_summarizer] refreshed Ollama model '{model}': {status}")
+        return True
+    except requests.exceptions.ConnectionError:
+        logger.warning(
+            f"[llm_summarizer] could not reach Ollama at {host} to refresh model '{model}' "
+            f"(non-fatal, today's cached weights keep working either way)"
+        )
+        return False
+    except Exception as e:
+        logger.warning(f"[llm_summarizer] Ollama model refresh failed (non-fatal): {e}")
+        return False
     """
     Returns a polished paragraph, or the ORIGINAL deterministic_summary
     unchanged if the feature is disabled, misconfigured, or the call
