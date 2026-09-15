@@ -1,7 +1,7 @@
 // monitoring-hub/frontend/src/pages/ServiceList.jsx
 import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getAlerts, getAccountMetrics, getResourceCounts, getConsoleUrl } from "../api/api";
+import { getAlerts, getAccountMetrics, getResourceCounts } from "../api/api";
 import { CloudServiceIcon, AzureBrandLogo, officialPerService } from "../components/cloud-icons";
 import { LinkIcon } from "../components/icons";
 
@@ -28,12 +28,13 @@ const DESC_OVERRIDES = {
 
 const PALETTE = ["#2bb3ac", "#38bdf8", "#7c6ee0", "#fbbf24", "#34d399", "#f472b6", "#22c55e", "#f59e0b", "#a78bfa", "#e879f9"];
 
-// Services with a real backend resource-list + detail page (see
-// app/api/live_data.py + the /accounts/:id/<service> routes in
-// App.jsx). A tile for any other ("extended") service opens the AWS
-// Console directly instead of navigating internally, since there's no
-// detail page for it yet — see openInConsole() below.
-const CORE_AWS_SERVICES = new Set(["ec2", "ebs", "rds", "lambda", "s3", "elb", "alb", "ecs"]);
+// Every tile now navigates to /accounts/:id/<service> regardless of
+// whether that service has a bespoke chart page or not — the decision
+// between the two detail components (ServiceDetail.jsx vs the generic
+// GenericServiceDetail.jsx) happens one layer down, in
+// ServiceDetailRouter.jsx (see hasCoreDetailPage() there). This file
+// only needs to know whether to show a tile at all — never which kind
+// of page it opens into — so no service allowlist lives here anymore.
 
 // Real-shape resource-id/ARN patterns per provider, used to attribute
 // active alerts to the right service tile — NOT hardcoded to AWS only.
@@ -75,21 +76,20 @@ export default function ServiceList() {
   const [groups,  setGroups]  = useState([]);
   const [alerts,  setAlerts]  = useState([]);
   const [loading, setLoading] = useState(true);
-  // Real per-service resource counts from AWS — see GET
-  // /api/live/resource-counts/{id}. null = not loaded yet (used only to
-  // avoid a flash of every tile before the first fetch resolves). Once
-  // loaded, a tile shows ONLY if we have a confirmed count > 0 for it.
-  // A missing/failed count (undefined, or a collector that threw — e.g.
-  // an AccessDenied on that one service) is treated the same as zero and
-  // hidden. This is a deliberate choice: it trades "never hide a tile
-  // that might have real resources" for "never show a tile that doesn't
-  // have any" — so a flaky/under-permissioned collector for one service
-  // will make that tile disappear rather than stay visible. If a tile
-  // you expect to see goes missing, check the backend logs for a
-  // "resource-counts: <svc> failed" warning — that's usually an IAM
-  // permissions gap on that specific service, not a real zero.
+  // Real per-service resource counts, from the shared `resources` table
+  // (see GET /api/live/resource-counts/{id} and the backend comment on
+  // live_resource_counts) — populated by every provider's discovery
+  // pipeline, not just AWS. null = not loaded yet (used only to avoid a
+  // flash of every tile before the first fetch resolves). Once loaded,
+  // a service with no rows for this account genuinely has zero
+  // resources right now — there's no separate "unknown/failed" state
+  // to worry about anymore, since this reads one DB table instead of
+  // making 41 independent live API calls that could each fail on their
+  // own. See the note on the fetch effect below for the accuracy
+  // trade-off this brings (freshness = last discovery cycle, not
+  // live-to-the-second; and stale rows for since-deleted cloud
+  // resources aren't pruned yet).
   const [resourceCounts, setResourceCounts] = useState(null);
-  const [consoleLoading, setConsoleLoading] = useState(null); // svc.id currently opening
 
   useEffect(() => {
     let cancelled = false;
@@ -108,64 +108,50 @@ export default function ServiceList() {
 
   const provider = account?.provider || "aws";
 
-  // Fetch real resource counts once we know this is an AWS account —
-  // the collectors behind this endpoint are AWS-only. This runs
-  // independently of the main load above so a slow AWS call never
+  // Fetch real resource counts for this account. This now reads from
+  // the shared, cross-provider `resources` table on the backend (see
+  // live_resource_counts's comment) rather than making live AWS-only
+  // API calls, so it applies the same way to AWS, GCP, and Azure
+  // accounts — the old "only for AWS accounts" gate has been removed.
+  // Runs independently of the main load above so a slow fetch never
   // blocks the page from rendering.
   useEffect(() => {
-    if (!account || (account.provider || "aws") !== "aws") return;
+    if (!account) return;
     let cancelled = false;
     getResourceCounts(id).then(c => { if (!cancelled) setResourceCounts(c ?? {}); }).catch(() => {});
     return () => { cancelled = true; };
   }, [account, id]);
 
-  function openInConsole(serviceId) {
-    // Previously bailed out here for any non-AWS provider. The backend
-    // endpoint this calls (getConsoleUrl -> /api/admin/accounts/{id}/
-    // console-url) already dispatches through get_provider() and works
-    // for Azure/GCP too -- Azure generically, GCP with real per-service
-    // deep links for 10 of 16 curated types. Removed the bailout; the
-    // existing catch below already surfaces a clear error if a
-    // particular service genuinely has no console link available yet.
-    setConsoleLoading(serviceId);
-    getConsoleUrl(id, serviceId)
-      .then(r => { if (r?.url) window.open(r.url, "_blank", "noopener,noreferrer"); })
-      .catch(err => {
-        console.error(err);
-        window.alert(
-          "Couldn't open the AWS Console for this service. Check that an IAM " +
-          "role is configured for this account in Settings."
-        );
-      })
-      .finally(() => setConsoleLoading(null));
-  }
-
   const hasAnyMetricsEnabled = groups.some(g => (g.metrics || []).some(m => m.enabled));
 
-  // Dynamic, aligned with the metric selector: a service tile only shows up
-  // here if it has at least one metric enabled for THIS account — the same
-  // selection made during onboarding or later edited in Settings -> Metrics
-  // — AND (for AWS accounts) BOTH a confirmed positive resource count AND a
-  // real internal detail page (CORE_AWS_SERVICES) it can open into. AWS
-  // services with no detail page only ever had a "VIEW IN CONSOLE" tile
-  // that sends you off to the AWS Console — that's been dropped entirely,
-  // on purpose: this page now only shows tiles you can click straight into
-  // with real data behind them, never a console-link placeholder. Non-AWS
-  // accounts have no resource-count data source yet, so they always show.
+  // Dynamic, aligned with the metric selector, for EVERY provider and
+  // EVERY tier (core + extended) — no per-service allowlist decides
+  // whether a tile can exist. A tile shows if:
+  //   1. It has at least one metric enabled for THIS account (the same
+  //      selection made in Settings -> Metrics), AND
+  //   2. Either resourceCounts hasn't loaded yet (avoid a flash of
+  //      nothing before the first fetch resolves), OR the account has
+  //      a confirmed positive resource count for it.
+  //
+  // getResourceCounts() now reads from the shared `resources` table
+  // (populated by AWS core discovery, AWS extended discovery, GCP
+  // discovery, and Azure discovery alike — see the backend comment on
+  // live_resource_counts) instead of live-calling 41 separate AWS APIs.
+  // That removes the old null-vs-zero ambiguity entirely: a service
+  // with no rows in `resources` for this account IS a confirmed zero,
+  // not an unknown/failed check — there's no more silent-failure case
+  // where a broken collector looked identical to "nothing here".
   const activeServices = useMemo(() => {
-    const isAws = provider === "aws";
     return groups
       .filter(g => (g.metrics || []).some(m => m.enabled))
       .filter(g => {
-        if (!isAws) return true;                    // no resource-count data for GCP/Azure
-        if (!CORE_AWS_SERVICES.has(g.service)) return false; // no console-link tiles, ever
-        if (!resourceCounts) return true;            // still loading — avoid a flash of nothing
+        if (!resourceCounts) return true; // still loading — avoid a flash of nothing
         const count = resourceCounts[g.service];
         return typeof count === "number" && count > 0;
       })
       .map((g, i) => {
         const resourceCount = resourceCounts
-          ? (resourceCounts[g.service] ?? null)
+          ? (resourceCounts[g.service] ?? 0)
           : null;
         return {
           id: g.service,
@@ -176,7 +162,7 @@ export default function ServiceList() {
           resourceCount,
         };
       });
-  }, [groups, resourceCounts, provider]);
+  }, [groups, resourceCounts]);
 
   const activeAlerts = alerts.filter(a => (a.status || "").toLowerCase() === "active");
 
@@ -239,7 +225,7 @@ export default function ServiceList() {
           textAlign:"center", color:"var(--text-muted)", fontSize:13,
         }}>
           {hasAnyMetricsEnabled ? (
-            <>Metrics are enabled for this account, but no matching resources were found in AWS
+            <>Metrics are enabled for this account, but no matching resources were found
             right now — this list updates automatically once resources appear.</>
           ) : (
             <>No services are enabled for this account yet. Go to <b style={{color:"var(--text-secondary)"}}>Settings → Metrics</b> to select
@@ -249,15 +235,12 @@ export default function ServiceList() {
       ) : (
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))", gap:10 }}>
           {activeServices.map(svc => {
-            const routable = CORE_AWS_SERVICES.has(svc.id);
             const svcAlerts = alertsForService(svc.id);
             return (
               <ServiceCard key={svc.id} svc={svc} provider={provider}
                 criticalCount={svcAlerts.filter(a => a.severity?.toUpperCase() === "CRITICAL").length}
                 warningCount={svcAlerts.filter(a => a.severity?.toUpperCase() !== "CRITICAL").length}
-                routable={routable}
-                isConsoleLoading={consoleLoading === svc.id}
-                onClick={() => routable ? navigate(`/accounts/${id}/${svc.id}`) : openInConsole(svc.id)} />
+                onClick={() => navigate(`/accounts/${id}/${svc.id}`)} />
             );
           })}
         </div>
@@ -266,7 +249,7 @@ export default function ServiceList() {
   );
 }
 
-function ServiceCard({ svc, provider, onClick, criticalCount, warningCount, routable = true, isConsoleLoading = false }) {
+function ServiceCard({ svc, provider, onClick, criticalCount, warningCount }) {
   const [hovered, setHovered] = useState(false);
   const alertCount = criticalCount + warningCount;
   const hasCritical = criticalCount > 0;
@@ -326,7 +309,7 @@ function ServiceCard({ svc, provider, onClick, criticalCount, warningCount, rout
         color: hovered ? svc.color : "var(--text-muted)", letterSpacing:"0.02em",
         whiteSpace: "nowrap", flexShrink: 0,
       }}>
-        {routable ? "Open →" : (isConsoleLoading ? "Opening…" : "View in console ↗")}
+        Open →
       </div>
     </div>
   );
