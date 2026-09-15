@@ -132,7 +132,25 @@ def _call_ollama(system_prompt: str, user_content: str, timeout: float) -> str:
     """Raises on any failure -- caller (_call_llm) handles fallback.
     Ollama's /api/chat mirrors the OpenAI/Anthropic chat-message shape
     closely enough that this reuses the same system+user prompt
-    strings the Anthropic path already built."""
+    strings the Anthropic path already built.
+
+    "think": False is NOT optional here -- found via live production
+    testing on 2026-09-15: Qwen3 (and other hybrid-reasoning models
+    Ollama supports the same way, e.g. deepseek-r1) generates a long
+    internal chain-of-thought by default before its actual answer,
+    even for trivial prompts -- a one-sentence greeting produced 684
+    "thinking" tokens and took ~5 minutes on a 2-vCPU box, versus a
+    few words of real output. That default is a genuine problem for
+    THIS use case specifically: polishing an already-correct
+    deterministic summary needs fast, direct rewriting, not open-ended
+    deliberation -- the extra "thinking" tokens add latency and cost
+    (CPU time) without adding any value polish_summary()/
+    generate_postmortem_narrative() can use (only the final
+    message.content is ever read; the model's thinking is discarded).
+    Disabling it is the correct fix for this task, not a workaround --
+    if a future model added here doesn't support the "think" field at
+    all, Ollama silently ignores unknown fields, so this stays safe to
+    always send."""
     host = os.getenv("OLLAMA_HOST", _OLLAMA_DEFAULT_HOST).rstrip("/")
     model = os.getenv("OLLAMA_MODEL", _OLLAMA_DEFAULT_MODEL)
     response = requests.post(
@@ -144,6 +162,7 @@ def _call_ollama(system_prompt: str, user_content: str, timeout: float) -> str:
                 {"role": "user", "content": user_content},
             ],
             "stream": False,
+            "think": False,
         },
         timeout=timeout,
     )
