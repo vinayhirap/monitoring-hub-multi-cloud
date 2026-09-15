@@ -5,102 +5,192 @@ collectors (app/providers/{azure,gcp}/metrics_collector.py) and writes
 results directly to the local DB (Phase 2/3 -- no longer via VictoriaMetrics,
 see each collector's own docstring).
 
-Two-tier priority-based cadence (see monitoring-hub-metric-audit.md §8 flaw
-#3, §9 -- added after the original flat-5-min design; kept deliberately
-DIFFERENT from AWS's critical/standard/low split rather than copying it,
-because the two clouds are tiered for different reasons here:
+Severity-tiered cadence (2026-09-15 patch -- see monitoring-hub-metric-audit.md
+§8 flaw #3, §9 for the original core/extended split this replaces). Kept
+DIFFERENT from AWS's critical/standard/low split rather than copied
+verbatim, because Azure and GCP are tiered for different reasons here, and
+different from EACH OTHER for the same reason:
 
   - AWS tiers to cut CloudWatch GetMetricData call *volume*, because AWS
     bills every call regardless of the underlying metric's own cost.
   - Azure platform-metric reads are free up to 1,000,000 API calls/month/
-    billing account (Microsoft-confirmed) -- tiering here isn't chasing a
-    current bill, it's protecting headroom under that ceiling as more
-    extended services get enabled.
+    billing account (Microsoft-confirmed) -- there's no bill to protect at
+    this app's scale, so Azure's CRITICAL tier is tuned for FRESHNESS:
+    it polls at ~1 min, matching Azure Monitor's own real publish rate for
+    these metrics (see the workbook's 'Real Publish Rate' column), instead
+    of waiting out a flat 5-min cycle for no reason. Slower tiers exist to
+    protect headroom under that 1M/month ceiling as more services get
+    enabled, and to avoid polling latency-insensitive services as often as
+    latency-sensitive ones for no freshness benefit.
   - GCP's read API bills per TIME SERIES RETURNED (not per call), effective
     Oct 2, 2025 pricing change: $0.50/million series above the first
     1,000,000 free/billing-account/month. That meter scales with
     (metrics enabled) x (resources of that type) because list_time_series()
-    is fleet-wide per metric type -- tiering here directly slows growth
-    toward a real, if currently small, cost line.
+    is fleet-wide per metric type -- this is a real, cost-bearing meter the
+    same way AWS's is, so GCP's tiers are tuned for COST like AWS's,
+    inheriting AWS's own interval choices (2/5/15/60 min) rather than
+    Azure's freshness-driven ones.
 
-CORE tier   -- 5 min  -- the services this app's own resource collectors
-                          already treat as primary (Azure: VM, Storage
-                          Account, SQL Database, App Service; GCP: Compute
-                          Engine, Cloud Storage, Cloud SQL, Cloud Run).
-                          category='core' in metric_catalog.
-EXTENDED tier -- 15 min -- everything else the user has enabled (VMSS, AKS,
-                          Cosmos DB, Redis, GKE, Pub/Sub, etc. -- and any
-                          DIRECTORY-tier metric a user has manually enabled
-                          via "Discover", which behaves like 'extended' for
-                          cadence purposes once selected).
-                          category IN ('extended','directory').
+Per-cloud tiers (see app/providers/{azure,gcp}/severity_tiers.py for the
+exact per-metric allowlists):
 
-This mirrors the PRIORITY of AWS's split (fast for what's latency-
-sensitive, slower for trend/low-priority) without assuming Azure/GCP's
-publication cadence or billing shape matches AWS's -- both clouds' core
-platform metrics publish at 1-min resolution (Microsoft/Google-confirmed),
-well within a 5-min poll's ability to always see fresh data, and none of
-this tiering trades away freshness on any metric this app treats as
-alertable/critical.
+  Azure:
+    CRITICAL   --  1 min -- alertable core signals (VM CPU/availability,
+                             SQL DB CPU/failed-connections, App Service
+                             5xx/health) -- matches Azure's real ~1-min
+                             publish rate, free to do at this app's scale.
+    STANDARD   --  5 min -- remaining core metrics (unchanged from the
+                             previous flat core cadence).
+    LOW        -- 15 min -- trend-only core metrics (disk bytes, credits,
+                             queue depth, ingress/egress, latency detail).
+    EXTENDED   -- 15 min -- extended-tier services NOT in
+                             SLOW_EXTENDED_SERVICES (unchanged cadence).
+    SLOW_EXT.  -- 60 min -- extended-tier services that either publish
+                             slower than 1 min anyway (VPN Gateway,
+                             Managed Disks: 5 min) or are bursty/
+                             config-adjacent rather than steady (Key
+                             Vault, CDN, Data Factory) -- 60 min loses no
+                             freshness a user would notice.
+
+  GCP:
+    CRITICAL   --  2 min -- alertable core signals (Compute Engine CPU,
+                             Cloud SQL CPU/up, Cloud Run CPU/latency) --
+                             matches AWS's own critical-tier interval.
+    STANDARD   --  5 min -- remaining core metrics (unchanged).
+    LOW        -- 15 min -- trend-only core metrics (matches AWS's low tier).
+    EXTENDED   -- 60 min -- ALL extended-tier services, slowed from 15 min
+                             to 60 min (matches AWS's extended tier) --
+                             the direct lever on the (metrics enabled) x
+                             (resources) series-returned volume that's
+                             actually billed.
+
+Backward compatibility: run_loop(leader_event) with no further arguments
+(the only call site today, app/main.py's _run_multicloud_collector) keeps
+working unchanged -- all new interval/tier knobs have defaults matching
+the policy above. run_once() also still exists, unchanged in shape, for
+any manual/standalone single-cycle caller; it now runs every tier in one
+untiered pass when categories=None, same behavior as before this patch.
 """
 import time
 import logging
 import threading
 
+from app.providers.azure.metric_catalog_data import CURATED as AZURE_CURATED
+from app.providers.gcp.metric_catalog_data import CURATED as GCP_CURATED
+from app.providers.azure import severity_tiers as azure_tiers
+from app.providers.gcp import severity_tiers as gcp_tiers
+
 logger = logging.getLogger(__name__)
 
 _stop_event = threading.Event()
 
-CORE_INTERVAL_SECONDS     = 300   # 5 min  -- VM/Compute/SQL/Storage/Run/App Service
-EXTENDED_INTERVAL_SECONDS = 900   # 15 min -- everything else enabled
+# ── Azure intervals (seconds) -- freshness-driven, free at this app's scale ──
+AZURE_CRITICAL_INTERVAL_SECONDS = 60          #  1 min
+AZURE_STANDARD_INTERVAL_SECONDS = 300         #  5 min (unchanged core cadence)
+AZURE_LOW_INTERVAL_SECONDS = 900              # 15 min
+AZURE_EXTENDED_INTERVAL_SECONDS = 900         # 15 min (unchanged for non-slow extended)
+AZURE_SLOW_EXTENDED_INTERVAL_SECONDS = 3600   # 60 min
 
-# Kept for any external caller still importing the old flat-interval name.
+# ── GCP intervals (seconds) -- cost-driven, mirrors AWS's own tiering ──
+GCP_CRITICAL_INTERVAL_SECONDS = 120           #  2 min (matches AWS critical)
+GCP_STANDARD_INTERVAL_SECONDS = 300           #  5 min (unchanged core cadence)
+GCP_LOW_INTERVAL_SECONDS = 900                # 15 min
+GCP_EXTENDED_INTERVAL_SECONDS = 3600          # 60 min (matches AWS extended; was 15 min)
+
+# Kept for any external caller still importing the old flat-interval names.
+CORE_INTERVAL_SECONDS = AZURE_STANDARD_INTERVAL_SECONDS
+EXTENDED_INTERVAL_SECONDS = AZURE_EXTENDED_INTERVAL_SECONDS
 INTERVAL_SECONDS = CORE_INTERVAL_SECONDS
+
+# Built once at import time from the curated catalogs -- see each
+# severity_tiers.py module for what these actually contain.
+_AZURE_CRITICAL = azure_tiers.CRITICAL_METRICS
+_AZURE_STANDARD = azure_tiers.build_standard_metrics(AZURE_CURATED)
+_AZURE_LOW = azure_tiers.LOW_METRICS
+_AZURE_EXTENDED_FAST = azure_tiers.build_extended_fast_metrics(AZURE_CURATED)
+_AZURE_EXTENDED_SLOW = azure_tiers.build_extended_slow_metrics(AZURE_CURATED)
+
+_GCP_CRITICAL = gcp_tiers.CRITICAL_METRICS
+_GCP_STANDARD = gcp_tiers.build_standard_metrics(GCP_CURATED)
+_GCP_LOW = gcp_tiers.LOW_METRICS
+_GCP_EXTENDED = gcp_tiers.build_extended_metrics(GCP_CURATED)
+
+
+def _run_azure_pass(tier_label, only_metric_names, categories):
+    from app.providers.azure.metrics_collector import collect_all_azure_accounts
+    try:
+        result = collect_all_azure_accounts(categories=categories, only_metric_names=only_metric_names)
+        logger.info(
+            f"[multicloud:azure:{tier_label}] {result['accounts']} account(s), "
+            f"{result['pushed']} datapoints written directly"
+            + (f", {len(result['errors'])} account(s) had errors" if result["errors"] else "")
+        )
+    except Exception as e:
+        logger.error(f"[multicloud:azure:{tier_label}] collection cycle crashed: {e}")
+
+
+def _run_gcp_pass(tier_label, only_metric_names, categories):
+    from app.providers.gcp.metrics_collector import collect_all_gcp_accounts
+    try:
+        result = collect_all_gcp_accounts(categories=categories, only_metric_names=only_metric_names)
+        logger.info(
+            f"[multicloud:gcp:{tier_label}] {result['accounts']} account(s), "
+            f"{result['pushed']} datapoints written directly"
+            + (f", {len(result['errors'])} account(s) had errors" if result["errors"] else "")
+        )
+    except Exception as e:
+        logger.error(f"[multicloud:gcp:{tier_label}] collection cycle crashed: {e}")
 
 
 def run_once(categories=None):
     """Run one collection cycle for Azure + GCP, restricted to `categories`
     if given (e.g. ("core",) or ("extended","directory")). categories=None
-    collects everything enabled, in one pass -- used by run() below for a
-    single manual/standalone cycle."""
-    from app.providers.azure.metrics_collector import collect_all_azure_accounts
-    from app.providers.gcp.metrics_collector import collect_all_gcp_accounts
-
-    tier_label = "+".join(categories) if categories else "all"
-
-    try:
-        azure_result = collect_all_azure_accounts(categories=categories)
-        logger.info(
-            f"[multicloud:{tier_label}] Azure: {azure_result['accounts']} account(s), "
-            f"{azure_result['pushed']} datapoints written directly (Phase 2 -- no longer via VM)"
-            + (f", {len(azure_result['errors'])} account(s) had errors" if azure_result["errors"] else "")
-        )
-    except Exception as e:
-        logger.error(f"[multicloud:{tier_label}] Azure collection cycle crashed: {e}")
-
-    try:
-        gcp_result = collect_all_gcp_accounts(categories=categories)
-        logger.info(
-            f"[multicloud:{tier_label}] GCP: {gcp_result['accounts']} account(s), "
-            f"{gcp_result['pushed']} datapoints written directly (Phase 3 -- no longer via VM)"
-            + (f", {len(gcp_result['errors'])} account(s) had errors" if gcp_result["errors"] else "")
-        )
-    except Exception as e:
-        logger.error(f"[multicloud:{tier_label}] GCP collection cycle crashed: {e}")
+    collects everything enabled, in one untiered pass -- used for a single
+    manual/standalone cycle, same behavior as before this patch."""
+    tier_label = "all" if categories is None else "+".join(categories)
+    _run_azure_pass(tier_label, None, categories)
+    _run_gcp_pass(tier_label, None, categories)
 
 
-def run_loop(leader_event=None, core_interval: int = CORE_INTERVAL_SECONDS, extended_interval: int = EXTENDED_INTERVAL_SECONDS):
+def run_loop(
+    leader_event=None,
+    azure_critical_interval: int = AZURE_CRITICAL_INTERVAL_SECONDS,
+    azure_standard_interval: int = AZURE_STANDARD_INTERVAL_SECONDS,
+    azure_low_interval: int = AZURE_LOW_INTERVAL_SECONDS,
+    azure_extended_interval: int = AZURE_EXTENDED_INTERVAL_SECONDS,
+    azure_slow_extended_interval: int = AZURE_SLOW_EXTENDED_INTERVAL_SECONDS,
+    gcp_critical_interval: int = GCP_CRITICAL_INTERVAL_SECONDS,
+    gcp_standard_interval: int = GCP_STANDARD_INTERVAL_SECONDS,
+    gcp_low_interval: int = GCP_LOW_INTERVAL_SECONDS,
+    gcp_extended_interval: int = GCP_EXTENDED_INTERVAL_SECONDS,
+):
     """
     leader_event: see app/collector/scheduler.py's run_loop docstring --
     same leadership-loss guard, same reasoning (this loop is started
     under the identical leader-elected code path and was equally
     vulnerable to running forever as an orphaned second scheduler).
+
+    The tick loop runs on Azure's critical interval (the fastest configured
+    cadence across both clouds) and fires every other tier only once its
+    own interval has elapsed since it last ran -- same "fast tick, slower
+    tiers gated by elapsed time" structure app/collector/scheduler.py uses
+    for AWS's critical/standard/low/extended/slow-extended split.
     """
     logger.info(
-        f"Multi-cloud (Azure/GCP) metrics scheduler started "
-        f"(core={core_interval}s, extended={extended_interval}s)"
+        "Multi-cloud (Azure/GCP) severity-tiered metrics scheduler started "
+        f"(azure critical={azure_critical_interval}s standard={azure_standard_interval}s "
+        f"low={azure_low_interval}s extended={azure_extended_interval}s "
+        f"slow_extended={azure_slow_extended_interval}s; "
+        f"gcp critical={gcp_critical_interval}s standard={gcp_standard_interval}s "
+        f"low={gcp_low_interval}s extended={gcp_extended_interval}s)"
     )
-    last_extended = 0.0
+
+    last = {
+        "gcp_critical": 0.0, "azure_standard": 0.0, "azure_low": 0.0,
+        "azure_extended": 0.0, "azure_slow_extended": 0.0,
+        "gcp_standard": 0.0, "gcp_low": 0.0, "gcp_extended": 0.0,
+    }
+
     while not _stop_event.is_set():
         if leader_event is not None and not leader_event.is_set():
             logger.warning("[multicloud-scheduler] leadership lost -- stopping this loop "
@@ -109,14 +199,46 @@ def run_loop(leader_event=None, core_interval: int = CORE_INTERVAL_SECONDS, exte
 
         now = time.time()
 
-        run_once(categories=("core",))
+        # Azure critical runs every tick (Azure's tick rate = the fastest
+        # configured interval across both clouds). GCP critical is gated
+        # like every other tier below, since its own interval (2 min) is
+        # slower than the tick rate (1 min).
+        _run_azure_pass("critical", _AZURE_CRITICAL, ("core",))
 
-        if now - last_extended >= extended_interval:
-            run_once(categories=("extended", "directory"))
-            last_extended = now
+        if now - last["gcp_critical"] >= gcp_critical_interval:
+            _run_gcp_pass("critical", _GCP_CRITICAL, ("core",))
+            last["gcp_critical"] = now
+
+        if now - last["azure_standard"] >= azure_standard_interval:
+            _run_azure_pass("standard", _AZURE_STANDARD, ("core",))
+            last["azure_standard"] = now
+
+        if now - last["azure_low"] >= azure_low_interval:
+            _run_azure_pass("low", _AZURE_LOW, ("core",))
+            last["azure_low"] = now
+
+        if now - last["azure_extended"] >= azure_extended_interval:
+            _run_azure_pass("extended", _AZURE_EXTENDED_FAST, ("extended", "directory"))
+            last["azure_extended"] = now
+
+        if now - last["azure_slow_extended"] >= azure_slow_extended_interval:
+            _run_azure_pass("slow_extended", _AZURE_EXTENDED_SLOW, ("extended",))
+            last["azure_slow_extended"] = now
+
+        if now - last["gcp_standard"] >= gcp_standard_interval:
+            _run_gcp_pass("standard", _GCP_STANDARD, ("core",))
+            last["gcp_standard"] = now
+
+        if now - last["gcp_low"] >= gcp_low_interval:
+            _run_gcp_pass("low", _GCP_LOW, ("core",))
+            last["gcp_low"] = now
+
+        if now - last["gcp_extended"] >= gcp_extended_interval:
+            _run_gcp_pass("extended", _GCP_EXTENDED, ("extended", "directory"))
+            last["gcp_extended"] = now
 
         elapsed = time.time() - now
-        sleep = max(0, core_interval - elapsed)
+        sleep = max(0, azure_critical_interval - elapsed)
         _stop_event.wait(timeout=sleep)
 
 
