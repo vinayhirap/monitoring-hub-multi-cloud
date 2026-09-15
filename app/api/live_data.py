@@ -54,6 +54,7 @@ from app.aws.collector_direct import (
     _get_ecs_metric_series,
 )
 from app.db import get_connection
+from app.alert_visibility import hidden_metrics_sql
 import datetime
 import time
 import json
@@ -193,6 +194,16 @@ def _get_active_alert_counts_by_account() -> dict:
     banner/tiles disagreement this function exists to prevent. Alert
     *age* is a display concern — see alerts.py's `stale` flag — never
     a reason to stop counting an alert that is still open.)
+
+    Also excludes app.alert_visibility.HIDDEN_FROM_ALERTS_UI_METRICS
+    (2026-09-15 fix) -- every alerts.py query this function is meant to
+    agree with already excludes these (multivariate_anomaly rows: real
+    in the DB, deliberately invisible in the UI). Before this fix, this
+    was the one query that didn't, so an account with hidden anomaly-
+    detector warnings open could show a HIGHER warning count here than
+    on the Alerts page's own Active/Warning tabs for the same account at
+    the same moment -- the same disagreement this function's docstring
+    above already describes fixing for a different cause.
     """
     try:
         conn   = get_connection()
@@ -205,8 +216,9 @@ def _get_active_alert_counts_by_account() -> dict:
                                    AND acc.status = 'active'
             WHERE a.status = 'active'
               AND a.resolved_at IS NULL
+              AND a.metric_name NOT IN ({hidden})
             GROUP BY r.aws_account_id, a.severity
-        """)
+        """.format(hidden=hidden_metrics_sql()))
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
