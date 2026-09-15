@@ -12,7 +12,8 @@ request. See app/llm/summarizer.py's module docstring for the
 never-invents-facts / graceful-fallback contract this relies on.
 
 COST CONTROL: entirely no-op (zero DB reads, zero API calls) unless
-LLM_SUMMARY_ENABLED=true and ANTHROPIC_API_KEY are both set (see
+LLM_SUMMARY_ENABLED=true (and, if LLM_PROVIDER=ollama, a running local
+Ollama server -- see
 is_enabled()). Even when enabled, only regenerates a summary when its
 underlying deterministic facts actually CHANGED since the last cycle
 (hash comparison -- see migration 030's docstring), and caps how many
