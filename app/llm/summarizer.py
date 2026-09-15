@@ -32,15 +32,23 @@ TWO PROVIDERS, chosen via LLM_PROVIDER in .env:
 
 OLLAMA SETUP (do this once, on whichever box runs this app):
     curl -fsSL https://ollama.com/install.sh | sh
-    ollama pull qwen3:4b
+    ollama pull llama3.2:3b
     sudo systemctl enable --now ollama
 That's the whole cost: a one-time download and some disk/RAM, never a
-bill. As of 2026-09-15, Qwen3:4b is the best all-round pick for a
-CPU-only box with 8GB+ RAM free; on tighter RAM (~4GB), pull
-`phi4-mini` instead and set OLLAMA_MODEL=phi4-mini -- this changes
-every few months as new models ship, so re-check before assuming this
-comment is still current. Swap models anytime with OLLAMA_MODEL=<name>
-in .env -- no code change needed.
+bill. llama3.2:3b was chosen (2026-09-15) over Qwen3/Phi-4-mini-class
+"reasoning" models specifically BECAUSE it has no internal
+chain-of-thought step -- a real production test on this app's own
+t3.large found Qwen3:4b took ~5 minutes per call (684 tokens of
+internal "thinking" before a 5-word answer) versus llama3.2:3b's
+~9-33s for the same class of prompt with genuinely good output
+quality and zero wasted reasoning tokens. AVOID any model whose
+name/description mentions "reasoning", "thinking", or "R1" for this
+feature specifically -- that capability is pure latency overhead for
+a task that's just "rewrite already-correct facts," not a benefit.
+Swap models anytime with OLLAMA_MODEL=<name> in .env -- no code change
+needed, just confirm a candidate has no reasoning mode and time a real
+test prompt first (see this session's own before/after numbers as the
+template for how to evaluate one).
 
 AUTO-REFRESH, NOT AUTO-UPGRADE: refresh_ollama_model() below runs once
 a day (scheduler.py's slow_extended tier) and re-pulls whatever model
@@ -70,7 +78,7 @@ logger = logging.getLogger(__name__)
 
 # ── Ollama (free, local, default) ────────────────────────────────────
 _OLLAMA_DEFAULT_HOST = "http://localhost:11434"
-_OLLAMA_DEFAULT_MODEL = "qwen3:4b"
+_OLLAMA_DEFAULT_MODEL = "llama3.2:3b"
 
 # ── Anthropic (optional, paid, opt-in only) ──────────────────────────
 _ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
