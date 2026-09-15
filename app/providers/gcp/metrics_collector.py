@@ -180,10 +180,15 @@ _BIGQUERY_PROJECT_UNRESOLVABLE_METRICS = {
 }
 
 
-def _enabled_gcp_metrics(cur, account_id: int, categories=None):
+def _enabled_gcp_metrics(cur, account_id: int, categories=None, only_metric_names=None):
     """[(namespace, service, metric_name), ...] for this account's enabled
     selection. categories: optional iterable of metric_catalog.category
-    values to restrict to -- see collect_account_metrics()'s docstring."""
+    values to restrict to -- see collect_account_metrics()'s docstring.
+
+    only_metric_names: optional {service: {metric_name, ...}} (see
+    app/providers/gcp/severity_tiers.py), applied as a Python-side filter
+    after the category-based SQL query -- same severity-tier-pass filter
+    as Azure's counterpart, same no-schema-change reasoning."""
     query = """
         SELECT mc.namespace, mc.service, mc.metric_name
         FROM metric_catalog mc
@@ -197,7 +202,15 @@ def _enabled_gcp_metrics(cur, account_id: int, categories=None):
         query += f" AND mc.category IN ({placeholders})"
         params.extend(categories)
     cur.execute(query, params)
-    return cur.fetchall()
+    rows = cur.fetchall()
+
+    if only_metric_names is not None:
+        rows = [
+            row for row in rows
+            if row["metric_name"] in only_metric_names.get(row["service"], set())
+        ]
+
+    return rows
 
 
 def _build_resource_maps(cur, account_id: int, services: set):
@@ -231,7 +244,7 @@ def _build_resource_maps(cur, account_id: int, services: set):
     return resource_id_maps, numeric_id_map
 
 
-def collect_account_metrics(account: dict, categories=None) -> dict:
+def collect_account_metrics(account: dict, categories=None, only_metric_names=None) -> dict:
     """
     account: a row from aws_accounts (dict) for one GCP account. Must have
     id, project_id, and a service-account key stored via app.credentials.
@@ -250,6 +263,14 @@ def collect_account_metrics(account: dict, categories=None) -> dict:
     toward that ceiling as more services/resources are added. See
     monitoring-hub-metric-audit.md §3.3, §8 flaw #3, §9. None (the
     default) preserves the original untiered behavior.
+
+    only_metric_names: optional per-metric severity filter -- see
+    app/providers/gcp/severity_tiers.py. Because GCP's read cost is
+    genuinely usage-based (unlike Azure's free-up-to-a-ceiling shape),
+    this is where 'core' gets split into a cost-conscious critical/
+    standard/low cadence mirroring AWS's own tiering, rather than the
+    freshness-driven split Azure's severity_tiers.py uses. None preserves
+    the original category-only behavior.
 
     Returns {"pushed": int, "metric_types_queried": int, "errors": [str, ...]}.
     Never raises -- see the Azure collector's docstring for why.
@@ -288,7 +309,9 @@ def collect_account_metrics(account: dict, categories=None) -> dict:
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
-        enabled = _enabled_gcp_metrics(cur, account["id"], categories=categories)
+        enabled = _enabled_gcp_metrics(
+            cur, account["id"], categories=categories, only_metric_names=only_metric_names
+        )
         if not enabled:
             return result
         resource_id_maps, numeric_id_map = _build_resource_maps(
@@ -407,9 +430,9 @@ def collect_account_metrics(account: dict, categories=None) -> dict:
     return result
 
 
-def collect_all_gcp_accounts(categories=None) -> dict:
+def collect_all_gcp_accounts(categories=None, only_metric_names=None) -> dict:
     """Runs collect_account_metrics() for every active GCP account. Used by the scheduler.
-    categories: see collect_account_metrics()'s docstring."""
+    categories, only_metric_names: see collect_account_metrics()'s docstring."""
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
@@ -422,7 +445,7 @@ def collect_all_gcp_accounts(categories=None) -> dict:
 
     totals = {"accounts": len(accounts), "pushed": 0, "errors": []}
     for account in accounts:
-        r = collect_account_metrics(account, categories=categories)
+        r = collect_account_metrics(account, categories=categories, only_metric_names=only_metric_names)
         totals["pushed"] += r["pushed"]
         if r["errors"]:
             totals["errors"].append({"account_id": account["id"], "errors": r["errors"]})

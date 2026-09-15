@@ -56,13 +56,24 @@ logger = logging.getLogger(__name__)
 _BATCH_SIZE = 50  # Azure Monitor Metrics Batch API hard limit per call
 
 
-def _enabled_azure_metrics(cur, account_id: int, categories=None):
+def _enabled_azure_metrics(cur, account_id: int, categories=None, only_metric_names=None):
     """{(namespace, service): {metric_name, ...}} for this account's enabled
     selection. categories: optional iterable of metric_catalog.category
     values ('core','extended','directory') to restrict to -- see
     collect_account_metrics()'s docstring for why this exists. None (the
     default) preserves the original behavior of collecting every enabled
     metric regardless of category, for callers that don't opt into tiering.
+
+    only_metric_names: optional {service: {metric_name, ...}} (see
+    app/providers/azure/severity_tiers.py) applied as a Python-side filter
+    AFTER the category-based SQL query above -- this is the severity-tier
+    pass filter multicloud_scheduler.py uses to split 'core' into
+    critical/standard/low and 'extended' into fast/slow without any
+    metric_catalog schema change. A service key present in `categories`'
+    result but absent from only_metric_names is dropped entirely for this
+    pass (it belongs to a different severity tier); a service present in
+    both is restricted to the intersection of its enabled metrics and this
+    tier's allowlist for that service.
     """
     query = """
         SELECT mc.namespace, mc.service, mc.metric_name
@@ -81,10 +92,22 @@ def _enabled_azure_metrics(cur, account_id: int, categories=None):
     for row in cur.fetchall():
         key = (row["namespace"], row["service"])
         grouped.setdefault(key, set()).add(row["metric_name"])
+
+    if only_metric_names is not None:
+        filtered = {}
+        for (namespace, service), names in grouped.items():
+            allowed = only_metric_names.get(service)
+            if not allowed:
+                continue
+            kept = names & allowed
+            if kept:
+                filtered[(namespace, service)] = kept
+        grouped = filtered
+
     return grouped
 
 
-def collect_account_metrics(account: dict, categories=None) -> dict:
+def collect_account_metrics(account: dict, categories=None, only_metric_names=None) -> dict:
     """
     account: a row from aws_accounts (dict) for one Azure account. Must have
     id, tenant_id, client_id, subscription_id, default_region.
@@ -104,6 +127,13 @@ def collect_account_metrics(account: dict, categories=None) -> dict:
     metrics) as often as latency-sensitive ones (VM CPU) for no freshness
     benefit. See monitoring-hub-metric-audit.md §8 flaw #3, §9. None (the
     default) preserves the original untiered behavior.
+
+    only_metric_names: optional per-metric severity filter -- see
+    app/providers/azure/severity_tiers.py and _enabled_azure_metrics()'s
+    docstring. Lets multicloud_scheduler.py split 'core' into a
+    near-real-time critical pass and slower standard/low passes (and
+    'extended' into fast/slow passes) without a metric_catalog schema
+    change. None preserves the original category-only behavior.
 
     Returns {"pushed": int, "resources_queried": int, "errors": [str, ...]}.
     Never raises -- collection failures for one account/service shouldn't
@@ -160,7 +190,9 @@ def collect_account_metrics(account: dict, categories=None) -> dict:
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
-        by_service = _enabled_azure_metrics(cur, account["id"], categories=categories)
+        by_service = _enabled_azure_metrics(
+            cur, account["id"], categories=categories, only_metric_names=only_metric_names
+        )
         if not by_service:
             return result
 
@@ -235,9 +267,9 @@ def collect_account_metrics(account: dict, categories=None) -> dict:
     return result
 
 
-def collect_all_azure_accounts(categories=None) -> dict:
+def collect_all_azure_accounts(categories=None, only_metric_names=None) -> dict:
     """Runs collect_account_metrics() for every active Azure account. Used by the scheduler.
-    categories: see collect_account_metrics()'s docstring."""
+    categories, only_metric_names: see collect_account_metrics()'s docstring."""
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
@@ -250,7 +282,7 @@ def collect_all_azure_accounts(categories=None) -> dict:
 
     totals = {"accounts": len(accounts), "pushed": 0, "errors": []}
     for account in accounts:
-        r = collect_account_metrics(account, categories=categories)
+        r = collect_account_metrics(account, categories=categories, only_metric_names=only_metric_names)
         totals["pushed"] += r["pushed"]
         if r["errors"]:
             totals["errors"].append({"account_id": account["id"], "errors": r["errors"]})
