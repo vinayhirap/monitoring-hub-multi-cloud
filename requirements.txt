@@ -109,7 +109,17 @@ scikit-learn==1.8.0
 # cloud API calls. Entirely optional at runtime: if this fails to
 # install, baseline_stl.py logs a warning and no-ops, sigma-clipped
 # baselines from baseline.py are unaffected either way.
-statsmodels==0.14.5
+#
+# MUST be >=0.15.0, not 0.14.x: statsmodels 0.14.5 (originally pinned
+# here) calls pandas' deprecate_kwarg() with its old 2-argument
+# signature at import time (statsmodels/tsa/stattools.py), which
+# raises TypeError under this app's pandas==3.0.2 (pandas 3.0 changed
+# deprecate_kwarg() to require a leading `klass` argument) -- an
+# upstream statsmodels/pandas incompatibility, not anything in this
+# app's own code. Confirmed fixed in 0.15.0 by reproducing the crash
+# and re-testing an actual STL fit end-to-end against this exact
+# pandas version before bumping the pin.
+statsmodels==0.15.0
 
 # app/llm/postmortem_pdf.py (downloadable incident postmortems,
 # 2026-09-14): fpdf2 is a pure-Python PDF generator (no compiled
