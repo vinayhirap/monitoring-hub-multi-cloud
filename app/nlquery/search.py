@@ -73,7 +73,7 @@ def run_nl_search(query_text: str, current_user: dict) -> dict:
             params.append(filters["resource_type"])
 
         if filters["since_minutes"]:
-            where.append("a.created_at >= DATE_SUB(NOW(), INTERVAL %s MINUTE)")
+            where.append("a.triggered_at >= DATE_SUB(NOW(), INTERVAL %s MINUTE)")
             params.append(filters["since_minutes"])
 
         if filters["free_text"]:
@@ -91,13 +91,13 @@ def run_nl_search(query_text: str, current_user: dict) -> dict:
         sql = f"""
             SELECT a.id, a.resource_id AS aws_resource_id, r.name AS resource_name,
                    r.resource_type, a.metric_name, a.severity, a.status,
-                   a.current_value, a.threshold, a.created_at, acc.id AS account_id,
+                   a.current_value, a.threshold, a.triggered_at AS created_at, acc.id AS account_id,
                    acc.account_name
             FROM alerts a
             JOIN resources r      ON r.resource_id = a.resource_id
             JOIN aws_accounts acc ON acc.id = r.aws_account_id
             WHERE {' AND '.join(where)}
-            ORDER BY a.created_at DESC
+            ORDER BY a.triggered_at DESC
             LIMIT {MAX_RESULTS}
         """
         cursor.execute(sql, tuple(params))
