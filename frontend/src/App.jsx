@@ -19,6 +19,12 @@ import OpEvents          from "./pages/OpEvents";
 import EscalationPolicies from "./pages/EscalationPolicies";
 import SyntheticChecks    from "./pages/SyntheticChecks";
 import Slos                from "./pages/Slos";
+import SecurityFindings    from "./pages/SecurityFindings";
+import MaintenanceWindows  from "./pages/MaintenanceWindows";
+import DeployRisk          from "./pages/DeployRisk";
+import Search              from "./pages/Search";
+import StatusPageAdmin     from "./pages/StatusPageAdmin";
+import StatusPagePublic    from "./pages/StatusPagePublic";
 
 function SessionCheckingScreen() {
   // Shown only for the brief moment while AuthContext asks the backend
@@ -46,6 +52,13 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={isLoggedIn ? <Navigate to="/overview" replace /> : <Login />} />
+      {/* Public status page (2026-09-14) -- deliberately OUTSIDE
+          RequireAuth, same reasoning as /login: this must render for
+          a logged-out (or account-less) visitor. See
+          pages/StatusPagePublic.jsx and app/api/status_page.py's
+          module docstring for the sanitization boundary that makes
+          this safe to expose with no auth check at all. */}
+      <Route path="/status" element={<StatusPagePublic />} />
       <Route path="/" element={<RequireAuth><Layout /></RequireAuth>}>
         <Route index element={<Navigate to="/overview" replace />} />
         <Route path="overview"                  element={<Overview />} />
@@ -57,6 +70,11 @@ function AppRoutes() {
         <Route path="escalation-policies"       element={<EscalationPolicies />} />
         <Route path="synthetic-checks"          element={<SyntheticChecks />} />
         <Route path="slos"                      element={<Slos />} />
+        <Route path="security-findings"         element={<SecurityFindings />} />
+        <Route path="maintenance-windows"       element={<MaintenanceWindows />} />
+        <Route path="deploy-risk"               element={<DeployRisk />} />
+        <Route path="search"                    element={<Search />} />
+        <Route path="status-page-admin"         element={<StatusPageAdmin />} />
         <Route path="settings"                  element={<Settings />} />
         <Route path="accounts/:id/services"     element={<ServiceList />} />
         <Route path="accounts/:id/topology"     element={<Topology />} />
