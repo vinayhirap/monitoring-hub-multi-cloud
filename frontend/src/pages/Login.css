@@ -344,6 +344,21 @@
 }
 .login-link-back:hover { color: #e2e8f0; }
 
+/* SAML SSO link (2026-09-14) -- centered below the sign-in button,
+   quiet by default (this is a secondary path for most users until an
+   org actually turns SSO on). */
+.login-sso-link {
+  display: block;
+  text-align: center;
+  margin-top: 14px;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  color: rgba(99, 130, 190, 0.75);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.login-sso-link:hover { color: #2bb3ac; text-decoration: underline; }
+
 /* ── info / status banner ── */
 .login-info {
   display: flex;

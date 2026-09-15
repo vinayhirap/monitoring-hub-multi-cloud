@@ -332,6 +332,17 @@ export default function Login() {
             <button type="submit" className={`login-btn ${loading ? "login-btn-loading" : ""}`} disabled={loading}>
               {loading ? (<><span className="login-spinner" />Authenticating…</>) : "Sign In →"}
             </button>
+
+            {/* SAML SSO (2026-09-14) -- always shown; if SSO_SAML_ENABLED
+                isn't set in the backend's .env, this link's target
+                returns a plain 503 rather than a styled error here --
+                see app/auth/saml.py's module docstring for how to turn
+                it on. Plain <a>, not a click handler + fetch: this must
+                be a real full-page navigation for the SP-initiated
+                redirect flow to work. */}
+            <a href="/api/auth/sso/login" className="login-sso-link">
+              Log in with SSO
+            </a>
           </form>
         )}
 
