@@ -135,7 +135,7 @@ def _cached(key: str, fn, ttl: int = None):
     return result
 
 
-def get_session(region=None, role_arn=None, external_id=None):
+def get_session(region=None, role_arn=None, external_id=None, account=None):
     """
     Cross-account credentials for a SPECIFIC AWS account (role_arn
     given) come from a real STS AssumeRole (app.aws.sts.assume_role) —
@@ -143,7 +143,17 @@ def get_session(region=None, role_arn=None, external_id=None):
     federation. Without role_arn, falls back to ambient credentials
     (env vars / instance profile / shared config), unchanged from
     before — every OTHER caller of get_session in this file that
-    doesn't pass role_arn is unaffected.
+    doesn't pass role_arn/account is unaffected.
+
+    `account` (optional): the full aws_accounts DB row dict. When given,
+    takes priority over role_arn/external_id and resolves credentials
+    via app.aws.sts.get_boto3_session(), which also covers auth_mode ==
+    "static_keys" -- role_arn alone can never represent that case, since
+    a static-key account's role_arn column is empty by design. Pass this
+    whenever you have the account row available (see callers in
+    get_account_summary / app/api/live_data.py); role_arn/external_id
+    stay supported standalone for callers that only have those two
+    values on hand.
 
     Why this matters beyond correctness: before this, every collector
     below fell through to ambient-credential resolution regardless of
@@ -155,6 +165,29 @@ def get_session(region=None, role_arn=None, external_id=None):
     resolves once and is reused for every client built from the
     returned session.
     """
+    if account is not None:
+        # Preferred path: resolves ALL auth modes (static_keys, assume_role,
+        # ambient) through the single real choke point (app.aws.sts.
+        # get_boto3_session) instead of this function's own role_arn-only
+        # logic below, which silently fell back to ambient/self credentials
+        # for any account onboarded via static access/secret keys (auth_mode
+        # = "static_keys") -- see the 2026-09-16 U4RAD incident, part 2: even
+        # after U4RAD's stored keys were fixed and discovery correctly
+        # populated the `resources` table with U4RAD's own instances, this
+        # function -- which powers the Overview page's account cards AND the
+        # live per-account Service Detail pages via app/api/live_data.py --
+        # kept calling AWS with ambient credentials (the server's own
+        # AuroGov Mumbai account) for U4RAD and any other static-key
+        # account, because it only ever knew about role_arn.
+        from app.aws.sts import get_boto3_session
+        base_session = get_boto3_session(account)
+        creds = base_session.get_credentials().get_frozen_credentials()
+        return boto3.Session(
+            aws_access_key_id=creds.access_key,
+            aws_secret_access_key=creds.secret_key,
+            aws_session_token=creds.token,
+            region_name=region,
+        )
     if role_arn:
         from app.aws.sts import assume_role
         base_session = assume_role(role_arn, external_id, session_name="mh-account-summary")
@@ -294,12 +327,13 @@ def _gmd_series(cw, queries, hours=6):
 
 # ── EC2 ───────────────────────────────────────────────────────────────
 
-def collect_ec2_instances(region=None, role_arn=None, external_id=None) -> list:
-    return _cached(f"ec2_{region}_{role_arn or 'self'}", lambda: _ec2_raw(region, role_arn, external_id))
+def collect_ec2_instances(region=None, role_arn=None, external_id=None, account=None) -> list:
+    cache_key = (account or {}).get("id") or role_arn or "self"
+    return _cached(f"ec2_{region}_{cache_key}", lambda: _ec2_raw(region, role_arn, external_id, account))
 
-def _ec2_raw(region, role_arn=None, external_id=None) -> list:
+def _ec2_raw(region, role_arn=None, external_id=None, account=None) -> list:
     try:
-        ec2 = get_session(region, role_arn, external_id).client("ec2")
+        ec2 = get_session(region, role_arn, external_id, account).client("ec2")
         instances = []
         for r in ec2.describe_instances()["Reservations"]:
             for inst in r["Instances"]:
@@ -341,12 +375,13 @@ def _ec2_raw(region, role_arn=None, external_id=None) -> list:
 
 # ── EBS ───────────────────────────────────────────────────────────────
 
-def collect_ebs_volumes(region=None, role_arn=None, external_id=None) -> list:
-    return _cached(f"ebs_{region}_{role_arn or 'self'}", lambda: _ebs_raw(region, role_arn, external_id))
+def collect_ebs_volumes(region=None, role_arn=None, external_id=None, account=None) -> list:
+    cache_key = (account or {}).get("id") or role_arn or "self"
+    return _cached(f"ebs_{region}_{cache_key}", lambda: _ebs_raw(region, role_arn, external_id, account))
 
-def _ebs_raw(region, role_arn=None, external_id=None) -> list:
+def _ebs_raw(region, role_arn=None, external_id=None, account=None) -> list:
     try:
-        ec2  = get_session(region, role_arn, external_id).client("ec2")
+        ec2  = get_session(region, role_arn, external_id, account).client("ec2")
         vols = ec2.describe_volumes().get("Volumes", [])
 
         read_ops_map  = _metric_snapshot_query_all("ebs", "volumereadops")
@@ -398,12 +433,13 @@ def _ebs_raw(region, role_arn=None, external_id=None) -> list:
 
 # ── RDS (discovery only — no CW metrics fetched here) ───────────────────
 
-def collect_rds_instances(region=None, role_arn=None, external_id=None) -> list:
-    return _cached(f"rds_{region}_{role_arn or 'self'}", lambda: _rds_raw(region, role_arn, external_id))
+def collect_rds_instances(region=None, role_arn=None, external_id=None, account=None) -> list:
+    cache_key = (account or {}).get("id") or role_arn or "self"
+    return _cached(f"rds_{region}_{cache_key}", lambda: _rds_raw(region, role_arn, external_id, account))
 
-def _rds_raw(region, role_arn=None, external_id=None) -> list:
+def _rds_raw(region, role_arn=None, external_id=None, account=None) -> list:
     try:
-        rds = get_session(region, role_arn, external_id).client("rds")
+        rds = get_session(region, role_arn, external_id, account).client("rds")
         out = []
         for db in rds.describe_db_instances()["DBInstances"]:
             out.append({
@@ -425,8 +461,9 @@ def _rds_raw(region, role_arn=None, external_id=None) -> list:
 
 # ── S3 (unchanged — not in YACE config) ─────────────────────────────────
 
-def collect_s3_buckets(region=None, role_arn=None, external_id=None) -> list:
-    return _cached(f"s3_global_{role_arn or 'self'}", lambda: _s3_raw(role_arn, external_id))
+def collect_s3_buckets(region=None, role_arn=None, external_id=None, account=None) -> list:
+    cache_key = (account or {}).get("id") or role_arn or "self"
+    return _cached(f"s3_global_{cache_key}", lambda: _s3_raw(role_arn, external_id, account))
 
 def _s3_bucket_detail(s3, b) -> dict:
     """
@@ -469,7 +506,7 @@ def _s3_bucket_detail(s3, b) -> dict:
     }
 
 
-def _s3_raw(role_arn=None, external_id=None) -> list:
+def _s3_raw(role_arn=None, external_id=None, account=None) -> list:
     """
     Lists buckets, then fetches each bucket's location/versioning/
     public-access-block details CONCURRENTLY (one worker per bucket,
@@ -481,7 +518,7 @@ def _s3_raw(role_arn=None, external_id=None) -> list:
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     try:
-        s3      = get_session(None, role_arn, external_id).client("s3")
+        s3      = get_session(None, role_arn, external_id, account).client("s3")
         buckets = s3.list_buckets().get("Buckets", [])
         out     = []
         with ThreadPoolExecutor(max_workers=min(len(buckets), 20) or 1) as ex:
@@ -569,12 +606,13 @@ def get_s3_metric_series(bucket_name: str, hours: int = 24) -> dict:
 
 # ── ELB (discovery only — no CW metrics fetched here) ────────────────────
 
-def collect_elb(region=None, role_arn=None, external_id=None) -> list:
-    return _cached(f"elb_{region}_{role_arn or 'self'}", lambda: _elb_raw(region, role_arn, external_id))
+def collect_elb(region=None, role_arn=None, external_id=None, account=None) -> list:
+    cache_key = (account or {}).get("id") or role_arn or "self"
+    return _cached(f"elb_{region}_{cache_key}", lambda: _elb_raw(region, role_arn, external_id, account))
 
-def _elb_raw(region, role_arn=None, external_id=None) -> list:
+def _elb_raw(region, role_arn=None, external_id=None, account=None) -> list:
     try:
-        elb = get_session(region, role_arn, external_id).client("elbv2")
+        elb = get_session(region, role_arn, external_id, account).client("elbv2")
         out = []
         for lb in elb.describe_load_balancers().get("LoadBalancers", []):
             ct = lb.get("CreatedTime", "")
@@ -1077,12 +1115,13 @@ def _global_accelerator_raw() -> list:
 
 # ── ECS (unchanged — not in YACE config) ─────────────────────────────────
 
-def collect_ecs_clusters(region=None, role_arn=None, external_id=None) -> list:
-    return _cached(f"ecs_{region}_{role_arn or 'self'}", lambda: _ecs_raw(region, role_arn, external_id))
+def collect_ecs_clusters(region=None, role_arn=None, external_id=None, account=None) -> list:
+    cache_key = (account or {}).get("id") or role_arn or "self"
+    return _cached(f"ecs_{region}_{cache_key}", lambda: _ecs_raw(region, role_arn, external_id, account))
 
-def _ecs_raw(region, role_arn=None, external_id=None) -> list:
+def _ecs_raw(region, role_arn=None, external_id=None, account=None) -> list:
     try:
-        session = get_session(region, role_arn, external_id)
+        session = get_session(region, role_arn, external_id, account)
         ecs = session.client("ecs")
         cw  = session.client("cloudwatch")
         cluster_arns = ecs.list_clusters().get("clusterArns", [])
@@ -1157,12 +1196,13 @@ def _ecs_raw(region, role_arn=None, external_id=None) -> list:
 
 # ── Lambda (unchanged — not in YACE config) ──────────────────────────────
 
-def collect_lambda_functions(region=None, role_arn=None, external_id=None) -> list:
-    return _cached(f"lambda_{region}_{role_arn or 'self'}", lambda: _lambda_raw(region, role_arn, external_id))
+def collect_lambda_functions(region=None, role_arn=None, external_id=None, account=None) -> list:
+    cache_key = (account or {}).get("id") or role_arn or "self"
+    return _cached(f"lambda_{region}_{cache_key}", lambda: _lambda_raw(region, role_arn, external_id, account))
 
-def _lambda_raw(region, role_arn=None, external_id=None) -> list:
+def _lambda_raw(region, role_arn=None, external_id=None, account=None) -> list:
     try:
-        lmb = get_session(region, role_arn, external_id).client("lambda")
+        lmb = get_session(region, role_arn, external_id, account).client("lambda")
         out = []
         for page in lmb.get_paginator("list_functions").paginate():
             for fn in page["Functions"]:
@@ -1922,17 +1962,26 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> li
 
 # ── Account summary (unchanged) ──────────────────────────────────────────
 
-def get_account_summary(region=None, role_arn=None, external_id=None) -> dict:
+def get_account_summary(region=None, role_arn=None, external_id=None, account=None) -> dict:
+    """
+    `account` (optional, preferred): full aws_accounts DB row. Threaded
+    through to every collector below so static-key accounts resolve their
+    own stored credentials instead of falling back to ambient/self
+    credentials the way role_arn-only resolution did (2026-09-16 U4RAD
+    incident, part 2 -- see get_session()'s docstring in this module).
+    role_arn/external_id stay accepted standalone for backward
+    compatibility with any other caller that only has those two values.
+    """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     collectors = {
-        "ec2": lambda: collect_ec2_instances(region, role_arn, external_id),
-        "ebs": lambda: collect_ebs_volumes(region, role_arn, external_id),
-        "rds": lambda: collect_rds_instances(region, role_arn, external_id),
-        "lmb": lambda: collect_lambda_functions(region, role_arn, external_id),
-        "s3":  lambda: collect_s3_buckets(region, role_arn, external_id),
-        "elb": lambda: collect_elb(region, role_arn, external_id),
-        "ecs": lambda: collect_ecs_clusters(region, role_arn, external_id),
+        "ec2": lambda: collect_ec2_instances(region, role_arn, external_id, account),
+        "ebs": lambda: collect_ebs_volumes(region, role_arn, external_id, account),
+        "rds": lambda: collect_rds_instances(region, role_arn, external_id, account),
+        "lmb": lambda: collect_lambda_functions(region, role_arn, external_id, account),
+        "s3":  lambda: collect_s3_buckets(region, role_arn, external_id, account),
+        "elb": lambda: collect_elb(region, role_arn, external_id, account),
+        "ecs": lambda: collect_ecs_clusters(region, role_arn, external_id, account),
     }
     results = {}
     with ThreadPoolExecutor(max_workers=6) as ex:
