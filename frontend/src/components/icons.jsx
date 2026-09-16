@@ -25,6 +25,7 @@ function Base({ size = 16, children, ...rest }) {
 
 // Arrows / navigation
 export const ArrowLeftIcon  = (p) => <Base {...p}><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></Base>;
+export const ChevronDownIcon = (p) => <Base {...p}><polyline points="6 9 12 15 18 9"/></Base>;
 export const ArrowRightIcon = (p) => <Base {...p}><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></Base>;
 export const ExternalLinkIcon = (p) => <Base {...p}><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></Base>;
 export const CompassIcon    = (p) => <Base {...p}><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></Base>;

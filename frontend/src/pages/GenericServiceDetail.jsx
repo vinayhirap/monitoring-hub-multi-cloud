@@ -7,26 +7,112 @@
 // ServiceDetailRouter.jsx whenever ServiceDetail.hasCoreDetailPage()
 // says no bespoke page exists for the requested service key.
 //
-// Deliberately generic: one resource table (name, region, tags, state,
-// discovered-at) sourced from GET /api/live/resources-list/{id}/{svc},
-// which reads the same shared `resources` table every provider's
-// discovery pipeline writes into — see the backend comment on
-// live_resource_counts in app/api/live_data.py for the full list of
-// discovery modules that feed it. No per-service custom rendering, on
-// purpose: a bespoke chart-heavy page per extended/GCP/Azure service
-// is a real, larger follow-up (needs a per-service metric picker
-// against metric_history), not something to fake here with placeholder
-// charts.
+// Resource list sourced from GET /api/live/resources-list/{id}/{svc}
+// (the shared `resources` table every provider's discovery pipeline
+// writes into). Expanding a row fetches
+// GET /api/live/metrics/generic/{id}/{svc}/{resourceId} — real charts
+// from the same metric_history table every bespoke chart in this app
+// reads from (see that endpoint's backend comment), not a placeholder.
+// Charts are per-resource and lazy (fetched on first expand, not for
+// every row up front) since a service can have a large resource count.
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getResourcesList, getConsoleUrl } from "../api/api";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { getResourcesList, getGenericMetrics, getConsoleUrl } from "../api/api";
 import { CloudServiceIcon } from "../components/cloud-icons";
-import { ArrowLeftIcon, ExternalLinkIcon } from "../components/icons";
+import { ArrowLeftIcon, ExternalLinkIcon, ChevronDownIcon } from "../components/icons";
 
 async function fetchAccount(id) {
   const res = await fetch(`/api/admin/accounts/${id}`);
   if (!res.ok) throw new Error(String(res.status));
   return res.json();
+}
+
+function MetricChart({ name, metric }) {
+  const data = metric.series.map(p => ({ t: new Date(p.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), v: p.v }));
+  return (
+    <div style={{ background: "var(--bg-elevated, #10151c)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "10px 12px" }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 2 }}>{name}</div>
+      {metric.description && (
+        <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 6 }}>{metric.description}{metric.unit ? ` (${metric.unit})` : ""}</div>
+      )}
+      <ResponsiveContainer width="100%" height={110}>
+        <LineChart data={data} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <XAxis dataKey="t" tick={{ fontSize: 9, fill: "var(--text-muted)" }} interval="preserveStartEnd" />
+          <YAxis tick={{ fontSize: 9, fill: "var(--text-muted)" }} width={36} />
+          <Tooltip contentStyle={{ background: "var(--bg-card)", border: "1px solid var(--border)", fontSize: 11 }} />
+          <Line type="monotone" dataKey="v" stroke="var(--accent)" dot={false} strokeWidth={1.5} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function ResourceRow({ r, isLast, accountId, service }) {
+  const [expanded, setExpanded] = useState(false);
+  const [metrics, setMetrics] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  function toggle() {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && metrics === null && !loading) {
+      setLoading(true);
+      setError(null);
+      getGenericMetrics(accountId, service, r.resource_id)
+        .then(data => setMetrics(data || {}))
+        .catch(e => setError(e.message || "Failed to load metrics"))
+        .finally(() => setLoading(false));
+    }
+  }
+
+  const metricNames = metrics ? Object.keys(metrics) : [];
+
+  return (
+    <>
+      <tr
+        onClick={toggle}
+        style={{ borderBottom: (isLast && !expanded) ? "none" : "1px solid var(--border)", cursor: "pointer" }}
+      >
+        <td style={{ padding: "10px 14px", width: 20 }}>
+          <ChevronDownIcon size={13} style={{ color: "var(--text-muted)", transform: expanded ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform .15s" }} />
+        </td>
+        <td style={{ padding: "10px 14px" }}>
+          <div style={{ fontWeight: 600 }}>{r.name || r.resource_id}</div>
+          {r.name && r.name !== r.resource_id && (
+            <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{r.resource_id}</div>
+          )}
+        </td>
+        <td style={{ padding: "10px 14px", color: "var(--text-muted)" }}>{r.region || "—"}</td>
+        <td style={{ padding: "10px 14px", color: "var(--text-muted)" }}>{r.instance_state || "—"}</td>
+        <td style={{ padding: "10px 14px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
+          {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
+        </td>
+      </tr>
+      {expanded && (
+        <tr style={{ borderBottom: isLast ? "none" : "1px solid var(--border)" }}>
+          <td colSpan={5} style={{ padding: "0 14px 14px 40px", background: "rgba(255,255,255,.015)" }}>
+            {loading ? (
+              <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "10px 0" }}>Loading metrics…</div>
+            ) : error ? (
+              <div style={{ fontSize: 12, color: "var(--red)", padding: "10px 0" }}>{error}</div>
+            ) : metricNames.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "10px 0" }}>
+                No metric data collected yet for this resource. If you expect a metric here, confirm
+                it's enabled for this service in <b style={{ color: "var(--text-secondary)" }}>Settings → Metrics</b>.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10, paddingTop: 10 }}>
+                {metricNames.map(name => <MetricChart key={name} name={name} metric={metrics[name]} />)}
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
+  );
 }
 
 export default function GenericServiceDetail({ accountId, service, label }) {
@@ -49,6 +135,11 @@ export default function GenericServiceDetail({ accountId, service, label }) {
       .then(data => { if (!cancelled) setRows(Array.isArray(data) ? data : []); })
       .catch(e => { if (!cancelled) setError(e.message || "Failed to load resources"); })
       .finally(() => { if (!cancelled) setLoading(false); });
+    // Resource list only, on an interval — NOT re-fetching metrics for
+    // every expanded row on the same timer, to avoid hammering
+    // metric_history with repeat queries for rows the user isn't
+    // actively looking at. A resource-count/state change is worth
+    // catching passively; a chart refresh isn't as time-critical here.
     const t = setInterval(() => {
       getResourcesList(accountId, service).then(data => { if (!cancelled) setRows(Array.isArray(data) ? data : []); }).catch(() => {});
     }, 15000);
@@ -111,9 +202,9 @@ export default function GenericServiceDetail({ accountId, service, label }) {
         background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)",
         padding: "12px 16px", marginBottom: 16, fontSize: 12, color: "var(--text-muted)",
       }}>
-        This service doesn't have a dedicated metrics chart page yet — this is a live resource
-        listing sourced from the same discovery data that powers alerting for this service.
-        Metric history and alerts still work normally for any metric enabled for it in{" "}
+        This service doesn't have a dedicated page yet — click a resource row below to expand its
+        metric charts (same underlying data as every other page in this app). Metric collection and
+        alerts work normally for anything enabled in{" "}
         <b style={{ color: "var(--text-secondary)" }}>Settings → Metrics</b>; check the{" "}
         <span className="bc-link" onClick={() => navigate(`/accounts/${accountId}/incidents`)}>Alerts</span> page
         for this account to see anything currently firing.
@@ -136,6 +227,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
+                <th style={{ padding: "10px 14px", width: 20 }}></th>
                 <th style={{ padding: "10px 14px", color: "var(--text-muted)", fontWeight: 600, fontSize: 11 }}>NAME / ID</th>
                 <th style={{ padding: "10px 14px", color: "var(--text-muted)", fontWeight: 600, fontSize: 11 }}>REGION</th>
                 <th style={{ padding: "10px 14px", color: "var(--text-muted)", fontWeight: 600, fontSize: 11 }}>STATE</th>
@@ -144,19 +236,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
             </thead>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={r.resource_id || i} style={{ borderBottom: i === rows.length - 1 ? "none" : "1px solid var(--border)" }}>
-                  <td style={{ padding: "10px 14px" }}>
-                    <div style={{ fontWeight: 600 }}>{r.name || r.resource_id}</div>
-                    {r.name && r.name !== r.resource_id && (
-                      <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{r.resource_id}</div>
-                    )}
-                  </td>
-                  <td style={{ padding: "10px 14px", color: "var(--text-muted)" }}>{r.region || "—"}</td>
-                  <td style={{ padding: "10px 14px", color: "var(--text-muted)" }}>{r.instance_state || "—"}</td>
-                  <td style={{ padding: "10px 14px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
-                    {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
-                  </td>
-                </tr>
+                <ResourceRow key={r.resource_id || i} r={r} isLast={i === rows.length - 1} accountId={accountId} service={service} />
               ))}
             </tbody>
           </table>
@@ -165,3 +245,4 @@ export default function GenericServiceDetail({ accountId, service, label }) {
     </div>
   );
 }
+

@@ -54,15 +54,21 @@ def _credential(account: dict, secret: str) -> ClientSecretCredential:
 
 def _upsert_resource(cursor, account_id, resource_type, resource_id, name, tags, region,
                       normalized_resource_type):
+    # Same reasoning as app/providers/gcp/discovery.py's twin function:
+    # last_seen_at is recorded, but not used for staleness filtering
+    # yet -- Azure discovery has no recurring schedule either, only
+    # onboarding + manual "Settings -> resource sync". See
+    # 042_resource_last_seen_tracking.sql.
     cursor.execute("""
         INSERT INTO resources
-            (aws_account_id, resource_type, resource_id, name, tags, region, normalized_resource_type)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+            (aws_account_id, resource_type, resource_id, name, tags, region, normalized_resource_type, last_seen_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
         ON DUPLICATE KEY UPDATE
             name = VALUES(name),
             tags = VALUES(tags),
             region = VALUES(region),
-            normalized_resource_type = VALUES(normalized_resource_type)
+            normalized_resource_type = VALUES(normalized_resource_type),
+            last_seen_at = NOW()
     """, (account_id, resource_type, resource_id, name, json.dumps(tags or {}), region,
           normalized_resource_type))
 

@@ -95,12 +95,13 @@ def _upsert_resource(cursor, aws_account_id, resource_type, resource_id,
     inside runner.py without a circular-import risk."""
     cursor.execute("""
         INSERT INTO resources
-            (aws_account_id, resource_type, resource_id, name, tags, region)
-        VALUES (%s, %s, %s, %s, %s, %s)
+            (aws_account_id, resource_type, resource_id, name, tags, region, last_seen_at)
+        VALUES (%s, %s, %s, %s, %s, %s, NOW())
         ON DUPLICATE KEY UPDATE
-            name   = VALUES(name),
-            tags   = VALUES(tags),
-            region = VALUES(region)
+            name         = VALUES(name),
+            tags         = VALUES(tags),
+            region       = VALUES(region),
+            last_seen_at = NOW()
     """, (
         aws_account_id, resource_type, resource_id,
         name, json.dumps(tags), region

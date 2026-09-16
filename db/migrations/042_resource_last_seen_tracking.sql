@@ -1,0 +1,62 @@
+-- db/migrations/042_resource_last_seen_tracking.sql
+--
+-- Closes the "stale resources never get pruned" gap flagged when
+-- auditing the Services page (see live_resource_counts in
+-- app/api/live_data.py): a resource deleted in the actual cloud stays
+-- in `resources` forever today, since no discovery module has ever
+-- had a delete/reconcile step.
+--
+-- DELIBERATELY NOT hard-deleting stale rows in this migration or in
+-- the discovery code it enables. Two reasons, both found during this
+-- same audit, not theoretical:
+--
+--   1. metric_history has ON DELETE CASCADE on resources.id (see
+--      002c_metric_history_table.sql). Hard-deleting a `resources` row
+--      wipes that resource's entire metric history with it,
+--      irreversibly. A resource that's merely missing from ONE
+--      discovery cycle (API pagination hiccup, one region's call
+--      timing out, a transient permissions blip) is a normal, expected
+--      occurrence in this app's own history -- see
+--      021_resource_relationships.sql's docstring, which describes a
+--      real incident where resources were WRONGLY treated as absent.
+--      Auto-deleting on the same kind of transient gap would recreate
+--      that exact incident class, just via silent data loss this time
+--      instead of a silent monitoring gap.
+--
+--   2. GCP and Azure discovery has NO recurring schedule at all --
+--      confirmed by reading app/collector/scheduler.py end to end: it
+--      only calls app.collector.discovery.runner.run_discovery() (AWS
+--      core + extended, WHERE provider = 'aws' only) every
+--      DISCOVERY_INTERVAL (15 min). GCP/Azure's discover_resources()
+--      only ever runs once at account onboarding (app/api/admin/
+--      accounts.py's account-creation path) or when a human manually
+--      hits POST /{account_id}/discover. A resource "not seen in the
+--      last hour" is completely normal and expected for a GCP/Azure
+--      account that was onboarded two weeks ago and hasn't been
+--      manually re-synced since -- it does NOT mean the resource is
+--      gone. Any staleness rule applied uniformly across providers
+--      would make GCP/Azure resources vanish from the Services page
+--      almost immediately after onboarding, undoing the exact fix
+--      that added them there in the first place. Recurring GCP/Azure
+--      discovery is a real prerequisite for extending staleness
+--      handling to those providers -- flagging it here rather than
+--      building broken behavior around its absence.
+--
+-- So instead: track WHEN a resource was last confirmed present, and
+-- let live_resource_counts / resources-list (app/api/live_data.py)
+-- filter by recency ONLY for providers with a known recurring
+-- discovery cadence (AWS, today) -- see the accompanying code change.
+-- Nothing is ever deleted here; a resource that stops being "recently
+-- seen" simply drops out of the live count/tile until discovery finds
+-- it again, and its full history stays intact if it turns out to
+-- still exist.
+ALTER TABLE resources
+  ADD COLUMN last_seen_at TIMESTAMP NULL AFTER created_at;
+
+-- Existing rows have no real "last seen" data -- backfilling to NOW()
+-- rather than leaving NULL (which the new filtering code would have to
+-- special-case as "always show, we don't know") avoids every
+-- currently-tracked AWS resource looking instantly stale the moment
+-- this ships, while GCP/Azure rows get the same backfill but are never
+-- actually filtered by it per the reasoning above.
+UPDATE resources SET last_seen_at = NOW() WHERE last_seen_at IS NULL;
