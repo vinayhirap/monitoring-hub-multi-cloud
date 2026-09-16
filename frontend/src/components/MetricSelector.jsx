@@ -5,7 +5,12 @@ import "./MetricSelector.css";
 import { CloudServiceIcon } from "./cloud-icons";
 
 const PROVIDER_LABEL = { aws: "AWS", gcp: "GCP", azure: "Azure" };
-function sectionMeta(provider) {
+// Exported so ServiceList.jsx's Services page can group its tiles into
+// the same Core/Extended/Directory sections, with the same labels/hints,
+// as this selector -- one source of truth for that copy instead of two
+// drifting duplicates. See ServiceList.jsx's own comment for the fuller
+// reasoning (2026-09-16).
+export function sectionMeta(provider) {
   const label = PROVIDER_LABEL[provider] || "cloud";
   return {
     core:      { label: "Core",      hint: "Already collected by this app today" },

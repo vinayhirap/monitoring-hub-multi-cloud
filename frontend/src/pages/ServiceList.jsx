@@ -4,6 +4,8 @@ import { useParams, useNavigate } from "react-router-dom";
 import { getAlerts, getAccountMetrics, getResourceCounts } from "../api/api";
 import { CloudServiceIcon, AzureBrandLogo, officialPerService } from "../components/cloud-icons";
 import { LinkIcon } from "../components/icons";
+import { sectionMeta } from "../components/MetricSelector";
+import "../components/MetricSelector.css";
 
 // Short blurbs for the services we know about. Anything not listed here
 // (e.g. a directory-tier service the account onboarded via live discovery)
@@ -90,6 +92,18 @@ export default function ServiceList() {
   // live-to-the-second; and stale rows for since-deleted cloud
   // resources aren't pruned yet).
   const [resourceCounts, setResourceCounts] = useState(null);
+  // Which Core/Extended/Directory sections are collapsed -- mirrors
+  // MetricSelector's own default (directory starts collapsed, since it's
+  // the "discover more services live" tier and typically the longest
+  // list once an account has been running a while). See the render
+  // block below for why this page groups tiles into sections at all:
+  // previously every enabled service (any provider, any tier) rendered
+  // as one flat, unsorted grid, so a handful of core services (EC2, RDS)
+  // could be scattered between dozens of extended/directory tiles with
+  // no visual grouping to tell them apart -- the same core/extended/
+  // directory distinction Settings -> Metrics already uses everywhere
+  // else in this app.
+  const [collapsedSection, setCollapsedSection] = useState(() => new Set(["directory"]));
 
   useEffect(() => {
     let cancelled = false;
@@ -160,6 +174,7 @@ export default function ServiceList() {
           color: PALETTE[i % PALETTE.length],
           enabledCount: g.metrics.filter(m => m.enabled).length,
           resourceCount,
+          category: g.category || "core",
         };
       });
   }, [groups, resourceCounts]);
@@ -170,6 +185,31 @@ export default function ServiceList() {
     const match = alertMatcher(provider, svcId);
     if (!match) return [];
     return activeAlerts.filter(a => match(a.resource));
+  }
+
+  // Group into the same core/extended/directory sections MetricSelector
+  // uses in Settings -> Metrics -- see sectionMeta()'s shared docstring
+  // for why the labels/hints come from that one function instead of a
+  // second copy here. A service missing a recognized category (shouldn't
+  // happen -- metric_catalog.category is NOT NULL -- but this list is
+  // rendered off live data, not a compile-time contract) falls back to
+  // "core" rather than silently vanishing from every section.
+  const SECTION_ORDER = ["core", "extended", "directory"];
+  const SECTION_META = useMemo(() => sectionMeta(provider), [provider]);
+  const sectionedServices = useMemo(() => {
+    const bySection = { core: [], extended: [], directory: [] };
+    activeServices.forEach(svc => {
+      (bySection[svc.category] || bySection.core).push(svc);
+    });
+    return bySection;
+  }, [activeServices]);
+
+  function toggleSection(section) {
+    setCollapsedSection(prev => {
+      const next = new Set(prev);
+      next.has(section) ? next.delete(section) : next.add(section);
+      return next;
+    });
   }
 
   return (
@@ -233,14 +273,36 @@ export default function ServiceList() {
           )}
         </div>
       ) : (
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))", gap:10 }}>
-          {activeServices.map(svc => {
-            const svcAlerts = alertsForService(svc.id);
+        <div style={{ display:"flex", flexDirection:"column", gap:20 }}>
+          {SECTION_ORDER.map(sectionKey => {
+            const list = sectionedServices[sectionKey];
+            if (!list || list.length === 0) return null;
+            const meta = SECTION_META[sectionKey];
+            const isCollapsed = collapsedSection.has(sectionKey);
             return (
-              <ServiceCard key={svc.id} svc={svc} provider={provider}
-                criticalCount={svcAlerts.filter(a => a.severity?.toUpperCase() === "CRITICAL").length}
-                warningCount={svcAlerts.filter(a => a.severity?.toUpperCase() !== "CRITICAL").length}
-                onClick={() => navigate(`/accounts/${id}/${svc.id}`)} />
+              <div key={sectionKey} className="ms-section">
+                <button type="button" className="ms-section-header" onClick={() => toggleSection(sectionKey)}>
+                  <span className={`ms-section-chevron ${isCollapsed ? "" : "ms-section-chevron-open"}`}>▸</span>
+                  <span className={`ms-section-dot ms-section-dot-${sectionKey}`} />
+                  <span className="ms-section-label">{meta.label}</span>
+                  <span className="ms-section-hint">{meta.hint}</span>
+                  <span className="ms-section-spacer" />
+                  <span className="ms-section-count">{list.length} service{list.length === 1 ? "" : "s"}</span>
+                </button>
+                {!isCollapsed && (
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))", gap:10 }}>
+                    {list.map(svc => {
+                      const svcAlerts = alertsForService(svc.id);
+                      return (
+                        <ServiceCard key={svc.id} svc={svc} provider={provider}
+                          criticalCount={svcAlerts.filter(a => a.severity?.toUpperCase() === "CRITICAL").length}
+                          warningCount={svcAlerts.filter(a => a.severity?.toUpperCase() !== "CRITICAL").length}
+                          onClick={() => navigate(`/accounts/${id}/${svc.id}`)} />
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
