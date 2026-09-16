@@ -76,7 +76,7 @@ def _get_ec2_instances_by_region():
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
-            SELECT a.id AS account_db_id, a.role_arn, a.external_id, a.default_region,
+            SELECT a.id AS account_db_id, a.role_arn, a.external_id, a.auth_mode, a.default_region,
                    r.id AS resource_db_id, r.resource_id
             FROM resources r
             JOIN aws_accounts a ON a.id = r.aws_account_id
@@ -90,16 +90,30 @@ def _get_ec2_instances_by_region():
 
     grouped = {}
     for row in rows:
-        key = (row["account_db_id"], row["role_arn"], row["external_id"], row["default_region"])
+        key = (row["account_db_id"], row["role_arn"], row["external_id"], row["auth_mode"], row["default_region"])
         grouped.setdefault(key, []).append((row["resource_id"], row["resource_db_id"]))
     return grouped
 
 
-def _session_for(role_arn, external_id, region):
-    if role_arn:
-        from app.aws.sts import assume_role
-        return assume_role(role_arn, external_id)
-    return get_session(region)
+def _session_for(account_db_id, role_arn, external_id, auth_mode, region):
+    """
+    Single credential resolver for every poller in this module. Routes
+    through app.aws.sts.get_boto3_session() -- the same real choke point
+    discovery and (as of the live-data fix) collector_direct.py already
+    use -- instead of this module's own role_arn-only branch, which
+    silently fell back to plain get_session(region) (ambient/self
+    credentials) for any static-key account, same defect class as the
+    2026-09-16 U4RAD incident. Confirmed live: account 10 (U4RAD,
+    auth_mode='static_keys') was polling DescribeInstanceStatus with
+    AuroGov Mumbai's ambient credentials, so U4RAD's own real instance
+    IDs came back as InvalidInstanceID.NotFound (they don't exist in
+    AuroGov's account).
+    """
+    from app.aws.sts import get_boto3_session
+    return get_boto3_session({
+        "id": account_db_id, "auth_mode": auth_mode,
+        "role_arn": role_arn, "external_id": external_id,
+    })
 
 
 def poll_ec2_status() -> int:
@@ -109,13 +123,13 @@ def poll_ec2_status() -> int:
     it costs nothing extra to run often. Returns count of instances polled.
     """
     total = 0
-    for (account_db_id, role_arn, external_id, region), instance_pairs in _get_ec2_instances_by_region().items():
+    for (account_db_id, role_arn, external_id, auth_mode, region), instance_pairs in _get_ec2_instances_by_region().items():
         if not region or not instance_pairs:
             continue
         instance_ids = [iid for iid, _rdid in instance_pairs]
         resource_db_id_by_iid = dict(instance_pairs)
         try:
-            session = _session_for(role_arn, external_id, region)
+            session = _session_for(account_db_id, role_arn, external_id, auth_mode, region)
             ec2 = session.client("ec2", region_name=region)
             ts = int(time.time() * 1000)
             lines = []
@@ -157,7 +171,7 @@ def _get_target_groups_by_region():
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
-            SELECT id AS account_db_id, role_arn, external_id, default_region
+            SELECT id AS account_db_id, role_arn, external_id, auth_mode, default_region
             FROM aws_accounts WHERE status = 'active'
         """)
         accounts = cur.fetchall()
@@ -170,12 +184,12 @@ def _get_target_groups_by_region():
         if not region:
             continue
         try:
-            session = _session_for(a["role_arn"], a["external_id"], region)
+            session = _session_for(a["account_db_id"], a["role_arn"], a["external_id"], a["auth_mode"], region)
             elbv2 = session.client("elbv2", region_name=region)
             tgs = elbv2.describe_target_groups().get("TargetGroups", [])
             pairs = [(tg["TargetGroupArn"], tg.get("LoadBalancerArns") or []) for tg in tgs]
             if pairs:
-                grouped[(a["account_db_id"], a["role_arn"], a["external_id"], region)] = pairs
+                grouped[(a["account_db_id"], a["role_arn"], a["external_id"], a["auth_mode"], region)] = pairs
         except Exception as e:
             logger.warning(f"describe_polling: list target groups [{region}]: {e}")
     return grouped
@@ -256,11 +270,11 @@ def _get_active_accounts_for_ebs():
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
-            SELECT id AS account_db_id, role_arn, external_id, default_region
+            SELECT id AS account_db_id, role_arn, external_id, auth_mode, default_region
             FROM aws_accounts WHERE status = 'active'
         """)
         return [
-            (a["account_db_id"], a["role_arn"], a["external_id"], a["default_region"])
+            (a["account_db_id"], a["role_arn"], a["external_id"], a["auth_mode"], a["default_region"])
             for a in cur.fetchall() if a["default_region"]
         ]
     finally:
@@ -334,9 +348,9 @@ def poll_ebs_attachments() -> int:
     attachment edge.
     """
     total = 0
-    for account_db_id, role_arn, external_id, region in _get_active_accounts_for_ebs():
+    for account_db_id, role_arn, external_id, auth_mode, region in _get_active_accounts_for_ebs():
         try:
-            session = _session_for(role_arn, external_id, region)
+            session = _session_for(account_db_id, role_arn, external_id, auth_mode, region)
             ec2 = session.client("ec2", region_name=region)
             vols = ec2.describe_volumes().get("Volumes", [])
             attachments = {}
@@ -371,9 +385,9 @@ def poll_alb_target_health() -> int:
     consumer -- this is a dual-write, not a replacement).
     """
     total = 0
-    for (account_db_id, role_arn, external_id, region), tg_pairs in _get_target_groups_by_region().items():
+    for (account_db_id, role_arn, external_id, auth_mode, region), tg_pairs in _get_target_groups_by_region().items():
         try:
-            session = _session_for(role_arn, external_id, region)
+            session = _session_for(account_db_id, role_arn, external_id, auth_mode, region)
             elbv2 = session.client("elbv2", region_name=region)
             ts = int(time.time() * 1000)
             lines = []
