@@ -116,10 +116,28 @@ _GCP_LOW = gcp_tiers.LOW_METRICS
 _GCP_EXTENDED = gcp_tiers.build_extended_metrics(GCP_CURATED)
 
 
-def _run_azure_pass(tier_label, only_metric_names, categories):
+def _window_for(interval_seconds, buffer_seconds=60):
+    """GetMetricData / Azure query_resources lookback window, sized to a
+    tier's own poll interval plus a buffer -- NOT a fixed constant.
+
+    2026-09-16 fix: both Azure's and GCP's collectors previously queried
+    a hardcoded ~10-minute window regardless of which tier called them.
+    That's fine for the fast core tiers (critical/standard, 1-5 min) but
+    silently drops data for anything slower (LOW at 15 min, EXTENDED at
+    15-60 min, Azure's SLOW_EXTENDED at 60 min): a window narrower than
+    the gap between polls has no guarantee of overlapping whenever the
+    cloud actually published a datapoint. Same bug class, same fix
+    shape, as AWS's app/collector/metrics/extended.py's _LOOKBACK_MINUTES
+    (see that dict's docstring for the fuller math on why this matters
+    more the slower a tier polls)."""
+    return interval_seconds + buffer_seconds
+
+
+def _run_azure_pass(tier_label, only_metric_names, categories, window_seconds=600):
     from app.providers.azure.metrics_collector import collect_all_azure_accounts
     try:
-        result = collect_all_azure_accounts(categories=categories, only_metric_names=only_metric_names)
+        result = collect_all_azure_accounts(categories=categories, only_metric_names=only_metric_names,
+                                             window_seconds=window_seconds)
         logger.info(
             f"[multicloud:azure:{tier_label}] {result['accounts']} account(s), "
             f"{result['pushed']} datapoints written directly"
@@ -129,10 +147,11 @@ def _run_azure_pass(tier_label, only_metric_names, categories):
         logger.error(f"[multicloud:azure:{tier_label}] collection cycle crashed: {e}")
 
 
-def _run_gcp_pass(tier_label, only_metric_names, categories):
+def _run_gcp_pass(tier_label, only_metric_names, categories, window_seconds=600):
     from app.providers.gcp.metrics_collector import collect_all_gcp_accounts
     try:
-        result = collect_all_gcp_accounts(categories=categories, only_metric_names=only_metric_names)
+        result = collect_all_gcp_accounts(categories=categories, only_metric_names=only_metric_names,
+                                           window_seconds=window_seconds)
         logger.info(
             f"[multicloud:gcp:{tier_label}] {result['accounts']} account(s), "
             f"{result['pushed']} datapoints written directly"
@@ -146,10 +165,18 @@ def run_once(categories=None):
     """Run one collection cycle for Azure + GCP, restricted to `categories`
     if given (e.g. ("core",) or ("extended","directory")). categories=None
     collects everything enabled, in one untiered pass -- used for a single
-    manual/standalone cycle, same behavior as before this patch."""
+    manual/standalone cycle, same behavior as before this patch.
+
+    window_seconds here is deliberately the widest of any configured
+    tier (60 min + buffer): a standalone/manual call has no "last polled
+    N seconds ago" context to size a tighter window from, and a wider
+    window than strictly necessary only means re-reading a few already-
+    seen datapoints, never missing new ones -- the safe direction to
+    round to when the right answer is unknown."""
     tier_label = "all" if categories is None else "+".join(categories)
-    _run_azure_pass(tier_label, None, categories)
-    _run_gcp_pass(tier_label, None, categories)
+    window_seconds = _window_for(max(AZURE_SLOW_EXTENDED_INTERVAL_SECONDS, GCP_EXTENDED_INTERVAL_SECONDS))
+    _run_azure_pass(tier_label, None, categories, window_seconds=window_seconds)
+    _run_gcp_pass(tier_label, None, categories, window_seconds=window_seconds)
 
 
 def run_loop(
@@ -203,38 +230,41 @@ def run_loop(
         # configured interval across both clouds). GCP critical is gated
         # like every other tier below, since its own interval (2 min) is
         # slower than the tick rate (1 min).
-        _run_azure_pass("critical", _AZURE_CRITICAL, ("core",))
+        _run_azure_pass("critical", _AZURE_CRITICAL, ("core",), window_seconds=_window_for(azure_critical_interval))
 
         if now - last["gcp_critical"] >= gcp_critical_interval:
-            _run_gcp_pass("critical", _GCP_CRITICAL, ("core",))
+            _run_gcp_pass("critical", _GCP_CRITICAL, ("core",), window_seconds=_window_for(gcp_critical_interval))
             last["gcp_critical"] = now
 
         if now - last["azure_standard"] >= azure_standard_interval:
-            _run_azure_pass("standard", _AZURE_STANDARD, ("core",))
+            _run_azure_pass("standard", _AZURE_STANDARD, ("core",), window_seconds=_window_for(azure_standard_interval))
             last["azure_standard"] = now
 
         if now - last["azure_low"] >= azure_low_interval:
-            _run_azure_pass("low", _AZURE_LOW, ("core",))
+            _run_azure_pass("low", _AZURE_LOW, ("core",), window_seconds=_window_for(azure_low_interval))
             last["azure_low"] = now
 
         if now - last["azure_extended"] >= azure_extended_interval:
-            _run_azure_pass("extended", _AZURE_EXTENDED_FAST, ("extended", "directory"))
+            _run_azure_pass("extended", _AZURE_EXTENDED_FAST, ("extended", "directory"),
+                             window_seconds=_window_for(azure_extended_interval))
             last["azure_extended"] = now
 
         if now - last["azure_slow_extended"] >= azure_slow_extended_interval:
-            _run_azure_pass("slow_extended", _AZURE_EXTENDED_SLOW, ("extended",))
+            _run_azure_pass("slow_extended", _AZURE_EXTENDED_SLOW, ("extended",),
+                             window_seconds=_window_for(azure_slow_extended_interval))
             last["azure_slow_extended"] = now
 
         if now - last["gcp_standard"] >= gcp_standard_interval:
-            _run_gcp_pass("standard", _GCP_STANDARD, ("core",))
+            _run_gcp_pass("standard", _GCP_STANDARD, ("core",), window_seconds=_window_for(gcp_standard_interval))
             last["gcp_standard"] = now
 
         if now - last["gcp_low"] >= gcp_low_interval:
-            _run_gcp_pass("low", _GCP_LOW, ("core",))
+            _run_gcp_pass("low", _GCP_LOW, ("core",), window_seconds=_window_for(gcp_low_interval))
             last["gcp_low"] = now
 
         if now - last["gcp_extended"] >= gcp_extended_interval:
-            _run_gcp_pass("extended", _GCP_EXTENDED, ("extended", "directory"))
+            _run_gcp_pass("extended", _GCP_EXTENDED, ("extended", "directory"),
+                           window_seconds=_window_for(gcp_extended_interval))
             last["gcp_extended"] = now
 
         elapsed = time.time() - now
