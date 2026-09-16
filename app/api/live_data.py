@@ -105,7 +105,7 @@ def _get_db_accounts():
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
             SELECT id, account_name, account_id,
-                default_region, status, role_arn, external_id,
+                default_region, status, role_arn, auth_mode, external_id,
                 created_at, last_synced_at
             FROM aws_accounts
             WHERE status = 'active'
@@ -467,7 +467,7 @@ def live_accounts(current_user: dict = Depends(require_permission("resources.vie
 
     def process_account(acc):
         region  = acc.get("default_region")
-        summary = get_account_summary(region, role_arn=acc.get("role_arn"), external_id=acc.get("external_id"))
+        summary = get_account_summary(region, role_arn=acc.get("role_arn"), external_id=acc.get("external_id"), account=acc)
         running = summary.get("ec2_running", 0)
         total   = summary.get("ec2_total",   0)
         avg_cpu = summary.get("ec2_avg_cpu", 0)
@@ -582,7 +582,7 @@ def live_ec2(account_db_id: int, current_user: dict = Depends(require_permission
     _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
-    return _serialize(collect_ec2_instances(region))
+    return _serialize(collect_ec2_instances(region, account=acc))
 
 
 @router.get("/ebs/{account_db_id}")
@@ -590,7 +590,7 @@ def live_ebs(account_db_id: int, current_user: dict = Depends(require_permission
     _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
-    return _serialize(collect_ebs_volumes(region))
+    return _serialize(collect_ebs_volumes(region, account=acc))
 
 
 @router.get("/rds/{account_db_id}")
@@ -598,7 +598,7 @@ def live_rds(account_db_id: int, current_user: dict = Depends(require_permission
     _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
-    return _serialize(collect_rds_instances(region))
+    return _serialize(collect_rds_instances(region, account=acc))
 
 
 @router.get("/lambda/{account_db_id}")
@@ -606,7 +606,7 @@ def live_lambda(account_db_id: int, current_user: dict = Depends(require_permiss
     _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
-    return _serialize(collect_lambda_functions(region))
+    return _serialize(collect_lambda_functions(region, account=acc))
 
 
 @router.get("/s3/{account_db_id}")
@@ -614,7 +614,7 @@ def live_s3(account_db_id: int, current_user: dict = Depends(require_permission(
     _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
-    return _serialize(collect_s3_buckets(region))
+    return _serialize(collect_s3_buckets(region, account=acc))
 
 
 @router.get("/elb/{account_db_id}")
@@ -622,7 +622,7 @@ def live_elb(account_db_id: int, current_user: dict = Depends(require_permission
     _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
-    return _serialize(collect_elb(region))
+    return _serialize(collect_elb(region, account=acc))
 
 
 @router.get("/ecs/{account_db_id}")
@@ -630,7 +630,7 @@ def live_ecs(account_db_id: int, current_user: dict = Depends(require_permission
     _check_account_scope(current_user, account_db_id)
     acc    = _get_db_account(account_db_id)
     region = acc.get("default_region") 
-    return _serialize(collect_ecs_clusters(region))
+    return _serialize(collect_ecs_clusters(region, account=acc))
 
 
 # ── Real-time per-service resource counts (ALL providers, ALL tiers) ──
