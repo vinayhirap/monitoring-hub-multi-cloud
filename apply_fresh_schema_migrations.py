@@ -291,6 +291,67 @@ def plan_statements(cursor):
             "ALTER TABLE alerts MODIFY COLUMN resource_id VARCHAR(512) NOT NULL",
         ))
 
+    # ── 5c. resources cross-account unique key (045) ────────────────
+    # See db/migrations/045_fix_resources_cross_account_unique_key.sql --
+    # the old uniq_resource key (resource_id, resource_type) is missing
+    # aws_account_id, so two accounts sharing a resource name silently
+    # merge into one row. Fresh installs need this enforced directly,
+    # not just assumed via a (baseline) migration record.
+    if table_exists(cursor, "resources"):
+        if not index_exists(cursor, "resources", "uniq_resource_identity"):
+            plan.append((
+                "resources add uniq_resource_identity (aws_account_id, resource_type, resource_id)",
+                "ALTER TABLE resources ADD UNIQUE KEY uniq_resource_identity "
+                "(aws_account_id, resource_type, resource_id)",
+            ))
+        if index_exists(cursor, "resources", "uniq_resource"):
+            plan.append((
+                "resources drop old uniq_resource (missing aws_account_id)",
+                "ALTER TABLE resources DROP INDEX uniq_resource",
+            ))
+
+    # ── 5d. alert_pending / metric_baseline account scoping (046) ───
+    # See db/migrations/046_add_account_scoping_to_baseline_and_pending.sql --
+    # same bug shape as #5c, found by audit_cross_account_keys.py. Only
+    # meaningful for an existing table with data (a truly fresh table has
+    # nothing to backfill/dedupe), so these checks are add-if-missing
+    # only, mirroring the column-exists guards used elsewhere in this file.
+    if table_exists(cursor, "alert_pending"):
+        if not column_exists(cursor, "alert_pending", "aws_account_id"):
+            plan.append((
+                "alert_pending add aws_account_id",
+                "ALTER TABLE alert_pending ADD COLUMN aws_account_id BIGINT NULL AFTER id",
+            ))
+        if not index_exists(cursor, "alert_pending", "uq_pending_account_resource_metric"):
+            plan.append((
+                "alert_pending add uq_pending_account_resource_metric",
+                "ALTER TABLE alert_pending ADD UNIQUE KEY uq_pending_account_resource_metric "
+                "(aws_account_id, resource_id, metric_name)",
+            ))
+        if index_exists(cursor, "alert_pending", "uq_pending_resource_metric"):
+            plan.append((
+                "alert_pending drop old uq_pending_resource_metric (missing aws_account_id)",
+                "ALTER TABLE alert_pending DROP INDEX uq_pending_resource_metric",
+            ))
+
+    if table_exists(cursor, "metric_baseline"):
+        if not column_exists(cursor, "metric_baseline", "aws_account_id"):
+            plan.append((
+                "metric_baseline add aws_account_id",
+                "ALTER TABLE metric_baseline ADD COLUMN aws_account_id BIGINT NULL AFTER id",
+            ))
+        if not index_exists(cursor, "metric_baseline", "uniq_account_baseline_bucket"):
+            plan.append((
+                "metric_baseline add uniq_account_baseline_bucket",
+                "ALTER TABLE metric_baseline ADD UNIQUE KEY uniq_account_baseline_bucket "
+                "(aws_account_id, resource_id, metric_name, hour_of_day, day_of_week)",
+            ))
+        if index_exists(cursor, "metric_baseline", "uniq_baseline_bucket"):
+            plan.append((
+                "metric_baseline drop old uniq_baseline_bucket (missing aws_account_id)",
+                "ALTER TABLE metric_baseline DROP INDEX uniq_baseline_bucket",
+            ))
+
     # ── 6. metrics last-value-only (004) ───────────────────────────
     if table_exists(cursor, "metrics"):
         if has_partitions(cursor, "metrics"):

@@ -86,7 +86,7 @@ def compare(value, threshold, op):
 CONFIDENT_SAMPLES = 20
 
 
-def _dynamic_bounds(cursor, aws_resource_id, metric_name, comparison, k,
+def _dynamic_bounds(cursor, aws_account_id, aws_resource_id, metric_name, comparison, k,
                      static_warning=None, static_critical=None):
     """
     Looks up this resource+metric's current hour-of-day/day-of-week
@@ -115,12 +115,18 @@ def _dynamic_bounds(cursor, aws_resource_id, metric_name, comparison, k,
     dynamic band is returned unchanged -- this keeps the function
     backward compatible with any other caller.
     """
+    # aws_account_id is REQUIRED here, not optional -- resource_id alone
+    # (e.g. "System", a stock CloudWatch Logs group name; see the
+    # 2026-09-16 AuroGov Mumbai/U4RAD cross-account resource_id collision)
+    # is only unique WITHIN one account. Without this filter, two accounts
+    # sharing a resource name would silently share each other's baseline
+    # mean/stddev -- see db/migrations/046_add_account_scoping_to_baseline_and_pending.sql.
     cursor.execute("""
         SELECT mean_value, stddev_value, sample_count
         FROM metric_baseline
-        WHERE resource_id = %s AND metric_name = %s
+        WHERE aws_account_id = %s AND resource_id = %s AND metric_name = %s
           AND hour_of_day = HOUR(NOW()) AND day_of_week = WEEKDAY(NOW())
-    """, (aws_resource_id, metric_name))
+    """, (aws_account_id, aws_resource_id, metric_name))
     baseline = cursor.fetchone()
     if not baseline:
         return None
@@ -253,18 +259,25 @@ def _auto_resolve_stale_alerts(cursor):
     return total, account_removed, len(orphaned_ids), len(stopped_ids)
 
 
-def _touch_pending(cursor, resource_id, metric_name, severity, environment,
+def _touch_pending(cursor, aws_account_id, resource_id, metric_name, severity, environment,
                     metric_value, threshold_value):
     """
     Upsert a breach candidate. Returns the row's breach_cycles AFTER this
     touch (so the caller can decide whether to promote it this cycle).
+
+    aws_account_id is REQUIRED -- resource_id alone is only unique WITHIN
+    one account (e.g. "System", a stock CloudWatch Logs group name).
+    Without it, two accounts breaching a same-named resource in the same
+    cycle would merge into one pending row, silently losing/misattributing
+    breach_cycles for whichever account didn't win the upsert -- see
+    db/migrations/046_add_account_scoping_to_baseline_and_pending.sql.
     """
     cursor.execute("""
         INSERT INTO alert_pending
-            (resource_id, metric_name, severity, environment,
+            (aws_account_id, resource_id, metric_name, severity, environment,
              first_breach_at, last_seen_at, breach_cycles,
              current_value, threshold_value)
-        VALUES (%s, %s, %s, %s, NOW(), NOW(), 1, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, NOW(), NOW(), 1, %s, %s)
         ON DUPLICATE KEY UPDATE
             last_seen_at    = NOW(),
             breach_cycles   = breach_cycles + 1,
@@ -272,21 +285,22 @@ def _touch_pending(cursor, resource_id, metric_name, severity, environment,
             threshold_value = VALUES(threshold_value),
             -- escalate severity if this cycle is worse than before
             severity = IF(VALUES(severity) = 'CRITICAL', 'CRITICAL', severity)
-    """, (resource_id, metric_name, severity, environment,
+    """, (aws_account_id, resource_id, metric_name, severity, environment,
           metric_value, threshold_value))
 
     cursor.execute("""
         SELECT breach_cycles, severity, first_breach_at
         FROM alert_pending
-        WHERE resource_id = %s AND metric_name = %s
-    """, (resource_id, metric_name))
+        WHERE aws_account_id = %s AND resource_id = %s AND metric_name = %s
+    """, (aws_account_id, resource_id, metric_name))
     return cursor.fetchone()
 
 
-def _clear_pending(cursor, resource_id, metric_name):
+def _clear_pending(cursor, aws_account_id, resource_id, metric_name):
     cursor.execute("""
-        DELETE FROM alert_pending WHERE resource_id = %s AND metric_name = %s
-    """, (resource_id, metric_name))
+        DELETE FROM alert_pending
+        WHERE aws_account_id = %s AND resource_id = %s AND metric_name = %s
+    """, (aws_account_id, resource_id, metric_name))
 
 
 def evaluate_alerts():
@@ -405,7 +419,7 @@ def _evaluate_alerts_body(conn, cursor):
         warning_value, critical_value = row["warning_value"], row["critical_value"]
         if row.get("use_dynamic"):
             dynamic = _dynamic_bounds(
-                cursor, aws_resource_id, metric_name,
+                cursor, aws_account_id, aws_resource_id, metric_name,
                 row["comparison"], row["dynamic_k"] or 3.0,
                 static_warning=warning_value, static_critical=critical_value,
             )
@@ -435,7 +449,7 @@ def _evaluate_alerts_body(conn, cursor):
         if not is_breaching:
             # Healthy reading. A candidate that never sustained: drop it,
             # it was a transient blip, not a real breach.
-            _clear_pending(cursor, aws_resource_id, metric_name)
+            _clear_pending(cursor, aws_account_id, aws_resource_id, metric_name)
 
             if existing:
                 # Sustained-recovery: require `required_cycles` consecutive
@@ -521,7 +535,7 @@ def _evaluate_alerts_body(conn, cursor):
         # No visible alert yet — this breach must sustain for
         # `required_cycles` before it becomes one.
         pending = _touch_pending(
-            cursor, aws_resource_id, metric_name, severity, environment,
+            cursor, aws_account_id, aws_resource_id, metric_name, severity, environment,
             metric_value, threshold_value,
         )
         pending_touched += 1
@@ -550,7 +564,7 @@ def _evaluate_alerts_body(conn, cursor):
         new_alert_id = cursor.lastrowid
         new_alerts  += 1
         pending_cleared += 1
-        _clear_pending(cursor, aws_resource_id, metric_name)
+        _clear_pending(cursor, aws_account_id, aws_resource_id, metric_name)
 
         try:
             publish_alert(

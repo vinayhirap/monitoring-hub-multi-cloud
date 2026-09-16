@@ -62,6 +62,30 @@ _EXPECTED_RESOURCE_ID_WIDTHS = {
     ("resource_relationships", "target_resource_id"): 512,
 }
 
+# (table, expected unique key name, expected column tuple). Every one of
+# these tables stores a raw AWS resource_id STRING (unique only WITHIN
+# one account, never globally -- e.g. "System", a stock CloudWatch Logs
+# group name), so its identity-defining unique key MUST include
+# aws_account_id or two accounts sharing a resource name silently merge
+# into one row (2026-09-16 AuroGov Mumbai/U4RAD incident: resources'
+# uniq_resource key omitted it; 046 found the same shape in alert_pending
+# and metric_baseline). This check does NOT rely on a collision ever
+# actually being visible in the data -- unlike
+# find_cross_account_resource_collisions() below, which structurally
+# CANNOT catch this bug shape: a too-narrow unique key prevents the
+# second account's row from ever being *inserted* in the first place, so
+# there is never a duplicate pair sitting in the table to notice. This
+# check instead asserts the key's own column composition, every cycle,
+# so a future migration/hotfix that accidentally drops back to an
+# unscoped key is caught immediately rather than requiring another
+# multi-hour "why does account X have no resources" investigation.
+_EXPECTED_SCOPED_UNIQUE_KEYS = {
+    "resources": ("uniq_resource_identity", {"aws_account_id", "resource_type", "resource_id"}),
+    "alert_pending": ("uq_pending_account_resource_metric", {"aws_account_id", "resource_id", "metric_name"}),
+    "metric_baseline": ("uniq_account_baseline_bucket",
+                         {"aws_account_id", "resource_id", "metric_name", "hour_of_day", "day_of_week"}),
+}
+
 
 def find_cross_account_resource_collisions(cursor) -> list[dict]:
     """
@@ -115,6 +139,44 @@ def check_resource_id_column_widths(cursor) -> list[dict]:
     return drifted
 
 
+def check_unscoped_identity_keys(cursor) -> list[dict]:
+    """
+    Returns [{table, expected_key, issue}] for every table in
+    _EXPECTED_SCOPED_UNIQUE_KEYS whose account-scoped unique key is
+    missing, or whose columns don't match what's expected. Empty list =
+    healthy. See this module's docstring for why this check exists
+    alongside (not instead of) find_cross_account_resource_collisions().
+    """
+    drifted = []
+    for table, (expected_key_name, expected_cols) in _EXPECTED_SCOPED_UNIQUE_KEYS.items():
+        cursor.execute(
+            "SELECT COUNT(*) AS c FROM information_schema.TABLES "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s",
+            (table,),
+        )
+        if not cursor.fetchone()["c"]:
+            continue  # table doesn't exist yet -- not this check's job
+
+        cursor.execute(
+            "SELECT COLUMN_NAME FROM information_schema.STATISTICS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND INDEX_NAME = %s",
+            (table, expected_key_name),
+        )
+        actual_cols = {row["COLUMN_NAME"] for row in cursor.fetchall()}
+
+        if not actual_cols:
+            drifted.append({
+                "table": table, "expected_key": expected_key_name,
+                "issue": f"key is missing entirely (expected columns {sorted(expected_cols)})",
+            })
+        elif actual_cols != expected_cols:
+            drifted.append({
+                "table": table, "expected_key": expected_key_name,
+                "issue": f"key exists but covers {sorted(actual_cols)}, expected {sorted(expected_cols)}",
+            })
+    return drifted
+
+
 def _notify_admins(subject: str, body: str) -> None:
     """
     Emails every admin-role user with an email on file, same
@@ -159,13 +221,14 @@ def run_integrity_check() -> dict:
     """
     from app.collector.op_log import log_event
 
-    result = {"collisions": [], "width_drift": []}
+    result = {"collisions": [], "width_drift": [], "unscoped_keys": []}
     try:
         conn = get_connection()
         cursor = conn.cursor(dictionary=True)
         try:
             result["collisions"] = find_cross_account_resource_collisions(cursor)
             result["width_drift"] = check_resource_id_column_widths(cursor)
+            result["unscoped_keys"] = check_unscoped_identity_keys(cursor)
         finally:
             cursor.close()
             conn.close()
@@ -200,5 +263,21 @@ def run_integrity_check() -> dict:
         )
         log_event("resource_id_column_width_drift", msg, severity="WARNING")
         _notify_admins("[CloudOps] Schema drift: resource_id column width", msg)
+
+    if result["unscoped_keys"]:
+        lines = [
+            f"  - {d['table']} ({d['expected_key']}): {d['issue']}"
+            for d in result["unscoped_keys"]
+        ]
+        msg = (
+            f"{len(result['unscoped_keys'])} table(s) have an identity unique key that "
+            f"is missing account scoping -- two different accounts sharing a resource "
+            f"name (e.g. the stock 'System' CloudWatch Logs group) can silently merge "
+            f"into one row with NO error and NO duplicate ever visible in the data "
+            f"(see the 2026-09-16 AuroGov Mumbai/U4RAD incident and its 045/046 fixes):\n"
+            + "\n".join(lines)
+        )
+        log_event("unscoped_identity_key_drift", msg, severity="CRITICAL")
+        _notify_admins("[CloudOps] Cross-account data isolation at risk: unscoped identity key", msg)
 
     return result
