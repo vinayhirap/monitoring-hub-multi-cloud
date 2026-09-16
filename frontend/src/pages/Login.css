@@ -35,6 +35,23 @@
   position: relative;
   z-index: 1;
   min-width: 0;
+  overflow: hidden;
+}
+/* Audit finding: the left panel has an animated grid + drifting glow
+   blobs giving it real visual depth and motion; the right panel was a
+   flat, static void behind the card, which made the two halves feel
+   like two different screens stitched together rather than one
+   composed layout. A quiet, static (non-animated, so it never competes
+   with the card for attention) radial glow ties the halves together
+   without adding any visual noise around the form itself. */
+.login-form-side::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(560px 420px at 50% 38%, rgba(43,179,172,0.07), transparent 70%),
+    radial-gradient(420px 320px at 85% 90%, rgba(0,153,204,0.05), transparent 70%);
+  pointer-events: none;
 }
 @media (max-width: 960px) {
   .login-shell { display: block; }
@@ -184,10 +201,25 @@
   padding: 40px 36px 32px;
   box-shadow:
     0 0 0 1px rgba(43,179,172,0.05),
-    0 24px 64px rgba(0, 0, 0, 0.6),
-    0 0 80px rgba(43,179,172,0.04);
+    0 32px 80px rgba(0, 0, 0, 0.55),
+    0 8px 24px rgba(0, 0, 0, 0.35),
+    0 0 90px rgba(43,179,172,0.05);
   backdrop-filter: blur(12px);
   animation: card-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  overflow: hidden;
+}
+/* Audit finding: the card's border was a flat, uniform 1px all the way
+   round with nothing marking it as "the important surface" -- a thin
+   gradient hairline along the top edge is a common premium-auth-screen
+   cue (Stripe, Linear, Vercel all use some variant) that reads as
+   intentional polish rather than a plain bordered box. */
+.login-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(43,179,172,0.9) 25%, rgba(0,153,204,0.9) 50%, rgba(43,179,172,0.9) 75%, transparent);
+  opacity: 0.7;
 }
 @keyframes card-in {
   from { opacity: 0; transform: translateY(24px) scale(0.97); }
@@ -200,7 +232,9 @@
   flex-direction: column;
   align-items: flex-start;
   gap: 10px;
-  margin-bottom: 28px;
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid rgba(99, 130, 190, 0.12);
 }
 .login-logo-full {
   height: 34px;
@@ -249,7 +283,7 @@
 .login-form {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
 }
 .login-field {
   display: flex;
@@ -271,7 +305,7 @@
 .login-input-icon {
   position: absolute;
   left: 12px;
-  color: rgba(99, 130, 190, 0.5);
+  color: rgba(99, 130, 190, 0.65);
   display: flex;
   pointer-events: none;
 }
@@ -284,16 +318,21 @@
   color: #e2e8f0;
   font-size: 13px;
   font-family: 'JetBrains Mono', monospace;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
   outline: none;
   box-sizing: border-box;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.3);
 }
 .login-input::placeholder {
   color: rgba(99, 130, 190, 0.3);
 }
+.login-input:hover:not(:focus):not(:disabled) {
+  border-color: rgba(99, 130, 190, 0.32);
+}
 .login-input:focus {
-  border-color: rgba(43,179,172, 0.5);
-  box-shadow: 0 0 0 3px rgba(43,179,172, 0.08);
+  border-color: rgba(43,179,172, 0.55);
+  background: rgba(5, 12, 24, 0.95);
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.3), 0 0 0 3px rgba(43,179,172, 0.1);
 }
 .login-input:disabled {
   opacity: 0.5;
@@ -301,17 +340,21 @@
 }
 .login-toggle-pw {
   position: absolute;
-  right: 12px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
   background: none;
   border: none;
-  color: rgba(99, 130, 190, 0.5);
+  border-radius: 6px;
+  color: rgba(99, 130, 190, 0.55);
   cursor: pointer;
-  padding: 2px;
   display: flex;
   align-items: center;
-  transition: color 0.15s;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
 }
-.login-toggle-pw:hover { color: rgba(99, 130, 190, 0.9); }
+.login-toggle-pw:hover { color: rgba(220,230,245,0.9); background: rgba(99, 130, 190, 0.12); }
+.login-toggle-pw:focus-visible { outline: 2px solid rgba(43,179,172,0.6); outline-offset: 1px; }
 
 /* ── plain (no icon) input variant ── */
 .login-input-plain {
@@ -323,7 +366,6 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: -6px;
 }
 .login-link {
   background: none;
@@ -337,6 +379,17 @@
   transition: color 0.15s;
 }
 .login-link:hover { color: #2bb3ac; text-decoration: underline; }
+.login-link:focus-visible { outline: 2px solid rgba(43,179,172,0.6); outline-offset: 2px; border-radius: 2px; }
+/* Audit finding: "Forgot password?" (the action most people actually
+   need) and "Change password" (a rarely-needed, already-authenticated-
+   adjacent action) had identical visual weight, competing for attention
+   at the same level as the primary field they sit under. Muting the
+   secondary one relative to the teal primary link establishes a clear
+   priority without hiding the option. */
+.login-link-tertiary {
+  color: rgba(99, 130, 190, 0.7);
+}
+.login-link-tertiary:hover { color: rgba(220,230,245,0.9); }
 .login-link-back {
   margin-top: 4px;
   align-self: flex-start;
@@ -344,13 +397,35 @@
 }
 .login-link-back:hover { color: #e2e8f0; }
 
+/* "or" divider above the SSO link -- separates the primary
+   username/password path from the alternative SSO path, rather than
+   leaving the SSO link floating directly under the button with no
+   visual break (a common tell of an auth screen that was extended
+   ad hoc rather than designed as one flow). */
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: rgba(99, 130, 190, 0.5);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-family: 'JetBrains Mono', monospace;
+}
+.login-divider::before,
+.login-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(99, 130, 190, 0.15);
+}
+
 /* SAML SSO link (2026-09-14) -- centered below the sign-in button,
    quiet by default (this is a secondary path for most users until an
    org actually turns SSO on). */
 .login-sso-link {
   display: block;
   text-align: center;
-  margin-top: 14px;
   font-size: 12px;
   font-family: 'JetBrains Mono', monospace;
   color: rgba(99, 130, 190, 0.75);
@@ -419,15 +494,20 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  box-shadow: 0 4px 20px rgba(43,179,172, 0.25);
+  box-shadow: 0 4px 20px rgba(43,179,172, 0.25), inset 0 1px 0 rgba(255,255,255,0.18);
 }
 .login-btn:hover:not(:disabled) {
-  opacity: 0.92;
+  opacity: 0.94;
   transform: translateY(-1px);
-  box-shadow: 0 6px 28px rgba(43,179,172, 0.35);
+  box-shadow: 0 8px 32px rgba(43,179,172, 0.4), inset 0 1px 0 rgba(255,255,255,0.18);
 }
 .login-btn:active:not(:disabled) {
   transform: translateY(0);
+  box-shadow: 0 3px 14px rgba(43,179,172, 0.3), inset 0 1px 0 rgba(255,255,255,0.1);
+}
+.login-btn:focus-visible {
+  outline: 2px solid rgba(43,179,172,0.8);
+  outline-offset: 2px;
 }
 .login-btn:disabled {
   cursor: not-allowed;
