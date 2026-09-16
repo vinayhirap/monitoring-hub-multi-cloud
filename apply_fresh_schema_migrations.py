@@ -276,6 +276,21 @@ def plan_statements(cursor):
             "ALTER TABLE resources MODIFY COLUMN resource_id VARCHAR(512) NOT NULL",
         ))
 
+    # ── 5b. alerts.resource_id widen (044_widen_alerts_resource_id) ──
+    # alerts.resource_id was VARCHAR(50) -- missed when #5 above widened
+    # `resources` to VARCHAR(512); every later migration that stores a
+    # resource_id-shaped value already uses 512 to match. Confirmed live
+    # 2026-09-16: any resource_id over 50 chars (a CloudWatch Logs group
+    # name, an ELB/ACM ARN) breaks the ENTIRE evaluate_alerts() cycle
+    # with "1406 Data too long for column 'resource_id'" on promotion,
+    # not just the one alert -- see db/migrations/044_widen_alerts_resource_id.sql.
+    alerts_current_type = column_type(cursor, "alerts", "resource_id")
+    if alerts_current_type and alerts_current_type.lower() != "varchar(512)":
+        plan.append((
+            "alerts.resource_id widen -> VARCHAR(512)",
+            "ALTER TABLE alerts MODIFY COLUMN resource_id VARCHAR(512) NOT NULL",
+        ))
+
     # ── 6. metrics last-value-only (004) ───────────────────────────
     if table_exists(cursor, "metrics"):
         if has_partitions(cursor, "metrics"):
