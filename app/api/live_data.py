@@ -48,6 +48,7 @@ from app.aws.collector_direct import (
     get_ec2_metric_series,
     get_s3_metric_series,
     _get_ebs_metric_series,
+    _metric_history_query_range,
     _get_lambda_metric_series,
     _get_rds_metric_series,
     _get_elb_metric_series,
@@ -643,6 +644,32 @@ def live_ecs(account_db_id: int, current_user: dict = Depends(require_permission
 # data source yet for GCP/Azure — they always show"). Two real problems
 # with that: (1) a transient AWS error on any ONE of those 41 live calls
 # (timeout, AccessDenied) came back as None, and the frontend treated
+# Only AWS discovery (core + extended) runs on a known recurring
+# schedule today -- app/collector/scheduler.py's DISCOVERY_INTERVAL,
+# 15 minutes. 3 missed cycles (45 min) is a deliberately generous
+# margin above that -- one slow/skipped cycle from an account-level
+# error (see discovery/runner.py's per-account try/except) shouldn't
+# make a tile flicker, but a resource genuinely gone from 3 consecutive
+# cycles is a real signal, not noise. GCP/Azure are excluded from this
+# entirely -- see 042_resource_last_seen_tracking.sql for why applying
+# any time-based staleness rule to them today would be actively wrong.
+_AWS_STALE_AFTER_MINUTES = 45
+
+
+def _resource_scope_sql(provider: str) -> str:
+    """Returns the extra WHERE-clause fragment (and nothing else -- no
+    params) that scopes a `resources` query to "still considered
+    present" for the given provider. AWS gets a recency filter because
+    AWS has a real, known discovery cadence to measure staleness
+    against; every other provider gets no extra filter, because "not
+    recently re-synced" and "no longer exists" are NOT the same thing
+    for a provider whose discovery only runs at onboarding or on a
+    manual click."""
+    if provider == "aws":
+        return f" AND last_seen_at > NOW() - INTERVAL {_AWS_STALE_AFTER_MINUTES} MINUTE"
+    return ""
+
+
 # None exactly like a real zero -- so a broken/under-permissioned
 # collector silently hid a service instead of surfacing that it wasn't
 # being checked; (2) GCP/Azure had zero presence-checking at all.
@@ -663,24 +690,34 @@ def live_ecs(account_db_id: int, current_user: dict = Depends(require_permission
 #   - One fast DB read instead of up to 41 parallel live API calls.
 #
 # Trade-off worth knowing: this is only as fresh as the last discovery
-# cycle for that account (typically within a few minutes), not
-# live-to-the-second. A resource created seconds ago in the AWS/GCP/
-# Azure console won't show a count bump until the next discovery run.
-# It also does NOT prune a resource row when the underlying cloud
-# resource is deleted (no reconciliation/delete step currently exists in
-# any of the four discovery modules above) — a resource removed in the
-# cloud console can keep showing here until that gap is closed
-# separately; flagging it rather than silently accepting stale counts.
+# cycle for that account. For AWS that's within ~15 minutes; for
+# GCP/Azure, discovery is onboarding-or-manual-only (no recurring
+# schedule exists yet — confirmed by reading scheduler.py end to end),
+# so "freshness" there can genuinely be however long it's been since
+# the account was set up or last manually re-synced.
+#
+# A resource deleted in the actual cloud drops out of this count for
+# AWS once last_seen_at falls outside _AWS_STALE_AFTER_MINUTES — no
+# row is ever deleted, so its full metric_history stays intact if
+# discovery finds it again a cycle later (see
+# 042_resource_last_seen_tracking.sql for why a hard delete would be
+# dangerous here: ON DELETE CASCADE would wipe that history
+# irreversibly on what might just be one flaky cycle). GCP/Azure rows
+# are never filtered by age at all, for the reasons above — closing
+# that gap needs recurring GCP/Azure discovery first, which doesn't
+# exist yet.
 @router.get("/resource-counts/{account_db_id}")
 def live_resource_counts(account_db_id: int, current_user: dict = Depends(require_permission("resources.view"))):
     _check_account_scope(current_user, account_db_id)
-    _get_db_account(account_db_id)  # 404s if the account doesn't exist / isn't accessible
+    acc = _get_db_account(account_db_id)  # 404s if the account doesn't exist / isn't accessible
+    provider = acc.get("provider") or "aws"
 
     conn = get_connection()
     try:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
-            "SELECT resource_type, COUNT(*) AS cnt FROM resources WHERE aws_account_id = %s GROUP BY resource_type",
+            "SELECT resource_type, COUNT(*) AS cnt FROM resources WHERE aws_account_id = %s"
+            + _resource_scope_sql(provider) + " GROUP BY resource_type",
             (account_db_id,),
         )
         rows = cursor.fetchall()
@@ -699,7 +736,9 @@ def live_resource_counts(account_db_id: int, current_user: dict = Depends(requir
 # works identically for an AWS-extended service, a GCP service, or an
 # Azure service, since discovery for all of them upserts into this one
 # table (see the comment above live_resource_counts for the full list of
-# discovery modules this relies on). No per-provider branching needed.
+# discovery modules this relies on, and for why the staleness filter
+# below only applies to AWS). No per-provider branching beyond that one
+# filter is needed here.
 @router.get("/resources-list/{account_db_id}/{service}")
 def live_resources_list(
     account_db_id: int,
@@ -707,16 +746,18 @@ def live_resources_list(
     current_user: dict = Depends(require_permission("resources.view")),
 ):
     _check_account_scope(current_user, account_db_id)
-    _get_db_account(account_db_id)
+    acc = _get_db_account(account_db_id)
+    provider = acc.get("provider") or "aws"
 
     conn = get_connection()
     try:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
             """
-            SELECT resource_id, name, region, tags, instance_state, created_at
+            SELECT resource_id, name, region, tags, instance_state, created_at, last_seen_at
             FROM resources
             WHERE aws_account_id = %s AND resource_type = %s
+            """ + _resource_scope_sql(provider) + """
             ORDER BY name
             """,
             (account_db_id, service),
@@ -733,6 +774,75 @@ def live_resources_list(
             except (TypeError, ValueError):
                 r["tags"] = {}
     return _serialize(rows)
+
+
+# ── Generic metric charts (any service, any provider, any tier) ───────
+# Powers the chart section on the generic detail page for any service
+# without a bespoke page. Deliberately reuses
+# app/aws/collector_direct.py's _metric_history_query_range() as-is --
+# that's the exact same function every bespoke EC2/EBS/RDS/Lambda chart
+# in this app already calls, reading the same metric_history table
+# every provider's metrics collector already writes into (Phase 1 GMD
+# for AWS, Phase 2/3 for Azure/GCP -- see that function's own
+# docstring). No new query logic, no new failure mode: same
+# never-raises, degrade-to-empty-list contract as every existing chart.
+#
+# What's genuinely new here is deciding WHICH metric names to even try
+# charting for an arbitrary service, since there's no per-service chart
+# component (like ServiceDetail.jsx's switch-per-service) to hardcode
+# that list. Answer: metric_catalog already has this mapping -- it's
+# the same table Settings -> Metrics reads to know which metrics exist
+# per service, per provider. Only metrics with at least one real data
+# point in range are returned, so this never renders a wall of empty
+# charts for metrics that are enabled but haven't collected anything
+# yet (or aren't the right unit/resource combination for this specific
+# resource).
+@router.get("/metrics/generic/{account_db_id}/{service}/{resource_id}")
+def live_generic_metrics(
+    account_db_id: int,
+    service: str,
+    resource_id: str,
+    hours: int = Query(24),
+    current_user: dict = Depends(require_permission("metrics.view")),
+):
+    _check_account_scope(current_user, account_db_id)
+    acc = _get_db_account(account_db_id)
+    provider = acc.get("provider") or "aws"
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT DISTINCT metric_name, unit, statistic, description
+            FROM metric_catalog
+            WHERE provider = %s AND service = %s
+              AND (metric_name != '' AND metric_name IS NOT NULL)
+            """,
+            (provider, service),
+        )
+        catalog_rows = cursor.fetchall()
+        cursor.close()
+    finally:
+        conn.close()
+
+    end   = datetime.datetime.utcnow()
+    start = end - datetime.timedelta(hours=hours)
+
+    result = {}
+    for row in catalog_rows:
+        series = _metric_history_query_range(
+            service, resource_id, row["metric_name"], start, end, match_field="resource_id"
+        )
+        if not series:
+            continue  # no data yet for this metric/resource combo -- skip, don't render an empty chart
+        result[row["metric_name"]] = {
+            "unit": row.get("unit"),
+            "statistic": row.get("statistic"),
+            "description": row.get("description"),
+            "series": series,
+        }
+    return result
 
 
 # ── CloudWatch metric series endpoints ───────────────────────

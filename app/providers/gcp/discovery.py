@@ -43,15 +43,26 @@ def _credentials(sa_key_json: str):
 
 def _upsert_resource(cursor, account_id, resource_type, resource_id, name, tags, region,
                       normalized_resource_type):
+    # last_seen_at is still recorded here (consistent schema, and ready
+    # for the day recurring GCP discovery exists), but
+    # live_resource_counts does NOT filter GCP rows by it today -- GCP
+    # discovery only runs at onboarding or on a manual "Settings ->
+    # resource sync" click (see app/api/admin/accounts.py), never on a
+    # recurring schedule the way AWS's 15-min discovery does. A GCP
+    # resource legitimately can go untouched for weeks between syncs;
+    # treating that gap as staleness would hide real, still-existing
+    # resources. See 042_resource_last_seen_tracking.sql for the full
+    # reasoning.
     cursor.execute("""
         INSERT INTO resources
-            (aws_account_id, resource_type, resource_id, name, tags, region, normalized_resource_type)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+            (aws_account_id, resource_type, resource_id, name, tags, region, normalized_resource_type, last_seen_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
         ON DUPLICATE KEY UPDATE
             name = VALUES(name),
             tags = VALUES(tags),
             region = VALUES(region),
-            normalized_resource_type = VALUES(normalized_resource_type)
+            normalized_resource_type = VALUES(normalized_resource_type),
+            last_seen_at = NOW()
     """, (account_id, resource_type, resource_id, name, json.dumps(tags or {}), region,
           normalized_resource_type))
 

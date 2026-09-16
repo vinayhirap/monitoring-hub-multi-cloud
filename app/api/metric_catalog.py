@@ -258,11 +258,28 @@ def get_account_metrics(account_id: int, current_user: dict = Depends(require_pe
     # pattern directly for that one case. Only applied to the 7 core
     # AWS services this app actually discovers resources for
     # (ec2/ebs/rds/lambda/alb/nlb/ecs); EXTENDED-tier services are left
-    # alone deliberately -- this app has no discovery for them at all, so
-    # "zero resources found" would be true for literally all of them,
-    # and hiding the whole extended tier would remove the ability to
-    # pre-select metrics before a resource is even provisioned, a
-    # legitimate use of this page. See apply_metrics_to_monitor_cleanup.py.
+    # alone deliberately.
+    #
+    # CORRECTION (found auditing the Services page, see
+    # live_resource_counts in app/api/live_data.py): the reasoning this
+    # comment used to give -- "this app has no discovery for
+    # [extended-tier services] at all" -- is no longer true and hasn't
+    # been since app/collector/discovery/extended.py's
+    # discover_extended_services() was wired into every AWS discovery
+    # cycle (see discovery/runner.py's _discover_account()). Extended
+    # AWS resources DO get tracked in `resources` today, the same way
+    # core ones do. The real, still-valid reason to leave this tier
+    # unfiltered here is the one already stated above: this page's job
+    # is letting someone pre-select metrics for a service BEFORE a
+    # resource of that type exists yet (e.g. picking DynamoDB metrics
+    # ahead of provisioning a table) -- hiding a zero-resource extended
+    # service would silently remove that ability. That's a deliberate
+    # product choice for THIS page, independent of whether discovery
+    # exists. The Services page (ServiceList.jsx) is a different
+    # surface with a different job -- showing what's ACTUALLY being
+    # monitored right now -- so it correctly does hide a zero-resource
+    # service, extended or not; the two pages disagreeing here is
+    # intentional, not a bug to reconcile.
     present_core_services = None
     if provider == "aws":
         cur.execute("""

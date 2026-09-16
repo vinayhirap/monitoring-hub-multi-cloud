@@ -41,14 +41,21 @@ def _get_session(account):
 
 def _upsert_resource(cursor, aws_account_id, resource_type, resource_id,
                      name, tags, region):
+    # last_seen_at = NOW() on every call (insert AND update) is what
+    # lets live_resource_counts (app/api/live_data.py) tell "still
+    # exists as of the last discovery run" apart from "was seen once,
+    # a while ago, and hasn't been checked since" -- see
+    # 042_resource_last_seen_tracking.sql for why that distinction
+    # only drives filtering for AWS today, not GCP/Azure.
     cursor.execute("""
         INSERT INTO resources
-            (aws_account_id, resource_type, resource_id, name, tags, region)
-        VALUES (%s, %s, %s, %s, %s, %s)
+            (aws_account_id, resource_type, resource_id, name, tags, region, last_seen_at)
+        VALUES (%s, %s, %s, %s, %s, %s, NOW())
         ON DUPLICATE KEY UPDATE
-            name   = VALUES(name),
-            tags   = VALUES(tags),
-            region = VALUES(region)
+            name         = VALUES(name),
+            tags         = VALUES(tags),
+            region       = VALUES(region),
+            last_seen_at = NOW()
     """, (
         aws_account_id, resource_type, resource_id,
         name, json.dumps(tags), region
