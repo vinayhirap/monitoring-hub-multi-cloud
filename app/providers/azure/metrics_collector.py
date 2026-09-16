@@ -107,10 +107,25 @@ def _enabled_azure_metrics(cur, account_id: int, categories=None, only_metric_na
     return grouped
 
 
-def collect_account_metrics(account: dict, categories=None, only_metric_names=None) -> dict:
+def collect_account_metrics(account: dict, categories=None, only_metric_names=None,
+                             window_seconds: int = 600) -> dict:
     """
     account: a row from aws_accounts (dict) for one Azure account. Must have
     id, tenant_id, client_id, subscription_id, default_region.
+
+    window_seconds: how far back the Azure Monitor query looks for each
+    resource/metric (the `timespan` passed to query_resources()). Default
+    (600s / 10 min) matches this app's fastest tiers (critical=60s,
+    standard=300s) with headroom to spare, but multicloud_scheduler.py's
+    LOW (900s), EXTENDED (900s) and SLOW_EXTENDED (3600s) passes now pass
+    a wider value explicitly -- see that module's per-pass call sites and
+    the 2026-09-16 fix note there. Before that fix this was a hardcoded
+    timedelta(minutes=10) regardless of which tier called in, so any pass
+    polling less often than every 10 minutes (LOW, EXTENDED, SLOW_EXTENDED
+    -- i.e. every Azure service except the small critical/standard core
+    set) queried a window narrower than its own polling gap and silently
+    missed whatever Azure published in between. Same bug class as AWS's
+    extended.py fix (see that file's _LOOKBACK_MINUTES docstring).
 
     categories: optional iterable restricting collection to specific
     metric_catalog.category values ('core', 'extended', 'directory') --
@@ -214,7 +229,7 @@ def collect_account_metrics(account: dict, categories=None, only_metric_names=No
                         resource_ids=chunk_uris,
                         metric_namespace=namespace,
                         metric_names=list(metric_names),
-                        timespan=timedelta(minutes=10),
+                        timespan=timedelta(seconds=window_seconds),
                         granularity=timedelta(minutes=1),
                         aggregations=[MetricAggregationType.AVERAGE],
                     )
@@ -267,9 +282,9 @@ def collect_account_metrics(account: dict, categories=None, only_metric_names=No
     return result
 
 
-def collect_all_azure_accounts(categories=None, only_metric_names=None) -> dict:
+def collect_all_azure_accounts(categories=None, only_metric_names=None, window_seconds: int = 600) -> dict:
     """Runs collect_account_metrics() for every active Azure account. Used by the scheduler.
-    categories, only_metric_names: see collect_account_metrics()'s docstring."""
+    categories, only_metric_names, window_seconds: see collect_account_metrics()'s docstring."""
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
@@ -282,7 +297,8 @@ def collect_all_azure_accounts(categories=None, only_metric_names=None) -> dict:
 
     totals = {"accounts": len(accounts), "pushed": 0, "errors": []}
     for account in accounts:
-        r = collect_account_metrics(account, categories=categories, only_metric_names=only_metric_names)
+        r = collect_account_metrics(account, categories=categories, only_metric_names=only_metric_names,
+                                     window_seconds=window_seconds)
         totals["pushed"] += r["pushed"]
         if r["errors"]:
             totals["errors"].append({"account_id": account["id"], "errors": r["errors"]})

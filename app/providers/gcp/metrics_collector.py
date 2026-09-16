@@ -79,7 +79,18 @@ from app.collector.metrics_writer import write_metrics_batch, write_metric_histo
 
 logger = logging.getLogger(__name__)
 
-_WINDOW_SECONDS = 600  # look back 10 min for the latest datapoint
+_WINDOW_SECONDS = 600  # DEFAULT ONLY -- fast core tiers (critical/standard).
+# 2026-09-16 fix: this used to be the ONE lookback window for every tier,
+# including the 60-min "extended" tier (GCP_EXTENDED_INTERVAL_SECONDS in
+# multicloud_scheduler.py) -- a 10-min window polled once an hour has no
+# guarantee of overlapping whenever Cloud Monitoring actually published a
+# datapoint, which silently starved every GCP extended-tier service (GKE,
+# Cloud Functions, Pub/Sub, ...) of chart data the same way AWS's
+# analogous extended.py bug did (see that file's _LOOKBACK_MINUTES
+# docstring for the fuller math). collect_account_metrics() now takes an
+# explicit window_seconds, sized by multicloud_scheduler.py's per-pass
+# call sites to match each tier's real poll interval; this constant is
+# now only the fallback for callers that don't pass one.
 
 
 def _point_value(point):
@@ -244,10 +255,18 @@ def _build_resource_maps(cur, account_id: int, services: set):
     return resource_id_maps, numeric_id_map
 
 
-def collect_account_metrics(account: dict, categories=None, only_metric_names=None) -> dict:
+def collect_account_metrics(account: dict, categories=None, only_metric_names=None,
+                             window_seconds: int = _WINDOW_SECONDS) -> dict:
     """
     account: a row from aws_accounts (dict) for one GCP account. Must have
     id, project_id, and a service-account key stored via app.credentials.
+
+    window_seconds: how far back (from "now") the Cloud Monitoring
+    ListTimeSeries query looks. Defaults to _WINDOW_SECONDS (10 min) for
+    any caller that doesn't pass one explicitly, but multicloud_scheduler.py
+    now always passes a value sized to the calling tier's own poll
+    interval -- see _WINDOW_SECONDS's docstring above for why a fixed
+    10-min window broke GCP's extended tier specifically.
 
     categories: optional iterable restricting collection to specific
     metric_catalog.category values ('core','extended','directory') --
@@ -304,7 +323,7 @@ def collect_account_metrics(account: dict, categories=None, only_metric_names=No
     now = time.time()
     interval = monitoring_v3.TimeInterval({
         "end_time": {"seconds": int(now)},
-        "start_time": {"seconds": int(now - _WINDOW_SECONDS)},
+        "start_time": {"seconds": int(now - window_seconds)},
     })
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
@@ -430,9 +449,9 @@ def collect_account_metrics(account: dict, categories=None, only_metric_names=No
     return result
 
 
-def collect_all_gcp_accounts(categories=None, only_metric_names=None) -> dict:
+def collect_all_gcp_accounts(categories=None, only_metric_names=None, window_seconds: int = _WINDOW_SECONDS) -> dict:
     """Runs collect_account_metrics() for every active GCP account. Used by the scheduler.
-    categories, only_metric_names: see collect_account_metrics()'s docstring."""
+    categories, only_metric_names, window_seconds: see collect_account_metrics()'s docstring."""
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
@@ -445,7 +464,8 @@ def collect_all_gcp_accounts(categories=None, only_metric_names=None) -> dict:
 
     totals = {"accounts": len(accounts), "pushed": 0, "errors": []}
     for account in accounts:
-        r = collect_account_metrics(account, categories=categories, only_metric_names=only_metric_names)
+        r = collect_account_metrics(account, categories=categories, only_metric_names=only_metric_names,
+                                     window_seconds=window_seconds)
         totals["pushed"] += r["pushed"]
         if r["errors"]:
             totals["errors"].append({"account_id": account["id"], "errors": r["errors"]})

@@ -57,6 +57,44 @@ for _service_key, (_display, _namespace, _category, _metrics) in CURATED.items()
 # queues/streams are actually still in use before touching further.
 SLOW_EXTENDED_SERVICES = {"s3", "logs", "backup", "cloudfront", "wafv2"}
 
+# GetMetricData lookback window (minutes), keyed by tier -- see the
+# 2026-09-16 fix below for why this exists as its own map instead of
+# _collect_extended_service's old hardcoded minutes=16 default.
+#
+# ROOT CAUSE of "extended/slow_extended services never show any chart
+# data" (Services page audit, AuroGov Mumbai): when extended-tier
+# collection was split off the 15-min "low" tier onto its own 60-min
+# "extended" tier, and rare-event services split further onto a 24h
+# "slow_extended" tier (see scheduler.py's docstring for that history),
+# the GMD lookback window used to fetch each cycle's data was never
+# updated to match -- it stayed at minutes=16, the value that made
+# sense for the OLD 15-min tier (interval + ~1 min buffer, the same
+# convention every core collector in runner.py still follows: minutes=6
+# for the 5-min tier, minutes=16 for the 15-min tier).
+#
+# A 16-minute window polled once every 60 minutes only has a 16/60
+# chance of overlapping whenever AWS actually publishes a datapoint;
+# polled once every 24 HOURS (slow_extended), it's a 16/1440 chance --
+# under 1.2%. That's indistinguishable from "this service just doesn't
+# publish data", which is exactly the wrong conclusion the 2026-09-12
+# audit that created SLOW_EXTENDED_SERVICES drew (see that set's own
+# docstring above) -- some of those "zero datapoints regardless of poll
+# frequency" findings were this window bug, not (or not only) AWS's own
+# rare/once-daily publish behavior. WAFv2's BlockedRequests, S3's daily
+# storage snapshot, etc. still won't publish every cycle, but a window
+# that actually SPANS the full gap between polls at least catches
+# whatever WAS published sometime in that gap, instead of only the
+# last 16 minutes of it.
+#
+# Widened to interval + 10 min buffer (bigger than the 1-min buffer
+# used elsewhere, since this file requests Period=300 5-min-bucketed
+# data, not the core collectors' Period=60 1-min buckets -- a 1-min
+# buffer isn't enough headroom against a 5-min bucket boundary).
+_LOOKBACK_MINUTES = {
+    "extended":      70,    #  60 min interval + 10 min buffer
+    "slow_extended": 1450,  # 1440 min (24h) interval + 10 min buffer
+}
+
 
 # ── Per-service dimension builders ──────────────────────────────
 #
@@ -197,11 +235,16 @@ def _enabled_extended_metrics(cur, account_id):
     return {(row["service"], row["metric_name"]) for row in cur.fetchall()}
 
 
-def _collect_extended_service(cw, resources, service_key, enabled_keys):
+def _collect_extended_service(cw, resources, service_key, enabled_keys, minutes=16):
     """resources: list of dicts (id, resource_id, resource_type, name,
     region, tags) all belonging to the same (service_key, region) group.
     Mirrors app/collector/metrics/runner.py's _build_queries/_execute_gmd
-    shape but supports multi-dimension metrics via _build_dimensions."""
+    shape but supports multi-dimension metrics via _build_dimensions.
+
+    minutes: GetMetricData lookback window, forwarded to _execute_gmd.
+    Sized by the caller (collect_extended_for_account) to the actual
+    polling interval for this tier -- see _LOOKBACK_MINUTES below for
+    why this can no longer be a single hardcoded default."""
     metric_defs = EXTENDED_METRICS.get(service_key)
     if not metric_defs:
         return 0
@@ -238,7 +281,7 @@ def _collect_extended_service(cw, resources, service_key, enabled_keys):
     if not queries:
         return 0
 
-    n = _execute_gmd(cw, queries, id_map, minutes=16)
+    n = _execute_gmd(cw, queries, id_map, minutes=minutes)
     logger.info(f"    Extended[{service_key}]: {n} datapoints / {len(resources)} resources")
     return n
 
@@ -315,7 +358,8 @@ def collect_extended_for_account(session, account, tier="extended"):
         cw_region = _region_for_service(resource_type, region)
         try:
             cw = session.client("cloudwatch", region_name=cw_region)
-            _collect_extended_service(cw, resources, resource_type, enabled_keys)
+            minutes = _LOOKBACK_MINUTES.get(tier, 16)
+            _collect_extended_service(cw, resources, resource_type, enabled_keys, minutes=minutes)
         except Exception as e:
             logger.error(f"  Extended collection failed [{resource_type}/{cw_region}] "
                          f"[{account['account_name']}]: {e}")
