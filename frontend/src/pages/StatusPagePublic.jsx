@@ -8,7 +8,21 @@
 // boundary this relies on server-side -- this component only ever
 // renders what the backend already sanitized (component names and
 // computed statuses), nothing here can leak more than that.
+//
+// Timezone selector added on top of the same TimezoneContext the
+// authenticated app already uses for its topbar clock (App.jsx wraps
+// the ENTIRE route tree, /status included, in TimezoneProvider, so
+// this needed no extra plumbing to reach it) -- same IST/UTC choice,
+// same persisted preference, so a visitor's choice here carries over
+// if they also use the authenticated app in the same browser, and
+// vice versa. Timestamps are rendered through formatDateTime/formatTime
+// rather than raw toLocaleString() -- see app/api/status_page.py's
+// comment on why started_at/resolved_at/generated_at now carry an
+// explicit "Z": without it, every visitor's browser silently
+// mis-parsed a UTC instant as their own local time regardless of any
+// selector, which is the bug this page used to have.
 import { useState, useEffect, useCallback } from "react";
+import { useTimezone, TIMEZONE_OPTIONS } from "../contexts/TimezoneContext";
 import "./StatusPagePublic.css";
 
 const STATUS_COPY = {
@@ -24,6 +38,7 @@ function ComponentDot({ status }) {
 export default function StatusPagePublic() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const { timezone, setTimezone, formatDateTime, formatTime } = useTimezone();
 
   const load = useCallback(() => {
     fetch("/api/status-page")
@@ -63,6 +78,20 @@ export default function StatusPagePublic() {
   return (
     <div className="stp-page">
       <div className="stp-container">
+        <div className="stp-header-row">
+          <select
+            className="stp-tz-select"
+            value={timezone}
+            onChange={e => setTimezone(e.target.value)}
+            title="Display timezone — applies to every time on this page"
+            aria-label="Display timezone"
+          >
+            {Object.entries(TIMEZONE_OPTIONS).map(([key, opt]) => (
+              <option key={key} value={key}>{opt.label}</option>
+            ))}
+          </select>
+        </div>
+
         <div className={`stp-banner stp-banner-${overall.tone}`}>
           <ComponentDot status={data.overall_status} />
           <span>{overall.label}</span>
@@ -92,8 +121,8 @@ export default function StatusPagePublic() {
                 <div>
                   <div className="stp-event-title">{e.component} — {e.status === "outage" ? "Outage" : "Degraded performance"}</div>
                   <div className="stp-event-time">
-                    {new Date(e.started_at).toLocaleString()}
-                    {e.resolved_at ? ` – ${new Date(e.resolved_at).toLocaleString()}` : " – ongoing"}
+                    {formatDateTime(e.started_at)}
+                    {e.resolved_at ? ` – ${formatDateTime(e.resolved_at)}` : " – ongoing"}
                   </div>
                 </div>
               </div>
@@ -101,7 +130,7 @@ export default function StatusPagePublic() {
           </div>
         )}
 
-        <p className="stp-footer">Last updated {new Date(data.generated_at).toLocaleTimeString()} · refreshes automatically</p>
+        <p className="stp-footer">Last updated {formatTime(data.generated_at)} {timezone} · refreshes automatically</p>
       </div>
     </div>
   );

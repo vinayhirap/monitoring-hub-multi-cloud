@@ -214,8 +214,22 @@ def public_status_page():
                     recent_events.append({
                         "component": c["name"],
                         "status": "outage" if row["severity"] == "CRITICAL" else "degraded",
-                        "started_at": str(row["triggered_at"]),
-                        "resolved_at": str(row["resolved_at"]) if row["resolved_at"] else None,
+                        # +"Z" is load-bearing, not decorative: triggered_at/
+                        # resolved_at come out of MySQL as naive datetimes
+                        # (this DB's NOW() is confirmed plain UTC with no
+                        # offset -- see the audit that added this fix), and
+                        # str(naive_datetime) produces "2026-09-16 06:46:33"
+                        # with no timezone marker at all. Browsers parse a
+                        # timestamp with no 'Z'/offset as LOCAL time per the
+                        # ES2015+ Date-parsing spec -- so without this, every
+                        # viewer's browser silently mis-parsed a UTC instant
+                        # as if it were already their own local time, no
+                        # matter what timezone selector they had (see
+                        # StatusPagePublic.jsx's now-fixed toLocaleString()
+                        # calls, and TimezoneContext.jsx's formatInTz, which
+                        # both assume a real, unambiguous instant on input).
+                        "started_at": str(row["triggered_at"]) + "Z",
+                        "resolved_at": (str(row["resolved_at"]) + "Z") if row["resolved_at"] else None,
                     })
 
         recent_events.sort(key=lambda e: e["started_at"], reverse=True)
@@ -224,7 +238,10 @@ def public_status_page():
             "overall_status": overall,
             "components": components,
             "recent_events": recent_events[:MAX_RECENT_EVENTS],
-            "generated_at": datetime.utcnow().isoformat(),
+            # Same "no offset = browser treats it as local time" issue as
+            # started_at/resolved_at above -- isoformat() alone omits the
+            # 'Z' even though datetime.utcnow() genuinely is UTC.
+            "generated_at": datetime.utcnow().isoformat() + "Z",
         }
     finally:
         cursor.close(); conn.close()

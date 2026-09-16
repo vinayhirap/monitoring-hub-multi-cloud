@@ -9,6 +9,14 @@
 
 .stp-container { width: 100%; max-width: 640px; }
 
+.stp-header-row { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+.stp-tz-select {
+  background: var(--bg-card, #0e1829); border: 1px solid var(--border, rgba(99,130,190,0.14));
+  color: var(--text-secondary, #8ca0c4); border-radius: var(--radius, 6px);
+  font-size: 12px; font-family: var(--font-mono, monospace); padding: 5px 10px; cursor: pointer;
+}
+.stp-tz-select:hover { border-color: var(--accent, #2bb3ac); color: var(--text-primary, #dce6f5); }
+
 .stp-loading, .stp-error {
   text-align: center; color: var(--text-muted, #4a5f80); font-size: 14px; margin-top: 80px;
 }
