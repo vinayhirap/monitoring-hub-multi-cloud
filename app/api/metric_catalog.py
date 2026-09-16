@@ -523,14 +523,17 @@ def apply_default_template(account_id: int, current_user: dict = Depends(require
 
 def _discover_aws_metrics(acc: dict, namespace: str, region: str) -> set:
     """Live CloudWatch ListMetrics call — original AWS-only implementation."""
-    import boto3
+    from app.aws.sts import get_boto3_session
     resolved_region = region or acc.get("default_region")
-    if acc.get("role_arn"):
-        from app.aws.sts import assume_role
-        session = assume_role(acc["role_arn"], acc.get("external_id"))
-        cw = session.client("cloudwatch", region_name=resolved_region)
-    else:
-        cw = boto3.client("cloudwatch", region_name=resolved_region, config=STANDARD_RETRY)
+    # get_boto3_session() covers auth_mode == "static_keys" (which
+    # acc.get("role_arn") alone can never detect, since a static-key
+    # account's role_arn column is empty by design), falling back to
+    # plain ambient credentials only when the account genuinely has
+    # neither -- same defect class as the 2026-09-16 U4RAD incident,
+    # just for this endpoint's live CloudWatch ListMetrics call instead
+    # of discovery/the account summary/describe_polling.
+    session = get_boto3_session(acc)
+    cw = session.client("cloudwatch", region_name=resolved_region, config=STANDARD_RETRY)
 
     seen = {}
     paginator = cw.get_paginator("list_metrics")
@@ -664,7 +667,7 @@ def discover_namespace_metrics(account_id: int, namespace: str = Query(...), reg
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("""
-        SELECT id, provider, default_region, role_arn, external_id,
+        SELECT id, provider, default_region, role_arn, auth_mode, external_id,
                tenant_id, client_id, subscription_id, project_id
         FROM aws_accounts WHERE id = %s
     """, (account_id,))
