@@ -372,3 +372,14 @@ def run_discovery():
             logger.error(f"Discovery failed [{acc['account_name']}]: {e}")
 
     logger.info("Discovery complete")
+
+    # Runs after every discovery cycle, for all accounts, automatically --
+    # see app.collector.integrity_check module docstring for why this
+    # exists (2026-09-16 U4RAD/AuroGov Mumbai incident: a symptom-level
+    # safety net for this entire bug class, not tied to any one root
+    # cause). Never allowed to affect discovery's own success/failure.
+    try:
+        from app.collector.integrity_check import run_integrity_check
+        run_integrity_check()
+    except Exception as e:
+        logger.error(f"Post-discovery integrity check failed: {e}")

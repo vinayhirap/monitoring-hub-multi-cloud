@@ -61,24 +61,24 @@ def _load():
 
 def test_get_ec2_instances_by_region_returns_id_and_resource_db_id_pairs():
     rows = [
-        {"account_db_id": 1, "role_arn": None, "external_id": None, "default_region": "ap-south-1",
+        {"account_db_id": 1, "role_arn": None, "external_id": None, "auth_mode": "assume_role", "default_region": "ap-south-1",
          "resource_db_id": 501, "resource_id": "i-aaa"},
-        {"account_db_id": 1, "role_arn": None, "external_id": None, "default_region": "ap-south-1",
+        {"account_db_id": 1, "role_arn": None, "external_id": None, "auth_mode": "assume_role", "default_region": "ap-south-1",
          "resource_db_id": 502, "resource_id": "i-bbb"},
     ]
     install_stub("app.db", get_connection=lambda: _FakeConn(rows))
     mod, _ = _load()
 
     grouped = mod._get_ec2_instances_by_region()
-    key = (1, None, None, "ap-south-1")
+    key = (1, None, None, "assume_role", "ap-south-1")
     assert grouped[key] == [("i-aaa", 501), ("i-bbb", 502)]
 
 
 def test_poll_ec2_status_writes_locally_and_pushes_to_vm_unchanged():
     rows = [
-        {"account_db_id": 1, "role_arn": None, "external_id": None, "default_region": "ap-south-1",
+        {"account_db_id": 1, "role_arn": None, "external_id": None, "auth_mode": "assume_role", "default_region": "ap-south-1",
          "resource_db_id": 501, "resource_id": "i-aaa"},
-        {"account_db_id": 1, "role_arn": None, "external_id": None, "default_region": "ap-south-1",
+        {"account_db_id": 1, "role_arn": None, "external_id": None, "auth_mode": "assume_role", "default_region": "ap-south-1",
          "resource_db_id": 502, "resource_id": "i-bbb"},
     ]
     install_stub("app.db", get_connection=lambda: _FakeConn(rows))
