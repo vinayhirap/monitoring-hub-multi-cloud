@@ -112,6 +112,7 @@ def recompute_baselines() -> int:
     try:
         cursor.execute("""
             SELECT
+                r.aws_account_id,
                 r.resource_id,
                 h.metric_name,
                 HOUR(h.metric_timestamp)    AS hour_of_day,
@@ -157,7 +158,17 @@ def recompute_baselines() -> int:
                AND p1.day_of_week = WEEKDAY(h.metric_timestamp)
             WHERE h.metric_timestamp >= DATE_SUB(NOW(), INTERVAL %s DAY)
               AND h.metric_value IS NOT NULL
-            GROUP BY r.resource_id, h.metric_name,
+            -- Group by r.id (the true per-resource identity), NOT
+            -- r.resource_id (the raw AWS name string) -- two different
+            -- accounts' resources rows CAN share the same resource_id
+            -- string (e.g. "System", a stock CloudWatch Logs group
+            -- name; see the 2026-09-16 AuroGov Mumbai/U4RAD incident),
+            -- and grouping by the string alone would silently average
+            -- two unrelated accounts' metric history into one bucket.
+            -- r.resource_id/r.aws_account_id in the SELECT list are
+            -- functionally dependent on r.id, so this is valid under
+            -- ONLY_FULL_GROUP_BY without needing to list them here too.
+            GROUP BY r.id, h.metric_name,
                      HOUR(h.metric_timestamp), WEEKDAY(h.metric_timestamp)
             HAVING sample_count >= %s
         """, (
@@ -175,15 +186,15 @@ def recompute_baselines() -> int:
                 clipped_buckets += 1
             cursor.execute("""
                 INSERT INTO metric_baseline
-                    (resource_id, metric_name, hour_of_day, day_of_week,
+                    (aws_account_id, resource_id, metric_name, hour_of_day, day_of_week,
                      mean_value, stddev_value, sample_count)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     mean_value   = VALUES(mean_value),
                     stddev_value = VALUES(stddev_value),
                     sample_count = VALUES(sample_count)
             """, (
-                b["resource_id"], b["metric_name"], b["hour_of_day"], b["day_of_week"],
+                b["aws_account_id"], b["resource_id"], b["metric_name"], b["hour_of_day"], b["day_of_week"],
                 b["mean_value"], b["stddev_value"], b["sample_count"],
             ))
             written += 1
