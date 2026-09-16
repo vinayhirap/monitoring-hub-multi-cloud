@@ -41,7 +41,13 @@ const PwField = ({ id, label, value, onChange, show, onToggle, placeholder, auto
         disabled={disabled}
         autoFocus={autoFocus}
       />
-      <button type="button" className="login-toggle-pw" onClick={onToggle} tabIndex={-1}>
+      <button
+        type="button"
+        className="login-toggle-pw"
+        onClick={onToggle}
+        tabIndex={-1}
+        aria-label={show ? "Hide password" : "Show password"}
+      >
         <EyeIcon open={show} />
       </button>
     </div>
@@ -232,7 +238,7 @@ export default function Login() {
                 </svg>
               </div>
               <div className="login-orbit-badge login-orbit-badge-aws">
-                <AwsBrandLogo size={12} />AWS
+                <AwsBrandLogo dark size={12} />AWS
               </div>
               <div className="login-orbit-badge login-orbit-badge-azure">
                 <AzureBrandLogo size={15} />Azure
@@ -312,7 +318,7 @@ export default function Login() {
               <button type="button" className="login-link" onClick={() => goTo("forgot")}>
                 Forgot password?
               </button>
-              <button type="button" className="login-link" onClick={() => goTo("change")}>
+              <button type="button" className="login-link login-link-tertiary" onClick={() => goTo("change")}>
                 Change password
               </button>
             </div>
@@ -340,6 +346,7 @@ export default function Login() {
                 it on. Plain <a>, not a click handler + fetch: this must
                 be a real full-page navigation for the SP-initiated
                 redirect flow to work. */}
+            <div className="login-divider" role="presentation"><span>or</span></div>
             <a href="/api/auth/sso/login" className="login-sso-link">
               Log in with SSO
             </a>
