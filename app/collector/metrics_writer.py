@@ -104,6 +104,23 @@ def write_metric_history_batch(datapoints: list):
     rows -- this is genuine history, unlike write_metrics_batch() above
     which upserts a single latest value.
 
+    INSERT IGNORE, not plain INSERT (2026-09-16, see
+    db/migrations/043_metric_history_dedup_key.sql): once that
+    migration's UNIQUE KEY (resource_id, metric_name, metric_timestamp)
+    is in place, re-writing an already-recorded datapoint is expected,
+    routine behavior for the slow_extended tier's now much-wider
+    GetMetricData lookback windows (extended.py's _LOOKBACK_MINUTES) --
+    a window wider than the poll interval necessarily re-fetches
+    already-seen data on every subsequent cycle. Plain INSERT would
+    turn that expected overlap into a hard duplicate-key error on
+    EVERY slow_extended cycle after the first, aborting the whole
+    batch's write (see the try/except below -- previously exists only
+    for genuinely unexpected DB errors, not a routine, expected
+    condition). IGNORE makes a repeat of the exact same
+    (resource_id, metric_name, metric_timestamp, value) a silent no-op,
+    while a real DB error (connection loss, etc.) still raises via
+    non-duplicate-key error codes and is still caught below.
+
     datapoints: list of (resource_db_id, metric_name, value, timestamp) tuples.
     """
     if not datapoints:
@@ -114,7 +131,7 @@ def write_metric_history_batch(datapoints: list):
 
     try:
         cursor.executemany("""
-            INSERT INTO metric_history
+            INSERT IGNORE INTO metric_history
                 (resource_id, metric_name, metric_value, metric_timestamp)
             VALUES (%s, %s, %s, %s)
         """, [

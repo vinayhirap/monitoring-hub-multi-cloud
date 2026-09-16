@@ -92,7 +92,38 @@ SLOW_EXTENDED_SERVICES = {"s3", "logs", "backup", "cloudfront", "wafv2"}
 # buffer isn't enough headroom against a 5-min bucket boundary).
 _LOOKBACK_MINUTES = {
     "extended":      70,    #  60 min interval + 10 min buffer
-    "slow_extended": 1450,  # 1440 min (24h) interval + 10 min buffer
+    # 2026-09-16, live diagnostic on this exact codepath (AuroGov Mumbai,
+    # bucket "cidbuc"): 24h + 10min buffer (1450) was NOT enough for S3.
+    # Direct CloudWatch queries (bypassing this app entirely) showed
+    # BucketSizeBytes datapoints exactly 24h apart (2026-09-13 07:25,
+    # 2026-09-14 07:25) with NO newer point by 2026-09-16 -- a ~48h gap
+    # between the metric actually existing and this app's own poll time.
+    # This matches AWS's own documented behavior for S3's daily storage
+    # metrics (BucketSizeBytes/NumberOfObjects): "may take up to 48
+    # hours to become available" -- a genuine DELIVERY delay, not just
+    # a once-a-day PUBLISH rate. A 24h+buffer window can only ever catch
+    # a datapoint delivered within roughly a day of when it's dated;
+    # anything slower than that (which AWS explicitly says can happen)
+    # falls outside the window every single time, indistinguishable
+    # from "never publishes at all" -- the same class of false-negative
+    # this whole lookback-window fix exists to close.
+    #
+    # Widened to 48h + 20min buffer (2900) to safely span that
+    # documented worst case. This is shared by every SLOW_EXTENDED_SERVICES
+    # member (not just S3) since a wider window costs nothing extra in
+    # GetMetricData billing (CloudWatch bills per metric REQUESTED, not
+    # per time range queried) and only ever helps the event-driven
+    # members (logs/backup/cloudfront/wafv2) catch a rare event that
+    # happened anywhere in a longer look-back, never hurts them.
+    #
+    # IMPORTANT: a window this much wider than the 24h poll interval
+    # guarantees overlapping queries between consecutive daily runs --
+    # yesterday's already-recorded datapoint WILL be re-fetched today.
+    # See db/migrations/043_metric_history_dedup_key.sql and
+    # metrics_writer.py's write_metric_history_batch() (now INSERT
+    # IGNORE) for why that's safe rather than a growing pile of
+    # duplicate rows.
+    "slow_extended": 2900,  # 2880 min (48h) worst-case delay + 20 min buffer
 }
 
 
