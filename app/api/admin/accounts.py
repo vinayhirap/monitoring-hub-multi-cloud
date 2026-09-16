@@ -169,6 +169,43 @@ def _add_aws_account(payload: dict) -> tuple[int, str, str]:
         cursor.execute("UPDATE aws_accounts SET credential_ref = %s WHERE id = %s", (ref, new_id))
         conn.commit(); cursor.close(); conn.close()
 
+    # Verify the credentials actually land in the AWS account number typed
+    # into the form. account_id above is just a label the operator typed;
+    # nothing previously checked it against the account STS actually
+    # resolves to, so a wrong/reused/copy-pasted role ARN (or key pair)
+    # onboarded successfully and then silently monitored a completely
+    # different AWS account under this account's name on every discovery
+    # cycle afterwards, with no error anywhere.
+    # (2026-09-16 incident: U4RAD's role ARN in fact assumed into AuroGov
+    # Mumbai's own account, 924922671984, so U4RAD's dashboard showed
+    # AuroGov Mumbai's real EC2/EBS/S3/Lambda resources.)
+    try:
+        from app.aws.sts import get_boto3_session
+        verify_session = get_boto3_session({
+            "id": new_id, "auth_mode": auth_mode,
+            "role_arn": role_arn, "external_id": external_id,
+        })
+        assumed_account = verify_session.client("sts").get_caller_identity()["Account"]
+    except Exception as e:
+        assumed_account = None
+        logger.warning(f"Could not verify assumed AWS account for new account id={new_id}: {e}")
+
+    if assumed_account and assumed_account != account_id:
+        conn = get_connection(); cursor = conn.cursor()
+        cursor.execute("UPDATE aws_accounts SET status = 'inactive' WHERE id = %s", (new_id,))
+        conn.commit(); cursor.close(); conn.close()
+        if auth_mode == "static_keys":
+            from app.credentials import delete_credential
+            delete_credential(new_id)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"These credentials resolve to AWS account {assumed_account}, "
+                f"not {account_id} as entered. The account was not activated -- "
+                f"fix the Role ARN/access keys (or the account ID) and try again."
+            ),
+        )
+
     return new_id, account_name, "aws"
 
 
