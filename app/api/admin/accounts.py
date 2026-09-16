@@ -504,6 +504,14 @@ def delete_account(account_id: int, current_user: dict = Depends(require_role("a
         WHERE r.aws_account_id = %s
     """, (account_id,))
     cursor.execute("DELETE FROM resources WHERE aws_account_id = %s", (account_id,))
+    # Follow-up flagged (never implemented) in
+    # db/migrations/021_resource_relationships.sql's ON DELETE RESTRICT
+    # comment: resource_relationships isn't cleaned up here, so a
+    # removed account's ALB->EC2/EC2->EBS/etc edges were left behind
+    # indefinitely -- the same class of orphaned-data bug this block
+    # already fixed for alerts/metrics/resources, just missed for the
+    # table added after this block was originally written.
+    cursor.execute("DELETE FROM resource_relationships WHERE aws_account_id = %s", (account_id,))
 
     conn.commit()
     cursor.close()
