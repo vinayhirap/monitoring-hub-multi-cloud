@@ -220,6 +220,8 @@
   border-radius: var(--radius); padding: 8px 10px; transition: border-color 0.15s;
 }
 .rel-item:hover { border-color: var(--border-bright); }
+.rel-item-link { cursor: pointer; }
+.rel-item-link:hover { border-color: var(--accent); background: var(--accent-dim); }
 .rel-icon { display: flex; color: var(--text-muted); flex-shrink: 0; }
 .rel-info { flex: 1; min-width: 0; }
 .rel-name { font-size: 12px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
