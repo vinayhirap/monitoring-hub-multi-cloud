@@ -25,6 +25,7 @@ from fastapi import APIRouter, HTTPException, Body, Depends
 from app.db import get_connection
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
+from app.api.live_data import _get_db_account, _resource_scope_sql
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/topology", tags=["Topology"])
@@ -45,6 +46,18 @@ def get_topology(account_id: int, current_user: dict = Depends(require_permissio
 
     nodes come straight from `resources` for this account -- id,
     resource_type, name, region, instance_state where applicable.
+    For AWS accounts this excludes resources stale past
+    live_data.py's _AWS_STALE_AFTER_MINUTES (a resource genuinely gone
+    from 3+ discovery cycles) -- see the import above. Fixed here: this
+    query previously had no such filter at all, so a terminated
+    instance or deleted ALB that live_data.py's Resources page already
+    correctly stops counting kept showing up as a healthy-looking
+    topology node indefinitely (nothing ever hard-deletes `resources`
+    rows -- see 042_resource_last_seen_tracking.sql). Excluding it here
+    makes its still-present edges correctly flip to node_gap=True
+    instead of rendering a normal, connected-looking node for
+    infrastructure that's gone. GCP/Azure get no filter, same as
+    live_data.py, since neither has recurring discovery yet.
 
     edges are every resource_relationships row for this account, PLUS a
     `node_gap` flag per edge marking whether source/target actually has
@@ -53,13 +66,15 @@ def get_topology(account_id: int, current_user: dict = Depends(require_permissio
     never discovered is surfaced, not silently dropped).
     """
     _require_account_access(account_id, current_user)
+    acc = _get_db_account(account_id)  # 404s if the account doesn't exist
+    provider = acc.get("provider") or "aws"
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
             SELECT resource_id, resource_type, name, region, instance_state
             FROM resources
             WHERE aws_account_id = %s
-        """, (account_id,))
+        """ + _resource_scope_sql(provider), (account_id,))
         nodes = cur.fetchall()
         known_ids = {n["resource_id"] for n in nodes}
 
