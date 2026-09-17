@@ -48,6 +48,45 @@
 //     because the write endpoints rode along on the same permission as
 //     the read-only view.
 //
+// 2026-09-17 audit ("I want every resource in the account, not just
+// this pipeline, and aligned for GCP/Azure too"): traced this all the
+// way back through discovery (app/collector/discovery/runner.py +
+// extended.py, app/providers/azure/discovery.py,
+// app/providers/gcp/discovery.py) and the icon layer
+// (components/cloud-icons.jsx) before touching anything here --
+// discovery already writes every one of the ~42 AWS / 19 Azure / 16
+// GCP catalogued resource types into `resources` (see each file's own
+// docstring), and every one of those already has a real icon with a
+// sane fallback. The account in the screenshot that prompted this
+// really does have all 81 of its resources in `resources` and visible
+// in the "N other resources" disclosure below -- nothing was silently
+// dropped there. Three real gaps, fixed here:
+//   1. TIERS below only explicitly categorized a subset of AWS types
+//      and a much smaller subset of Azure/GCP types -- everything else
+//      silently fell into TIER_FALLBACK ("Compute"), so e.g. an SQS
+//      queue or a KMS key rendered in the Compute column. Every
+//      catalogued type across all three providers is now explicitly
+//      placed, plus a new "Security / Identity" tier for
+//      kms/certificatemanager/cognito/key_vault, which had no honest
+//      home in the previous three tiers.
+//   2. detailRoute()/ROUTE_SEGMENT_BY_TYPE assumed only 7 hardcoded AWS
+//      service pages existed and returned null (no link) for anything
+//      else, including every Azure/GCP resource. That was true when
+//      this file was first written, but ServiceDetailRouter.jsx +
+//      GenericServiceDetail.jsx (added since) now give EVERY service
+//      key, for every provider, a real in-app detail page -- the route
+//      segment is just the resource_type itself, matching the exact
+//      convention ServiceList.jsx's own ServiceCard links already use
+//      (`/accounts/${id}/${svc.id}`, svc.id === resource_type). The
+//      allowlist is gone; every non-hidden resource type is clickable
+//      now, on every provider.
+//   3. The "N other resources" disclosure defaulted to collapsed,
+//      putting most of an account's inventory one extra click away
+//      from "each and every resource" -- now defaults open. The main
+//      graph itself is deliberately still edges-only (see the header
+//      note above this one) -- that decluttering call was sound and
+//      isn't reversed here, only the visibility of what's *not* in it.
+//
 // Deliberately still no graph-layout library (react-flow etc.) --
 // frontend/package.json has zero graph dependencies today, and a fixed
 // tier-column layout is enough for the shapes this data actually takes
@@ -61,36 +100,65 @@ import { CloudServiceIcon } from "../components/cloud-icons";
 import { AlertTriangleIcon, TrashIcon, PlusIcon, InfoIcon, ExternalLinkIcon, XIcon } from "../components/icons";
 import "./Topology.css";
 
-// Which column a resource_type lands in. Anything unlisted falls back
-// to the compute column (TIER_FALLBACK) rather than being dropped.
-// Covers all three providers this app onboards accounts for -- see
-// cloud-icons.jsx's AWS_ICON/GCP_ICON_URL maps and ServiceList.jsx's
-// Azure resource-type matchers for the full set of keys each provider
-// actually uses.
+// Which column a resource_type lands in. Every type discovery actually
+// writes for AWS (app/collector/discovery/runner.py + extended.py),
+// Azure (app/providers/azure/discovery.py) and GCP
+// (app/providers/gcp/discovery.py) is listed explicitly below --
+// cross-checked 2026-09-17 against all three files plus each
+// provider's metric_catalog_data.py, so nothing should be silently
+// falling through to TIER_FALLBACK anymore. A brand-new service type
+// added later without a matching entry here still renders (icon +
+// fallback tier), it just won't be perfectly placed until this list is
+// updated too.
 const TIERS = [
   {
     key: "entry", label: "Entry / Routing",
     types: [
-      "elb", "alb", "nlb", "cloudfront", "apigateway", "route53", "globalaccelerator", // aws
-      "cloud_lb", "nat_gateway", // gcp
+      // aws
+      "elb", "alb", "nlb", "cloudfront", "apigateway", "route53",
+      "globalaccelerator", "natgateway", "transitgateway", "vpn",
+      "directconnect", "wafv2",
+      // azure
+      "load_balancer", "application_gateway", "cdn_profile", "vpn_gateway",
+      // gcp
+      "cloud_lb", "nat_gateway",
     ],
   },
   {
     key: "compute", label: "Compute",
     types: [
-      "ec2", "lambda", "ecs", "eks", "autoscaling", // aws
-      "vm", "app_service", "aks_cluster", // azure
-      "compute_instance", "cloud_run_service", "gke_cluster", "gke_node", "cloudfunctions_function", // gcp
+      // aws
+      "ec2", "lambda", "ecs", "ecs_service", "eks", "autoscaling", "states",
+      // azure
+      "vm", "vmss", "app_service", "aks_cluster", "function_app", "container_instance",
+      // gcp
+      "compute_instance", "cloud_run_service", "gke_cluster", "gke_node", "cloudfunctions_function",
     ],
   },
   {
     key: "data", label: "Data / Storage / Messaging",
     types: [
-      "ebs", "rds", "s3", "dynamodb", "elasticache", "efs", "redshift", "opensearch", "documentdb", "neptune", // aws
-      "storage_account", "sql_database", // azure
-      "gce_persistent_disk", "gcs_bucket", "cloudsql_instance", "firestore_database", "bigquery_project",
-      "spanner_instance", "redis_instance", "pubsub_topic", "pubsub_subscription", // gcp
+      // aws
+      "ebs", "rds", "s3", "dynamodb", "elasticache", "efs", "redshift",
+      "opensearch", "documentdb", "neptune", "sqs", "sns", "kinesis",
+      "firehose", "msk", "memorydb", "dax", "events", "backup", "dms", "logs",
+      // azure
+      "storage_account", "sql_database", "cosmosdb_account", "redis_cache",
+      "service_bus_namespace", "eventhub_namespace", "managed_disk", "data_factory",
+      // gcp
+      "gce_persistent_disk", "gcs_bucket", "cloudsql_instance", "firestore_database",
+      "bigquery_project", "spanner_instance", "redis_instance", "pubsub_topic", "pubsub_subscription",
     ],
+  },
+  {
+    // New 2026-09-17: kms/certificatemanager/cognito (aws) and
+    // key_vault (azure) had no honest home in the three tiers above --
+    // they aren't compute, storage, or an entry point -- and were
+    // landing in Compute purely via TIER_FALLBACK. No GCP catalog key
+    // maps here today (GCP's catalog has no dedicated KMS/Secret
+    // Manager entry), which is simply reality, not an omission.
+    key: "security", label: "Security / Identity",
+    types: ["kms", "certificatemanager", "cognito", "key_vault"],
   },
 ];
 const TIER_FALLBACK = "compute";
@@ -105,23 +173,21 @@ function tierIndexOf(resourceType) {
   return i === -1 ? TIERS.findIndex(t => t.key === TIER_FALLBACK) : i;
 }
 
-// Same AWS-only resource_type -> route-segment mapping Alerts.jsx uses
-// for its res-deeplink, duplicated here rather than shared (matches
-// this codebase's existing convention of keeping small per-page lookup
-// tables local -- see e.g. SevBadge/oe-sev/ep-sev). Azure/GCP resource
-// types intentionally have no entry: ServiceDetail.jsx (the page this
-// links to) doesn't support drilling into a specific non-AWS resource
-// yet, so returning null here correctly makes those nodes non-clickable
-// instead of navigating to a page that can't render them.
-const ROUTE_SEGMENT_BY_TYPE = {
-  ec2: "ec2", ebs: "ebs", rds: "rds", lambda: "lambda",
-  s3: "s3", elb: "elb", alb: "alb", ecs: "ecs",
-};
+// 2026-09-17: was a small hardcoded AWS-only allowlist (7 service
+// keys) that returned null -- no link at all -- for everything else,
+// including every Azure/GCP resource. That was correct when it was
+// written (ServiceDetail.jsx really was the only detail page and only
+// covered those 7), but ServiceDetailRouter.jsx now sends every other
+// service key to GenericServiceDetail.jsx, which works for any
+// provider -- see that router's own docstring. The route segment is
+// simply the resource_type itself, exactly the convention
+// ServiceList.jsx's own ServiceCard links already use
+// (`/accounts/${id}/${svc.id}`, svc.id === resource_type), so no
+// lookup table is needed at all anymore: any non-hidden, non-ghost
+// node is clickable now, on every provider.
 function detailRoute(node, accountId) {
   if (!node || node.ghost) return null;
-  const seg = ROUTE_SEGMENT_BY_TYPE[node.resource_type];
-  if (!seg) return null;
-  return `/accounts/${accountId}/${seg}?resource=${encodeURIComponent(node.resource_id)}`;
+  return `/accounts/${accountId}/${node.resource_type}`;
 }
 
 function StateDot({ state }) {
@@ -180,7 +246,14 @@ export default function Topology() {
   // -- see file header. Takes precedence over hoveredId wherever both
   // could apply.
   const [pinnedId, setPinnedId] = useState(null);
-  const [showOthers, setShowOthers] = useState(false);
+  // 2026-09-17: defaults to expanded now -- see file header's audit
+  // note. This is most of an account's inventory (81 of 81 resources
+  // in the account that prompted this, only 21 tracked in an edge);
+  // hiding it behind an extra click contradicted "every resource in
+  // this account, not just the ones with a tracked relationship" being
+  // the whole point of this disclosure existing at all. Still
+  // collapsible for anyone who wants the shorter view back.
+  const [showOthers, setShowOthers] = useState(true);
   const [addingEdge, setAddingEdge] = useState(false);
   const [form, setForm] = useState({ source: "", target: "" });
   const [saving, setSaving] = useState(false);
