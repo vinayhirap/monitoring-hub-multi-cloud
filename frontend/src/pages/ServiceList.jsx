@@ -13,7 +13,7 @@ import "../components/MetricSelector.css";
 // than a made-up description.
 const DESC_OVERRIDES = {
   ec2: "Compute instances", ebs: "Block storage volumes", rds: "Managed databases",
-  s3: "Object storage buckets", ecs: "Container services", elb: "Load balancers", alb: "Load balancers", lambda: "Serverless functions",
+  s3: "Object storage buckets", ecs: "Container services", elb: "Load balancers", alb: "Load balancers", nlb: "Load balancers", lambda: "Serverless functions",
   compute_instance: "Virtual machines", gcs_bucket: "Object storage buckets", cloudsql_instance: "Managed databases",
   cloud_run_service: "Serverless containers", gke_cluster: "Kubernetes clusters", gke_node: "Kubernetes nodes",
   cloudfunctions_function: "Serverless functions", pubsub_topic: "Pub/Sub topics", pubsub_subscription: "Pub/Sub subscriptions",
@@ -48,6 +48,7 @@ function alertMatcher(provider, service) {
       lambda: r => r?.includes("lambda") || r?.startsWith("arn:aws:lambda"),
       elb: r => r?.includes("alb") || r?.includes("elb") || r?.includes("loadbalancer"),
       alb: r => r?.includes("alb") || r?.includes("elb") || r?.includes("loadbalancer"),
+      nlb: r => r?.includes("nlb") || r?.includes("elb") || r?.includes("loadbalancer"),
       s3: r => r?.includes("s3"), ecs: r => r?.includes("ecs"),
     }[service];
   }

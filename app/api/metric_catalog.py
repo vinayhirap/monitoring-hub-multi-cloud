@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Body, Query, Response, Depends
 from app.db import get_connection
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
-from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type
+from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type, normalize_service_key
 import datetime
 import json
 import logging
@@ -286,18 +286,15 @@ def get_account_metrics(account_id: int, current_user: dict = Depends(require_pe
             SELECT resource_type, resource_id FROM resources WHERE aws_account_id = %s
         """, (account_id,))
         resource_rows = cur.fetchall()
-        present_core_services = set()
-        for rr in resource_rows:
-            rt, rid = rr["resource_type"], rr["resource_id"] or ""
-            if rt == "elb":
-                if "loadbalancer/app/" in rid:
-                    present_core_services.add("alb")
-                if "loadbalancer/net/" in rid:
-                    present_core_services.add("nlb")
-            elif rt in ("ecs", "ecs_service"):
-                present_core_services.add("ecs")
-            else:
-                present_core_services.add(rt)
+        # Uses the same normalize_service_key() live_resource_counts (app/
+        # api/live_data.py) now uses -- previously this logic was inlined
+        # here ONLY, which is exactly how it and live_resource_counts drifted
+        # apart and hid ALB/NLB from the Services page. See that function's
+        # docstring in app/threshold_defaults.py for the full history.
+        present_core_services = {
+            normalize_service_key(rr["resource_type"], rr["resource_id"] or "")
+            for rr in resource_rows
+        }
 
     cur.close(); conn.close()
 
