@@ -270,6 +270,42 @@ def normalize_threshold_resource_type(value):
     return THRESHOLD_RESOURCE_TYPE_ALIASES.get(value, value)
 
 
+# Same drift risk as THRESHOLD_RESOURCE_TYPE_ALIASES above, one layer
+# earlier: mapping a `resources` row to the metric_catalog.service key
+# it should be counted/grouped under for "is this service actually
+# present on this account" purposes. `resource_type` alone can't do
+# this for ELB -- discovery (runner.py's _discover_elb) stores every
+# load balancer under the single generic resource_type 'elb', but
+# metric_catalog_data.py has SEPARATE 'alb'/'nlb' entries (ALB and NLB
+# have different CloudWatch namespaces/metrics) -- only the resource_id
+# (ARN) can tell them apart.
+#
+# Added here, not duplicated a third time, because that's exactly how
+# ALB/NLB ended up invisible on the Services page (ServiceList.jsx)
+# while working fine on the Metric Selector / Settings -> Metrics to
+# Monitor: app/api/metric_catalog.py's present_core_services already
+# had this exact elb->alb/nlb split inline; live_resource_counts in
+# app/api/live_data.py -- a DIFFERENT resource-count source the
+# Services page reads instead -- never did, so it always reported 0
+# ALB/NLB resources and the tile got hidden as a zero-resource service,
+# even for an account (U4RAD) that has 3 real ALBs. Audited against
+# every resource_type discovery actually writes (runner.py's core 8 +
+# extended.py's 33 services) vs. every metric_catalog_data.py service
+# key: this ELB split is the ONLY one-resource_type-to-many-catalog-
+# keys case that exists today for AWS.
+def normalize_service_key(resource_type, resource_id=""):
+    resource_id = resource_id or ""
+    if resource_type == "elb":
+        if "loadbalancer/app/" in resource_id:
+            return "alb"
+        if "loadbalancer/net/" in resource_id:
+            return "nlb"
+        return resource_type  # Gateway/Classic LB ARNs -- no catalog split for these (yet)
+    if resource_type in ("ecs", "ecs_service"):
+        return "ecs"
+    return resource_type
+
+
 # Confirmed by reading app/providers/azure/metrics_collector.py and
 # app/providers/gcp/metrics_collector.py directly: both write
 # metric_catalog.metric_name into `metrics`/`metric_history` completely

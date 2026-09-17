@@ -56,6 +56,7 @@ from app.aws.collector_direct import (
 )
 from app.db import get_connection
 from app.alert_visibility import hidden_metrics_sql
+from app.threshold_defaults import normalize_service_key
 import datetime
 import time
 import json
@@ -743,9 +744,14 @@ def live_resource_counts(account_db_id: int, current_user: dict = Depends(requir
     conn = get_connection()
     try:
         cursor = conn.cursor(dictionary=True)
+        # Fetched as individual rows (not GROUP BY resource_type) because
+        # normalize_service_key() needs each row's resource_id, not just
+        # its resource_type -- see that function's docstring for why
+        # (ELB's alb/nlb split can only be told apart by ARN, and this
+        # exact gap is what hid ALB/NLB entirely from the Services page).
         cursor.execute(
-            "SELECT resource_type, COUNT(*) AS cnt FROM resources WHERE aws_account_id = %s"
-            + _resource_scope_sql(provider) + " GROUP BY resource_type",
+            "SELECT resource_type, resource_id FROM resources WHERE aws_account_id = %s"
+            + _resource_scope_sql(provider),
             (account_db_id,),
         )
         rows = cursor.fetchall()
@@ -753,7 +759,11 @@ def live_resource_counts(account_db_id: int, current_user: dict = Depends(requir
     finally:
         conn.close()
 
-    return {row["resource_type"]: row["cnt"] for row in rows}
+    counts = {}
+    for row in rows:
+        key = normalize_service_key(row["resource_type"], row["resource_id"])
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 # ── Generic resource listing (any service, any provider, any tier) ────
