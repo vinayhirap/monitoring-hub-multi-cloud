@@ -21,6 +21,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import { getResourcesList, getGenericMetrics, getConsoleUrl } from "../api/api";
 import { CloudServiceIcon } from "../components/cloud-icons";
 import { ArrowLeftIcon, ExternalLinkIcon, ChevronDownIcon } from "../components/icons";
+import { useTimezone } from "../contexts/TimezoneContext";
 
 async function fetchAccount(id) {
   const res = await fetch(`/api/admin/accounts/${id}`);
@@ -50,6 +51,7 @@ function MetricChart({ name, metric }) {
 }
 
 function ResourceRow({ r, isLast, accountId, service }) {
+  const { ianaName } = useTimezone();
   const [expanded, setExpanded] = useState(false);
   const [metrics, setMetrics] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -88,7 +90,7 @@ function ResourceRow({ r, isLast, accountId, service }) {
         <td style={{ padding: "10px 14px", color: "var(--text-muted)" }}>{r.region || "—"}</td>
         <td style={{ padding: "10px 14px", color: "var(--text-muted)" }}>{r.instance_state || "—"}</td>
         <td style={{ padding: "10px 14px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
-          {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
+          {r.created_at ? new Date(r.created_at).toLocaleString("en-US", { timeZone: ianaName }) : "—"}
         </td>
       </tr>
       {expanded && (

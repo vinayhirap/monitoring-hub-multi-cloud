@@ -18,6 +18,7 @@ import {
   getSecurityFindings, getSecurityFindingsSummary,
   getSecurityFindingsAccounts, getSecurityFindingConsoleUrl,
 } from "../api/api";
+import { useTimezone } from "../contexts/TimezoneContext";
 import { ShieldIcon, AlertOctagonIcon, ExternalLinkIcon } from "../components/icons";
 import "./SecurityFindings.css";
 
@@ -46,6 +47,7 @@ function ProviderBadge({ provider }) {
 }
 
 export default function SecurityFindings() {
+  const { ianaName } = useTimezone();
   const [findings, setFindings] = useState([]);
   const [summary, setSummary] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -172,7 +174,7 @@ export default function SecurityFindings() {
                     <div>{f.account_name}</div>
                     <ProviderBadge provider={f.account_provider} />
                   </td>
-                  <td className="mono">{new Date(f.last_seen_at).toLocaleString()}</td>
+                  <td className="mono">{new Date(f.last_seen_at).toLocaleString("en-US", { timeZone: ianaName })}</td>
                   <td>
                     <button
                       className="btn-console-sec"

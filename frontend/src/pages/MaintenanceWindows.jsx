@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { getMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, getAccounts } from "../api/api";
 import { PlusIcon, TrashIcon, AlertOctagonIcon, ToolIcon } from "../components/icons";
+import { useTimezone } from "../contexts/TimezoneContext";
 import "./MaintenanceWindows.css";
 
 function toLocalInputValue(d) {
@@ -24,6 +25,7 @@ const EMPTY_FORM = {
 };
 
 export default function MaintenanceWindows() {
+  const { ianaName } = useTimezone();
   const [windows, setWindows] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [error, setError] = useState(null);
@@ -132,7 +134,7 @@ export default function MaintenanceWindows() {
                   <td className="mono">{w.resource_id}</td>
                   <td>{w.reason}</td>
                   <td className="mono mw-window">
-                    {new Date(w.starts_at).toLocaleString()} → {new Date(w.ends_at).toLocaleString()}
+                    {new Date(w.starts_at).toLocaleString("en-US", { timeZone: ianaName })} → {new Date(w.ends_at).toLocaleString("en-US", { timeZone: ianaName })}
                   </td>
                   <td>{w.silence_downstream ? "Resource + dependents" : "Resource only"}</td>
                   <td>
