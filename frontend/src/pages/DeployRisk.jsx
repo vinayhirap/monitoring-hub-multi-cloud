@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback, Fragment } from "react";
 import { getDeployRisk } from "../api/api";
 import { AlertOctagonIcon, ZapIcon } from "../components/icons";
+import { useTimezone } from "../contexts/TimezoneContext";
 import "./DeployRisk.css";
 
 function RiskBadge({ risk }) {
@@ -14,6 +15,7 @@ function RiskBadge({ risk }) {
 }
 
 export default function DeployRisk() {
+  const { ianaName } = useTimezone();
   const [deployments, setDeployments] = useState([]);
   const [days, setDays] = useState(7);
   const [error, setError] = useState(null);
@@ -78,7 +80,7 @@ export default function DeployRisk() {
                       onClick={() => d.alert_count > 0 && setExpanded(expanded === d.id ? null : d.id)}>
                     <td><ZapIcon size={12} /> {d.message}</td>
                     <td>{d.account_name}</td>
-                    <td className="mono">{new Date(d.created_at).toLocaleString()}</td>
+                    <td className="mono">{new Date(d.created_at).toLocaleString("en-US", { timeZone: ianaName })}</td>
                     <td><RiskBadge risk={d.risk} /></td>
                     <td className="mono">{d.alert_count}</td>
                   </tr>

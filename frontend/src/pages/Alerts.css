@@ -51,8 +51,16 @@
 }
 .atab-count-active { background: rgba(245,158,11,0.15); color: #f59e0b; }
 
-.alerts-search {
+.alerts-account-filter {
   margin-left: auto;
+  background: var(--bg-card, #0d1627); border: 1px solid var(--border, rgba(99,130,190,0.12));
+  border-radius: 6px; padding: 6px 10px; color: var(--text, #c8d4e8);
+  font-size: 12px; outline: none; transition: border-color 0.15s; cursor: pointer;
+}
+.alerts-account-filter:focus { border-color: rgba(43,179,172,0.35); }
+
+.alerts-search {
+  margin-left: 8px;
   background: var(--bg-card, #0d1627); border: 1px solid var(--border, rgba(99,130,190,0.12));
   border-radius: 6px; padding: 6px 12px; color: var(--text, #c8d4e8);
   font-size: 12px; outline: none; width: 220px; transition: border-color 0.15s;
@@ -182,6 +190,7 @@
   .alerts-header { flex-wrap: wrap; gap: 12px; }
   .alerts-header-right { width: 100%; justify-content: space-between; }
   .alerts-tabs { gap: 8px; }
+  .alerts-account-filter { margin-left: 0; width: 100%; order: 9; flex-basis: 100%; }
   .alerts-search { margin-left: 0; width: 100%; order: 10; flex-basis: 100%; }
 }
 

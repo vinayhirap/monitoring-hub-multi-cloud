@@ -12,17 +12,21 @@
  *
  * Deliberately NOT applied to calendar-only fields (e.g. resource
  * "Created" / "Last Modified" dates in ServiceDetail/AccountDetail,
- * or the numeric audit-log entry date in Compliance) — those render
- * a bare date with no time-of-day, so an IST vs UTC toggle has no
- * visible effect on them except in the rare case a timestamp falls
- * in the ~5.5h band where the calendar day actually differs, which
- * isn't worth threading a timezone parameter through every plain
- * (non-component) date-formatting helper in the codebase for.
+ * UserManagement's "Created" column) — those render a bare date with
+ * no time-of-day, so an IST vs UTC toggle has no visible effect on
+ * them except in the rare case a timestamp falls in the ~5.5h band
+ * where the calendar day actually differs, which isn't worth
+ * threading a timezone parameter through every plain (non-component)
+ * date-formatting helper in the codebase for.
  *
- * The audit-log entry TIMESTAMP in Compliance.jsx (formatUTC) is
- * ALSO deliberately left fixed to UTC regardless of this selector —
- * an audit trail should read identically for every viewer, in one
- * canonical timezone, not shift depending on who's looking at it.
+ * 2026-09-17: the audit-log entry TIMESTAMP in Compliance.jsx
+ * (formerly formatTs's predecessor formatUTC, fixed to UTC regardless
+ * of this selector) now DOES follow the toggle, same as every other
+ * clock in the app, per explicit request — a per-viewer "audit trail
+ * reads in a different zone than everything else on screen" was
+ * confusing in practice. The underlying instant stored in the DB is
+ * unchanged either way; this only changes which zone it's displayed
+ * in.
  */
 import { createContext, useContext, useState, useEffect } from "react";
 

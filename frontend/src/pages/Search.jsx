@@ -7,6 +7,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { searchAlerts } from "../api/api";
 import { SearchIcon, AlertOctagonIcon } from "../components/icons";
+import { useTimezone } from "../contexts/TimezoneContext";
 import "./Search.css";
 
 function SevBadge({ sev }) {
@@ -14,6 +15,7 @@ function SevBadge({ sev }) {
 }
 
 export default function Search() {
+  const { ianaName } = useTimezone();
   const [q, setQ] = useState("");
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -91,7 +93,7 @@ export default function Search() {
                     <td>{a.resource_name || a.aws_resource_id}</td>
                     <td className="mono">{a.metric_name}</td>
                     <td>{a.account_name}</td>
-                    <td className="mono">{new Date(a.created_at).toLocaleString()}</td>
+                    <td className="mono">{new Date(a.created_at).toLocaleString("en-US", { timeZone: ianaName })}</td>
                     <td>{a.status}</td>
                   </tr>
                 ))}

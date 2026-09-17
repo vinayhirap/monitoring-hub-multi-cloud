@@ -51,21 +51,37 @@ function getIcon(action) {
   return ClipboardIcon;
 }
 
-function formatUTC(iso) {
+// Renders in whatever timezone the header's IST/UTC toggle is set to
+// (previously hardcoded to UTC regardless of that toggle -- the only
+// clock in the app that didn't follow it). tzLabel is the toggle's own
+// "IST"/"UTC" label, so the suffix always matches what's actually
+// selected instead of a string literal that would go stale the moment
+// someone picked IST.
+function formatTs(iso, ianaName, tzLabel) {
   try {
-    return new Date(iso).toISOString().replace("T", " ").substring(0, 19) + " UTC";
+    const d = new Date(iso);
+    const s = d.toLocaleString("en-US", {
+      timeZone: ianaName,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    });
+    // en-US gives "MM/DD/YYYY, HH:MM:SS" -- reorder to the
+    // "YYYY-MM-DD HH:MM:SS" shape this column always showed.
+    const [datePart, timePart] = s.split(", ");
+    const [mm, dd, yyyy] = datePart.split("/");
+    return `${yyyy}-${mm}-${dd} ${timePart} ${tzLabel}`;
   } catch { return iso ?? "—"; }
 }
 
-function formatDate(iso) {
+function formatDate(iso, ianaName) {
   try {
     return new Date(iso).toLocaleDateString("en-US", {
-      month: "numeric", day: "numeric", year: "numeric"
+      month: "numeric", day: "numeric", year: "numeric", timeZone: ianaName,
     });
   } catch { return ""; }
 }
 
-function AuditRow({ log }) {
+function AuditRow({ log, ianaName, tzLabel }) {
   const [expanded, setExpanded] = useState(false);
   const action = log.action ?? "System action";
   const actor  = log.actor  ?? "System";
@@ -78,8 +94,8 @@ function AuditRow({ log }) {
       onClick={() => setExpanded(x => !x)}
     >
       <div className="ar-time">
-        <div className="ar-ts">{formatUTC(log.created_at)}</div>
-        <div className="ar-date">{formatDate(log.created_at)}</div>
+        <div className="ar-ts">{formatTs(log.created_at, ianaName, tzLabel)}</div>
+        <div className="ar-date">{formatDate(log.created_at, ianaName)}</div>
       </div>
       <div className="ar-icon-wrap">{(() => { const Icon = getIcon(action); return <Icon size={15} />; })()}</div>
       <div className="ar-body">
@@ -101,7 +117,7 @@ function AuditRow({ log }) {
 export default function Compliance() {
   const { user } = useAuth();
   const isAdmin = (user?.role || "viewer").toLowerCase() === "admin";
-  const { ianaName } = useTimezone();
+  const { ianaName, timezone } = useTimezone();
   const [logs,        setLogs]        = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState(null);
@@ -155,7 +171,7 @@ export default function Compliance() {
     const rows = [
       ["Timestamp", "Action", "Actor", "Detail", "Role"],
       ...logs.map(l => [
-        l.created_at ?? "",
+        l.created_at ? formatTs(l.created_at, ianaName, timezone) : "",
         l.action ?? "",
         l.actor  ?? "",
         l.payload?.detail ?? "",
@@ -250,7 +266,9 @@ export default function Compliance() {
                   : "No audit log entries yet. Actions performed in the system will appear here automatically."}
               </div>
             ) : (
-              visible.map(log => <AuditRow key={log.id} log={log} />)
+              visible.map(log => (
+                <AuditRow key={log.id} log={log} ianaName={ianaName} tzLabel={timezone} />
+              ))
             )}
           </div>
         )}

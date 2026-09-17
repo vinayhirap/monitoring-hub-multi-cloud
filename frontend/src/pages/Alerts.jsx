@@ -133,6 +133,14 @@ export default function Alerts() {
   const [counts,  setCounts]  = useState(null);
   const [tab,     setTab]     = useState("active");
   const [search,  setSearch]  = useState("");
+  // Account filter -- options are derived from whatever accounts already
+  // appear in the full (uncapped) alerts list rather than a separate
+  // /api/alerts/accounts fetch: /api/alerts already returns every alert
+  // this user can see (RBAC-scoped server-side, see
+  // app/api/alerts.py's _filter_rows_by_scope), across every tab, so its
+  // account_id/account_name pairs are already the correct, permission-
+  // scoped dropdown contents with no extra request needed.
+  const [accountId, setAccountId] = useState("");
   const [acting,  setActing]  = useState(null);
   const [soundOn, setSoundOn] = useState(true);
   const [openingConsole, setOpeningConsole] = useState(null);
@@ -345,7 +353,16 @@ export default function Alerts() {
     }
   }
 
+  const accountOptions = Array.from(
+    new Map(
+      alerts
+        .filter(a => a.account_id != null)
+        .map(a => [a.account_id, a.account_name || `Account ${a.account_id}`])
+    ).entries()
+  ).sort((a, b) => a[1].localeCompare(b[1]));
+
   const filtered = alerts.filter(a => {
+    if (accountId && String(a.account_id) !== accountId) return false;
     const s = (a.status || "").toLowerCase();
     // "Active" means confirmed live — a resource still sending fresh data
     // that's breaching right now. Stale ones (no fresh data in 20+ min)
@@ -431,6 +448,16 @@ export default function Alerts() {
             </span>
           </button>
         ))}
+        <select
+          className="alerts-account-filter"
+          value={accountId}
+          onChange={e => setAccountId(e.target.value)}
+        >
+          <option value="">All accounts</option>
+          {accountOptions.map(([id, name]) => (
+            <option key={id} value={String(id)}>{name}</option>
+          ))}
+        </select>
         <input
           className="alerts-search"
           placeholder="Search metric, resource…"
