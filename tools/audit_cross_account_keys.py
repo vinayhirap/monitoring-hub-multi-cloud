@@ -83,9 +83,21 @@ def get_connection():
 def scan_unique_keys(cursor):
     """
     Returns (total_index_count, [{table, index_name, columns: [...]}])
-    for every non-PRIMARY unique key in the current database, one entry
-    per (table, index_name) with its columns in seq_in_index order.
+    -- total_index_count is every index (unique and non-unique) in the
+    schema, matching how the original ad-hoc version of this script
+    reported its "Scanned N indexes" line; the suspect list below only
+    ever considers unique keys, since a non-unique index can't enforce
+    the identity constraint this script is checking for.
     """
+    cursor.execute(
+        """
+        SELECT COUNT(DISTINCT TABLE_NAME, INDEX_NAME)
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+        """
+    )
+    total = cursor.fetchone()[0]
+
     cursor.execute(
         """
         SELECT TABLE_NAME, INDEX_NAME, COLUMN_NAME
@@ -100,7 +112,7 @@ def scan_unique_keys(cursor):
     for table, index_name, column in cursor.fetchall():
         keys.setdefault((table, index_name), []).append(column)
 
-    return len(keys), [
+    return total, [
         {"table": table, "index_name": index_name, "columns": columns}
         for (table, index_name), columns in sorted(keys.items())
     ]
