@@ -237,15 +237,24 @@ def _sync_topology_edges(account_db_id, lb_targets: dict) -> None:
 
         # Prune stale auto edges for this account's ALBs that are no
         # longer observed in this poll (deregistered target / deleted LB).
+        #
+        # Bug fix: previously scoped this SELECT to
+        # "source_resource_id IN (lb_arns seen in THIS poll)" -- which
+        # meant an ALB deleted entirely (so it no longer appears in
+        # lb_targets at all) never had its old edges reconciled here,
+        # contradicting this function's own docstring ("removes ...
+        # deleted LB"). Scoped to the whole account instead, matching
+        # _sync_ebs_attachment_edges()'s pattern just below -- accounts
+        # have a single default_region (see aws_accounts.default_region),
+        # so this poll already covers every 'routes_to' edge that could
+        # exist for this account, not just a region-scoped subset.
         if seen_pairs:
-            lb_arns = list(lb_targets.keys())
-            fmt = ",".join(["%s"] * len(lb_arns))
-            cur.execute(f"""
+            cur.execute("""
                 SELECT id, source_resource_id, target_resource_id
                 FROM resource_relationships
                 WHERE aws_account_id = %s AND relationship_type = 'routes_to'
-                  AND source = 'auto' AND source_resource_id IN ({fmt})
-            """, (account_db_id, *lb_arns))
+                  AND source = 'auto'
+            """, (account_db_id,))
             existing = cur.fetchall()
             stale_ids = [
                 row[0] for row in existing
