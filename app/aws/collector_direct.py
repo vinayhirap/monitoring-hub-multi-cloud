@@ -365,6 +365,15 @@ def _ec2_raw(region, role_arn=None, external_id=None, account=None) -> list:
                 "network_out_kb":    round(netout_map.get(iid, 0.0) / 1024, 2),
                 "uptime_days":       _calc_uptime(inst.get("LaunchTime")),
                 "tags":              tags,
+                # True only if this instance is actually a key in at least
+                # one of the maps above -- NOT derived from the .get(...,
+                # 0.0)-defaulted values two lines up, since a real 0.0
+                # reading and "never reported" are indistinguishable once
+                # defaulted. Lets the frontend default-sort resources with
+                # real metric data ahead of ones with none, instead of the
+                # list's first (alphabetically) row sometimes landing on a
+                # resource with nothing to show.
+                "has_metrics":       iid in cpu_map or iid in netin_map or iid in netout_map,
             })
         running = [i for i in instances if i["State"]["Name"] == "running"]
         logger.info(f"EC2: {len(out)} in {region} ({len(running)} running, via metrics cache)")
@@ -425,6 +434,12 @@ def _ebs_raw(region, role_arn=None, external_id=None, account=None) -> list:
                 "write_bytes_kb":    round(write_b_map.get(vid,   0.0) / 1024, 2),
                 "queue_length":      round(queue_map.get(vid,     0.0), 4),
                 "burst_balance":     round(burst_map.get(vid, 0.0), 2),
+                # See the identical comment in _ec2_raw() above -- same
+                # "key present vs. defaulted value" distinction, same reason.
+                "has_metrics":       (
+                    vid in read_ops_map or vid in write_ops_map or
+                    vid in read_b_map or vid in write_b_map or vid in queue_map
+                ),
             })
         return out
     except Exception as e:
@@ -1223,7 +1238,7 @@ def _lambda_raw(region, role_arn=None, external_id=None, account=None) -> list:
 
 # ── Metric series — EC2 (now VM-backed) ──────────────────────────────────
 
-def _ec2_cwagent_installed(instance_id, region=None) -> bool:
+def _ec2_cwagent_installed(instance_id, region=None, account=None) -> bool:
     """
     True iff the CWAgent CloudWatch namespace has ANY metric published
     for this instance — the only reliable signal that the CloudWatch
@@ -1234,14 +1249,14 @@ def _ec2_cwagent_installed(instance_id, region=None) -> bool:
     """
     return _cached(
         f"cwagent_present_{instance_id}_{region}",
-        lambda: _ec2_cwagent_installed_raw(instance_id, region),
+        lambda: _ec2_cwagent_installed_raw(instance_id, region, account),
         ttl=300,
     )
 
 
-def _ec2_cwagent_installed_raw(instance_id, region=None) -> bool:
+def _ec2_cwagent_installed_raw(instance_id, region=None, account=None) -> bool:
     try:
-        cw = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
+        cw = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
         resp = cw.list_metrics(
             Namespace="CWAgent",
             Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
@@ -1276,7 +1291,25 @@ def _ec2_cwagent_dimensions(cw, metric_name, instance_id):
         return None
 
 
-def get_ec2_metric_series(instance_id, region=None, hours=6) -> dict:
+def get_ec2_metric_series(instance_id, region=None, hours=6, account=None) -> dict:
+    """
+    Bug fixed here (same root cause as the 2026-09-16 U4RAD incident
+    documented on get_session() above, part 2): `account` was never
+    accepted or threaded through at all in this function or the two
+    CWAgent-detection helpers it calls, so every CWAgent list_metrics /
+    GetMetricData call below used bare boto3.client() -- ambient/self
+    credentials -- regardless of which AWS account instance_id actually
+    belongs to. For any cross-account or static-key account (U4RAD
+    included), that meant `cwagent_installed` always came back False
+    (list_metrics against the WRONG account's CloudWatch found nothing),
+    so mem_used_percent/disk_used_percent were silently hidden from the
+    chart panel entirely -- even when disk_used_percent had real,
+    correctly-collected history in the local `metric_history` table
+    (via app/collector/metrics/runner.py, which already resolves the
+    account correctly) driving a genuine forecast on the same page's
+    Health & Forecast panel. See live_ec2_metrics() in api/live_data.py
+    for where `account` is now resolved and passed in.
+    """
     try:
         end    = datetime.now(timezone.utc)
         start  = end - timedelta(hours=hours)
@@ -1286,7 +1319,7 @@ def get_ec2_metric_series(instance_id, region=None, hours=6) -> dict:
         def s(db_metric_name):
             return _metric_history_query_range("ec2", instance_id, db_metric_name, start, end)
 
-        cwagent_installed = _ec2_cwagent_installed(instance_id, region)
+        cwagent_installed = _ec2_cwagent_installed(instance_id, region, account)
 
         # Memory/disk-space utilization ONLY exist if the CloudWatch
         # Agent is installed and reporting — EC2 never publishes these
@@ -1301,7 +1334,7 @@ def get_ec2_metric_series(instance_id, region=None, hours=6) -> dict:
         disk_used_percent_by_mount = {}  # path -> series, ALL mounts (new -- see app/collector/disk_mounts.py)
         if cwagent_installed:
             try:
-                cw        = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
+                cw        = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
                 cw_period = max(period, 60)  # CWAgent's own default reporting interval
 
                 mem_dims = _ec2_cwagent_dimensions(cw, "mem_used_percent", instance_id)
