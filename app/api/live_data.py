@@ -163,6 +163,34 @@ def _check_resource_scope(user: dict, resource_identifier: str):
         raise HTTPException(status_code=403, detail="You do not have access to this resource")
 
 
+def _resolve_resource_account(resource_identifier: str) -> dict | None:
+    """
+    Look up the aws_accounts row that owns `resource_identifier` (via
+    `resources`, same lookup _check_resource_scope already does) so a
+    live per-resource metrics call can assume the CORRECT account's
+    credentials via get_session(..., account=...) instead of silently
+    falling back to ambient/self credentials. Returns None if the
+    resource isn't tracked yet -- callers should pass that straight
+    through to get_session(account=None), which already degrades to
+    the same ambient-credential behavior this had before.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT aws_account_id FROM resources WHERE resource_id = %s LIMIT 1",
+        (resource_identifier,),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if not row:
+        return None
+    try:
+        return _get_db_account(row["aws_account_id"])
+    except HTTPException:
+        return None
+
+
 def _get_active_alert_counts_by_account() -> dict:
     """
     THE authoritative source for account-level health: {aws_account_id:
@@ -868,7 +896,8 @@ def live_ec2_metrics(
     current_user: dict = Depends(require_permission("metrics.view")),
 ):
     _check_resource_scope(current_user, instance_id)
-    return get_ec2_metric_series(instance_id, region, hours)
+    account = _resolve_resource_account(instance_id)
+    return get_ec2_metric_series(instance_id, region, hours, account=account)
 
 
 @router.get("/metrics/ebs/{volume_id}")
