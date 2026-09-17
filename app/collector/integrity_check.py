@@ -18,13 +18,30 @@ Two checks:
 
 1. Cross-account resource collisions. Two different active AWS
    accounts can NEVER legitimately share the same resource_id for the
-   same resource_type -- EC2 instance IDs, ARNs, etc. are unique
-   within AWS by construction. If this table ever shows the same
-   (resource_type, resource_id) under two different aws_account_id
-   values, that is definitive proof some code path resolved the wrong
-   account's credentials for one of them -- exactly what happened here,
-   just now caught by asserting the invariant instead of a human
-   noticing the dashboard looks wrong.
+   same resource_type WHEN that resource_id is an ARN or an
+   AWS-generated opaque ID (EC2 instance IDs, volume IDs, ENI IDs,
+   etc.) -- those are unique within AWS by construction, so a match
+   across accounts is definitive proof some code path resolved the
+   wrong account's credentials for one of them.
+
+   This does NOT hold for the human/CloudFormation-assigned NAMES this
+   app also stores as resource_id for most extended-tier services --
+   CloudWatch Logs group names, Backup plan names, API Gateway names,
+   DynamoDB table names, etc. (see app/collector/discovery/extended.py's
+   module docstring: resource_id is deliberately set to "whatever value
+   that service's CloudWatch dimension needs", which for most of the 33
+   extended services is a name, not an AWS-assigned ID). Two accounts
+   built from the same landing-zone template WILL legitimately share
+   these -- confirmed 2026-09-17 for 'logs'/'backup' resources shared
+   between accounts 7 and 10 (System, Default, cid-DataExportCreator):
+   each account had its own distinct `resources` row, both freshly
+   polled, no flipping -- exactly the correctly-isolated state
+   045/046 were built to produce, not a bug. The original version of
+   this check treated ALL resource_ids as globally unique and would
+   have alerted on this forever. It now only evaluates resource_ids
+   matching _GLOBALLY_UNIQUE_ID_PATTERN (an ARN or an AWS-generated
+   hex-suffixed ID) so it keeps catching the real failure mode without
+   permanently crying wolf on shared naming templates.
 
 2. resource_id-shaped column widths. The other half of this incident
    (migration 044) was alerts.resource_id silently sitting at
@@ -79,6 +96,17 @@ _EXPECTED_RESOURCE_ID_WIDTHS = {
 # so a future migration/hotfix that accidentally drops back to an
 # unscoped key is caught immediately rather than requiring another
 # multi-hour "why does account X have no resources" investigation.
+# Matches an ARN ("arn:aws:...") or an AWS-generated opaque ID: a short
+# lowercase-alnum prefix, a hyphen, then 8+ hex chars (i-0abc123def456789,
+# vol-0abc..., eni-0abc..., ami-0abc..., snap-0abc..., sg-, vpc-, subnet-,
+# fs-, nat-, igw-, rtb-, vgw-, tgw-, pcx-, eipalloc-, etc.). Deliberately
+# does NOT match plain names (System, Default, my-table, cid-Something) --
+# those are only unique within one account and are expected to repeat
+# across accounts that share a naming template. See this module's
+# find_cross_account_resource_collisions() docstring for why this
+# distinction matters.
+_GLOBALLY_UNIQUE_ID_PATTERN = r'^(arn:|[a-z0-9]{1,8}-[0-9a-f]{8,})'
+
 _EXPECTED_SCOPED_UNIQUE_KEYS = {
     "resources": ("uniq_resource_identity", {"aws_account_id", "resource_type", "resource_id"}),
     "alert_pending": ("uq_pending_account_resource_metric", {"aws_account_id", "resource_id", "metric_name"}),
@@ -90,19 +118,25 @@ _EXPECTED_SCOPED_UNIQUE_KEYS = {
 def find_cross_account_resource_collisions(cursor) -> list[dict]:
     """
     Returns [{resource_type, resource_id, account_ids: [..]}] for every
-    (resource_type, resource_id) pair currently attached to more than
-    one active aws_account_id. Empty list = healthy (the expected,
-    overwhelmingly common case).
+    ARN or AWS-generated-ID resource_id (see _GLOBALLY_UNIQUE_ID_PATTERN)
+    currently attached to more than one active aws_account_id. Plain
+    names are deliberately excluded -- they're expected to repeat across
+    accounts. Empty list = healthy (the expected, overwhelmingly common
+    case).
     """
-    cursor.execute("""
+    cursor.execute(
+        """
         SELECT r.resource_type, r.resource_id,
                GROUP_CONCAT(DISTINCT r.aws_account_id ORDER BY r.aws_account_id) AS account_ids
         FROM resources r
         JOIN aws_accounts a ON a.id = r.aws_account_id
         WHERE a.status = 'active'
+          AND r.resource_id REGEXP %s
         GROUP BY r.resource_type, r.resource_id
         HAVING COUNT(DISTINCT r.aws_account_id) > 1
-    """)
+        """,
+        (_GLOBALLY_UNIQUE_ID_PATTERN,),
+    )
     rows = cursor.fetchall()
     return [
         {
@@ -242,9 +276,11 @@ def run_integrity_check() -> dict:
             for c in result["collisions"]
         ]
         msg = (
-            f"{len(result['collisions'])} resource(s) are attached to more than one active "
-            f"AWS account -- this is only possible if a credential-resolution bug queried the "
-            f"wrong account for one of them (see the 2026-09-16 U4RAD/AuroGov Mumbai incident):\n"
+            f"{len(result['collisions'])} resource(s) with a globally-unique ARN/AWS-generated ID "
+            f"are attached to more than one active AWS account -- this is only possible if a "
+            f"credential-resolution bug queried the wrong account for one of them (see the "
+            f"2026-09-16 U4RAD/AuroGov Mumbai incident). Plain-name resource_ids are excluded from "
+            f"this check since they're expected to repeat across accounts sharing a naming template:\n"
             + "\n".join(lines)
         )
         log_event("cross_account_resource_collision", msg, severity="ERROR")
