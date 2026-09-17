@@ -316,6 +316,16 @@ fetchAccount(id).then(setAccount).catch(err => {
       const pa = STATE_PRIORITY[sa] ?? 1;
       const pb = STATE_PRIORITY[sb] ?? 1;
       if (pa !== pb) return pa - pb;
+      // Default (applies under every sortKey, not just a dedicated option):
+      // a resource with no metric data at all sinks below ones that have
+      // some, within the same state group. `has_metrics` is only present
+      // on services collector_direct.py has been updated to report it for
+      // (EC2, EBS so far) -- treat it as "has data" (=== false, not falsy)
+      // for every other service so they're never wrongly demoted just for
+      // lacking the field.
+      const ha = a.has_metrics !== false;
+      const hb = b.has_metrics !== false;
+      if (ha !== hb) return ha ? -1 : 1;
       if (sortKey === "cpu")   return (b.cpu_utilization || 0) - (a.cpu_utilization || 0);
       if (sortKey === "size")  return (a.instance_type || a.size || "").localeCompare(b.instance_type || b.size || "");
       if (sortKey === "state") return sa.localeCompare(sb);
@@ -688,7 +698,22 @@ function ECSTable({ rows, selected, onSelect }) {
   );
 }
 
-function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
+function ResourceRelationships({ service, row, allRows, onSelectRelated, accountId }) {
+  const navigate = useNavigate();
+  // `onSelectRelated` only works for a row already loaded in THIS page's
+  // own `rows` (same service) -- every relationship below points at a
+  // DIFFERENT service (EC2<->EBS), so the only way to actually land on
+  // that resource's own metrics pane is a real navigation, reusing the
+  // exact `?resource=` deep-link convention Alerts.jsx's detailRoute()
+  // already established for ServiceDetail to auto-select a row on load.
+  // (onSelectRelated is left in place/still passed through untouched for
+  // any future same-service use -- this was previously wired all the way
+  // down to here and never once called from inside this component.)
+  const goTo = (svcSegment, resourceId) => {
+    if (!accountId || !resourceId) return;
+    navigate(`/accounts/${accountId}/${svcSegment}?resource=${encodeURIComponent(resourceId)}`);
+  };
+
   if (service === "EC2" && allRows) {
     const attachedVolumes = (allRows._ebs || []).filter(v =>
       v.attached_to && v.attached_to.includes(row.instance_id)
@@ -700,7 +725,7 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
         <div className="id-section-title"><LinkIcon size={12} /> ATTACHED VOLUMES</div>
         <div className="rel-list">
           {attachedVolumes.length > 0 ? attachedVolumes.map(v => (
-            <div key={v.volume_id} className="rel-item">
+            <div key={v.volume_id} className="rel-item rel-item-link" onClick={() => goTo("ebs", v.volume_id)}>
               <span className="rel-icon"><SaveIcon size={16} /></span>
               <div className="rel-info">
                 <div className="rel-name">{v.name || v.volume_id}</div>
@@ -709,7 +734,11 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
               <StatusChip status={v.state} colorMap={{ "in-use": "green", available: "blue" }} />
             </div>
           )) : blockDevices.map((d, i) => (
-            <div key={i} className="rel-item">
+            <div
+              key={i}
+              className={d.volume_id ? "rel-item rel-item-link" : "rel-item"}
+              onClick={d.volume_id ? () => goTo("ebs", d.volume_id) : undefined}
+            >
               <span className="rel-icon"><SaveIcon size={16} /></span>
               <div className="rel-info">
                 <div className="rel-name">{d.volume_id || d.device_name || `Volume ${i + 1}`}</div>
@@ -732,7 +761,7 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
       <div className="id-section">
         <div className="id-section-title"><LinkIcon size={12} /> ATTACHED TO INSTANCE</div>
         <div className="rel-list">
-          <div className="rel-item">
+          <div className="rel-item rel-item-link" onClick={() => goTo("ec2", instanceId)}>
             <span className="rel-icon"><ServerIcon size={16} /></span>
             <div className="rel-info">
               {row.attached_instance_name && (
@@ -989,6 +1018,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
         row={row}
         allRows={allRows}
         onSelectRelated={onSelectRelated}
+        accountId={accountId}
       />
 
       {Object.keys(row.tags || {}).length > 0 && (

@@ -307,9 +307,10 @@ def auto_tune_static_thresholds() -> int:
         cursor.execute("""
             SELECT t.id, t.aws_account_id, t.resource_type, t.metric_id,
                    t.warning_value, t.critical_value, t.comparison, t.dynamic_k,
-                   mc.metric_name
+                   mc.metric_name, a.account_name
             FROM thresholds t
             JOIN metric_catalog mc ON mc.id = t.metric_id
+            LEFT JOIN aws_accounts a ON a.id = t.aws_account_id
             WHERE t.enabled = 1 AND t.use_dynamic = 0
         """)
         static_thresholds = cursor.fetchall()
@@ -401,9 +402,10 @@ def auto_tune_static_thresholds() -> int:
                     f"variability alone already crosses the configured warning value"
                 )
                 trigger_path = "chronic_noise"
+            account_label = th["account_name"] or f"account {th['aws_account_id']}"
             note = (
                 f"Auto-switched {th['metric_name']} threshold for {th['resource_type']} "
-                f"(account {th['aws_account_id']}) from static to dynamic: {trigger_desc} "
+                f"({account_label}) from static to dynamic: {trigger_desc} "
                 f"of {th['warning_value']} (critical is {th['critical_value']}; e.g. "
                 f"{example['resource_id']} typically runs around "
                 f"{round(example['typical_value'], 1)}). This was producing repeated alerts with no "
