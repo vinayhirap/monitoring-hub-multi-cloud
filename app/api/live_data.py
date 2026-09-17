@@ -797,7 +797,20 @@ def live_resources_list(
 # charts for metrics that are enabled but haven't collected anything
 # yet (or aren't the right unit/resource combination for this specific
 # resource).
-@router.get("/metrics/generic/{account_db_id}/{service}/{resource_id}")
+# {resource_id:path} (not plain {resource_id}) — several extended
+# services hand this endpoint a resource_id that legitimately contains
+# "/": CloudWatch Logs group names always start with "/aws/..." or
+# "/ecs/...", Step Functions/ACM/KMS/Backup-vault ARNs contain "/"
+# too. The frontend already percent-encodes the slashes
+# (encodeURIComponent in api.js's getGenericMetrics), but uvicorn
+# decodes %2F back to a literal "/" before Starlette's route matching
+# runs, so a plain single-segment {resource_id} converter 404'd on
+# every one of those resources -- confirmed live via a 404 on
+# GET .../metrics/generic/10/logs/%2Faws%2Fguardduty%2F... (browser
+# console, 2026-09-17). The :path converter matches the rest of the
+# URL including any "/" it contains, same fix already applied to
+# /metrics/s3/{bucket_name:path} below.
+@router.get("/metrics/generic/{account_db_id}/{service}/{resource_id:path}")
 def live_generic_metrics(
     account_db_id: int,
     service: str,
