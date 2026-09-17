@@ -32,7 +32,12 @@ const NAV_ITEMS = [
   { to: "/slos",                label: "SLOs",                icon: SloIcon,        roles: ["admin","editor","viewer"], perm: "slo.view" },
   { to: "/security-findings",   label: "Security Findings",   icon: SecurityIcon,   roles: ["admin","editor","viewer"], perm: "security.view" },
   { to: "/maintenance-windows", label: "Maintenance Windows", icon: MaintenanceIcon,roles: ["admin","editor","viewer"], perm: "maintenance.view" },
-  { to: "/deploy-risk",         label: "Deploy Risk",         icon: DeployRiskIcon, roles: ["admin","editor","viewer"], perm: "deploy_risk.view" },
+  // Deploy Risk: nav entry hidden (2026-09-17, per request) -- route,
+  // page, and backend (app/api/deploy_risk.py, app/collector/rca.py)
+  // all still fully intact, just not linked from the sidebar or
+  // routable from the frontend. Uncomment here AND in App.jsx's route
+  // list to re-enable.
+  // { to: "/deploy-risk",         label: "Deploy Risk",         icon: DeployRiskIcon, roles: ["admin","editor","viewer"], perm: "deploy_risk.view" },
   { to: "/search",              label: "Search",              icon: SearchNavIcon,  roles: ["admin","editor","viewer"], perm: "search.query" },
   { to: "/status-page-admin",   label: "Status Page",         icon: StatusPageIcon, roles: ["admin","editor"],          perm: "status_page.manage" },
   { to: "/settings",   label: "Settings",           icon: SettingsIcon,   roles: ["admin","editor"] },

@@ -21,7 +21,10 @@ import SyntheticChecks    from "./pages/SyntheticChecks";
 import Slos                from "./pages/Slos";
 import SecurityFindings    from "./pages/SecurityFindings";
 import MaintenanceWindows  from "./pages/MaintenanceWindows";
-import DeployRisk          from "./pages/DeployRisk";
+// Deploy Risk hidden from frontend (2026-09-17, per request) -- backend
+// (app/api/deploy_risk.py, app/collector/rca.py) untouched. Uncomment
+// here and in components/Layout.jsx's NAV_ITEMS to re-enable.
+// import DeployRisk          from "./pages/DeployRisk";
 import Search              from "./pages/Search";
 import StatusPageAdmin     from "./pages/StatusPageAdmin";
 import StatusPagePublic    from "./pages/StatusPagePublic";
@@ -72,7 +75,7 @@ function AppRoutes() {
         <Route path="slos"                      element={<Slos />} />
         <Route path="security-findings"         element={<SecurityFindings />} />
         <Route path="maintenance-windows"       element={<MaintenanceWindows />} />
-        <Route path="deploy-risk"               element={<DeployRisk />} />
+        {/* <Route path="deploy-risk"               element={<DeployRisk />} /> */}
         <Route path="search"                    element={<Search />} />
         <Route path="status-page-admin"         element={<StatusPageAdmin />} />
         <Route path="settings"                  element={<Settings />} />
