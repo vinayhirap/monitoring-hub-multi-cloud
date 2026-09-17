@@ -108,6 +108,13 @@ class GCPProvider(CloudProvider):
             return f"https://console.cloud.google.com/net-services/nat/list?project={project_id}"
         if service == "firestore_database":
             return f"https://console.cloud.google.com/firestore/databases?project={project_id}"
+        if service == "gce_firewall_rule":
+            # Added for the CSPM "firewall open to world" finding
+            # (app/collector/cspm.py) -- firewall rules aren't a
+            # `resources`-tracked type, but the console has a real
+            # per-rule details page keyed by name+project, same shape
+            # as every other branch above.
+            return f"https://console.cloud.google.com/networking/firewalls/details/{name}?project={project_id}"
 
         return f"https://console.cloud.google.com/home/dashboard?project={project_id}"
 

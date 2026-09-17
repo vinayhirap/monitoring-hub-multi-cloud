@@ -156,9 +156,14 @@ export const updateSlo    = (id, data) => apiFetch(`/api/slo/${id}`, { method: "
 export const deleteSlo    = (id) => apiFetch(`/api/slo/${id}`, { method: "DELETE" });
 
 // ── Lite CSPM security findings ──────────────────────────────────────
-export const getSecurityFindings = (status = "open", severity = null) =>
-  apiFetch(`/api/security-findings?status=${status}${severity ? `&severity=${severity}` : ""}`);
+export const getSecurityFindings = (status = "open", severity = null, accountId = null) =>
+  apiFetch(`/api/security-findings?status=${status}${severity ? `&severity=${severity}` : ""}${accountId ? `&account_id=${accountId}` : ""}`);
 export const getSecurityFindingsSummary = () => apiFetch("/api/security-findings/summary");
+export const getSecurityFindingsAccounts = () => apiFetch("/api/security-findings/accounts");
+// POST, not GET: writes an audit-log entry as a side effect on the AWS
+// leg of this call -- same reasoning as getConsoleUrl above.
+export const getSecurityFindingConsoleUrl = (findingId) =>
+  apiFetch(`/api/security-findings/${findingId}/console-url`, { method: "POST" });
 
 // ── Maintenance windows ──────────────────────────────────────────────
 export const getMaintenanceWindows   = () => apiFetch("/api/maintenance-windows");

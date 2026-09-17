@@ -93,6 +93,11 @@ def service_console_list_url(service: str, region: str) -> str:
         "s3":     "https://s3.console.aws.amazon.com/s3/buckets",
         "elb":    f"{base}/ec2/home?region={region}#LoadBalancers:",
         "ecs":    f"{base}/ecs/home?region={region}",
+        "security_group": f"{base}/ec2/home?region={region}#SecurityGroups:",
+        # IAM is a global (non-regional) service -- console.aws.amazon.com
+        # itself handles the redirect from any region subdomain, same as
+        # every other global-service link this app already builds this way.
+        "iam_user": f"{base}/iam/home#/users",
     }.get(service, f"{base}/console/home?region={region}")
 
 
@@ -144,6 +149,16 @@ def resource_console_destination(service: str, resource_id: str, region: str,
             return (f"{base}/ecs/home?region={region}"
                     f"#/clusters/{cluster}/services/{ecs_service_name}")
         return f"{base}/ecs/home?region={region}#/clusters/{cluster}"
+    if svc == "security_group":
+        return f"{base}/ec2/home?region={region}#SecurityGroups:groupId={resource_id}"
+    if svc == "iam_user":
+        # `resource_name` carries the username -- for the stale-access-key
+        # check `resource_id` is "username:key-id" (see cspm.py), so the
+        # username alone (not the raw resource_id) is what belongs in the
+        # path here. Falls back to resource_id itself when it's already a
+        # bare username (the no-MFA check's case).
+        username = resource_name or resource_id
+        return f"{base}/iam/home#/users/details/{username}?section=security_credentials"
 
     return _legacy_prefix_guess_destination(resource_id, region)
 
@@ -198,6 +213,9 @@ def _service_read_actions(service: str) -> list[str]:
         "s3":     ["s3:GetBucket*", "s3:ListBucket", "s3:GetObject", "s3:ListAllMyBuckets"],
         "elb":    ["elasticloadbalancing:Describe*"],
         "ecs":    ["ecs:Describe*", "ecs:List*"],
+        "security_group": ["ec2:DescribeSecurityGroups", "ec2:DescribeSecurityGroupRules"],
+        "iam_user": ["iam:GetUser", "iam:ListMFADevices", "iam:ListAccessKeys",
+                     "iam:GetLoginProfile", "iam:GetAccessKeyLastUsed"],
     }
     extra = per_service.get((service or "").lower())
     if not extra:
@@ -235,6 +253,13 @@ def _service_resource_arns(service: str, resource_id: str | None, region: str | 
         if ecs_service_name:
             arns.append(f"arn:aws:ecs:{region}:{account_id}:service/{cluster}/{ecs_service_name}")
         return arns
+    if svc == "iam_user":
+        # IAM is global -- no region in this ARN. Resource-level
+        # restriction IS supported here (unlike ec2:Describe*/
+        # security_group above, a hard AWS limitation, not an
+        # oversight), so this narrows further than "*".
+        username = resource_name or resource_id
+        return [f"arn:aws:iam::{account_id}:user/{username}"]
     return None
 
 
