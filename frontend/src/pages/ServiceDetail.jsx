@@ -298,6 +298,16 @@ fetchAccount(id).then(setAccount).catch(err => {
     return acc;
   }, {});
   const filterStates = ["all", ...Object.keys(stateCounts)];
+  // Buckets, and any other resource type with no real lifecycle state
+  // (state/status both absent -- see collect_s3_buckets in
+  // collector_direct.py, which never sets either field), fall back to
+  // "unknown" for every single row, so the filter bar was rendering as
+  // a useless "All 45 / Unknown 45" duplicate pair with nothing to
+  // actually filter by. Generalized rather than special-cased to S3:
+  // hide the filter bar (and the equally-meaningless "Sort: State"
+  // option below) whenever "unknown" is the ONLY bucket, for any
+  // service that turns out to have no state concept.
+  const hasRealStates = Object.keys(stateCounts).some(s => s !== "unknown");
 
   const STATE_PRIORITY = { running: 0, active: 0, "in-use": 0, available: 1, stopped: 2, terminated: 3 };
 
@@ -387,23 +397,25 @@ fetchAccount(id).then(setAccount).catch(err => {
                 value={search}
                 onChange={e => setSearch(e.target.value)}
               />
-              <div className="state-filters">
-                {filterStates.map(s => (
-                  <button
-                    key={s}
-                    className={`sf-btn ${filter === s ? "sf-active" : ""}`}
-                    onClick={() => setFilter(s)}
-                  >
-                    {s === "all" ? "All" : capitalize(s)}
-                    <span className="sf-count">{s === "all" ? rows.length : (stateCounts[s] || 0)}</span>
-                  </button>
-                ))}
-              </div>
+              {hasRealStates && (
+                <div className="state-filters">
+                  {filterStates.map(s => (
+                    <button
+                      key={s}
+                      className={`sf-btn ${filter === s ? "sf-active" : ""}`}
+                      onClick={() => setFilter(s)}
+                    >
+                      {s === "all" ? "All" : capitalize(s)}
+                      <span className="sf-count">{s === "all" ? rows.length : (stateCounts[s] || 0)}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <select className="sort-select" value={sortKey} onChange={e => setSortKey(e.target.value)}>
                 <option value="name">Sort: Name</option>
                 {service === "EC2" && <option value="cpu">Sort: CPU</option>}
                 <option value="size">Sort: Type / Size</option>
-                <option value="state">Sort: State</option>
+                {hasRealStates && <option value="state">Sort: State</option>}
               </select>
             </div>
             <div className="inst-table-wrap">
