@@ -385,6 +385,7 @@ def seed_default_thresholds(account_id: int = Query(3), current_user: dict = Dep
 def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(require_permission("alerts.view"))):
     _require_account_access(account_id, current_user)
     from app.aws.collector_direct import check_and_write_alerts
+    from app.api.live_data import _get_db_account
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("""
@@ -394,12 +395,20 @@ def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(re
         WHERE t.aws_account_id = %s AND t.enabled = 1
     """, (account_id,))
     thresholds = cur.fetchall()
-    cur.execute("SELECT default_region FROM aws_accounts WHERE id=%s", (account_id,))
-    acc = cur.fetchone(); cur.close(); conn.close()
-    region = (acc or {}).get("default_region", "")
+    cur.close(); conn.close()
+
+    # Bug fixed here (see check_and_write_alerts()'s docstring in
+    # collector_direct.py for the full history): this used to fetch only
+    # default_region and never passed account context at all, so every
+    # resource type's on-demand threshold check ran against the WRONG AWS
+    # account for any cross-account/static-key account. _get_db_account
+    # gives check_and_write_alerts() everything collect_ec2_instances() /
+    # collect_ebs_volumes() / etc. need to assume the correct role.
+    acc = _get_db_account(account_id)
+    region = acc.get("default_region", "")
 
     try:
-        breaches = check_and_write_alerts(account_id, region, [_ser(t) for t in thresholds])
+        breaches = check_and_write_alerts(account_id, region, [_ser(t) for t in thresholds], account=acc)
         return {"breaches": breaches, "checked": len(thresholds), "region": region, "written_to_db": len(breaches)}
     except Exception as e:
         logger.error(f"Check error: {e}")

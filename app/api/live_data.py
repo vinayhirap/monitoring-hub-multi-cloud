@@ -940,7 +940,8 @@ def live_lambda_metrics(
     current_user: dict = Depends(require_permission("metrics.view")),
 ):
     _check_resource_scope(current_user, function_name)
-    return _get_lambda_metric_series(function_name, region, hours)
+    account = _resolve_resource_account(function_name)
+    return _get_lambda_metric_series(function_name, region, hours, account=account)
 
 
 @router.get("/metrics/s3/{bucket_name:path}")
@@ -950,7 +951,8 @@ def live_s3_metrics(
     current_user: dict = Depends(require_permission("metrics.view")),
 ):
     _check_resource_scope(current_user, bucket_name)
-    return get_s3_metric_series(bucket_name, hours)
+    account = _resolve_resource_account(bucket_name)
+    return get_s3_metric_series(bucket_name, hours, account=account)
 
 
 @router.get("/metrics/elb/{account_db_id}")
@@ -968,7 +970,7 @@ def live_elb_metrics(
     _check_account_scope(current_user, account_db_id)
     acc = _get_db_account(account_db_id)
     resolved_region = region or acc.get("default_region") 
-    return _get_elb_metric_series(lb_name, resolved_region, hours)
+    return _get_elb_metric_series(lb_name, resolved_region, hours, account=acc)
 
 
 @router.get("/metrics/ecs/{account_db_id}")
@@ -987,4 +989,4 @@ def live_ecs_metrics(
     _check_account_scope(current_user, account_db_id)
     acc = _get_db_account(account_db_id)
     resolved_region = region or acc.get("default_region")
-    return _get_ecs_metric_series(cluster_name, service_name, resolved_region, hours)
+    return _get_ecs_metric_series(cluster_name, service_name, resolved_region, hours, account=acc)

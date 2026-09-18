@@ -1327,12 +1327,27 @@ function MetricChart({ title, data, color, unit, warningThreshold, criticalThres
     </div>
   );
   const latest = data[data.length - 1]?.v ?? 0;
+  // Bug fixed here: `t` used to be a pre-formatted display string, and
+  // XAxis had no `type` -- Recharts defaults an untyped/string dataKey
+  // to a CATEGORY axis, which spaces every point EQUALLY regardless of
+  // its actual time gap. A metric like HTTPCode_Target_5XX_Count is
+  // often near-empty (CloudWatch only reports a Sum datapoint for
+  // periods that actually had an error), so 3-4 real points from a
+  // 45-minute span were getting stretched across the full 6H width,
+  // reading as if the whole window was densely covered when almost
+  // none of it was. Kept as a real epoch-ms number now, with a
+  // proportional (type="number") axis and dataMin/dataMax domain, so
+  // gaps in the data show as visual gaps instead of being silently
+  // smoothed away by even spacing. Affects every metric on every
+  // resource type that renders through this one shared component, not
+  // just ELB -- this was never resource-type-specific.
   const formatted = data.map(d => ({
-    t: new Date(d.t).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: ianaName }),
+    t: new Date(d.t).getTime(),
     v: d.v,
     ...(warningThreshold != null ? { warningThreshold } : {}),
     ...(criticalThreshold != null ? { criticalThreshold } : {}),
   }));
+  const fmtTick = (ms) => new Date(ms).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: ianaName });
   return (
     <div className="chart-box">
       <div className="chart-header">
@@ -1342,11 +1357,13 @@ function MetricChart({ title, data, color, unit, warningThreshold, criticalThres
       <ResponsiveContainer width="100%" height={90}>
         <LineChart data={formatted} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
           <CartesianGrid stroke="rgba(99,130,190,0.08)" strokeDasharray="3 3" />
-          <XAxis dataKey="t" tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
+          <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} tickFormatter={fmtTick}
+                 tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} scale="time" />
           <YAxis tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} />
           <Tooltip
             contentStyle={{ background: "#0b1220", border: "1px solid rgba(99,130,190,0.2)", borderRadius: 6, fontSize: 11 }}
             labelStyle={{ color: "#7a90b8" }}
+            labelFormatter={fmtTick}
             formatter={(value, name) => {
               if (name === "warningThreshold") return [`${value}${unit}`, <span style={{display:"inline-flex",alignItems:"center",gap:4}}><AlertTriangleIcon size={11} /> Warn at</span>];
               if (name === "criticalThreshold") return [`${value}${unit}`, <span style={{display:"inline-flex",alignItems:"center",gap:4}}><AlertTriangleIcon size={11} /> Crit at</span>];

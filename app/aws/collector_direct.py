@@ -551,9 +551,10 @@ def _s3_raw(role_arn=None, external_id=None, account=None) -> list:
 
 # ── S3 metric series (unchanged — not in YACE config) ────────────────────
 
-def get_s3_metric_series(bucket_name: str, hours: int = 24) -> dict:
+def get_s3_metric_series(bucket_name: str, hours: int = 24, account=None) -> dict:
     try:
-        cw            = boto3.client("cloudwatch", region_name="us-east-1", config=STANDARD_RETRY)
+        cw            = get_session(None, account=account).client(
+                            "cloudwatch", region_name="us-east-1", config=STANDARD_RETRY)
         end           = datetime.now(timezone.utc)
         effective_hrs = max(hours, 24 * 14)
         start         = end - timedelta(hours=effective_hrs)
@@ -1430,15 +1431,21 @@ def _get_ebs_metric_series(volume_id, region=None, hours=6) -> dict:
 # with `curl "http://<vm-host>/api/v1/label/__name__/values" | grep aws_lambda`
 # after first deploy. Falls back to boto3 automatically if VM has nothing.
 
-def _get_lambda_metric_series(function_name, region=None, hours=6) -> dict:
+def _get_lambda_metric_series(function_name, region=None, hours=6, account=None) -> dict:
+    # account included in the cache key (unlike instance IDs, which are
+    # globally unique, Lambda function names are only unique WITHIN an
+    # account -- two different accounts can both have a function named
+    # e.g. "process-orders", and without this the cache would silently
+    # hand one account's data to the other).
+    acc_key = (account or {}).get("id", "none")
     return _cached(
-        f"lambda_series_{function_name}_{region}_{hours}",
-        lambda: _get_lambda_metric_series_raw(function_name, region, hours),
+        f"lambda_series_{acc_key}_{function_name}_{region}_{hours}",
+        lambda: _get_lambda_metric_series_raw(function_name, region, hours, account),
         ttl=_LAMBDA_SERIES_CACHE_TTL,
     )
 
 
-def _get_lambda_metric_series_raw(function_name, region=None, hours=6) -> dict:
+def _get_lambda_metric_series_raw(function_name, region=None, hours=6, account=None) -> dict:
     try:
         end    = datetime.now(timezone.utc)
         start  = end - timedelta(hours=hours)
@@ -1464,7 +1471,7 @@ def _get_lambda_metric_series_raw(function_name, region=None, hours=6) -> dict:
 
         missing = [k for k, v in result.items() if not v]
         if missing:
-            cw   = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
+            cw   = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
             dims = [{"Name": "FunctionName", "Value": function_name}]
             fallback_map = {
                 "invocations": ("Invocations", "Sum"),
@@ -1540,9 +1547,28 @@ def _get_rds_metric_series(db_id, region=None, hours=6) -> dict:
 # Dimension label: "dimension_LoadBalancer" — verify with:
 #   curl "http://<vm-host>/api/v1/series?match[]=aws_applicationelb_request_count_sum"
 
-def _get_elb_metric_series(lb_name: str, region=None, hours=6) -> dict:
+def _get_elb_metric_series(lb_name: str, region=None, hours=6, account=None) -> dict:
+    """
+    Bug fixed here (same class as get_ec2_metric_series() above, and the
+    9-function list flagged when that fix shipped): HTTPCode_Target_4XX_
+    Count, HTTPCode_ELB_5XX_Count, ActiveConnectionCount and
+    NewConnectionCount ALWAYS fall through to the boto3 fallback below
+    (see the "deliberately excluded from Phase 1" comment on `result` a
+    few lines down -- metric_history never has them by design), and that
+    fallback used bare boto3.client() with no account at all. For any
+    cross-account/static-key account (U4RAD confirmed), that meant these
+    4 metrics ALWAYS queried the wrong AWS account and ALWAYS came back
+    "No data" -- not because the load balancer genuinely had none, but
+    because the account being checked was wrong on every single request
+    for these 4 specific metrics, while the other 5 (which have real
+    metric_history data from YACE, or come from describe_polling.py's
+    separately-and-correctly-scoped DescribeTargetHealth path) worked
+    fine. That split -- some metrics right, others wrong, on the SAME
+    resource -- is exactly what made this one hard to spot from the UI
+    alone.
+    """
     try:
-        elbv2 = boto3.client("elbv2", region_name=region, config=STANDARD_RETRY)
+        elbv2 = get_session(region, account=account).client("elbv2", config=STANDARD_RETRY)
 
         lb_dim = lb_name
         try:
@@ -1599,7 +1625,7 @@ def _get_elb_metric_series(lb_name: str, region=None, hours=6) -> dict:
 
         missing = [k for k, v in result.items() if not v]
         if missing:
-            cw   = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
+            cw   = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
             dims = [{"Name": "LoadBalancer", "Value": lb_dim}]
             ns   = "AWS/ApplicationELB"
             fallback_map = {
@@ -1653,7 +1679,7 @@ def _get_elb_metric_series(lb_name: str, region=None, hours=6) -> dict:
 # rarely-clicked chart, so it's not a priority cost driver.
 
 def _get_ecs_metric_series(cluster_name: str, service_name: str = None,
-                           region=None, hours=6) -> dict:
+                           region=None, hours=6, account=None) -> dict:
     try:
         dims = (
             [{"Name": "ClusterName", "Value": cluster_name},
@@ -1689,7 +1715,7 @@ def _get_ecs_metric_series(cluster_name: str, service_name: str = None,
         # boto3 fallback for AWS/ECS if VM has nothing yet (not deployed /
         # not scraped yet) — same safety pattern as _get_elb_metric_series.
         if not cpu or not mem:
-            cw = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
+            cw = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
             fallback_q = [
                 _make_query("cpu", "AWS/ECS", "CPUUtilization",    dims, "Average"),
                 _make_query("mem", "AWS/ECS", "MemoryUtilization", dims, "Average"),
@@ -1698,7 +1724,7 @@ def _get_ecs_metric_series(cluster_name: str, service_name: str = None,
             cpu = cpu or fb.get("cpu", [])
             mem = mem or fb.get("mem", [])
 
-        cw = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
+        cw = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
         ci_ns = "ECS/ContainerInsights"
         ci_queries = [
             _make_query("running",  ci_ns, "RunningTaskCount",  dims, "Average"),
@@ -1766,22 +1792,39 @@ def _account_metric_snapshot(account_id, resource_type, db_metric_name, key_fiel
     return out
 
 
-def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> list:
+def check_and_write_alerts(account_id: int, region: str, thresholds: list, account=None) -> list:
     """
     Evaluates thresholds against current data.
     ec2/ebs/rds thresholds are checked against VictoriaMetrics.
     lambda (and anything else not in YACE) still uses the boto3 GMD batch.
     Writes breaches to alerts table. Returns list of breach dicts.
+
+    Bug fixed here (same class/family as get_ec2_metric_series() and
+    _get_elb_metric_series() above): `account` was never accepted here at
+    all, so every collect_*() call below ran with region only -- no
+    role_arn/external_id/account -- even though collect_ec2_instances(),
+    collect_ebs_volumes(), collect_rds_instances(), collect_lambda_
+    functions() and collect_elb() all already accept and correctly use
+    `account` when given one. For a cross-account/static-key account,
+    that meant EVERY resource type's on-demand threshold check (this is
+    what /settings' "check thresholds now" -> check_thresholds() in
+    api/settings.py calls) was listing resources from the wrong AWS
+    account entirely -- not a display bug, an alerting-correctness bug:
+    real threshold breaches could go undetected, or unrelated data from
+    the wrong account could get evaluated instead. The `cw` GMD client
+    for Lambda thresholds had the identical bare-boto3.client() problem
+    on top of that. See api/settings.py's check_thresholds() for where
+    `account` is now resolved and passed in.
     """
     from app.db import get_connection
 
-    cw = boto3.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
+    cw = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
 
-    ec2_instances = collect_ec2_instances(region)
-    ebs_volumes   = collect_ebs_volumes(region)
-    rds_instances = collect_rds_instances(region)
-    lambda_funcs  = collect_lambda_functions(region)
-    elb_list      = collect_elb(region)   # NEW — needed to route ALB thresholds to VM
+    ec2_instances = collect_ec2_instances(region, account=account)
+    ebs_volumes   = collect_ebs_volumes(region, account=account)
+    rds_instances = collect_rds_instances(region, account=account)
+    lambda_funcs  = collect_lambda_functions(region, account=account)
+    elb_list      = collect_elb(region, account=account)   # NEW — needed to route ALB thresholds to VM
 
     def _lb_dim(lb):
         """YACE/CloudWatch dimension value is the ARN suffix after 'loadbalancer/', not the LB name."""
