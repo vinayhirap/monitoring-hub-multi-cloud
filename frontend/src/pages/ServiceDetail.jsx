@@ -1153,21 +1153,43 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
                   apply_simplify_s3_charts.py. */}
             </>}
 
-            {service === "ELB" && <>
-              <div className="chart-full">
-                <MetricChart title="RequestCount"           data={metrics?.requests           || []} color="#2bb3ac" unit=""  timeRange={rangLabel} />
-              </div>
-              <MetricChart title="HTTPCode_Target_5XX_Count"       data={metrics?.errors_5xx         || []} color="#ef4444" unit=""  warningThreshold={getThreshold("elb", "HTTPCode_Target_5XX_Count")?.warning} criticalThreshold={getThreshold("elb", "HTTPCode_Target_5XX_Count")?.critical} timeRange={rangLabel} />
-              <MetricChart title="HTTPCode_Target_4XX_Count"       data={metrics?.errors_4xx         || []} color="#f59e0b" unit=""  warningThreshold={getThreshold("elb", "HTTPCode_Target_4XX_Count")?.warning} criticalThreshold={getThreshold("elb", "HTTPCode_Target_4XX_Count")?.critical} timeRange={rangLabel} />
-              <MetricChart title="HTTPCode_ELB_5XX_Count"          data={metrics?.errors_elb_5xx     || []} color="#f472b6" unit=""  warningThreshold={getThreshold("elb", "HTTPCode_ELB_5XX_Count")?.warning} criticalThreshold={getThreshold("elb", "HTTPCode_ELB_5XX_Count")?.critical}  timeRange={rangLabel} />
-              <div className="chart-full">
-                <MetricChart title="TargetResponseTime" data={metrics?.latency           || []} color="#fbbf24" unit="s" warningThreshold={getThreshold("elb", "TargetResponseTime")?.warning} criticalThreshold={getThreshold("elb", "TargetResponseTime")?.critical} timeRange={rangLabel} />
-              </div>
-              <MetricChart title="HealthyHostCount"             data={metrics?.healthy_hosts      || []} color="#22c55e" unit=""  timeRange={rangLabel} />
-              <MetricChart title="UnHealthyHostCount"           data={metrics?.unhealthy_hosts    || []} color="#ef4444" unit=""  warningThreshold={getThreshold("elb", "UnHealthyHostCount")?.warning} criticalThreshold={getThreshold("elb", "UnHealthyHostCount")?.critical} timeRange={rangLabel} />
-              <MetricChart title="ActiveConnectionCount"        data={metrics?.active_connections || []} color="#7c6ee0" unit=""  timeRange={rangLabel} />
-              <MetricChart title="NewConnectionCount"           data={metrics?.new_connections    || []} color="#38bdf8" unit=""  timeRange={rangLabel} />
-            </>}
+            {service === "ELB" && (() => {
+              // AWS behavior, not a CloudOps fetch failure: RequestCount /
+              // HTTPCode_Target_4XX/5XX_Count / TargetResponseTime are all
+              // measured AT THE TARGET -- if a target group has zero
+              // healthy targets, the ALB rejects the request before it
+              // ever reaches a target, so CloudWatch itself never
+              // generates a datapoint for these four during that window
+              // (confirmed against AWS's own "Resolve RequestCount metric
+              // drop" knowledge-center article: "might occur because the
+              // target groups ... don't have registered targets").
+              // HTTPCode_ELB_5XX_Count/HealthyHostCount/UnHealthyHostCount/
+              // Active+NewConnectionCount are measured at the load
+              // balancer/listener itself and are unaffected -- which is
+              // exactly why those kept showing real data on
+              // U4Rad-orthanc-uat while the other four went empty.
+              const healthySeries = metrics?.healthy_hosts || [];
+              const noHealthyTargets = healthySeries.length > 0 &&
+                healthySeries.every(d => (d.v ?? 0) === 0);
+              const targetGapReason = noHealthyTargets
+                ? "No data — 0 healthy targets in this window, so no request ever reached a target (see HealthyHostCount below)"
+                : undefined;
+              return <>
+                <div className="chart-full">
+                  <MetricChart title="RequestCount"           data={metrics?.requests           || []} color="#2bb3ac" unit=""  timeRange={rangLabel} emptyReason={targetGapReason} />
+                </div>
+                <MetricChart title="HTTPCode_Target_5XX_Count"       data={metrics?.errors_5xx         || []} color="#ef4444" unit=""  warningThreshold={getThreshold("elb", "HTTPCode_Target_5XX_Count")?.warning} criticalThreshold={getThreshold("elb", "HTTPCode_Target_5XX_Count")?.critical} timeRange={rangLabel} emptyReason={targetGapReason} />
+                <MetricChart title="HTTPCode_Target_4XX_Count"       data={metrics?.errors_4xx         || []} color="#f59e0b" unit=""  warningThreshold={getThreshold("elb", "HTTPCode_Target_4XX_Count")?.warning} criticalThreshold={getThreshold("elb", "HTTPCode_Target_4XX_Count")?.critical} timeRange={rangLabel} emptyReason={targetGapReason} />
+                <MetricChart title="HTTPCode_ELB_5XX_Count"          data={metrics?.errors_elb_5xx     || []} color="#f472b6" unit=""  warningThreshold={getThreshold("elb", "HTTPCode_ELB_5XX_Count")?.warning} criticalThreshold={getThreshold("elb", "HTTPCode_ELB_5XX_Count")?.critical}  timeRange={rangLabel} />
+                <div className="chart-full">
+                  <MetricChart title="TargetResponseTime" data={metrics?.latency           || []} color="#fbbf24" unit="s" warningThreshold={getThreshold("elb", "TargetResponseTime")?.warning} criticalThreshold={getThreshold("elb", "TargetResponseTime")?.critical} timeRange={rangLabel} emptyReason={targetGapReason} />
+                </div>
+                <MetricChart title="HealthyHostCount"             data={metrics?.healthy_hosts      || []} color="#22c55e" unit=""  timeRange={rangLabel} />
+                <MetricChart title="UnHealthyHostCount"           data={metrics?.unhealthy_hosts    || []} color="#ef4444" unit=""  warningThreshold={getThreshold("elb", "UnHealthyHostCount")?.warning} criticalThreshold={getThreshold("elb", "UnHealthyHostCount")?.critical} timeRange={rangLabel} />
+                <MetricChart title="ActiveConnectionCount"        data={metrics?.active_connections || []} color="#7c6ee0" unit=""  timeRange={rangLabel} />
+                <MetricChart title="NewConnectionCount"           data={metrics?.new_connections    || []} color="#38bdf8" unit=""  timeRange={rangLabel} />
+              </>;
+            })()}
 
             {service === "ECS" && <>
               <div className="chart-full">
@@ -1310,7 +1332,7 @@ function StatusChip({ status, colorMap = {} }) { const s = (status || "").toLowe
 function CpuBar({ cpu, state }) { if (state !== "running") return <span className="mono small muted">—</span>; const pct = cpu ?? 0; const color = pct > 75 ? "#ef4444" : pct > 50 ? "#f59e0b" : "#22c55e"; return <div className="cpu-cell"><div className="cpu-bar-bg"><div className="cpu-bar-fill" style={{ width: `${Math.max(2, pct)}%`, background: color }} /></div><span className="cpu-label mono">{pct.toFixed(1)}%</span></div>; }
 function QuickStat({ label, value, color, mono }) { return <div className="qs-item"><div className="qs-label">{label}</div><div className={`qs-value ${color ? `c-${color}` : ""}${mono ? " mono" : ""}`}>{value}</div></div>; }
 
-function MetricChart({ title, data, color, unit, warningThreshold, criticalThreshold, timeRange }) {
+function MetricChart({ title, data, color, unit, warningThreshold, criticalThreshold, timeRange, emptyReason }) {
   const { ianaName } = useTimezone();
   // data === null (not undefined, not []) means the backend knows this
   // metric structurally can never have data for this resource (e.g. EBS
@@ -1323,7 +1345,13 @@ function MetricChart({ title, data, color, unit, warningThreshold, criticalThres
   if (!data || data.length === 0) return (
     <div className="chart-box">
       <div className="chart-title">{title}</div>
-      <div className="chart-empty">No data in last {timeRange || "6H"}</div>
+      {/* Plain "No data" reads as "the tool failed to fetch this" --
+          indistinguishable from an actual outage in this app. When the
+          caller can attribute the gap to a specific, known AWS-side
+          cause (see the ELB block below), show that instead so it's
+          clear this is AWS's own CloudWatch behavior, not CloudOps
+          failing to reach it. */}
+      <div className="chart-empty">{emptyReason || `No data in last ${timeRange || "6H"}`}</div>
     </div>
   );
   const latest = data[data.length - 1]?.v ?? 0;
