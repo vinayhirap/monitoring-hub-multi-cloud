@@ -1,28 +1,30 @@
-# app/llm/postmortem.py
+# app/llm/rca_report.py
 """
-Downloadable incident postmortem generation (2026-09-14). Works for
-ANY alert (standalone or part of a multi-alert incident) -- reuses
+Downloadable incident RCA (Root Cause Analysis) report generation
+(originally shipped 2026-09-14 as "postmortem", renamed 2026-09-17 for
+a more professional, client-facing name -- no behavior change). Works
+for ANY alert (standalone or part of a multi-alert incident) -- reuses
 app/collector/rca.py's explain_alert() for all of its signal-gathering
 (deployment correlation, CloudTrail events, config changes, trend,
 flapping, related alerts) rather than re-querying the database itself,
-so a postmortem's facts are always identical to what the Alerts page's
-own RCA panel already shows for that alert.
+so a report's facts are always identical to what the Alerts page's own
+RCA panel already shows for that alert.
 
 STRUCTURE: the timeline, resource info, severity, and duration are
 assembled DETERMINISTICALLY from real rows -- never touched by an LLM.
 Only the "Executive Summary" and "Recommendations" sections are
 optionally LLM-written (app/llm/summarizer.py's
-generate_postmortem_narrative(), same strict fact-grounding contract as
-every other LLM feature in this app). If the LLM is disabled or the
-call fails, those two sections fall back to a plain bullet-point
-rendering of the same facts -- a postmortem is ALWAYS produced, with or
-without the LLM configured.
+generate_rca_narrative(), same strict fact-grounding contract as every
+other LLM feature in this app). If the LLM is disabled or the call
+fails, those two sections fall back to a plain bullet-point rendering
+of the same facts -- a report is ALWAYS produced, with or without the
+LLM configured.
 """
 import logging
 
 from app.db import get_connection
 from app.collector.rca import explain_alert
-from app.llm.summarizer import generate_postmortem_narrative
+from app.llm.summarizer import generate_rca_narrative
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +111,7 @@ def _fallback_narrative(facts: dict) -> str:
     return "\n".join(lines)
 
 
-def generate_postmortem(alert_id: int) -> dict:
+def generate_rca_report(alert_id: int) -> dict:
     """
     Returns None if the alert doesn't exist, otherwise:
         {"facts": {...}, "narrative_markdown": "## Executive Summary...",
@@ -119,17 +121,17 @@ def generate_postmortem(alert_id: int) -> dict:
     if facts is None:
         return None
 
-    narrative = generate_postmortem_narrative(facts)
+    narrative = generate_rca_narrative(facts)
     if narrative:
         return {"facts": facts, "narrative_markdown": narrative, "narrative_source": "llm"}
     return {"facts": facts, "narrative_markdown": _fallback_narrative(facts), "narrative_source": "template"}
 
 
-def render_markdown(postmortem: dict) -> str:
-    f = postmortem["facts"]
+def render_markdown(report: dict) -> str:
+    f = report["facts"]
     duration = f"{f['duration_minutes']} minutes" if f["duration_minutes"] is not None else "still active"
     lines = [
-        f"# Postmortem: {f['metric_name']} on {f['resource_name'] or f['resource_id']}",
+        f"# RCA Report: {f['metric_name']} on {f['resource_name'] or f['resource_id']}",
         "",
         f"- **Account:** {f['account_name']}",
         f"- **Resource:** {f['resource_name'] or f['resource_id']} ({f['resource_type']})",
@@ -139,7 +141,7 @@ def render_markdown(postmortem: dict) -> str:
         f"- **Duration:** {duration}",
         f"- **RCA confidence:** {f['confidence']}",
         "",
-        postmortem["narrative_markdown"],
+        report["narrative_markdown"],
         "",
         "## Timeline",
         "",
@@ -148,6 +150,6 @@ def render_markdown(postmortem: dict) -> str:
         lines.append(f"- **{event['time']}** \u2014 {event['event']}")
     lines += [
         "",
-        f"*Generated automatically ({postmortem['narrative_source']} narrative) -- verify before external distribution.*",
+        f"*Generated automatically ({report['narrative_source']} narrative) by AurionPro CloudOps -- verify before external distribution.*",
     ]
     return "\n".join(lines)

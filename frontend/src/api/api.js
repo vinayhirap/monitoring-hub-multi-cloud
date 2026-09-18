@@ -187,11 +187,11 @@ export const deleteStatusPageComponent = (id) => apiFetch(`/api/status-page/comp
 // ── Natural-language alert search ────────────────────────────────────
 export const searchAlerts = (q) => apiFetch(`/api/search?q=${encodeURIComponent(q)}`);
 
-// ── Downloadable postmortems (LLM-polished, alerts.js's explain) ─────
-// Not fetched via apiFetch -- this triggers a file download, see
-// pages/Alerts.jsx's handlePostmortemDownload for why it opens the URL
-// directly instead of parsing a JSON response.
-export const postmortemUrl = (alertId, format = "pdf") => `/api/alerts/${alertId}/postmortem?format=${format}`;
+// ── Downloadable RCA reports (LLM-polished, alerts.js's explain) ─────
+// Not fetched via apiFetch -- this triggers a file download via a
+// plain <a href> in pages/Alerts.jsx, not a JSON response to parse.
+// Renamed from "postmortem" 2026-09-17 for a more professional name.
+export const rcaReportUrl = (alertId, format = "pdf") => `/api/alerts/${alertId}/rca-report?format=${format}`;
 
 // ── Reports (S3-backed client/stakeholder reports) ──────────────────────────
 export const generateReport = ({ reportType, scopeType, scopeId, accountId, periodStart, periodEnd }) => {

@@ -234,12 +234,12 @@
   padding: 2px 8px; border-radius: 10px;
   background: rgba(124,110,224,0.14); color: var(--accent-purple, #7c6ee0);
 }
-.explain-postmortem-link {
+.explain-rca-report-link {
   display: inline-flex; align-items: center; gap: 4px;
   font-size: 11px; font-weight: 600; color: var(--text-secondary, #8ca0c4);
   text-decoration: none; padding: 2px 8px; border-radius: 10px;
   border: 1px solid var(--border-md, rgba(99,130,190,0.24));
   transition: all .15s; margin-left: auto;
 }
-.explain-postmortem-link:hover { color: var(--accent, #2bb3ac); border-color: var(--accent, #2bb3ac); }
+.explain-rca-report-link:hover { color: var(--accent, #2bb3ac); border-color: var(--accent, #2bb3ac); }
 

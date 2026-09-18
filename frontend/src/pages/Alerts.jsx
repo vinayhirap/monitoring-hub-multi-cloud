@@ -6,7 +6,7 @@ import { useWebSocket } from "../hooks/useWebSocket";
 import "./Alerts.css";
 import { useTimezone, formatInTz } from "../contexts/TimezoneContext";
 import { InfoIcon, DownloadIcon } from "../components/icons";
-import { postmortemUrl } from "../api/api";
+import { rcaReportUrl } from "../api/api";
 
 const BASE = "";
 
@@ -668,13 +668,13 @@ export default function Alerts() {
                                   </span>
                                 )}
                                 <a
-                                  className="explain-postmortem-link"
-                                  href={postmortemUrl(a.id, "pdf")}
+                                  className="explain-rca-report-link"
+                                  href={rcaReportUrl(a.id, "pdf")}
                                   target="_blank"
                                   rel="noreferrer"
-                                  title="Download a full postmortem (timeline, probable cause, recommendations) as a PDF"
+                                  title="Download a full RCA report (timeline, probable cause, recommendations) as a PDF"
                                 >
-                                  <DownloadIcon size={12} /> Postmortem
+                                  <DownloadIcon size={12} /> RCA Report
                                 </a>
                               </div>
                               <p className="explain-summary">{explainCache[a.id].summary}</p>
