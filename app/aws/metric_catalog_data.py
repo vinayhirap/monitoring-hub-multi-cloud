@@ -294,7 +294,15 @@ CURATED = {
         ("ConnectionTime",          "Milliseconds", "Average", False, "TCP connection time"),
     ]),
     "wafv2": ("AWS WAF", "AWS/WAFV2", "extended", [
-        ("AllowedRequests", "Count", "Sum", False, "Requests allowed"),
+        # 2026-09-17: AllowedRequests flipped to a default alongside
+        # BlockedRequests (live U4RAD audit). BlockedRequests-only
+        # meant a REGIONAL WebACL attached to a resource with normal,
+        # unblocked traffic -- the overwhelmingly common case -- showed
+        # "no data" forever, indistinguishable from a WebACL receiving
+        # no traffic at all. AllowedRequests publishes on ordinary
+        # traffic, giving a baseline signal the failure-only metric
+        # structurally cannot.
+        ("AllowedRequests", "Count", "Sum", True,  "Requests allowed"),
         ("BlockedRequests", "Count", "Sum", True,  "Requests blocked"),
         ("CountedRequests", "Count", "Sum", False, "Requests matched in count mode"),
         ("PassedRequests",  "Count", "Sum", False, "Requests passed through"),
@@ -340,8 +348,13 @@ CURATED = {
         ("DaysToExpiry", "Days", "Minimum", True, "Days until certificate expiry"),
     ]),
     "backup": ("AWS Backup", "AWS/Backup", "extended", [
+        # 2026-09-17: NumberOfBackupJobsCompleted flipped to a default
+        # (live U4RAD audit -- same failure-only-default pattern as
+        # wafv2/logs below). A vault with jobs succeeding on schedule
+        # showed permanent "no data" because only the two failure
+        # counters were ever enabled by default.
         ("NumberOfBackupJobsFailed",    "Count", "Sum", True,  "Failed backup jobs"),
-        ("NumberOfBackupJobsCompleted", "Count", "Sum", False, "Completed backup jobs"),
+        ("NumberOfBackupJobsCompleted", "Count", "Sum", True,  "Completed backup jobs"),
         ("NumberOfRestoreJobsFailed",   "Count", "Sum", True,  "Failed restore jobs"),
     ]),
     "cognito": ("Amazon Cognito", "AWS/Cognito", "extended", [
@@ -350,7 +363,19 @@ CURATED = {
         ("ThrottledEvents", "Count", "Sum", True,  "Throttled requests"),
     ]),
     "logs": ("Amazon CloudWatch Logs", "AWS/Logs", "extended", [
-        ("IncomingBytes",  "Bytes", "Sum", False, "Log bytes ingested"),
+        # 2026-09-17: IncomingBytes flipped to a default alongside
+        # DeliveryErrors (live U4RAD audit: 9 active log groups, 100%
+        # zero datapoints across 48h+ / dozens of collection cycles --
+        # traced to DeliveryErrors, which only fires on a subscription/
+        # export failure, being the only enabled metric). IncomingBytes
+        # publishes on ordinary log ingestion -- essentially real-time
+        # for any log group actually receiving events -- so it's the
+        # metric that should have been the default in the first place.
+        # IncomingLogEvents left opt-in: same publish trigger as
+        # IncomingBytes (one GetMetricData request's worth of signal
+        # either one already gives), so enabling both by default would
+        # only double the billed request count for redundant coverage.
+        ("IncomingBytes",  "Bytes", "Sum", True,  "Log bytes ingested"),
         ("IncomingLogEvents", "Count", "Sum", False, "Log events ingested"),
         ("DeliveryErrors", "Count", "Sum", True, "Subscription/export delivery errors"),
     ]),
