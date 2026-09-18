@@ -38,81 +38,107 @@
 //     small link icon on each node with a real detail route (see
 //     detailRoute() below) is the explicit way to navigate now; the
 //     node body itself only pins/unpins.
-//   - Node icons and column placement are provider-aware (AWS/Azure/
-//     GCP resource-type keys all map to a sensible tier), since an
-//     account onboarded as Azure or GCP renders its own topology here
-//     too, not just AWS accounts.
 //   - "Add dependency" / delete controls only render for a user with
 //     topology.manage (see db/migrations/024_topology_manage_permission.sql)
 //     -- previously any viewer could mutate manually-declared edges
 //     because the write endpoints rode along on the same permission as
 //     the read-only view.
 //
-// 2026-09-17 audit ("I want every resource in the account, not just
-// this pipeline, and aligned for GCP/Azure too"): traced this all the
-// way back through discovery (app/collector/discovery/runner.py +
-// extended.py, app/providers/azure/discovery.py,
-// app/providers/gcp/discovery.py) and the icon layer
-// (components/cloud-icons.jsx) before touching anything here --
-// discovery already writes every one of the ~42 AWS / 19 Azure / 16
-// GCP catalogued resource types into `resources` (see each file's own
-// docstring), and every one of those already has a real icon with a
-// sane fallback. The account in the screenshot that prompted this
-// really does have all 81 of its resources in `resources` and visible
-// in the "N other resources" disclosure below -- nothing was silently
-// dropped there. Three real gaps, fixed here:
-//   1. TIERS below only explicitly categorized a subset of AWS types
-//      and a much smaller subset of Azure/GCP types -- everything else
-//      silently fell into TIER_FALLBACK ("Compute"), so e.g. an SQS
-//      queue or a KMS key rendered in the Compute column. Every
-//      catalogued type across all three providers is now explicitly
-//      placed, plus a new "Security / Identity" tier for
-//      kms/certificatemanager/cognito/key_vault, which had no honest
-//      home in the previous three tiers.
-//   2. detailRoute()/ROUTE_SEGMENT_BY_TYPE assumed only 7 hardcoded AWS
-//      service pages existed and returned null (no link) for anything
-//      else, including every Azure/GCP resource. That was true when
-//      this file was first written, but ServiceDetailRouter.jsx +
-//      GenericServiceDetail.jsx (added since) now give EVERY service
-//      key, for every provider, a real in-app detail page -- the route
-//      segment is just the resource_type itself, matching the exact
-//      convention ServiceList.jsx's own ServiceCard links already use
-//      (`/accounts/${id}/${svc.id}`, svc.id === resource_type). The
-//      allowlist is gone; every non-hidden resource type is clickable
-//      now, on every provider.
-//   3. The "N other resources" disclosure defaulted to collapsed,
-//      putting most of an account's inventory one extra click away
-//      from "each and every resource" -- now defaults open. The main
-//      graph itself is deliberately still edges-only (see the header
-//      note above this one) -- that decluttering call was sound and
-//      isn't reversed here, only the visibility of what's *not* in it.
+// 2026-09-17, first pass ("every resource in the account, aligned for
+// GCP/Azure"): confirmed discovery + icons were already complete for
+// all three providers (see app/collector/discovery/*, app/providers/
+// {azure,gcp}/discovery.py, components/cloud-icons.jsx) and fixed the
+// three real gaps that were left: incomplete tier categorization,
+// AWS-only detail-page routing, and the others-list defaulting closed.
+//
+// 2026-09-17, second pass -- REDESIGN ("think like a cloud architect
+// and a UI/UX pro; NAT/VPC/WAF are implicitly attached to almost
+// everything, not just what has a literal discovered edge; build real
+// layers"): the flat 4-tier model (Entry/Compute/Data/Security) and
+// the flat alphabetical "others" chip wall both under-served what this
+// data actually is -- an account's infrastructure has real
+// architectural layers, and a few resource types (NAT, WAF, VPC-level
+// networking, KMS) are foundational to *everything downstream* in a
+// way no discovered edge will ever capture (AWS's describe/tagging
+// APIs report "this ALB targets that EC2 instance", never "every
+// private-subnet instance's egress passes through this NAT gateway" --
+// that's implied by VPC route tables, not a discrete API relationship
+// this app polls). Drawing literal edges from one NAT gateway to every
+// compute node it plausibly serves would be a correct-ish but
+// unreadable hairball -- the real cloud-architecture-diagram answer
+// (AWS's own reference architectures, and every serious diagramming
+// tool) is a BOUNDARY, not N edges: foundational network/security
+// infrastructure is drawn as a zone the rest of the diagram sits
+// inside, not as a node with a thousand arrows leaving it. That's what
+// PERIMETER_LAYER_KEYS + the dashed boundary box below implement.
+//
+// What changed:
+//   1. TIERS -> LAYERS: 6 real architectural layers instead of 4 loose
+//      buckets -- Network & Perimeter, Security & Identity, Compute,
+//      Data & Storage, Messaging & Eventing, Governance &
+//      Observability -- each with its own icon and accent color, and
+//      a complete type list per provider (see the audit comment this
+//      replaced for the exact discovery-vs-catalog cross-check; the
+//      type assignments are unchanged in substance, just regrouped
+//      from 4 buckets into 6 more precise ones. New homes that didn't
+//      exist before: Messaging split out from Data, Governance split
+//      out from Data, for backup/logs/data_factory).
+//   2. Network & Security are drawn inside a shared dashed "Perimeter"
+//      boundary box spanning their combined columns -- the visual
+//      answer to "NAT/WAF/etc. are attached to everything": they
+//      frame the diagram, they don't get individually wired to every
+//      node behind them. See PerimeterBoundary below.
+//   3. Edges now visually flow: auto-detected edges animate a moving
+//      dash pattern (CSS, see topo-edge-auto in Topology.css) so a
+//      live/current relationship reads as "live" at a glance, not just
+//      via a legend color key. Manually-declared edges stay static
+//      dashed -- deliberately NOT animated, since "flowing" implies an
+//      observed, current relationship and a manual edge is a stated
+//      belief, not something this app has re-confirmed since it was
+//      typed in.
+//   4. Every node card gets a thin left accent stripe in its layer's
+//      color, and the others-list is now grouped under the same 6
+//      layer headers (icon + accent + count) instead of one flat
+//      alphabetical wall -- color and grouping both do real
+//      categorization work now, on the graph AND on the 60+ resources
+//      that never show up in it.
 //
 // Deliberately still no graph-layout library (react-flow etc.) --
 // frontend/package.json has zero graph dependencies today, and a fixed
-// tier-column layout is enough for the shapes this data actually takes
-// (a handful of load-balancer/compute/data edges per account). Revisit
-// with a real layout engine only if that stops being true.
+// layer-column layout plus CSS-only edge animation covers everything
+// this redesign needed. Revisit with a real layout engine only if a
+// future ask needs true force-directed placement or draggable nodes.
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getTopology, addManualEdge, deleteManualEdge } from "../api/api";
 import { useAuth } from "../auth/AuthContext";
 import { CloudServiceIcon } from "../components/cloud-icons";
-import { AlertTriangleIcon, TrashIcon, PlusIcon, InfoIcon, ExternalLinkIcon, XIcon } from "../components/icons";
+import {
+  AlertTriangleIcon, TrashIcon, PlusIcon, InfoIcon, ExternalLinkIcon, XIcon,
+  GlobeIcon, ShieldIcon, ServerIcon, DatabaseIcon, MailIcon, ClipboardIcon,
+} from "../components/icons";
 import "./Topology.css";
 
-// Which column a resource_type lands in. Every type discovery actually
-// writes for AWS (app/collector/discovery/runner.py + extended.py),
-// Azure (app/providers/azure/discovery.py) and GCP
-// (app/providers/gcp/discovery.py) is listed explicitly below --
-// cross-checked 2026-09-17 against all three files plus each
-// provider's metric_catalog_data.py, so nothing should be silently
-// falling through to TIER_FALLBACK anymore. A brand-new service type
-// added later without a matching entry here still renders (icon +
-// fallback tier), it just won't be perfectly placed until this list is
-// updated too.
-const TIERS = [
+// Six real architectural layers, left-to-right in request-flow order:
+// a request crosses the network perimeter, is subject to security
+// controls, reaches compute, which reads/writes data and publishes/
+// consumes async messages -- governance doesn't sit IN that flow, it
+// watches all of it, hence its own distinct treatment (see
+// GOVERNANCE_LAYER_KEY below and its render-time styling).
+//
+// Every type discovery actually writes for AWS
+// (app/collector/discovery/runner.py + extended.py), Azure
+// (app/providers/azure/discovery.py) and GCP
+// (app/providers/gcp/discovery.py) is listed explicitly -- cross-
+// checked against all three files plus each provider's
+// metric_catalog_data.py, so nothing should be silently falling
+// through to TIER_FALLBACK. A brand-new service type added later
+// without a matching entry here still renders (icon + fallback layer),
+// it just won't be perfectly placed until this list is updated too.
+const LAYERS = [
   {
-    key: "entry", label: "Entry / Routing",
+    key: "network", label: "Network & Perimeter", icon: GlobeIcon, accent: "#3b82f6",
+    blurb: "Edge, DNS, gateways & traffic filtering -- every request crosses this first.",
     types: [
       // aws
       "elb", "alb", "nlb", "cloudfront", "apigateway", "route53",
@@ -125,7 +151,21 @@ const TIERS = [
     ],
   },
   {
-    key: "compute", label: "Compute",
+    // kms/certificatemanager/cognito (aws) and key_vault (azure) have
+    // no discovered edges to anything -- there's no Describe API that
+    // reports "this KMS key encrypts that EBS volume" -- but they
+    // gate what the layers to the right are allowed to do, same
+    // conceptual role as the network perimeter. Grouped with it inside
+    // one shared boundary box below for exactly that reason. No GCP
+    // catalog key maps here today (GCP's catalog has no dedicated
+    // KMS/Secret Manager entry), which is reality, not an omission.
+    key: "security", label: "Security & Identity", icon: ShieldIcon, accent: "#ef4444",
+    blurb: "Keys, certificates & identity -- governs what every layer to the right can do.",
+    types: ["kms", "certificatemanager", "cognito", "key_vault"],
+  },
+  {
+    key: "compute", label: "Compute", icon: ServerIcon, accent: "#a855f7",
+    blurb: "Where your code actually runs.",
     types: [
       // aws
       "ec2", "lambda", "ecs", "ecs_service", "eks", "autoscaling", "states",
@@ -136,41 +176,67 @@ const TIERS = [
     ],
   },
   {
-    key: "data", label: "Data / Storage / Messaging",
+    key: "data", label: "Data & Storage", icon: DatabaseIcon, accent: "#10b981",
+    blurb: "Databases, object storage & block storage -- state that outlives a single request.",
     types: [
       // aws
       "ebs", "rds", "s3", "dynamodb", "elasticache", "efs", "redshift",
-      "opensearch", "documentdb", "neptune", "sqs", "sns", "kinesis",
-      "firehose", "msk", "memorydb", "dax", "events", "backup", "dms", "logs",
+      "opensearch", "documentdb", "neptune", "memorydb", "dax", "dms",
       // azure
-      "storage_account", "sql_database", "cosmosdb_account", "redis_cache",
-      "service_bus_namespace", "eventhub_namespace", "managed_disk", "data_factory",
+      "storage_account", "sql_database", "cosmosdb_account", "redis_cache", "managed_disk",
       // gcp
       "gce_persistent_disk", "gcs_bucket", "cloudsql_instance", "firestore_database",
-      "bigquery_project", "spanner_instance", "redis_instance", "pubsub_topic", "pubsub_subscription",
+      "bigquery_project", "spanner_instance", "redis_instance",
     ],
   },
   {
-    // New 2026-09-17: kms/certificatemanager/cognito (aws) and
-    // key_vault (azure) had no honest home in the three tiers above --
-    // they aren't compute, storage, or an entry point -- and were
-    // landing in Compute purely via TIER_FALLBACK. No GCP catalog key
-    // maps here today (GCP's catalog has no dedicated KMS/Secret
-    // Manager entry), which is simply reality, not an omission.
-    key: "security", label: "Security / Identity",
-    types: ["kms", "certificatemanager", "cognito", "key_vault"],
+    key: "messaging", label: "Messaging & Eventing", icon: MailIcon, accent: "#f59e0b",
+    blurb: "Queues, topics & event buses -- how compute talks to compute asynchronously.",
+    types: [
+      // aws
+      "sqs", "sns", "kinesis", "firehose", "msk", "events",
+      // azure
+      "service_bus_namespace", "eventhub_namespace",
+      // gcp
+      "pubsub_topic", "pubsub_subscription",
+    ],
+  },
+  {
+    // Deliberately last, and visually distinct (see GOVERNANCE_LAYER_KEY
+    // below) -- backup/logs/data_factory observe or operate on every
+    // other layer rather than participating in a request's own path
+    // through the system, so placing them inline at the end of the
+    // same left-to-right flow would misrepresent them as a downstream
+    // processing step instead of an out-of-band concern.
+    key: "governance", label: "Governance & Observability", icon: ClipboardIcon, accent: "#64748b",
+    blurb: "Backup, logs & data orchestration -- operates across every layer, not inside the request path.",
+    types: [
+      // aws
+      "backup", "logs",
+      // azure
+      "data_factory",
+      // gcp -- none in the catalog today
+    ],
   },
 ];
 const TIER_FALLBACK = "compute";
+// The network + security layers get drawn inside one shared dashed
+// "perimeter" boundary box (see PerimeterBoundary) instead of literal
+// edges to everything they implicitly affect -- see this file's
+// 2026-09-17 redesign note above for why. Indices, not keys, since
+// PerimeterBoundary needs to know which *columns* (by position) to
+// span.
+const PERIMETER_LAYER_INDICES = [0, 1]; // network, security
+const GOVERNANCE_LAYER_KEY = "governance";
 // Excluded entirely -- see file header. Not just "no branded icon", not
 // drawn at all: filtered out of nodes, edges, and the others-list below.
 const HIDDEN_RESOURCE_TYPES = new Set(["eni"]);
 
 const NODE_W = 208, NODE_H = 60, COL_GAP = 130, ROW_GAP = 20, PAD = 30;
 
-function tierIndexOf(resourceType) {
-  const i = TIERS.findIndex(t => t.types.includes(resourceType));
-  return i === -1 ? TIERS.findIndex(t => t.key === TIER_FALLBACK) : i;
+function layerIndexOf(resourceType) {
+  const i = LAYERS.findIndex(t => t.types.includes(resourceType));
+  return i === -1 ? LAYERS.findIndex(t => t.key === TIER_FALLBACK) : i;
 }
 
 // 2026-09-17: was a small hardcoded AWS-only allowlist (7 service
@@ -199,10 +265,14 @@ function StateDot({ state }) {
 
 function NodeCard({ node, active, dimmed, pinned, onHover, onLeave, onSelect, provider, onOpen }) {
   const isGhost = node.ghost;
+  // 2026-09-17 redesign: left accent stripe in the node's layer color
+  // -- ghosts stay neutral (grey), since "unresolved edge endpoint" is
+  // its own category, not a real layer membership.
+  const accent = isGhost ? "var(--text-muted)" : LAYERS[layerIndexOf(node.resource_type)].accent;
   return (
     <div
       className={`topo-node topo-node-selectable ${active ? "topo-node-hovered" : ""} ${dimmed ? "topo-node-dimmed" : ""} ${isGhost ? "topo-node-ghost" : ""} ${pinned ? "topo-node-pinned" : ""}`}
-      style={{ left: node.x, top: node.y, width: NODE_W, height: NODE_H }}
+      style={{ left: node.x, top: node.y, width: NODE_W, height: NODE_H, "--node-accent": accent }}
       onMouseEnter={onHover}
       onMouseLeave={onLeave}
       onClick={onSelect}
@@ -229,6 +299,32 @@ function NodeCard({ node, active, dimmed, pinned, onHover, onLeave, onSelect, pr
           <ExternalLinkIcon size={12} />
         </button>
       )}
+    </div>
+  );
+}
+
+// 2026-09-17 redesign: the visual answer to "NAT/WAF/security are
+// implicitly attached to almost everything" -- a shared dashed
+// boundary drawn behind the network + security columns (see
+// PERIMETER_LAYER_INDICES), spanning the full graph height, instead of
+// literal edges fanning out from each one. Real cloud reference
+// architectures draw a VPC/security boundary as a box the rest of the
+// diagram sits inside, not as a node wired to everything it affects --
+// this is that convention, not a novel one. Renders nothing if neither
+// layer has any nodes in the graph (usedCols may exclude both).
+function PerimeterBoundary({ columns, height }) {
+  const activeIdx = PERIMETER_LAYER_INDICES.filter(i => columns[i]?.length > 0);
+  if (activeIdx.length === 0) return null;
+  const first = Math.min(...activeIdx), last = Math.max(...activeIdx);
+  const left = first * (NODE_W + COL_GAP) + PAD - 14;
+  const width = (last - first) * (NODE_W + COL_GAP) + NODE_W + 28;
+  return (
+    <div
+      className="topo-perimeter"
+      style={{ left, width, height: height + 28, top: -14 }}
+      title="Network & security infrastructure -- foundational to every resource inside it, even without a discovered edge to each one"
+    >
+      <span className="topo-perimeter-label"><ShieldIcon size={11} /> Perimeter</span>
     </div>
   );
 }
@@ -303,9 +399,18 @@ export default function Topology() {
     const allConnected = [...connectedReal, ...ghostNodes];
 
     const others = nodes.filter(n => !connectedIds.has(n.resource_id));
+    // 2026-09-17: group the unconnected ("others") resources by the
+    // same 6 layers the graph itself uses, sorted for scannability --
+    // this is what turns the old flat alphabetical chip wall into
+    // something a person can actually navigate by category. Empty
+    // layers are kept (as empty arrays) so the render side can just
+    // zip this against LAYERS by index without a second lookup.
+    const othersByLayer = LAYERS.map(() => []);
+    others.forEach(n => othersByLayer[layerIndexOf(n.resource_type)].push(n));
+    othersByLayer.forEach(group => group.sort((a, b) => (a.name || a.resource_id).localeCompare(b.name || b.resource_id)));
 
-    const columns = TIERS.map(() => []);
-    allConnected.forEach(n => columns[tierIndexOf(n.resource_type)].push(n));
+    const columns = LAYERS.map(() => []);
+    allConnected.forEach(n => columns[layerIndexOf(n.resource_type)].push(n));
 
     const positioned = {};
     let maxRows = 0;
@@ -316,11 +421,11 @@ export default function Topology() {
       });
     });
 
-    const usedCols = TIERS.filter((_, i) => columns[i].length > 0).length || 1;
+    const usedCols = LAYERS.filter((_, i) => columns[i].length > 0).length || 1;
     const width  = usedCols * (NODE_W + COL_GAP) - COL_GAP + PAD * 2;
     const height = Math.max(1, maxRows) * (NODE_H + ROW_GAP) - ROW_GAP + PAD * 2;
 
-    return { nodes, edges, positioned, others, width, height, columns };
+    return { nodes, edges, positioned, others, othersByLayer, width, height, columns };
   }, [data]);
 
   if (error) return <div className="topo-page"><div className="topo-error"><AlertTriangleIcon size={14} /> Failed to load topology: {error}</div></div>;
@@ -412,11 +517,19 @@ export default function Topology() {
       ) : (
         <div className="topo-graph-wrap">
           <div className="topo-tier-labels" style={{ width: layout.width }}>
-            {TIERS.map((t, i) => layout.columns[i].length > 0 && (
-              <span key={t.key} className="topo-tier-label" style={{ left: i * (NODE_W + COL_GAP) + PAD }}>{t.label}</span>
+            {LAYERS.map((t, i) => layout.columns[i].length > 0 && (
+              <span
+                key={t.key}
+                className="topo-tier-label"
+                style={{ left: i * (NODE_W + COL_GAP) + PAD, "--layer-accent": t.accent }}
+                title={t.blurb}
+              >
+                <t.icon size={12} /> {t.label}
+              </span>
             ))}
           </div>
           <div className="topo-graph" style={{ width: layout.width, height: layout.height }}>
+            <PerimeterBoundary columns={layout.columns} height={layout.height} />
             <svg width={layout.width} height={layout.height} className="topo-svg">
               <defs>
                 <marker id="arrow-auto" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
@@ -439,11 +552,19 @@ export default function Topology() {
                 return (
                   <path
                     key={e.id}
+                    // 2026-09-17: auto-detected edges get the flowing-
+                    // dash animation (topo-edge-auto, see Topology.css)
+                    // -- a currently-observed relationship reads as
+                    // "live" at a glance. Manual edges deliberately do
+                    // NOT flow: a manually-declared dependency is a
+                    // stated belief this app has never independently
+                    // re-confirmed, and animating it the same way would
+                    // claim a freshness it doesn't have.
+                    className={isManual ? "topo-edge-manual" : "topo-edge-auto"}
                     d={`M${sx},${sy} C${midx},${sy} ${midx},${ty} ${tx},${ty}`}
                     fill="none"
                     stroke={isManual ? "var(--accent-purple)" : "var(--accent)"}
                     strokeWidth={active ? 2.5 : 1.5}
-                    strokeDasharray={isManual ? "5 4" : undefined}
                     opacity={activeId ? (active ? 1 : 0.15) : 0.7}
                     markerEnd={`url(#${isManual ? "arrow-manual" : "arrow-auto"})`}
                     style={{ transition: "opacity .15s, stroke-width .15s" }}
@@ -470,7 +591,7 @@ export default function Topology() {
             })}
           </div>
           <div className="topo-legend">
-            <span><i className="topo-legend-line topo-legend-auto" /> Auto-detected</span>
+            <span><i className="topo-legend-line topo-legend-auto" /> Auto-detected · live</span>
             <span><i className="topo-legend-line topo-legend-manual" /> Manually declared</span>
             <span className="topo-legend-hint">Click a resource to trace its connections while scrolling</span>
             {pinnedId && (
@@ -488,20 +609,46 @@ export default function Topology() {
             {showOthers ? "▾" : "▸"} {layout.others.length} other resource{layout.others.length === 1 ? "" : "s"} in this account not part of any tracked relationship
           </button>
           {showOthers && (
-            <div className="topo-others-grid">
-              {layout.others.map(n => {
-                const route = detailRoute(n, id);
+            // 2026-09-17 redesign: grouped by the same 6 architectural
+            // layers the graph above uses, instead of one flat
+            // alphabetical wall -- an account's "everything else" is
+            // still an inventory worth being able to scan by category
+            // (all the ACM certs together, all the log/backup/StackSet
+            // governance noise together, etc.), not just a list.
+            <div className="topo-others-layers">
+              {LAYERS.map((layer, i) => {
+                const items = layout.othersByLayer[i];
+                if (!items.length) return null;
+                const isGovernance = layer.key === GOVERNANCE_LAYER_KEY;
                 return (
                   <div
-                    key={n.resource_id}
-                    className={`topo-chip ${route ? "topo-chip-clickable" : ""}`}
-                    title={n.resource_id}
-                    onClick={route ? () => navigate(route) : undefined}
+                    key={layer.key}
+                    className={`topo-layer-group ${isGovernance ? "topo-layer-group-governance" : ""}`}
+                    style={{ "--layer-accent": layer.accent }}
                   >
-                    <span className="topo-chip-icon">
-                      <CloudServiceIcon provider={provider} service={n.resource_type} size={15} />
-                    </span>
-                    {n.name || n.resource_id}
+                    <div className="topo-layer-group-header" title={layer.blurb}>
+                      <layer.icon size={13} />
+                      <span>{layer.label}</span>
+                      <span className="topo-layer-count">{items.length}</span>
+                    </div>
+                    <div className="topo-others-grid">
+                      {items.map(n => {
+                        const route = detailRoute(n, id);
+                        return (
+                          <div
+                            key={n.resource_id}
+                            className={`topo-chip ${route ? "topo-chip-clickable" : ""}`}
+                            title={n.resource_id}
+                            onClick={route ? () => navigate(route) : undefined}
+                          >
+                            <span className="topo-chip-icon">
+                              <CloudServiceIcon provider={provider} service={n.resource_type} size={15} />
+                            </span>
+                            {n.name || n.resource_id}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 );
               })}
