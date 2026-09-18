@@ -103,11 +103,47 @@
 //      categorization work now, on the graph AND on the 60+ resources
 //      that never show up in it.
 //
+// 2026-09-17, third pass -- FEEDBACK ON THE SECOND PASS ("I don't want
+// the segregated others-list at all, I want everything in the graph
+// linked with each other; also the lines look like they're breaking"):
+// two real problems, not just preferences:
+//   a. PerimeterBoundary's box had its own floating "PERIMETER" corner
+//      label positioned with a negative top offset for breathing room
+//      above the first node -- that offset pushed the label up far
+//      enough to collide with the tier-labels row directly above it (a
+//      separate sibling element), rendering as unreadable overlapping
+//      text. Fixed by dropping that label entirely (the column headers
+//      already say "Network & Perimeter" / "Security & Identity") and
+//      keeping the box fully within its own container's bounds -- no
+//      negative offsets at all now.
+//   b. Auto-detected edges' "flowing" effect was implemented as an
+//      animated dashed stroke (stroke-dashoffset). In a static
+//      screenshot -- and, per feedback, apparently in motion too -- a
+//      dashed line reads as "this connection is broken/interrupted",
+//      which is the opposite of the intended meaning. Replaced with a
+//      SOLID, never-interrupted line plus small dots traveling along
+//      it via SVG animateMotion -- the line itself cannot look broken
+//      now, because it's just a plain stroke; only the dots move.
+// And one real design reversal, on request: the others-list (2026-09-17
+// second pass) is gone. Every resource is now a node in the main graph,
+// regardless of whether it has a discovered edge. For the ~60 resources
+// per account that typically have NONE (ACM certs, GuardDuty Lambdas,
+// Config rules, StackSets -- discovery has no way to know these relate
+// to any specific other resource), inventing a specific fake
+// relationship would be dishonest, so instead each layer column gets a
+// single vertical "spine" line that every node in it taps into (see
+// LayerSpine) -- a real, visible line, but one that only claims "this
+// resource is a member of this layer", never "this resource relates to
+// THAT one" the way a real discovered edge does. Real edges stay
+// visually distinct: brighter, flowing, arrowheaded; spine lines are
+// dim, static, undirected.
+//
 // Deliberately still no graph-layout library (react-flow etc.) --
 // frontend/package.json has zero graph dependencies today, and a fixed
-// layer-column layout plus CSS-only edge animation covers everything
-// this redesign needed. Revisit with a real layout engine only if a
-// future ask needs true force-directed placement or draggable nodes.
+// layer-column layout plus CSS/SVG-native edge animation covers
+// everything this redesign needed. Revisit with a real layout engine
+// only if a future ask needs true force-directed placement or
+// draggable nodes.
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getTopology, addManualEdge, deleteManualEdge } from "../api/api";
@@ -123,8 +159,7 @@ import "./Topology.css";
 // a request crosses the network perimeter, is subject to security
 // controls, reaches compute, which reads/writes data and publishes/
 // consumes async messages -- governance doesn't sit IN that flow, it
-// watches all of it, hence its own distinct treatment (see
-// GOVERNANCE_LAYER_KEY below and its render-time styling).
+// watches all of it, hence its own distinct treatment further down.
 //
 // Every type discovery actually writes for AWS
 // (app/collector/discovery/runner.py + extended.py), Azure
@@ -202,12 +237,13 @@ const LAYERS = [
     ],
   },
   {
-    // Deliberately last, and visually distinct (see GOVERNANCE_LAYER_KEY
-    // below) -- backup/logs/data_factory observe or operate on every
-    // other layer rather than participating in a request's own path
-    // through the system, so placing them inline at the end of the
-    // same left-to-right flow would misrepresent them as a downstream
-    // processing step instead of an out-of-band concern.
+    // Deliberately last, and no longer visually grouped with any other
+    // resources beyond its own layer spine -- backup/logs/data_factory
+    // observe or operate on every other layer rather than
+    // participating in a request's own path through the system, so
+    // placing them inline at the end of the same left-to-right flow
+    // would misrepresent them as a downstream processing step instead
+    // of an out-of-band concern.
     key: "governance", label: "Governance & Observability", icon: ClipboardIcon, accent: "#64748b",
     blurb: "Backup, logs & data orchestration -- operates across every layer, not inside the request path.",
     types: [
@@ -227,7 +263,6 @@ const TIER_FALLBACK = "compute";
 // PerimeterBoundary needs to know which *columns* (by position) to
 // span.
 const PERIMETER_LAYER_INDICES = [0, 1]; // network, security
-const GOVERNANCE_LAYER_KEY = "governance";
 // Excluded entirely -- see file header. Not just "no branded icon", not
 // drawn at all: filtered out of nodes, edges, and the others-list below.
 const HIDDEN_RESOURCE_TYPES = new Set(["eni"]);
@@ -312,20 +347,59 @@ function NodeCard({ node, active, dimmed, pinned, onHover, onLeave, onSelect, pr
 // diagram sits inside, not as a node wired to everything it affects --
 // this is that convention, not a novel one. Renders nothing if neither
 // layer has any nodes in the graph (usedCols may exclude both).
+// 2026-09-17, third pass: dropped the box's own floating corner label
+// ("PERIMETER") entirely -- it collided with the tier-labels row
+// directly above it (the negative top offset needed to give the box
+// breathing room above its first node pushed the label up into that
+// sibling element's own text, an unreadable overlap visible in the
+// 2026-09-17 screenshot review). The column headers already say
+// "Network & Perimeter" / "Security & Identity" clearly; a second,
+// smaller label saying nearly the same thing added redundancy and,
+// worse, a real layout bug. The box itself (plus its title tooltip)
+// still carries the "these are foundational" meaning on its own.
 function PerimeterBoundary({ columns, height }) {
   const activeIdx = PERIMETER_LAYER_INDICES.filter(i => columns[i]?.length > 0);
   if (activeIdx.length === 0) return null;
   const first = Math.min(...activeIdx), last = Math.max(...activeIdx);
   const left = first * (NODE_W + COL_GAP) + PAD - 14;
   const width = (last - first) * (NODE_W + COL_GAP) + NODE_W + 28;
+  // Contained entirely within .topo-graph's own box (PAD already gives
+  // 30px of clearance above the first node row) -- no negative offset
+  // that could push this into the sibling tier-labels row above.
   return (
     <div
       className="topo-perimeter"
-      style={{ left, width, height: height + 28, top: -14 }}
+      style={{ left, width, height: height - 20, top: 10 }}
       title="Network & security infrastructure -- foundational to every resource inside it, even without a discovered edge to each one"
-    >
-      <span className="topo-perimeter-label"><ShieldIcon size={11} /> Perimeter</span>
-    </div>
+    />
+  );
+}
+
+// 2026-09-17, third pass: draws a single vertical "backbone" line
+// through a layer's column, with a short stub touching every node in
+// it -- the honest way to make "every resource is linked to something"
+// true without inventing a specific resource-to-resource relationship
+// discovery never reported. A GuardDuty Lambda and an S3 log bucket in
+// the same account aren't necessarily related to EACH OTHER, but they
+// ARE both real members of this account's Governance layer, and that
+// membership is exactly what this line represents -- deliberately
+// undirected (no arrowhead), static (no flow animation, unlike real
+// edges below), and rendered in a dim, desaturated version of the
+// layer's own accent so a REAL discovered relationship (bright,
+// flowing, arrowheaded) still reads as categorically more significant
+// than "lives in the same layer."
+function LayerSpine({ col, colIndex, accent }) {
+  if (col.length === 0) return null;
+  const x = colIndex * (NODE_W + COL_GAP) + PAD - 16;
+  const yTop = col[0].y + NODE_H / 2;
+  const yBottom = col[col.length - 1].y + NODE_H / 2;
+  return (
+    <g className="topo-spine" style={{ "--spine-accent": accent }}>
+      {col.length > 1 && <line x1={x} y1={yTop} x2={x} y2={yBottom} />}
+      {col.map(n => (
+        <line key={n.resource_id} x1={x} y1={n.y + NODE_H / 2} x2={n.x} y2={n.y + NODE_H / 2} />
+      ))}
+    </g>
   );
 }
 
@@ -342,14 +416,9 @@ export default function Topology() {
   // -- see file header. Takes precedence over hoveredId wherever both
   // could apply.
   const [pinnedId, setPinnedId] = useState(null);
-  // 2026-09-17: defaults to expanded now -- see file header's audit
-  // note. This is most of an account's inventory (81 of 81 resources
-  // in the account that prompted this, only 21 tracked in an edge);
-  // hiding it behind an extra click contradicted "every resource in
-  // this account, not just the ones with a tracked relationship" being
-  // the whole point of this disclosure existing at all. Still
-  // collapsible for anyone who wants the shorter view back.
-  const [showOthers, setShowOthers] = useState(true);
+  // (The "N other resources" disclosure's showOthers state was removed
+  // 2026-09-17, third pass -- everything is in the main graph now, see
+  // the layout useMemo's own note on that change.)
   const [addingEdge, setAddingEdge] = useState(false);
   const [form, setForm] = useState({ source: "", target: "" });
   const [saving, setSaving] = useState(false);
@@ -388,44 +457,55 @@ export default function Topology() {
     const connectedIds = new Set();
     edges.forEach(e => { connectedIds.add(e.source_resource_id); connectedIds.add(e.target_resource_id); });
 
-    // Real nodes that participate in an edge, plus "ghost" placeholder
-    // nodes for edge endpoints with no matching resources row (the
-    // node_gap case app/api/topology.py's docstring calls out) -- these
-    // still get drawn, just visually distinct, instead of the edge
-    // silently vanishing because one end has nowhere to attach to.
-    const connectedReal = [...connectedIds].filter(rid => byId[rid]).map(rid => byId[rid]);
+    // "Ghost" placeholder nodes for edge endpoints with no matching
+    // resources row (the node_gap case app/api/topology.py's docstring
+    // calls out) -- still drawn, just visually distinct, instead of
+    // the edge silently vanishing because one end has nowhere to
+    // attach to.
     const ghostIds = [...connectedIds].filter(rid => !byId[rid]);
     const ghostNodes = ghostIds.map(rid => ({ resource_id: rid, resource_type: "unknown", ghost: true }));
-    const allConnected = [...connectedReal, ...ghostNodes];
 
-    const others = nodes.filter(n => !connectedIds.has(n.resource_id));
-    // 2026-09-17: group the unconnected ("others") resources by the
-    // same 6 layers the graph itself uses, sorted for scannability --
-    // this is what turns the old flat alphabetical chip wall into
-    // something a person can actually navigate by category. Empty
-    // layers are kept (as empty arrays) so the render side can just
-    // zip this against LAYERS by index without a second lookup.
-    const othersByLayer = LAYERS.map(() => []);
-    others.forEach(n => othersByLayer[layerIndexOf(n.resource_type)].push(n));
-    othersByLayer.forEach(group => group.sort((a, b) => (a.name || a.resource_id).localeCompare(b.name || b.resource_id)));
-
+    // 2026-09-17, third pass ("everything in the graph, linked, not a
+    // separate segregated list"): every resource is now a node in the
+    // main graph -- the earlier "only draw what has a discovered edge,
+    // collapse the rest into a chip list below" design (2026-09-13) is
+    // reversed here on explicit request. Within each layer column,
+    // nodes that participate in a real discovered edge sort to the
+    // TOP (so the relationships that actually matter stay visible
+    // without scrolling past everything else first); everything else
+    // in that layer follows, alphabetically. See the LayerSpine
+    // component below for how an unconnected node still reads as
+    // "linked" -- via its layer's backbone line -- without this
+    // fabricating a specific false relationship to another resource
+    // discovery never reported.
+    const allNodes = [...nodes, ...ghostNodes];
     const columns = LAYERS.map(() => []);
-    allConnected.forEach(n => columns[layerIndexOf(n.resource_type)].push(n));
+    allNodes.forEach(n => columns[layerIndexOf(n.resource_type)].push(n));
+    columns.forEach(col => col.sort((a, b) => {
+      const aC = connectedIds.has(a.resource_id) || a.ghost, bC = connectedIds.has(b.resource_id) || b.ghost;
+      if (aC !== bC) return aC ? -1 : 1;
+      return (a.name || a.resource_id).localeCompare(b.name || b.resource_id);
+    }));
 
     const positioned = {};
     let maxRows = 0;
     columns.forEach((col, ci) => {
       maxRows = Math.max(maxRows, col.length);
       col.forEach((n, ri) => {
-        positioned[n.resource_id] = { ...n, x: ci * (NODE_W + COL_GAP) + PAD, y: ri * (NODE_H + ROW_GAP) + PAD, col: ci };
+        positioned[n.resource_id] = { ...n, x: ci * (NODE_W + COL_GAP) + PAD, y: ri * (NODE_H + ROW_GAP) + PAD, col: ci, row: ri };
       });
     });
+    // Re-point each column at its own positioned (x/y-bearing) copies
+    // -- LayerSpine needs coordinates, and building them from the
+    // positioned map here (once) is simpler than threading a second
+    // lookup through every consumer of `columns`.
+    const positionedColumns = columns.map(col => col.map(n => positioned[n.resource_id]));
 
     const usedCols = LAYERS.filter((_, i) => columns[i].length > 0).length || 1;
     const width  = usedCols * (NODE_W + COL_GAP) - COL_GAP + PAD * 2;
     const height = Math.max(1, maxRows) * (NODE_H + ROW_GAP) - ROW_GAP + PAD * 2;
 
-    return { nodes, edges, positioned, others, othersByLayer, width, height, columns };
+    return { nodes, edges, positioned, width, height, columns: positionedColumns };
   }, [data]);
 
   if (error) return <div className="topo-page"><div className="topo-error"><AlertTriangleIcon size={14} /> Failed to load topology: {error}</div></div>;
@@ -512,8 +592,8 @@ export default function Topology() {
         </div>
       )}
 
-      {Object.keys(layout.positioned).length === 0 ? (
-        <div className="topo-empty">No relationships tracked for this account yet{canManage ? " — add a manual dependency, or wait for the next auto-sync." : " yet."}</div>
+      {layout.nodes.length === 0 ? (
+        <div className="topo-empty">No resources discovered for this account yet.</div>
       ) : (
         <div className="topo-graph-wrap">
           <div className="topo-tier-labels" style={{ width: layout.width }}>
@@ -525,6 +605,7 @@ export default function Topology() {
                 title={t.blurb}
               >
                 <t.icon size={12} /> {t.label}
+                <span className="topo-tier-count">{layout.columns[i].length}</span>
               </span>
             ))}
           </div>
@@ -539,6 +620,13 @@ export default function Topology() {
                   <path d="M0,0 L6,3 L0,6 Z" fill="var(--accent-purple)" />
                 </marker>
               </defs>
+              {/* Layer backbones first, underneath everything -- see
+                  LayerSpine's own comment for why this is the honest
+                  way to show "every resource is linked to something"
+                  without inventing specific false relationships. */}
+              {layout.columns.map((col, ci) => (
+                <LayerSpine key={LAYERS[ci].key} col={col} colIndex={ci} accent={LAYERS[ci].accent} />
+              ))}
               {layout.edges.map(e => {
                 const s = layout.positioned[e.source_resource_id];
                 const t = layout.positioned[e.target_resource_id];
@@ -549,26 +637,36 @@ export default function Topology() {
                 const midx = (sx + tx) / 2;
                 const active = isEdgeActive(e);
                 const isManual = e.source === "manual";
+                const pathId = `edge-path-${e.id}`;
+                const d = `M${sx},${sy} C${midx},${sy} ${midx},${ty} ${tx},${ty}`;
                 return (
-                  <path
-                    key={e.id}
-                    // 2026-09-17: auto-detected edges get the flowing-
-                    // dash animation (topo-edge-auto, see Topology.css)
-                    // -- a currently-observed relationship reads as
-                    // "live" at a glance. Manual edges deliberately do
-                    // NOT flow: a manually-declared dependency is a
-                    // stated belief this app has never independently
-                    // re-confirmed, and animating it the same way would
-                    // claim a freshness it doesn't have.
-                    className={isManual ? "topo-edge-manual" : "topo-edge-auto"}
-                    d={`M${sx},${sy} C${midx},${sy} ${midx},${ty} ${tx},${ty}`}
-                    fill="none"
-                    stroke={isManual ? "var(--accent-purple)" : "var(--accent)"}
-                    strokeWidth={active ? 2.5 : 1.5}
-                    opacity={activeId ? (active ? 1 : 0.15) : 0.7}
-                    markerEnd={`url(#${isManual ? "arrow-manual" : "arrow-auto"})`}
-                    style={{ transition: "opacity .15s, stroke-width .15s" }}
-                  />
+                  // 2026-09-17, third pass: switched from a dashed
+                  // stroke animation (topo-edge-auto's earlier
+                  // stroke-dashoffset keyframe) to a SOLID continuous
+                  // line plus small dots traveling along it via
+                  // animateMotion -- reported as looking "broken" in a
+                  // static screenshot, and a dashed line is genuinely
+                  // ambiguous with "this line is interrupted" in a way
+                  // a solid line with visible motion is not. The line
+                  // itself never breaks now; only the dots move.
+                  <g key={e.id}>
+                    <path
+                      id={pathId}
+                      d={d}
+                      fill="none"
+                      stroke={isManual ? "var(--accent-purple)" : "var(--accent)"}
+                      strokeWidth={active ? 2.5 : 1.5}
+                      strokeDasharray={isManual ? "5 4" : undefined}
+                      opacity={activeId ? (active ? 1 : 0.15) : 0.75}
+                      markerEnd={`url(#${isManual ? "arrow-manual" : "arrow-auto"})`}
+                      style={{ transition: "opacity .15s, stroke-width .15s" }}
+                    />
+                    {!isManual && (!activeId || active) && (
+                      <circle r={2.6} fill="var(--accent)" opacity={activeId ? 1 : 0.85}>
+                        <animateMotion dur="1.6s" repeatCount="indefinite" path={d} />
+                      </circle>
+                    )}
+                  </g>
                 );
               })}
             </svg>
@@ -593,6 +691,7 @@ export default function Topology() {
           <div className="topo-legend">
             <span><i className="topo-legend-line topo-legend-auto" /> Auto-detected · live</span>
             <span><i className="topo-legend-line topo-legend-manual" /> Manually declared</span>
+            <span><i className="topo-legend-line topo-legend-spine" /> Same layer (no discovered relationship)</span>
             <span className="topo-legend-hint">Click a resource to trace its connections while scrolling</span>
             {pinnedId && (
               <button className="topo-legend-clear" onClick={() => setPinnedId(null)}>
@@ -600,60 +699,6 @@ export default function Topology() {
               </button>
             )}
           </div>
-        </div>
-      )}
-
-      {layout.others.length > 0 && (
-        <div className="topo-others">
-          <button className="topo-others-toggle" onClick={() => setShowOthers(v => !v)}>
-            {showOthers ? "▾" : "▸"} {layout.others.length} other resource{layout.others.length === 1 ? "" : "s"} in this account not part of any tracked relationship
-          </button>
-          {showOthers && (
-            // 2026-09-17 redesign: grouped by the same 6 architectural
-            // layers the graph above uses, instead of one flat
-            // alphabetical wall -- an account's "everything else" is
-            // still an inventory worth being able to scan by category
-            // (all the ACM certs together, all the log/backup/StackSet
-            // governance noise together, etc.), not just a list.
-            <div className="topo-others-layers">
-              {LAYERS.map((layer, i) => {
-                const items = layout.othersByLayer[i];
-                if (!items.length) return null;
-                const isGovernance = layer.key === GOVERNANCE_LAYER_KEY;
-                return (
-                  <div
-                    key={layer.key}
-                    className={`topo-layer-group ${isGovernance ? "topo-layer-group-governance" : ""}`}
-                    style={{ "--layer-accent": layer.accent }}
-                  >
-                    <div className="topo-layer-group-header" title={layer.blurb}>
-                      <layer.icon size={13} />
-                      <span>{layer.label}</span>
-                      <span className="topo-layer-count">{items.length}</span>
-                    </div>
-                    <div className="topo-others-grid">
-                      {items.map(n => {
-                        const route = detailRoute(n, id);
-                        return (
-                          <div
-                            key={n.resource_id}
-                            className={`topo-chip ${route ? "topo-chip-clickable" : ""}`}
-                            title={n.resource_id}
-                            onClick={route ? () => navigate(route) : undefined}
-                          >
-                            <span className="topo-chip-icon">
-                              <CloudServiceIcon provider={provider} service={n.resource_type} size={15} />
-                            </span>
-                            {n.name || n.resource_id}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
       )}
 
