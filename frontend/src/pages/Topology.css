@@ -92,34 +92,38 @@
   display: inline-flex; align-items: center; gap: 5px; cursor: help;
 }
 .topo-tier-label svg { flex-shrink: 0; opacity: .9; }
+.topo-tier-count {
+  background: color-mix(in srgb, var(--layer-accent, var(--text-muted)) 18%, transparent);
+  color: var(--layer-accent, var(--text-muted));
+  border-radius: 999px; padding: 0 6px; font-size: 9px; font-family: var(--font-mono);
+  text-transform: none; letter-spacing: normal;
+}
 .topo-graph { position: relative; }
 .topo-svg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 1; }
 
 /* Perimeter boundary -- the visual answer to "NAT/WAF/security are
    implicitly attached to everything": a shared zone drawn behind the
    network+security columns instead of literal edges to every node
-   they affect. See PerimeterBoundary in Topology.jsx. */
+   they affect. See PerimeterBoundary in Topology.jsx -- no floating
+   corner label anymore (2026-09-17 third pass; it collided with the
+   tier-labels row above), just the box + a hover tooltip. */
 .topo-perimeter {
   position: absolute; z-index: 0; pointer-events: none;
   border: 1.5px dashed rgba(59,130,246,.35);
   background: linear-gradient(180deg, rgba(59,130,246,.05), rgba(239,68,68,.04));
   border-radius: 14px;
 }
-.topo-perimeter-label {
-  position: absolute; top: -9px; left: 12px;
-  display: inline-flex; align-items: center; gap: 4px;
-  background: var(--bg-card); padding: 1px 8px; border-radius: 4px;
-  font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
-  color: #6d97e8; border: 1px dashed rgba(59,130,246,.35);
-}
 
-/* Flowing-edge animation -- an auto-detected (currently-observed)
-   relationship visually flows; a manually-declared one deliberately
-   stays static (see the className comment at the call site in
-   Topology.jsx for why that distinction matters, not just aesthetics). */
-@keyframes topo-flow { to { stroke-dashoffset: -16; } }
-.topo-edge-auto { stroke-dasharray: 5 5; animation: topo-flow 0.6s linear infinite; }
-.topo-edge-manual { stroke-dasharray: 5 4; }
+/* Layer spine -- the undirected "same layer" backbone every node taps
+   into (see LayerSpine in Topology.jsx). Dim and static on purpose: a
+   REAL discovered edge (below) is brighter, flows, and has an
+   arrowhead, so it still reads as categorically more meaningful than
+   "just lives in the same layer". */
+.topo-spine line {
+  stroke: var(--spine-accent, var(--border-md));
+  stroke-width: 1;
+  opacity: .28;
+}
 
 .topo-node {
   position: absolute; z-index: 2;
@@ -175,6 +179,7 @@
 .topo-legend-line { display: inline-block; width: 22px; height: 0; border-top: 2px solid; }
 .topo-legend-auto   { border-color: var(--accent); }
 .topo-legend-manual { border-color: var(--accent-purple); border-top-style: dashed; }
+.topo-legend-spine  { border-color: var(--text-muted); opacity: .5; }
 .topo-legend-hint { color: var(--text-muted); font-style: italic; }
 .topo-legend-clear {
   display: inline-flex; align-items: center; gap: 5px;
@@ -183,52 +188,6 @@
   margin-left: auto; transition: all .15s;
 }
 .topo-legend-clear:hover { border-color: var(--accent); color: var(--accent); }
-
-/* Unconnected-resources disclosure -- grouped by architectural layer
-   (2026-09-17 redesign) instead of one flat alphabetical wall. */
-.topo-others { margin-bottom: var(--space-4); }
-.topo-others-toggle {
-  background: transparent; border: none; color: var(--text-secondary);
-  font-size: 12px; cursor: pointer; padding: 8px 0; display: flex; align-items: center; gap: 6px;
-}
-.topo-others-toggle:hover { color: var(--accent); }
-.topo-others-layers { display: flex; flex-direction: column; gap: 16px; margin-top: 8px; }
-.topo-layer-group {
-  border-left: 2px solid var(--layer-accent, var(--border-md));
-  padding-left: 12px;
-}
-.topo-layer-group-header {
-  display: flex; align-items: center; gap: 7px;
-  font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
-  color: var(--layer-accent, var(--text-muted)); margin-bottom: 8px; cursor: help;
-}
-.topo-layer-group-header svg { flex-shrink: 0; }
-.topo-layer-count {
-  background: color-mix(in srgb, var(--layer-accent, var(--text-muted)) 16%, transparent);
-  color: var(--layer-accent, var(--text-muted));
-  border-radius: 999px; padding: 1px 8px; font-size: 10px; font-family: var(--font-mono);
-}
-/* Governance watches every other layer rather than sitting inside the
-   request path -- a faint dashed top rule (instead of the plain solid
-   left border every other layer group gets) visually separates it as
-   "observes the above, isn't part of the same flow" without resorting
-   to a tooltip alone to carry that distinction. */
-.topo-layer-group-governance {
-  border-left-style: dashed;
-  padding-top: 4px;
-}
-.topo-others-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px;
-}
-.topo-chip {
-  display: flex; align-items: center; gap: 8px;
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 8px 10px; font-size: 12px; color: var(--text-secondary);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.topo-chip-icon { flex-shrink: 0; display: flex; color: var(--text-muted); }
-.topo-chip-clickable { cursor: pointer; }
-.topo-chip-clickable:hover { border-color: var(--accent); color: var(--accent); }
 
 /* Manual-edges list */
 .topo-manual-list {
