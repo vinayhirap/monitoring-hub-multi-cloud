@@ -175,7 +175,7 @@
 .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .chart-title  { font-size: 11px; color: var(--text-secondary); font-weight: 500; }
 .chart-latest { font-size: 15px; font-weight: 800; font-family: var(--font-mono); }
-.chart-empty  { font-size: 11px; color: var(--text-muted); text-align: center; padding: 20px; }
+.chart-empty  { font-size: 11px; color: var(--text-muted); text-align: center; padding: 20px; max-width: 320px; margin: 0 auto; line-height: 1.5; }
 
 .btn-open-aws {
   display: flex; align-items: center; justify-content: center; gap: 6px;
