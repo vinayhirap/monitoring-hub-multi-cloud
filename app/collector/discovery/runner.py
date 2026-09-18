@@ -276,6 +276,33 @@ def _reconcile_service_metrics(session, account, region):
         from app.api.metric_catalog import enable_metrics_for_services
 
         detected = discover_all_service_keys(session, region)
+
+        # Union in whatever this very discovery cycle actually wrote to
+        # `resources` for this account -- the tagging-API sweep above
+        # is blind to any resource with zero tags (its own docstring
+        # says so), and WAF WebACLs / Backup vaults are exactly the
+        # kind of resource that routinely goes untagged. discovery's
+        # dedicated per-service discoverers (_discover_wafv2,
+        # _discover_backup, etc., called earlier in this same
+        # per-account cycle, above this function's call site) don't
+        # depend on tags at all, so `resources` is the authoritative
+        # answer to "does this account actually have this service" --
+        # confirmed live on 2026-09-18: U4RAD's WAFv2 WebACL and
+        # AuroGov's + U4RAD's backup vault were sitting in `resources`
+        # from correct, tag-independent discovery, yet the tagging
+        # sweep alone never once surfaced 'wafv2' or 'backup' for
+        # U4RAD, so their non-failure default metrics (AllowedRequests,
+        # NumberOfBackupJobsCompleted) never got auto-enabled despite
+        # the resources being fully known and visible everywhere else
+        # in the app.
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute(
+            "SELECT DISTINCT resource_type FROM resources WHERE aws_account_id = %s",
+            (account["id"],),
+        )
+        detected |= {r[0] for r in cur.fetchall()}
+        cur.close(); conn.close()
+
         result = enable_metrics_for_services(account["id"], detected, provider="aws", source="discovered")
         if result["added"]:
             logger.info(
