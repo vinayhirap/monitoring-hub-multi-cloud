@@ -109,9 +109,16 @@ _RCA_REPORT_SYSTEM_PROMPT = (
     "fields state -- if those are empty, say the cause is undetermined. "
     "(3) Recommendations must be concrete and directly tied to facts present "
     "in the input (e.g. only recommend a deploy-process change if "
-    "recent_deployment is non-null). (4) Output ONLY these two sections as "
-    "markdown, in this exact format, no other text:\n\n"
-    "## Executive Summary\n<2-4 sentences>\n\n## Recommendations\n<2-4 bullet points>"
+    "recent_deployment is non-null). (4) The Executive Summary should be "
+    "genuinely informative, not just a restatement of the status line -- when "
+    "current_value, threshold, threshold_delta_pct, resource_type, or "
+    "account_name are present in the input, weave the concrete numbers in "
+    "rather than speaking only in generalities. (5) Never invent or cite an "
+    "AWS documentation URL yourself -- a References section with verified "
+    "links is appended separately after your text; do not write your own. "
+    "(6) Output ONLY these two sections as markdown, in this exact format, "
+    "no other text:\n\n"
+    "## Executive Summary\n<3-5 sentences>\n\n## Recommendations\n<2-5 bullet points>"
 )
 
 

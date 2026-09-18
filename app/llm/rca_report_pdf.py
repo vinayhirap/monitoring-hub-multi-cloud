@@ -5,9 +5,10 @@ branded PDF, using fpdf2 (pure-Python, no compiled system dependency).
 
 Deliberately not a full markdown-to-PDF engine -- this app's report
 markdown only ever uses '#'/'##' headers, '-' bullets, '**bold**'
-inline, and a fixed run of "- **Label:** value" metadata lines right
-after the title, all handled explicitly below rather than pulling in a
-general markdown-rendering dependency for four constructs.
+inline, a fixed run of "- **Label:** value" metadata lines right after
+the title, and "- [Title](url)" reference links, all handled
+explicitly below rather than pulling in a general markdown-rendering
+dependency for five constructs.
 
 Branding matches the app shell exactly (see frontend/src/components/
 Layout.jsx's sidebar logo and frontend/src/pages/Alerts.css's --accent
@@ -52,6 +53,10 @@ _UNICODE_REPLACEMENTS = {
 # render_markdown() always emits right after the title -- rendered as a
 # proper table below instead of plain bullets.
 _METADATA_LINE = re.compile(r"^- \*\*(?P<label>[^*]+):\*\* (?P<value>.*)$")
+
+# Matches a References-section bullet: "- [Title](https://...)" --
+# rendered as a real clickable link instead of literal brackets.
+_MD_LINK_BULLET = re.compile(r"^\[(?P<title>[^\]]+)\]\((?P<url>https?://[^)]+)\)$")
 
 
 def _latin1_safe(text: str) -> str:
@@ -137,7 +142,17 @@ def _draw_title_block(pdf: _RCAReportPDF, title: str, severity: str):
 
 
 def _draw_metadata_table(pdf: _RCAReportPDF, rows):
-    label_w = 45
+    # Dynamic label column width -- a fixed 45mm clipped longer labels
+    # like "CURRENT VALUE / THRESHOLD" (found via visual inspection
+    # before shipping). Measured against the actual bold font used for
+    # labels, with a floor/ceiling so one long label can't crush the
+    # value column on the other rows.
+    pdf.set_font("Helvetica", "B", 9)
+    padding = 6
+    label_w = max(
+        45,
+        min(80, max(pdf.get_string_width(label.upper()) for label, _ in rows) + padding),
+    )
     value_w = pdf.w - 2 * _MARGIN - label_w
     row_h = 7
     for i, (label, value) in enumerate(rows):
@@ -209,11 +224,32 @@ def render_pdf(markdown_text: str, title: str, severity: str = None) -> bytes:
         elif line.startswith("## "):
             _draw_section_header(pdf, line[3:])
         elif line.startswith("- "):
-            pdf.set_font("Helvetica", "", 10)
-            pdf.set_text_color(*_TEAL)
-            pdf.cell(4, 6, "-")
-            pdf.set_text_color(*_INK)
-            pdf.multi_cell(0, 6, _strip_bold_markers(line[2:]), new_x="LMARGIN", new_y="NEXT", align="L")
+            bullet_text = line[2:]
+            link_match = _MD_LINK_BULLET.match(bullet_text)
+            if link_match:
+                # A References-section entry -- real clickable link
+                # (teal, underlined) with the literal URL printed below
+                # in small muted text so a printed copy is still usable.
+                pdf.set_font("Helvetica", "U", 10)
+                pdf.set_text_color(*_TEAL)
+                pdf.cell(4, 6, "-")
+                pdf.multi_cell(
+                    0, 6, _latin1_safe(link_match.group("title")),
+                    new_x="LMARGIN", new_y="NEXT", align="L",
+                    link=link_match.group("url"),
+                )
+                pdf.set_font("Helvetica", "", 8)
+                pdf.set_text_color(*_MUTED)
+                pdf.set_x(_MARGIN + 4)
+                pdf.multi_cell(0, 4, _latin1_safe(link_match.group("url")), new_x="LMARGIN", new_y="NEXT", align="L")
+                pdf.set_text_color(*_INK)
+                pdf.ln(1)
+            else:
+                pdf.set_font("Helvetica", "", 10)
+                pdf.set_text_color(*_TEAL)
+                pdf.cell(4, 6, "-")
+                pdf.set_text_color(*_INK)
+                pdf.multi_cell(0, 6, _strip_bold_markers(bullet_text), new_x="LMARGIN", new_y="NEXT", align="L")
         elif line.startswith("*Generated automatically"):
             generated_footnote_seen = True
             pdf.ln(2)
