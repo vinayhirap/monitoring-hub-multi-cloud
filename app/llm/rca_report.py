@@ -25,6 +25,7 @@ import logging
 from app.db import get_connection
 from app.collector.rca import explain_alert
 from app.llm.summarizer import generate_rca_narrative
+from app.llm.aws_docs import get_references
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,16 @@ def _gather_facts(alert_id: int) -> dict:
             timeline.append({"time": str(alert["resolved_at"]), "event": "Alert resolved"})
         timeline.sort(key=lambda e: e["time"])
 
+        # Genuine, deterministic (never LLM-touched) -- both values were
+        # already gathered above and shown in the Alerts table's own
+        # Value/Threshold column, just never surfaced in the report
+        # itself until now. Guards div-by-zero for a threshold of 0.
+        threshold_delta_pct = None
+        if alert["current_value"] is not None and alert["threshold"] not in (None, 0):
+            threshold_delta_pct = round(
+                (alert["current_value"] - alert["threshold"]) / abs(alert["threshold"]) * 100, 1
+            )
+
         return {
             "alert_id": alert["id"],
             "resource_id": alert["resource_id"],
@@ -80,6 +91,7 @@ def _gather_facts(alert_id: int) -> dict:
             "duration_minutes": duration_minutes,
             "current_value": alert["current_value"],
             "threshold": alert["threshold"],
+            "threshold_delta_pct": threshold_delta_pct,
             "confidence": explanation.get("confidence"),
             "trend": explanation.get("trend"),
             "is_likely_flapping": explanation.get("is_likely_flapping"),
@@ -88,6 +100,7 @@ def _gather_facts(alert_id: int) -> dict:
             "related_alert_count": explanation.get("related_alert_count"),
             "template_summary": explanation.get("template_summary"),
             "timeline": timeline,
+            "references": get_references(alert["resource_type"], alert["metric_name"]),
         }
     finally:
         cursor.close()
@@ -96,8 +109,22 @@ def _gather_facts(alert_id: int) -> dict:
 
 def _fallback_narrative(facts: dict) -> str:
     """Deterministic Executive Summary + Recommendations, used when the
-    LLM is disabled or its call fails -- see module docstring."""
-    lines = ["## Executive Summary", "", facts["template_summary"] or "No summary available.", "", "## Recommendations", ""]
+    LLM is disabled or its call fails -- see module docstring. Slightly
+    more detailed than a bare template_summary dump, but every added
+    sentence below is assembled from a fact already present in `facts`
+    (current_value/threshold/resource_type/account_name) -- nothing
+    here is invented, it's just surfacing numbers this app already
+    gathered but previously left out of the narrative."""
+    summary_parts = [facts["template_summary"] or "No summary available."]
+
+    if facts.get("threshold_delta_pct") is not None:
+        direction = "above" if facts["threshold_delta_pct"] >= 0 else "below"
+        summary_parts.append(
+            f"The triggering value was {abs(facts['threshold_delta_pct'])}% {direction} "
+            f"the configured threshold for {facts['metric_name']} on this {facts['resource_type']} resource."
+        )
+
+    lines = ["## Executive Summary", "", " ".join(summary_parts), "", "## Recommendations", ""]
     if facts.get("recent_deployment"):
         lines.append("- Review the deployment listed in the timeline above for a possible causal link.")
     if facts.get("is_likely_flapping"):
@@ -108,6 +135,7 @@ def _fallback_narrative(facts: dict) -> str:
         lines.append("- This alert is still active -- prioritize resolution before drawing final conclusions.")
     if len(lines) == 6:  # no bullets were added above
         lines.append("- No specific recommendation could be derived automatically from the signals gathered for this alert.")
+    lines.append("- See References below for AWS's own documentation on this metric and how to investigate it further.")
     return "\n".join(lines)
 
 
@@ -139,6 +167,7 @@ def render_markdown(report: dict) -> str:
         f"- **Status:** {f['status']}",
         f"- **Triggered:** {f['triggered_at']}",
         f"- **Duration:** {duration}",
+        f"- **Current Value / Threshold:** {f['current_value']} / {f['threshold']}",
         f"- **RCA confidence:** {f['confidence']}",
         "",
         report["narrative_markdown"],
@@ -148,6 +177,10 @@ def render_markdown(report: dict) -> str:
     ]
     for event in f["timeline"]:
         lines.append(f"- **{event['time']}** \u2014 {event['event']}")
+    if f.get("references"):
+        lines += ["", "## References", ""]
+        for ref in f["references"]:
+            lines.append(f"- [{ref['title']}]({ref['url']})")
     lines += [
         "",
         f"*Generated automatically ({report['narrative_source']} narrative) by AurionPro CloudOps -- verify before external distribution.*",
