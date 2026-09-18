@@ -1,0 +1,177 @@
+// src/pages/Reports.jsx
+// CloudOps client/stakeholder report engine UI. Generation runs async
+// on the backend (app/reports/worker.py) -- this page enqueues, polls
+// job status, then lists/downloads/emails completed reports. Follows
+// the same card/table language as Incidents.jsx / Compliance.jsx.
+import { useState, useEffect, useCallback } from "react";
+import { useAuth } from "../auth/AuthContext";
+import {
+  getLiveAccounts, generateReport, getReportJobStatus,
+  listReports, reportDownloadUrl, emailReport,
+} from "../api/api";
+import "./Reports.css";
+
+const REPORT_TYPES = ["WEEKLY", "MONTHLY", "QUARTERLY", "CUSTOM"];
+const SCOPE_TYPES = ["ACCOUNT", "RESOURCE", "INCIDENT", "CLIENT"];
+
+export default function Reports() {
+  const { hasPermission } = useAuth();
+  const [accounts, setAccounts] = useState([]);
+  const [reportType, setReportType] = useState("WEEKLY");
+  const [scopeType, setScopeType] = useState("ACCOUNT");
+  const [accountId, setAccountId] = useState("");
+  const [scopeId, setScopeId] = useState("");
+  const [periodStart, setPeriodStart] = useState("");
+  const [periodEnd, setPeriodEnd] = useState("");
+  const [pending, setPending] = useState(null); // { job_id, status }
+  const [reports, setReports] = useState([]);
+  const [emailTargets, setEmailTargets] = useState({});
+  const [error, setError] = useState("");
+
+  const refreshHistory = useCallback(() => {
+    listReports({}).then(setReports).catch(() => setReports([]));
+  }, []);
+
+  useEffect(() => {
+    getLiveAccounts().then(setAccounts).catch(() => setAccounts([]));
+    refreshHistory();
+  }, [refreshHistory]);
+
+  // Poll a queued job until it completes/fails, then refresh history.
+  useEffect(() => {
+    if (!pending || pending.status === "COMPLETE" || pending.status === "FAILED") return;
+    const t = setInterval(async () => {
+      try {
+        const job = await getReportJobStatus(pending.job_id);
+        setPending(job);
+        if (job.status === "COMPLETE" || job.status === "FAILED") {
+          clearInterval(t);
+          refreshHistory();
+        }
+      } catch {
+        clearInterval(t);
+      }
+    }, 2500);
+    return () => clearInterval(t);
+  }, [pending, refreshHistory]);
+
+  async function handleGenerate(e) {
+    e.preventDefault();
+    setError("");
+    if (scopeType === "ACCOUNT" && !accountId) { setError("Select an account."); return; }
+    if (scopeType !== "ACCOUNT" && !scopeId) { setError("Enter a resource/incident/client id."); return; }
+    try {
+      const resp = await generateReport({
+        reportType, scopeType,
+        scopeId: scopeType === "ACCOUNT" ? accountId : scopeId,
+        accountId: accountId || null,
+        periodStart: reportType === "CUSTOM" ? periodStart : undefined,
+        periodEnd: reportType === "CUSTOM" ? periodEnd : undefined,
+      });
+      setPending(resp);
+    } catch (err) {
+      setError(err.message || "Failed to queue report");
+    }
+  }
+
+  async function handleEmail(reportId) {
+    const to = emailTargets[reportId];
+    if (!to) return;
+    try {
+      await emailReport(reportId, to);
+      alert(`Report emailed to ${to}`);
+    } catch (err) {
+      alert(err.message.includes("501") ? "SMTP is not configured yet -- ask an admin to set SMTP_HOST in .env." : "Email failed.");
+    }
+  }
+
+  if (!hasPermission("reports.view")) {
+    return <div className="reports-page"><p>You do not have access to Reports.</p></div>;
+  }
+
+  return (
+    <div className="reports-page">
+      <h1>Reports</h1>
+      <p className="reports-sub">Generate professional, stakeholder-ready monitoring/incident reports, stored in S3 for 1 year.</p>
+
+      {hasPermission("reports.generate") && (
+        <form className="reports-form" onSubmit={handleGenerate}>
+          <div className="reports-form-row">
+            <label>Report type
+              <select value={reportType} onChange={(e) => setReportType(e.target.value)}>
+                {REPORT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </label>
+            <label>Scope
+              <select value={scopeType} onChange={(e) => setScopeType(e.target.value)}>
+                {SCOPE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </label>
+            <label>Account
+              <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+                <option value="">-- select --</option>
+                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name || a.account_id}</option>)}
+              </select>
+            </label>
+            {scopeType !== "ACCOUNT" && (
+              <label>{scopeType === "RESOURCE" ? "Resource ID" : scopeType === "INCIDENT" ? "Incident/Alert ID" : "Client name"}
+                <input value={scopeId} onChange={(e) => setScopeId(e.target.value)} placeholder="id / name" />
+              </label>
+            )}
+            {reportType === "CUSTOM" && (
+              <>
+                <label>From <input type="datetime-local" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} /></label>
+                <label>To <input type="datetime-local" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} /></label>
+              </>
+            )}
+            <button type="submit" disabled={pending && pending.status !== "COMPLETE" && pending.status !== "FAILED"}>
+              Generate Report
+            </button>
+          </div>
+          {error && <p className="reports-error">{error}</p>}
+          {pending && (
+            <p className="reports-status">
+              Job #{pending.job_id}: <strong>{pending.status}</strong>
+              {pending.status === "FAILED" && pending.error_message ? ` -- ${pending.error_message}` : ""}
+            </p>
+          )}
+        </form>
+      )}
+
+      <h2>Report History</h2>
+      <table className="reports-table">
+        <thead>
+          <tr><th>Type</th><th>Scope</th><th>Period</th><th>Generated</th><th>Size</th><th>Expires</th><th></th></tr>
+        </thead>
+        <tbody>
+          {reports.map((r) => (
+            <tr key={r.id}>
+              <td>{r.report_type}</td>
+              <td>{r.scope_type}: {r.scope_label || r.scope_id}</td>
+              <td>{new Date(r.period_start).toLocaleDateString()} - {new Date(r.period_end).toLocaleDateString()}</td>
+              <td>{new Date(r.generated_at).toLocaleString()}</td>
+              <td>{Math.round(r.size_bytes / 1024)} KB</td>
+              <td>{new Date(r.expires_at).toLocaleDateString()}</td>
+              <td className="reports-actions">
+                {hasPermission("reports.download") && (
+                  <a href={reportDownloadUrl(r.id)} target="_blank" rel="noreferrer">Download</a>
+                )}
+                {hasPermission("reports.email") && (
+                  <span>
+                    <input
+                      type="email" placeholder="email@client.com" className="reports-email-input"
+                      value={emailTargets[r.id] || ""}
+                      onChange={(e) => setEmailTargets({ ...emailTargets, [r.id]: e.target.value })}
+                    />
+                    <button type="button" onClick={() => handleEmail(r.id)}>Send</button>
+                  </span>
+                )}
+              </td>
+            </tr>
+          ))}
+          {reports.length === 0 && <tr><td colSpan={7}>No reports generated yet.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}

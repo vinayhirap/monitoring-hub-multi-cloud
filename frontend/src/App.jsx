@@ -26,6 +26,7 @@ import MaintenanceWindows  from "./pages/MaintenanceWindows";
 // here and in components/Layout.jsx's NAV_ITEMS to re-enable.
 // import DeployRisk          from "./pages/DeployRisk";
 import Search              from "./pages/Search";
+import Reports              from "./pages/Reports";
 import StatusPageAdmin     from "./pages/StatusPageAdmin";
 import StatusPagePublic    from "./pages/StatusPagePublic";
 
@@ -78,6 +79,7 @@ function AppRoutes() {
         {/* <Route path="deploy-risk"               element={<DeployRisk />} /> */}
         <Route path="search"                    element={<Search />} />
         <Route path="status-page-admin"         element={<StatusPageAdmin />} />
+        <Route path="reports"                   element={<Reports />} />
         <Route path="settings"                  element={<Settings />} />
         <Route path="accounts/:id/services"     element={<ServiceList />} />
         <Route path="accounts/:id/topology"     element={<Topology />} />

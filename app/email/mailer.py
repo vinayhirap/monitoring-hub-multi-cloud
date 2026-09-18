@@ -32,6 +32,8 @@ import os
 import re
 import smtplib
 import ssl
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 logger = logging.getLogger(__name__)
@@ -106,7 +108,11 @@ def send_email(to_addr: str, subject: str, body_text: str) -> bool:
     username  = os.getenv("SMTP_USERNAME", "")
     password  = os.getenv("SMTP_PASSWORD", "")
     use_tls   = os.getenv("SMTP_USE_TLS", "true").strip().lower() == "true"
-    mail_from = os.getenv("MAIL_FROM", username or "cloudops@aurionpro.com")
+    # SMTP_FROM is accepted as an alias of the original MAIL_FROM name
+    # so the report-engine's documented env-var spec (SMTP_HOST/PORT/
+    # USERNAME/PASSWORD/FROM/USE_TLS) works without renaming the
+    # existing var everywhere else in this app already reads it from.
+    mail_from = os.getenv("MAIL_FROM") or os.getenv("SMTP_FROM") or username or "cloudops@aurionpro.com"
 
     msg = MIMEText(body_text, "plain", "utf-8")
     msg["Subject"] = subject
@@ -114,19 +120,76 @@ def send_email(to_addr: str, subject: str, body_text: str) -> bool:
     msg["To"]      = to_addr
 
     try:
-        if use_tls:
-            with smtplib.SMTP(host, port, timeout=15) as server:
-                server.starttls(context=ssl.create_default_context())
-                if username:
-                    server.login(username, password)
-                server.sendmail(mail_from, [to_addr], msg.as_string())
-        else:
-            with smtplib.SMTP_SSL(host, port, timeout=15, context=ssl.create_default_context()) as server:
-                if username:
-                    server.login(username, password)
-                server.sendmail(mail_from, [to_addr], msg.as_string())
+        _send_mime(host, port, username, password, use_tls, mail_from, to_addr, msg)
         logger.info(f"Mail sent to {to_addr!r} (subject={subject!r})")
         return True
     except Exception as e:
         logger.error(f"Mail send failed to {to_addr!r} (subject={subject!r}): {e}")
+        return False
+
+
+def _send_mime(host, port, username, password, use_tls, mail_from, to_addr, msg) -> None:
+    if use_tls:
+        with smtplib.SMTP(host, port, timeout=30) as server:
+            server.starttls(context=ssl.create_default_context())
+            if username:
+                server.login(username, password)
+            server.sendmail(mail_from, [to_addr], msg.as_string())
+    else:
+        with smtplib.SMTP_SSL(host, port, timeout=30, context=ssl.create_default_context()) as server:
+            if username:
+                server.login(username, password)
+            server.sendmail(mail_from, [to_addr], msg.as_string())
+
+
+def send_report_email(to_addr: str, report: dict, pdf_bytes: bytes) -> bool:
+    """Sends a generated report as a PDF attachment. Same fail-safe
+    contract as send_email(): never raises, returns False (logged) if
+    SMTP isn't configured or the send fails. Callers (app/api/
+    reports.py) are expected to check mailer.is_configured() first and
+    surface a clear 501 to the caller rather than a generic failure --
+    this function itself stays silent-safe for consistency with
+    send_email()'s existing contract.
+    """
+    try:
+        _reject_header_injection(to_addr, "to_addr")
+    except ValueError as e:
+        logger.error(f"Refusing to email report -- {e} (to_addr={to_addr!r})")
+        return False
+
+    if not is_configured():
+        logger.warning(f"Report email not sent to {to_addr!r} -- SMTP_HOST is not set.")
+        return False
+
+    host      = os.getenv("SMTP_HOST")
+    port      = int(os.getenv("SMTP_PORT", "587"))
+    username  = os.getenv("SMTP_USERNAME", "")
+    password  = os.getenv("SMTP_PASSWORD", "")
+    use_tls   = os.getenv("SMTP_USE_TLS", "true").strip().lower() == "true"
+    mail_from = os.getenv("MAIL_FROM") or os.getenv("SMTP_FROM") or username or "cloudops@aurionpro.com"
+
+    subject = f"CloudOps {report['report_type'].title()} Report -- {report.get('scope_label') or report['scope_id']}"
+    filename = report["s3_key"].rsplit("/", 1)[-1]
+
+    msg = MIMEMultipart()
+    msg["Subject"] = subject
+    msg["From"] = mail_from
+    msg["To"] = to_addr
+    msg.attach(MIMEText(
+        "Attached is your requested CloudOps monitoring report.\n\n"
+        f"Report type: {report['report_type']}\n"
+        f"Period: {report['period_start']} to {report['period_end']}\n\n"
+        "This is an automated message from CloudOps Monitoring Hub.",
+        "plain", "utf-8",
+    ))
+    attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
+    attachment.add_header("Content-Disposition", "attachment", filename=filename)
+    msg.attach(attachment)
+
+    try:
+        _send_mime(host, port, username, password, use_tls, mail_from, to_addr, msg)
+        logger.info(f"Report email sent to {to_addr!r} (report_id context, subject={subject!r})")
+        return True
+    except Exception as e:
+        logger.error(f"Report email send failed to {to_addr!r}: {e}")
         return False

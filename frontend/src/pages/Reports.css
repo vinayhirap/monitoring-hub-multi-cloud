@@ -1,0 +1,12 @@
+.reports-page { padding: 24px; }
+.reports-sub { color: var(--text-muted, #888); margin-bottom: 20px; }
+.reports-form { background: var(--card-bg, #16181d); border: 1px solid var(--border, #2a2d34); border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+.reports-form-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+.reports-form-row label { display: flex; flex-direction: column; font-size: 0.8rem; gap: 4px; }
+.reports-form-row select, .reports-form-row input { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #2a2d34); background: var(--input-bg, #0f1115); color: inherit; }
+.reports-error { color: #e5534b; margin-top: 8px; }
+.reports-status { margin-top: 8px; font-size: 0.85rem; }
+.reports-table { width: 100%; border-collapse: collapse; }
+.reports-table th, .reports-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border, #2a2d34); font-size: 0.85rem; }
+.reports-actions { display: flex; gap: 8px; align-items: center; }
+.reports-email-input { width: 160px; margin-right: 4px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border, #2a2d34); background: var(--input-bg, #0f1115); color: inherit; }

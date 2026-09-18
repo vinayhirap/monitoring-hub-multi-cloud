@@ -192,3 +192,20 @@ export const searchAlerts = (q) => apiFetch(`/api/search?q=${encodeURIComponent(
 // pages/Alerts.jsx's handlePostmortemDownload for why it opens the URL
 // directly instead of parsing a JSON response.
 export const postmortemUrl = (alertId, format = "pdf") => `/api/alerts/${alertId}/postmortem?format=${format}`;
+
+// ── Reports (S3-backed client/stakeholder reports) ──────────────────────────
+export const generateReport = ({ reportType, scopeType, scopeId, accountId, periodStart, periodEnd }) => {
+  const params = new URLSearchParams({ report_type: reportType, scope_type: scopeType, scope_id: scopeId });
+  if (accountId != null) params.set("account_id", accountId);
+  if (periodStart) params.set("period_start", periodStart);
+  if (periodEnd) params.set("period_end", periodEnd);
+  return apiFetch(`/api/reports/generate?${params}`, { method: "POST" });
+};
+export const getReportJobStatus = (jobId) => apiFetch(`/api/reports/jobs/${jobId}/status`);
+export const listReports = (filters = {}) => {
+  const params = new URLSearchParams(filters);
+  return apiFetch(`/api/reports?${params}`);
+};
+export const reportDownloadUrl = (reportId) => `/api/reports/${reportId}/download`;
+export const emailReport = (reportId, toAddr) =>
+  apiFetch(`/api/reports/${reportId}/email?to_addr=${encodeURIComponent(toAddr)}`, { method: "POST" });
