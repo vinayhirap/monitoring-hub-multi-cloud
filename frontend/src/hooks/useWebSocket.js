@@ -6,6 +6,10 @@ const WS_BASE = `ws://${window.location.host}/ws`;
 const _sockets    = {};          // channel → WebSocket
 const _listeners  = {};          // channel → Set of {onMsg, onStatus}
 const _reconnect  = {};          // channel → timeout handle
+const _backoffMs  = {};          // channel → current retry delay
+
+const BACKOFF_INITIAL_MS = 1000;
+const BACKOFF_MAX_MS     = 30000;
 
 function getOrCreate(channel) {
   if (_sockets[channel] && _sockets[channel].readyState <= 1) return;
@@ -15,6 +19,10 @@ function getOrCreate(channel) {
   _sockets[channel] = socket;
 
   socket.onopen = () => {
+    // A successful handshake means the server accepted us (valid
+    // session cookie); reset backoff so the next transient drop
+    // retries quickly rather than inheriting a long prior delay.
+    _backoffMs[channel] = BACKOFF_INITIAL_MS;
     notifyStatus(channel, true);
     socket._ping = setInterval(() => {
       if (socket.readyState === WebSocket.OPEN) socket.send("ping");
@@ -33,9 +41,28 @@ function getOrCreate(channel) {
     clearInterval(socket._ping);
     notifyStatus(channel, false);
     delete _sockets[channel];
-    // Reconnect after 4s
+
+    // SECURITY/LOAD: previously this always retried after a flat 1s,
+    // forever, with no way to stop -- a tab left open with an expired
+    // or missing session cookie (login page, logged-out tab, expired
+    // token) would hammer the server's WS handshake once a second
+    // indefinitely, showing up server-side as a continuous stream of
+    // rejected connections with no way to tell "stale client" apart
+    // from "real outage" (see server log discussion this session).
+    //
+    // Fix: exponential backoff up to BACKOFF_MAX_MS, and stop
+    // scheduling further attempts once nobody is listening on this
+    // channel any more (all components using it have unmounted) --
+    // no reason to keep a dead channel alive in the background.
+    if (!_listeners[channel] || _listeners[channel].size === 0) {
+      delete _backoffMs[channel];
+      return;
+    }
+
+    const delay = _backoffMs[channel] || BACKOFF_INITIAL_MS;
     clearTimeout(_reconnect[channel]);
-    _reconnect[channel] = setTimeout(() => getOrCreate(channel), 1000);
+    _reconnect[channel] = setTimeout(() => getOrCreate(channel), delay);
+    _backoffMs[channel] = Math.min(delay * 2, BACKOFF_MAX_MS);
   };
 
   socket.onerror = () => socket.close();
