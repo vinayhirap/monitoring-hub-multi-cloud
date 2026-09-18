@@ -222,8 +222,15 @@ CURATED = {
         ("IndexingLatency",      "Milliseconds", "Average", False, "Indexing request latency"),
     ]),
     "eks": ("Amazon EKS", "AWS/EKS", "extended", [
+        # 2026-09-18: cluster_node_count flipped to a default alongside
+        # cluster_failed_node_count (same failure-only-default sweep
+        # that found logs/wafv2/backup/cognito -- see git log). A
+        # healthy cluster with zero failed nodes showed permanent "no
+        # data" under the old scheme; cluster_node_count is a gauge
+        # that always reports as long as the cluster exists, giving a
+        # baseline signal the failure-only metric structurally can't.
         ("cluster_failed_node_count", "Count", "Average", True, "Nodes not Ready"),
-        ("cluster_node_count",        "Count", "Average", False, "Total nodes in cluster"),
+        ("cluster_node_count",        "Count", "Average", True, "Total nodes in cluster"),
     ]),
     "efs": ("Amazon EFS", "AWS/EFS", "extended", [
         ("PercentIOLimit",       "Percent", "Average", True,  "% of provisioned I/O used"),
@@ -358,7 +365,16 @@ CURATED = {
         ("NumberOfRestoreJobsFailed",   "Count", "Sum", True,  "Failed restore jobs"),
     ]),
     "cognito": ("Amazon Cognito", "AWS/Cognito", "extended", [
-        ("SignInSuccesses", "Count", "Sum", False, "Successful sign-ins"),
+        # 2026-09-18: SignInSuccesses flipped to a default alongside
+        # ThrottledEvents (same failure-only-default sweep that found
+        # logs/wafv2/backup/eks). A pool with normal sign-in traffic
+        # and zero throttling showed permanent "no data" under the old
+        # scheme. SignUpSuccesses left opt-in -- sign-ups are
+        # inherently rarer than sign-ins for an established pool, so
+        # it's a weaker baseline-activity signal and would mostly just
+        # add a second near-always-empty series rather than real
+        # coverage.
+        ("SignInSuccesses", "Count", "Sum", True,  "Successful sign-ins"),
         ("SignUpSuccesses", "Count", "Sum", False, "Successful sign-ups"),
         ("ThrottledEvents", "Count", "Sum", True,  "Throttled requests"),
     ]),
@@ -385,8 +401,17 @@ CURATED = {
         ("TunnelDataOut", "Bytes", "Sum", False, "Bytes sent"),
     ]),
     "globalaccelerator": ("AWS Global Accelerator", "AWS/GlobalAccelerator", "extended", [
+        # 2026-09-18: ProcessedBytesIn flipped to a default. Unlike
+        # kms just above (correctly left with zero defaults -- its one
+        # metric only applies to imported key material, a rare case
+        # where defaulting it on would just show "no data" for
+        # everyone else), all three of Global Accelerator's metrics
+        # are ordinary baseline-traffic counters that publish whenever
+        # the accelerator carries any traffic at all -- yet none was
+        # marked default, so an account actually using Global
+        # Accelerator got zero auto-enabled visibility out of the box.
         ("NewFlowCount",     "Count", "Sum", False, "New flows"),
-        ("ProcessedBytesIn", "Bytes", "Sum", False, "Inbound bytes processed"),
+        ("ProcessedBytesIn", "Bytes", "Sum", True,  "Inbound bytes processed"),
         ("ProcessedBytesOut","Bytes", "Sum", False, "Outbound bytes processed"),
     ]),
     "dms": ("AWS Database Migration Service", "AWS/DMS", "extended", [
