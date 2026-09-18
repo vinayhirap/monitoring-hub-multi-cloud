@@ -24,6 +24,7 @@ from app.api.topology       import router as topology_router
 from app.api.op_events      import router as op_events_router
 from app.api.escalation     import router as escalation_router
 from app.api.incidents      import router as incidents_router
+from app.api.reports        import router as reports_router
 from app.api.nlquery        import router as nlquery_router
 from app.api.synthetic      import router as synthetic_router
 from app.api.webhooks       import router as webhooks_router
@@ -106,6 +107,11 @@ def _start_all_collector_threads(leader_event, collector_enabled=True, describe_
         # not the free describe-poll loop -- so this stays tied to
         # collector_enabled, not describe_poll_enabled.
         threading.Thread(target=_run_multicloud_collector, args=(leader_event,), daemon=True, name="multicloud-collector").start()
+    # Report-job sweeper: independent of collector_enabled/describe_poll_enabled
+    # (it requeues stuck report_jobs, unrelated to CloudWatch/Describe polling
+    # cost) but still leader-guarded so only one app instance runs it.
+    from app.reports.worker import run_sweeper_loop
+    threading.Thread(target=run_sweeper_loop, args=(leader_event,), daemon=True, name="report-sweeper").start()
 
 
 @asynccontextmanager
@@ -305,6 +311,7 @@ app.include_router(topology_router,       dependencies=_auth_dep)
 app.include_router(op_events_router,      dependencies=_auth_dep)
 app.include_router(escalation_router,     dependencies=_auth_dep)
 app.include_router(incidents_router,      dependencies=_auth_dep)
+app.include_router(reports_router,        dependencies=_auth_dep)
 app.include_router(nlquery_router,        prefix="/api", dependencies=_auth_dep)
 app.include_router(synthetic_router,      dependencies=_auth_dep)
 # NOTE: webhooks_router deliberately has NO _auth_dep -- it's called by
