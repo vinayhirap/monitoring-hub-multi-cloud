@@ -220,7 +220,23 @@ def _build_dimensions(resource, cw_metric_name=None):
         # a different filter name, or with request metrics never
         # enabled at all, will show no data for these specific metrics
         # regardless of correct dimensions.
-        if cw_metric_name in _S3_STORAGE_METRICS:
+        # BucketSizeBytes and NumberOfObjects need DIFFERENT StorageType
+        # values, not the same one -- AWS only ever publishes
+        # NumberOfObjects under StorageType=AllStorageTypes (it has no
+        # per-storage-class breakdown), while BucketSizeBytes publishes
+        # per storage class (StandardStorage etc.) *and* a separate
+        # AllStorageTypes total. Sending StandardStorage for
+        # NumberOfObjects (as both metrics did here until 2026-09-18)
+        # queries a (metric, dimension) pair AWS never publishes, so it
+        # 100% silently returns zero datapoints regardless of how many
+        # objects are actually in the bucket -- confirmed live across
+        # two accounts, 58 buckets combined, all with working
+        # BucketSizeBytes and zero NumberOfObjects. collector_direct.py
+        # (the bespoke S3 bucket-detail-page charts) already had this
+        # right; only this background-history collector had the bug.
+        if cw_metric_name == "NumberOfObjects":
+            dims.append({"Name": "StorageType", "Value": "AllStorageTypes"})
+        elif cw_metric_name in _S3_STORAGE_METRICS:
             dims.append({"Name": "StorageType", "Value": "StandardStorage"})
         elif cw_metric_name in _S3_REQUEST_METRICS:
             dims.append({"Name": "FilterId", "Value": "EntireBucket"})
