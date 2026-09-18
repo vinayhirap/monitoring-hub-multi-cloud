@@ -443,23 +443,26 @@ def explain_alert(alert_id: int, current_user: dict = Depends(require_permission
     return result
 
 
-@router.get("/{alert_id}/postmortem")
-def get_postmortem(
+@router.get("/{alert_id}/rca-report")
+def get_rca_report(
     alert_id: int,
     format: str = "md",
     current_user: dict = Depends(require_permission("alerts.view")),
 ):
     """
-    Downloadable incident postmortem -- works for any alert, standalone
-    or part of a multi-alert incident. format=md (default) or format=pdf.
-    See app/llm/postmortem.py's module docstring: the timeline and
+    Downloadable incident RCA (Root Cause Analysis) report -- works for
+    any alert, standalone or part of a multi-alert incident. format=md
+    (default) or format=pdf. Renamed from "postmortem" 2026-09-17 for a
+    more professional, client-facing name -- no behavior change.
+
+    See app/llm/rca_report.py's module docstring: the timeline and
     resource/severity/duration facts are always deterministic (real
     rows), only the Executive Summary/Recommendations prose is
     optionally LLM-written, with a deterministic bullet-point fallback
-    when the LLM is disabled or its call fails -- a postmortem is
-    ALWAYS produced either way.
+    when the LLM is disabled or its call fails -- a report is ALWAYS
+    produced either way.
 
-    GET, not POST: read-only, generates on demand (postmortems are
+    GET, not POST: read-only, generates on demand (reports are
     requested rarely, unlike /explain which loads on every alert page
     view -- so this is NOT cached the way /explain's LLM summary is,
     see app/collector/llm_summarizer.py for why that one needed a
@@ -470,13 +473,13 @@ def get_postmortem(
 
     _require_alert_access(alert_id, current_user)
 
-    from app.llm.postmortem import generate_postmortem, render_markdown
-    postmortem = generate_postmortem(alert_id)
-    if postmortem is None:
+    from app.llm.rca_report import generate_rca_report, render_markdown
+    report = generate_rca_report(alert_id)
+    if report is None:
         raise HTTPException(status_code=404, detail="Alert not found")
 
-    markdown_text = render_markdown(postmortem)
-    title = f"postmortem-alert-{alert_id}"
+    markdown_text = render_markdown(report)
+    title = f"rca-report-alert-{alert_id}"
 
     if format == "md":
         return Response(
@@ -485,9 +488,9 @@ def get_postmortem(
             headers={"Content-Disposition": f'attachment; filename="{title}.md"'},
         )
 
-    from app.llm.postmortem_pdf import render_pdf
-    pdf_title = f"Postmortem: {postmortem['facts']['metric_name']} on {postmortem['facts']['resource_name'] or postmortem['facts']['resource_id']}"
-    pdf_bytes = render_pdf(markdown_text, pdf_title)
+    from app.llm.rca_report_pdf import render_pdf
+    pdf_title = f"RCA Report: {report['facts']['metric_name']} on {report['facts']['resource_name'] or report['facts']['resource_id']}"
+    pdf_bytes = render_pdf(markdown_text, pdf_title, severity=report["facts"]["severity"])
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

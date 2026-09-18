@@ -64,7 +64,7 @@ change in this app.
 OFF BY DEFAULT: LLM_SUMMARY_ENABLED must be explicitly set to "true"
 in .env, or every call below is a no-op regardless of provider. With
 LLM_PROVIDER=ollama (the default), enabling this costs nothing ever,
-no matter how many alerts/postmortems it processes -- there's no
+no matter how many alerts/RCA reports it processes -- there's no
 metering to think about, unlike the old Anthropic path.
 """
 import hashlib
@@ -100,9 +100,9 @@ _SUMMARY_SYSTEM_PROMPT = (
     "markdown, no quotation marks around it."
 )
 
-_POSTMORTEM_SYSTEM_PROMPT = (
+_RCA_REPORT_SYSTEM_PROMPT = (
     "You write the Executive Summary and Recommendations sections of an "
-    "incident postmortem document for a cloud-operations team. STRICT RULES: "
+    "incident Root Cause Analysis (RCA) report for a cloud-operations team. STRICT RULES: "
     "(1) Do not introduce any fact, number, name, resource ID, or timestamp "
     "not already present in the input JSON. (2) Do not speculate about root "
     "cause beyond what the input's probable_trigger/recent_deployment/trend "
@@ -153,7 +153,7 @@ def _call_ollama(system_prompt: str, user_content: str, timeout: float) -> str:
     deterministic summary needs fast, direct rewriting, not open-ended
     deliberation -- the extra "thinking" tokens add latency and cost
     (CPU time) without adding any value polish_summary()/
-    generate_postmortem_narrative() can use (only the final
+    generate_rca_narrative() can use (only the final
     message.content is ever read; the model's thinking is discarded).
     Disabling it is the correct fix for this task, not a workaround --
     if a future model added here doesn't support the "think" field at
@@ -209,7 +209,7 @@ def _call_anthropic(system_prompt: str, user_content: str, model: str, max_token
 def _call_llm(system_prompt: str, user_content: str, max_tokens: int = _DEFAULT_MAX_TOKENS) -> str:
     """
     Single dispatch point for both polish_summary() and
-    generate_postmortem_narrative() below -- picks the provider from
+    generate_rca_narrative() below -- picks the provider from
     LLM_PROVIDER, calls it, and returns "" (never raises, never None)
     on ANY failure so both callers can use the same
     "empty string means fall back" check regardless of which provider
@@ -317,23 +317,23 @@ def refresh_ollama_model() -> bool:
     return polished or deterministic_summary
 
 
-def generate_postmortem_narrative(facts: dict) -> str:
+def generate_rca_narrative(facts: dict) -> str:
     """
-    Used by app/llm/postmortem.py -- writes the "Executive Summary" and
-    "Recommendations" prose sections of a downloadable postmortem
-    document. Everything else in a generated postmortem (the timeline
-    table, resource/severity/duration fields) is assembled
-    DETERMINISTICALLY by postmortem.py from real rows, never touched by
-    this function -- this is scoped ONLY to prose, under the exact same
-    fact-grounding system prompt discipline as polish_summary() above.
+    Used by app/llm/rca_report.py -- writes the "Executive Summary" and
+    "Recommendations" prose sections of a downloadable RCA report.
+    Everything else in a generated report (the timeline table,
+    resource/severity/duration fields) is assembled DETERMINISTICALLY
+    by rca_report.py from real rows, never touched by this function --
+    this is scoped ONLY to prose, under the exact same fact-grounding
+    system prompt discipline as polish_summary() above.
 
     Returns None (not a fallback string) on any failure -- the CALLER
-    decides what to show instead (postmortem.py falls back to a plain
+    decides what to show instead (rca_report.py falls back to a plain
     bullet-point rendering of the same facts), since "no narrative
-    available" reads differently in a formal document than it does in
+    available" reads differently in a formal report than it does in
     a one-line alert explanation.
     """
     if not is_enabled():
         return None
-    narrative = _call_llm(_POSTMORTEM_SYSTEM_PROMPT, json.dumps(facts, default=str), max_tokens=500)
+    narrative = _call_llm(_RCA_REPORT_SYSTEM_PROMPT, json.dumps(facts, default=str), max_tokens=500)
     return narrative or None
