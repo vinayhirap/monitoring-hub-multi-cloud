@@ -94,7 +94,16 @@ function detailRoute(resource, accountId, service) {
   const seg = ROUTE_SEGMENT_BY_SERVICE[(service || "").toLowerCase()];
   if (seg) return `/accounts/${accountId}/${seg}?resource=${encodeURIComponent(resource)}`;
 
-  // Fallback if `service` wasn't provided — guess from the resource id shape
+  // `service` covers every provider/tier now (AWS-extended, GCP, Azure),
+  // not just the 7 with a bespoke page — ServiceDetailRouter.jsx already
+  // knows how to route any of those to GenericServiceDetail.jsx, which
+  // now reads this same `?resource=` param to auto-expand the matching
+  // row. Previously this fell through to `return null` for anything
+  // outside ROUTE_SEGMENT_BY_SERVICE, silently hiding the "view metrics"
+  // deep link for every alert on a non-bespoke service.
+  if (service) return `/accounts/${accountId}/${service.toLowerCase()}?resource=${encodeURIComponent(resource)}`;
+
+  // Fallback if `service` wasn't provided at all — guess from the resource id shape
   if (resource.startsWith("i-"))   return `/accounts/${accountId}/ec2?resource=${encodeURIComponent(resource)}`;
   if (resource.startsWith("vol-")) return `/accounts/${accountId}/ebs?resource=${encodeURIComponent(resource)}`;
   if (resource.includes("lambda")) return `/accounts/${accountId}/lambda?resource=${encodeURIComponent(resource)}`;
