@@ -23,7 +23,7 @@
   align-items: center;
   padding: 60px 64px;
   background: linear-gradient(165deg, #0a1424 0%, #060c17 65%);
-  border-right: 1px solid rgba(43,179,172,0.14);
+  border-left: 1px solid rgba(43,179,172,0.14);
 }
 .login-form-side {
   flex: 1 1 50%;
@@ -529,59 +529,13 @@
   to { transform: rotate(360deg); }
 }
 
-/* ── demo hint box ── */
-.login-hint {
-  margin-top: 24px;
-  background: rgba(43,179,172, 0.04);
-  border: 1px solid rgba(43,179,172, 0.1);
-  border-radius: 8px;
-  padding: 14px 16px;
-}
-.login-hint-title {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: rgba(99, 130, 190, 0.6);
-  margin-bottom: 10px;
-  font-weight: 600;
-}
-.login-hint-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: rgba(99, 130, 190, 0.8);
-  font-family: 'JetBrains Mono', monospace;
-  margin-bottom: 6px;
-}
-.login-hint-row:last-child { margin-bottom: 0; }
-.login-hint-row code {
-  background: rgba(99, 130, 190, 0.12);
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 11px;
-  color: #e2e8f0;
-}
-.login-hint-role {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  border-radius: 4px;
-  padding: 2px 7px;
-  min-width: 48px;
-  text-align: center;
-}
-.login-hint-role.admin  {
-  background: rgba(249,115,22,0.15);
-  color: #fb923c;
-  border: 1px solid rgba(249,115,22,0.25);
-}
-.login-hint-role.viewer {
-  background: rgba(59,130,246,0.15);
-  color: #60a5fa;
-  border: 1px solid rgba(59,130,246,0.25);
-}
+/* ── Audit finding: .login-hint (demo-credentials hint box) and its
+   sub-classes below were entirely unused -- no element in Login.jsx
+   ever renders className="login-hint" or any of its children. ~50
+   lines of dead CSS removed (was here + duplicated in the responsive
+   block below) rather than left in as a landmine for a future
+   maintainer who'd reasonably assume a demo-credentials hint exists
+   because the styling for one does. ── */
 
 /* ── Responsive (added: audit found this file had zero @media rules) ──
    .login-root's own padding (above) already keeps the card off the
@@ -590,6 +544,4 @@
 @media (max-width: 480px) {
   .login-card { padding: 28px 22px 24px; }
   .login-brand { margin-bottom: 20px; }
-  .login-hint { padding: 12px 14px; margin-top: 18px; }
-  .login-hint-row { flex-wrap: wrap; }
 }
