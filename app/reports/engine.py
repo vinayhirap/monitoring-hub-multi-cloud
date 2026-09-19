@@ -96,11 +96,19 @@ def _status_color(status: str):
 # ago: alerts.current_value / alerts.triggered_at / alerts.resolved_at
 # are the real columns (see app/collector/alert_evaluator.py's INSERT,
 # app/api/incidents.py's own query), and alerts.resource_id stores the
-# STRING cloud resource id (e.g. "i-0abc..."), not resources.id -- see
-# alert_evaluator.py's `r.resource_id AS aws_resource_id`. The wrong
-# join wouldn't error, it would just silently match nothing (or the
-# wrong rows), so this shipped once already without being caught by
-# py_compile. Fixed here: `r.resource_id = a.resource_id`.
+# STRING cloud resource id (e.g. "i-0abc...").
+#
+# Cross-account scoping correction (found after
+# db/migrations/048_add_account_scoping_to_alerts.sql landed on main,
+# same day): a resource_id is only unique WITHIN one account, not
+# globally -- two accounts sharing a resource_id could otherwise leak
+# one account's alerts into another account's report. This function
+# now filters/joins on alerts.aws_account_id directly (added by 048),
+# never resources.aws_account_id alone, matching the same fix already
+# applied to app/collector/correlate.py and health_score.py in that
+# commit. RESOURCE and INCIDENT scoped reports now REQUIRE account_id
+# for the same reason (enforced in app/api/reports.py) -- a bare
+# resource_id or incident id is not a safe lookup key on its own.
 
 def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
                         period_start: datetime, period_end: datetime) -> dict:
@@ -117,10 +125,10 @@ def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
         where = ["a.triggered_at BETWEEN %s AND %s"]
 
         if scope_type == "RESOURCE":
-            where.append("r.resource_id = %s")
+            where.append("a.resource_id = %s")
             params.append(scope_id)
         if account_id:
-            where.append("r.aws_account_id = %s")
+            where.append("a.aws_account_id = %s")
             params.append(account_id)
 
         sql = f"""
@@ -128,7 +136,7 @@ def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
                    a.severity, a.status, a.triggered_at, a.resolved_at,
                    r.resource_type, r.resource_id, r.name AS resource_name, r.region
             FROM alerts a
-            JOIN resources r ON r.resource_id = a.resource_id
+            JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
             WHERE {' AND '.join(where)}
             ORDER BY a.triggered_at ASC
         """
@@ -167,7 +175,7 @@ def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
                               r.resource_type, r.name AS resource_name, r.region
                        FROM incident_alerts ia
                        JOIN alerts a ON a.id = ia.alert_id
-                       LEFT JOIN resources r ON r.resource_id = a.resource_id
+                       LEFT JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
                        WHERE ia.incident_id = %s ORDER BY a.triggered_at ASC""",
                     (inc["id"],),
                 )
