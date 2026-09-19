@@ -39,7 +39,6 @@ Design decisions:
 """
 from fastapi import APIRouter, HTTPException, Body, Depends
 from app.db import get_connection
-from app.auth.deps import require_role
 from app.auth.permissions import require_permission
 from app.auth import authorization as authz
 from app.api.admin.users import _user_manageable_by
@@ -130,7 +129,7 @@ def _serialize_group(conn, g: dict, include_details: bool = False) -> dict:
 
 
 @router.get("")
-def list_groups(current_user: dict = Depends(require_role("admin", "editor"))):
+def list_groups(current_user: dict = Depends(require_permission("groups.view"))):
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
@@ -144,7 +143,7 @@ def list_groups(current_user: dict = Depends(require_role("admin", "editor"))):
 
 
 @router.get("/users/{user_id}/groups")
-def get_user_groups(user_id: int, current_user: dict = Depends(require_role("admin", "editor"))):
+def get_user_groups(user_id: int, current_user: dict = Depends(require_permission("groups.view"))):
     """
     Direct memberships AND the fully-resolved inherited scope for this
     user in one call -- lets the admin UI show e.g. "member of
@@ -242,7 +241,7 @@ def create_group(payload: dict = Body(...), current_user: dict = Depends(require
 
 
 @router.get("/{group_id}")
-def get_group_detail(group_id: int, current_user: dict = Depends(require_role("admin", "editor"))):
+def get_group_detail(group_id: int, current_user: dict = Depends(require_permission("groups.view"))):
     conn = get_connection()
     g = authz.get_group(conn, group_id)
     if not g:
