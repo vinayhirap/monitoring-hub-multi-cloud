@@ -401,7 +401,7 @@ def _sync_thresholds_for_selection(cur, account_id: int, enabled_ids: set, disab
 
 
 @router.put("/api/account-metrics/{account_id}")
-def set_account_metrics(account_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("alerts.configure"))):
+def set_account_metrics(account_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("metric_catalog.manage"))):
     """
     Full-replace selection for this account.
     Body: { "enabled_metric_ids": [1, 2, 3, ...] }
@@ -468,7 +468,7 @@ def _set_account_metrics_internal(account_id: int, payload: dict, actor: str = "
 
 
 @router.post("/api/account-metrics/{account_id}/apply-default")
-def apply_default_template(account_id: int, current_user: dict = Depends(require_permission("alerts.configure"))):
+def apply_default_template(account_id: int, current_user: dict = Depends(require_permission("metric_catalog.manage"))):
     _require_account_access(account_id, current_user)
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     cur.execute("SELECT id, provider FROM aws_accounts WHERE id = %s", (account_id,))
@@ -642,7 +642,7 @@ def _discover_azure_metrics(acc: dict, namespace: str) -> set:
 
 @router.post("/api/account-metrics/{account_id}/discover")
 def discover_namespace_metrics(account_id: int, namespace: str = Query(...), region: str = Query(None),
-                                current_user: dict = Depends(require_permission("alerts.configure"))):
+                                current_user: dict = Depends(require_permission("metric_catalog.discover"))):
     """
     Live metric discovery for a 'directory' namespace — used when a user
     expands a service that doesn't have a hand-curated metric list.
@@ -656,10 +656,15 @@ def discover_namespace_metrics(account_id: int, namespace: str = Query(...), reg
     # account-scope check either -- any authenticated user, including
     # a read-only viewer, could trigger a live discovery API call
     # (billed/rate-limited against the TARGET account's own cloud
-    # quota) against any account_id in the system. Gated the same way
-    # its write-siblings in this file (set_account_metrics,
-    # apply_default_template) already are: alerts.configure (editor+)
-    # plus the caller's own account scope.
+    # quota) against any account_id in the system. A later fix gated
+    # it on alerts.configure (borrowed from its write-siblings in this
+    # file), which stopped the open-to-anyone problem but conflated a
+    # billed, cost-bearing action with unrelated alert-threshold
+    # config, and made it invisible as its own line in the permission
+    # matrix. Now gated on its own dedicated metric_catalog.discover
+    # code (catalog: db/migrations/041) plus the caller's own account
+    # scope, same as set_account_metrics/apply_default_template below
+    # now use metric_catalog.manage instead of alerts.configure too.
     _require_account_access(account_id, current_user)
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
