@@ -18,8 +18,8 @@ Read-only endpoints backing:
 """
 from fastapi import APIRouter, Depends
 from app.db import get_connection
-from app.auth.deps import get_current_user, require_role
-from app.auth.permissions import get_role_permissions
+from app.auth.deps import get_current_user
+from app.auth.permissions import get_role_permissions, require_permission
 
 router = APIRouter(prefix="/api/permissions", tags=["Permissions"])
 
@@ -41,7 +41,7 @@ def my_permissions(current_user: dict = Depends(get_current_user)):
 
 
 @router.get("")
-def list_permissions(current_user: dict = Depends(require_role("admin"))):
+def list_permissions(current_user: dict = Depends(require_permission("permissions.view"))):
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(

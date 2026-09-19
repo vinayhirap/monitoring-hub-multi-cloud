@@ -1,7 +1,7 @@
 # app/api/admin/accounts.py
 from fastapi import APIRouter, HTTPException, Body, Query, Depends
 from app.db import get_connection
-from app.auth.deps import get_current_user, require_role
+from app.auth.deps import get_current_user
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
 import datetime
@@ -516,7 +516,7 @@ def add_account(payload: dict = Body(...), current_user: dict = Depends(require_
 
 
 @router.delete("/{account_id}")
-def delete_account(account_id: int, current_user: dict = Depends(require_role("admin"))):
+def delete_account(account_id: int, current_user: dict = Depends(require_permission("accounts.delete"))):
     # Admin-only: no existing permission code covers "delete an entire
     # monitored account" (accounts.onboard is scoped to ADDING one in the
     # permission catalog's own description), and this is irreversible --

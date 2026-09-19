@@ -5,7 +5,7 @@ import time
 import logging
 from fastapi import APIRouter, HTTPException, Depends, Body, Response
 from app.db import get_connection
-from app.auth.deps import get_current_user, require_role
+from app.auth.deps import get_current_user
 from app.auth.permissions import require_permission
 from app.aws.federation import NoConsoleCredentialsError
 from app.ws.publisher import publish_alert_resolved
@@ -745,7 +745,7 @@ def ack_group(group_key: str, current_user: dict = Depends(require_permission("o
 
 # ── CLEAR ─────────────────────────────────────────────────────
 @router.delete("/clear")
-def clear_alerts(current_user: dict = Depends(require_role("admin"))):
+def clear_alerts(current_user: dict = Depends(require_permission("alerts.clear"))):
     # Admin-only: bulk-deletes every unresolved/unacked alert with no
     # undo. No existing permission code covers a bulk-destructive action
     # like this (operations.execute covers acting on ONE alert), so this

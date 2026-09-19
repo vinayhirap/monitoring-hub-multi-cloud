@@ -1,7 +1,6 @@
 # app/api/admin/users.py
 from fastapi import APIRouter, HTTPException, Body, Depends
 from app.db import get_connection
-from app.auth.deps import require_role
 from app.auth.permissions import require_permission
 from app.auth import authorization as authz
 from app.email import mailer
@@ -151,7 +150,7 @@ def _validate_and_insert_scopes(conn, user_id: int, scopes: list, actor: dict, a
 
 
 @router.get("")
-def list_users(current_user: dict = Depends(require_role("admin", "editor"))):
+def list_users(current_user: dict = Depends(require_permission("users.view"))):
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT id, username, role, created_at FROM users ORDER BY created_at ASC")
@@ -170,7 +169,7 @@ def list_users(current_user: dict = Depends(require_role("admin", "editor"))):
 
 
 @router.post("")
-def create_user(payload: dict = Body(...), current_user: dict = Depends(require_role("admin", "editor"))):
+def create_user(payload: dict = Body(...), current_user: dict = Depends(require_permission("users.create"))):
     username = (payload.get("username") or "").strip()
     password = (payload.get("password") or "").strip()
     role     = (payload.get("role") or "viewer").strip().lower()
@@ -343,7 +342,7 @@ def update_role(user_id: int, payload: dict = Body(...), current_user: dict = De
 
 
 @router.get("/{user_id}/access")
-def get_user_access(user_id: int, current_user: dict = Depends(require_role("admin", "editor"))):
+def get_user_access(user_id: int, current_user: dict = Depends(require_permission("users.view"))):
     conn = get_connection()
     target = _fetch_user(conn, user_id)
     if not target:
@@ -357,7 +356,7 @@ def get_user_access(user_id: int, current_user: dict = Depends(require_role("adm
 
 
 @router.post("/{user_id}/access")
-def add_user_access(user_id: int, payload: dict = Body(...), current_user: dict = Depends(require_role("admin", "editor"))):
+def add_user_access(user_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("users.update"))):
     scopes = payload.get("scopes") or []
     if not scopes:
         raise HTTPException(status_code=400, detail="scopes required")
@@ -384,7 +383,7 @@ def add_user_access(user_id: int, payload: dict = Body(...), current_user: dict 
 
 
 @router.delete("/access/{scope_id}")
-def revoke_access_scope(scope_id: int, current_user: dict = Depends(require_role("admin", "editor"))):
+def revoke_access_scope(scope_id: int, current_user: dict = Depends(require_permission("users.update"))):
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
@@ -416,7 +415,7 @@ def revoke_access_scope(scope_id: int, current_user: dict = Depends(require_role
 
 
 @router.delete("/{user_id}")
-def delete_user(user_id: int, current_user: dict = Depends(require_role("admin", "editor"))):
+def delete_user(user_id: int, current_user: dict = Depends(require_permission("users.delete"))):
     if current_user["id"] == user_id:
         raise HTTPException(status_code=403, detail="Cannot delete your own account")
 
