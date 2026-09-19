@@ -235,8 +235,31 @@ def cmd_apply(conn, filename):
         # MySQL DDL auto-commits per statement regardless of transaction
         # state, so this isn't atomic for multi-statement DDL files --
         # true before this fix too, unchanged here.
+        #
+        # BUG FIX (2026-09-19): every migration written since 040 uses
+        # the `SET @x := (...); SET @sql := IF(cond, '<DDL>', 'SELECT
+        # "already exists, skipping"'); PREPARE...EXECUTE...DEALLOCATE`
+        # pattern for idempotent conditional DDL. When the condition
+        # takes the "skipping" branch, that dynamic SQL is a bare
+        # SELECT, which -- unlike DDL -- leaves a result set on the
+        # cursor. mysql-connector-python raises "Unread result found"
+        # on the NEXT execute() call on that same cursor if it isn't
+        # drained first. This never surfaced against prod's DB state
+        # (045/046/048 happened to always take the real-DDL branch
+        # there), but crashed applying 045 on dev mid-file, where the
+        # DROP-old-key branch took the dummy-SELECT path first. Since
+        # the crash happens AFTER a preceding real ALTER can have
+        # already succeeded (MySQL auto-commits DDL immediately) but
+        # BEFORE this function's own INSERT INTO schema_migrations
+        # runs, a partially-applied file is never recorded as applied
+        # -- confirmed safe to resume, not data loss -- but every
+        # migration using this idiom was one dummy-SELECT branch away
+        # from hitting this. Fix: drain any result set immediately
+        # after each execute(), regardless of statement type.
         for stmt in statements:
             cursor.execute(stmt)
+            if cursor.with_rows:
+                cursor.fetchall()
         cursor.execute(
             "INSERT INTO schema_migrations (filename, applied_via) VALUES (%s, 'script')",
             (filename,),
