@@ -51,12 +51,15 @@ class CloudProvider(ABC):
         them can ignore the arguments.
 
         `requested_by` is the monitoring-hub username of whoever asked
-        for this link. Providers that mint their own AWS-style
-        federated/impersonated session (currently just AWS) use it to
-        attribute that session to the actual person instead of a
-        shared generic identity; providers that deep-link straight into
-        the target cloud's own portal (Azure, GCP) can ignore it, since
-        those portals already use the operator's own signed-in session.
+        for this link. No provider mints a federated/impersonated AWS-
+        side session any more (removed 2026-09-12 -- see
+        app/aws/federation.py's module docstring for why); every
+        provider's console link requires the visiting person to sign in
+        manually with their OWN cloud credentials. `requested_by` is
+        used only to attribute the click in THIS app's own audit log
+        (app/aws/federation.py's _write_console_open_audit) -- the app
+        has no visibility into or control over which identity the
+        person actually signs in as on the cloud side.
         """
         raise NotImplementedError
 

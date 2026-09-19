@@ -98,13 +98,25 @@ export const saveAccountMetrics       = (accountId, enabledIds) =>
 export const applyDefaultTemplate     = (accountId) =>
   apiFetch(`/api/account-metrics/${accountId}/apply-default`, { method: "POST" });
 
-// ── Federated AWS Console deep link (same endpoint the Alerts page uses) ──
-// POST, not GET: this endpoint writes an audit-log entry as a side
-// effect (see app/api/admin/accounts.py's docstring for the CSRF
-// reasoning) -- the query-param-only signature is unchanged, just the
-// HTTP method.
-export const getConsoleUrl = (accountId, service) =>
-  apiFetch(`/api/admin/accounts/${accountId}/console-url?service=${encodeURIComponent(service)}`, { method: "POST" });
+// ── Account-locked cloud console deep link (same endpoint the Alerts ──
+// page uses; works for AWS/Azure/GCP -- dispatches server-side through
+// the provider registry). POST, not GET: this endpoint writes an
+// audit-log entry as a side effect (see
+// app/api/admin/accounts.py's docstring for the CSRF reasoning).
+// NOT federated/impersonated -- this only ever returns a link that
+// still requires the visiting person to sign in with their own cloud
+// credentials; see app/aws/federation.py's module docstring.
+// `resourceId`/`region`/`resourceName`/`ecsServiceName` are all
+// optional -- omit them for a service-level (not resource-specific)
+// link, e.g. GenericServiceDetail's top-of-page "Open Console" button.
+export const getConsoleUrl = (accountId, service, { resourceId, region, resourceName, ecsServiceName } = {}) => {
+  const params = new URLSearchParams({ service });
+  if (resourceId) params.set("resource_id", resourceId);
+  if (region) params.set("region", region);
+  if (resourceName) params.set("resource_name", resourceName);
+  if (ecsServiceName) params.set("ecs_service_name", ecsServiceName);
+  return apiFetch(`/api/admin/accounts/${accountId}/console-url?${params}`, { method: "POST" });
+};
 export const discoverNamespaceMetrics = (accountId, namespace, region) =>
   apiFetch(`/api/account-metrics/${accountId}/discover?namespace=${encodeURIComponent(namespace)}${region ? `&region=${region}` : ""}`, { method: "POST" });
 export const downloadYaceConfig = (accountId, tier) =>

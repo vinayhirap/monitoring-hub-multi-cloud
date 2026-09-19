@@ -46,9 +46,11 @@ class GCPProvider(CloudProvider):
                          ecs_service_name: str | None = None,
                          requested_by: str | None = None) -> str:
         # requested_by unused: this provider deep-links straight into
-        # its own cloud portal, which already uses the operator's own
-        # signed-in browser session — no shared/impersonated identity
-        # to attribute here the way AWS federation needs.
+        # its own cloud portal, which already requires the operator to
+        # sign in with their own Google identity -- no shared/
+        # impersonated identity to attribute here (AWS's console link
+        # doesn't mint one either any more, see app/aws/federation.py,
+        # but still records requested_by in its own audit log).
         project_id = account.get("project_id") or ""
         service = (service or "").lower()
         name = resource_name or (resource_id or "").split("/")[-1]

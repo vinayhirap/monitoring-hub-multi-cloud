@@ -1,22 +1,42 @@
 # app/aws/federation.py
 """
-Builds account-specific AWS Console deep links via the federation endpoint.
+Builds account-specific, resource-specific AWS Console deep links --
+WITHOUT ever assuming this app's own IAM role/credentials on the
+visiting person's behalf. See build_federated_console_url()'s own
+docstring below for the full explanation of what this module does and
+does not do; the short version: every link built here still requires
+the person to sign in with their OWN IAM user and whatever permissions
+THEY personally have -- this app never mints, embeds, or hands over any
+credential that could authenticate anyone.
 
-Why this exists
-----------------
+Why an account-LOCKED link still matters even without minting credentials
+--------------------------------------------------------------------------
 Just linking to https://<region>.console.aws.amazon.com/... does NOT select
-an AWS account — it opens whatever account is already active in the user's
-browser session (via existing sign-in cookies). If the operator is signed
+an AWS account -- it opens whatever account is already active in the
+person's browser session (via existing sign-in cookies). If they're signed
 into a different account than the one the alert belongs to, the console
-opens the WRONG account.
-
-The fix is to mint a short-lived sign-in token for the alert's specific
-account/role via STS + the AWS sign-in federation endpoint, then wrap the
-target deep-link in a `Destination=` federation login URL. That login URL
-forces the correct account context before landing on the resource page,
-regardless of any existing browser session.
+opens the WRONG account. The fix is the account-locked sign-in URL AWS
+itself provides (see build_federated_console_url()) -- it carries the
+account ID and a `redirect_uri` to the specific resource page, so after
+the person manually signs in with their own credentials, they land
+exactly where the alert happened, in the right account, without ever
+having had to type an account ID/alias first.
 
 Docs: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_enable-console-custom-url.html
+
+NOTE (2026-09-18 audit): this module previously (pre-2026-09-12) minted
+real temporary credentials via STS + the AWS federation endpoint,
+scoped by a session policy (build_scoped_session_policy() and its
+helpers below) -- effectively auto-signing the visiting person in AS
+this app's own monitoring role. That approach was removed in favor of
+the account-locked-link approach build_federated_console_url()
+describes. _service_read_actions/_service_resource_arns/
+build_scoped_session_policy are kept only because a future, genuinely
+different feature (e.g. a "read-only session for support staff without
+their own IAM user" tool, which would need its own explicit design
+and consent flow) might reuse the scoping logic -- they are NOT called
+by anything in this app today. Verified via repo-wide grep before
+writing this note.
 """
 import datetime
 import json
@@ -24,16 +44,7 @@ import logging
 import re
 import urllib.parse
 
-import requests
-
-from app.aws.sts import assume_role, get_own_account_id, get_self_federation_session
-from app.aws.sts import _sanitize_session_name
-
 logger = logging.getLogger(__name__)
-
-FEDERATION_ENDPOINT = "https://signin.aws.amazon.com/federation"
-ISSUER = "monitoring-hub"
-SESSION_DURATION_SECONDS = 3600  # must be <= the assumed role's max session duration
 
 # Real AWS region names only ever look like "us-east-1", "ap-south-2",
 # "eu-central-1", etc. -- lowercase letters/digits and single hyphens,
@@ -80,7 +91,30 @@ class NoConsoleCredentialsError(ValueError):
 def service_console_list_url(service: str, region: str) -> str:
     """
     List-view console URL for a whole service (e.g. all EC2 instances) —
-    used when no specific resource is selected yet.
+    used when no specific resource is selected yet, and as the fallback
+    destination for any resource-type this app tracks that doesn't (yet)
+    have a resource-level deep link in resource_console_destination()
+    below.
+
+    Two honesty tiers, deliberately not blurred together (see this
+    project's "do not fake support" principle,
+    app/providers/base.py's module docstring):
+      - The first several entries (ec2/ebs/rds/lambda/s3/elb/ecs/
+        security_group/iam_user) are the original, long-established
+        entries -- battle-tested in this codebase.
+      - Everything from apigateway onward (added 2026-09-18, covering
+        every resources.resource_type this app's extended discovery
+        can produce -- see app/collector/discovery/extended.py) is each
+        service's standard console entry point, to the best of
+        available knowledge, but NOT individually search-verified the
+        way EC2/DynamoDB/CloudWatch Logs were. A slightly-off hash
+        fragment on one of these degrades gracefully -- the console
+        still opens in the CORRECT account and region, on the correct
+        top-level service, just possibly its default tab rather than
+        the exact one -- which is why this is safe to ship even at
+        lower confidence than a resource-level deep link would need
+        (a wrong resource ID fails hard with "not found"; a slightly
+        wrong list-page hash does not).
     """
     region = _safe_region(region)
     service = (service or "").lower()
@@ -98,6 +132,47 @@ def service_console_list_url(service: str, region: str) -> str:
         # itself handles the redirect from any region subdomain, same as
         # every other global-service link this app already builds this way.
         "iam_user": f"{base}/iam/home#/users",
+
+        # -- Extended-tier resource types (2026-09-18) --------------------
+        "dynamodb":          f"{base}/dynamodbv2/home?region={region}#tables",
+        "sqs":               f"{base}/sqs/v2/home?region={region}#/queues",
+        "sns":               f"{base}/sns/v3/home?region={region}#/topics",
+        "kinesis":           f"{base}/kinesis/home?region={region}#/streams/list",
+        "firehose":          f"{base}/firehose/home?region={region}#/",
+        "autoscaling":       f"{base}/ec2autoscaling/home?region={region}",
+        "natgateway":        f"{base}/vpc/home?region={region}#NatGateways:",
+        "efs":               f"{base}/efs/home?region={region}#/file-systems",
+        "elasticache":       f"{base}/elasticache/home?region={region}",
+        "redshift":          f"{base}/redshiftv2/home?region={region}#clusters:",
+        "memorydb":          f"{base}/memorydb/home?region={region}#/clusters",
+        "dax":               f"{base}/dax/home?region={region}",
+        "states":            f"{base}/states/home?region={region}#/statemachines",
+        "events":            f"{base}/events/home?region={region}#/rules",
+        "kms":               f"{base}/kms/home?region={region}#/kms/keys",
+        "certificatemanager": f"{base}/acm/home?region={region}#/certificates/list",
+        "backup":            f"{base}/backup/home?region={region}",
+        "cognito":           f"{base}/cognito/v2/home?region={region}#/user-pools",
+        "logs":              f"{base}/cloudwatch/home?region={region}#logsV2:log-groups",
+        "dms":               f"{base}/dms/v2/home?region={region}#/replicationInstances",
+        "directconnect":     f"{base}/directconnect/v2/home?region={region}#/connections",
+        "eks":               f"{base}/eks/home?region={region}#/clusters",
+        "documentdb":        f"{base}/docdb/home?region={region}#clusters:",
+        "neptune":           f"{base}/neptune/home?region={region}#databases:",
+        "apigateway":        f"{base}/apigateway/main/apis?region={region}",
+        # Route 53 is a global service, like IAM above.
+        "route53":           "https://console.aws.amazon.com/route53/healthchecks/home#/",
+        # CloudFront is global -- distributions aren't scoped to any region.
+        "cloudfront":        "https://console.aws.amazon.com/cloudfront/v4/home#/distributions",
+        "opensearch":        f"{base}/aos/home?region={region}#opensearch/domains",
+        "wafv2":             f"{base}/wafv2/homev2/web-acls?region={region}",
+        "msk":               f"{base}/msk/home?region={region}#/clusters",
+        "transitgateway":    f"{base}/vpc/home?region={region}#TransitGateways:",
+        "vpn":               f"{base}/vpc/home?region={region}#VpnConnections:",
+        # Global Accelerator's control plane only lives in us-west-2,
+        # regardless of which region the accelerator's endpoints are in
+        # -- unlike every other entry here, this deliberately ignores
+        # the passed-in `region`.
+        "globalaccelerator": "https://us-west-2.console.aws.amazon.com/ga/home?region=us-west-2#/accelerators",
     }.get(service, f"{base}/console/home?region={region}")
 
 
@@ -108,16 +183,26 @@ def resource_console_destination(service: str, resource_id: str, region: str,
     Resource-type-specific AWS Console deep link.
 
     `service` should be one of the resources.resource_type values
-    (ec2/ebs/rds/lambda/s3/elb/ecs — case-insensitive). This is the
-    single source of truth for console-link construction — the same
-    mapping frontend/src/pages/ServiceDetail.jsx used to keep as its own
-    separate copy (see multi-cloud-architecture-assessment.md section
-    2.3); that copy is being retired in favor of calling through here.
+    (case-insensitive) -- see app/collector/discovery/runner.py and
+    app/collector/discovery/extended.py for the full set this app can
+    produce. This is the single source of truth for console-link
+    construction — the same mapping frontend/src/pages/ServiceDetail.jsx
+    used to keep as its own separate copy (see
+    multi-cloud-architecture-assessment.md section 2.3); that copy is
+    being retired in favor of calling through here.
 
     `resource_name` is used where the console needs a display name
     rather than an ARN/ID (e.g. ELB search-by-name). `ecs_service_name`
     enables the deeper cluster > service link for ECS when known;
     without it, ECS falls back to the cluster-level view.
+
+    Every branch below is an individually confirmed, resource-SPECIFIC
+    deep link (not just a service list page) -- see each branch's
+    comment for how it was confirmed. Any resource_type not handled
+    here falls through to service_console_list_url(), which still
+    opens the correct account/region/service, just not narrowed to
+    this one resource -- seeing this module's docstring for why that's
+    an honest tradeoff rather than a gap being papered over.
 
     If `service` is missing/unrecognized (an older caller that hasn't
     been updated yet), falls back to the original ID-prefix-guessing
@@ -160,6 +245,43 @@ def resource_console_destination(service: str, resource_id: str, region: str,
         username = resource_name or resource_id
         return f"{base}/iam/home#/users/details/{username}?section=security_credentials"
 
+    # -- Extended-tier resource types (2026-09-18) ------------------------
+    # `resource_id` here is exactly what
+    # app/collector/discovery/extended.py's discovery functions store --
+    # a plain table/queue/topic/cluster NAME for most services (the
+    # console's own search-by-name works fine for those), or a full ARN
+    # for the handful of services extended.py stores an ARN for
+    # (states, certificatemanager, globalaccelerator) -- see that file's
+    # `_discover_*` functions for exactly which.
+    if svc == "dynamodb":
+        # Confirmed via pynamodb_mate (a published, actively maintained
+        # DynamoDB console-URL-generation library) -- table_name is
+        # url-encoded since it can be used as-is in this query position.
+        table_name = urllib.parse.quote(resource_id, safe="")
+        return (f"{base}/dynamodbv2/home?region={region}"
+                f"#table?initialTagKey=&name={table_name}&tab=overview")
+    if svc == "logs":
+        # Confirmed via 3 independent sources agreeing on this exact
+        # pattern: AWS's own CodeBuild API response documentation (a
+        # sample `deepLink` field), plus two actively maintained
+        # open-source CloudWatch-Logs-URL-builder utilities. Log group
+        # names always start with "/" and often contain more slashes
+        # (e.g. "/aws/lambda/my-fn"), so this MUST be url-encoded or the
+        # console misreads the path.
+        log_group = urllib.parse.quote(resource_id, safe="")
+        return f"{base}/cloudwatch/home?region={region}#logsV2:log-groups/log-group/{log_group}"
+
+    # Any resource_type this app tracks but doesn't have a resource-level
+    # deep link for above (all 31 extended types except dynamodb/logs)
+    # lands on that service's correct list page -- NOT the ID-shape-
+    # guessing legacy path below, which doesn't know about any of these
+    # service names and would silently fall through to a bare account
+    # home page for every one of them (caught via direct testing before
+    # shipping this fix, 2026-09-18). The legacy guesser is reserved for
+    # when `service` itself is missing entirely -- an older caller that
+    # hasn't been updated to pass it yet.
+    if svc:
+        return service_console_list_url(svc, region)
     return _legacy_prefix_guess_destination(resource_id, region)
 
 

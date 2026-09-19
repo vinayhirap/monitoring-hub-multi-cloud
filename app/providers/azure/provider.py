@@ -45,13 +45,16 @@ class AzureProvider(CloudProvider):
                          ecs_service_name: str | None = None,
                          requested_by: str | None = None) -> str:
         # requested_by unused: this provider deep-links straight into
-        # its own cloud portal, which already uses the operator's own
-        # signed-in browser session — no shared/impersonated identity
-        # to attribute here the way AWS federation needs.
+        # its own cloud portal, which already requires the operator to
+        # sign in with their own Azure AD identity -- no shared/
+        # impersonated identity to attribute here (AWS's console link
+        # doesn't mint one either any more, see app/aws/federation.py,
+        # but still records requested_by in its own audit log).
         # Azure resource IDs are already full ARM paths
         # (/subscriptions/.../resourceGroups/.../providers/...), so the
-        # portal deep link is a direct construction — no federation step
-        # needed the way AWS's assumed-role console requires.
+        # portal deep link is a direct construction -- no server-side
+        # credential-minting step needed the way AWS's OLD (removed)
+        # console federation approach required.
         tenant_id = account.get("tenant_id") or ""
         rid = resource_id or ""
         if not rid.startswith("/"):

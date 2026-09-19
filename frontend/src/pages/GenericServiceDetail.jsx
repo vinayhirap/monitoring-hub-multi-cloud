@@ -181,6 +181,7 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
   const [metrics, setMetrics] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [consoleLoading, setConsoleLoading] = useState(false);
   const rowRef = useRef(null);
   const autoHandledRef = useRef(false);
 
@@ -197,6 +198,27 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
     const next = !expanded;
     setExpanded(next);
     if (next) load();
+  }
+
+  // Per-resource console deep link -- distinct from this page's
+  // top-of-page openInConsole(), which only ever opens the generic
+  // service list (no resource_id). This is what actually lets any of
+  // the ~30 extended AWS resource types (and every GCP/Azure service
+  // this page also renders) deep-link to the SPECIFIC resource's
+  // console page, not just the service list -- see
+  // app/aws/federation.py's resource_console_destination() for which
+  // resource types get a precise deep link vs. a service-level
+  // fallback. stopPropagation so clicking the button doesn't also
+  // toggle the row's metric-chart expansion.
+  function openConsole(e) {
+    e.stopPropagation();
+    setConsoleLoading(true);
+    getConsoleUrl(accountId, service, { resourceId: r.resource_id, region: r.region, resourceName: r.name })
+      .then(res => { if (res?.url) window.open(res.url, "_blank", "noopener,noreferrer"); })
+      .catch(() => {
+        window.alert("Couldn't open the cloud console for this resource. Check that credentials are configured for this account in Settings.");
+      })
+      .finally(() => setConsoleLoading(false));
   }
 
   // Re-fetch whenever the shared time-range selector changes, but only
@@ -244,10 +266,20 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
         <td style={{ padding: "10px 14px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
           {r.created_at ? new Date(r.created_at).toLocaleString("en-US", { timeZone: ianaName }) : "—"}
         </td>
+        <td style={{ padding: "10px 14px", textAlign: "right" }}>
+          <button
+            className="btn-icon-console"
+            onClick={openConsole}
+            disabled={consoleLoading}
+            title="Open this resource in the cloud console (you'll sign in with your own credentials)"
+          >
+            <ExternalLinkIcon size={13} />
+          </button>
+        </td>
       </tr>
       {expanded && (
         <tr style={{ borderBottom: isLast ? "none" : "1px solid var(--border)" }}>
-          <td colSpan={5} style={{ padding: "0 14px 14px 40px", background: "rgba(255,255,255,.015)" }}>
+          <td colSpan={6} style={{ padding: "0 14px 14px 40px", background: "rgba(255,255,255,.015)" }}>
             {loading ? (
               <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "10px 0" }}>Loading metrics…</div>
             ) : error ? (
@@ -503,6 +535,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
                 <th style={{ padding: "10px 14px", color: "var(--text-muted)", fontWeight: 600, fontSize: 11 }}>REGION</th>
                 <th style={{ padding: "10px 14px", color: "var(--text-muted)", fontWeight: 600, fontSize: 11 }}>STATE</th>
                 <th style={{ padding: "10px 14px", color: "var(--text-muted)", fontWeight: 600, fontSize: 11 }}>DISCOVERED</th>
+                <th style={{ padding: "10px 14px", width: 40 }}></th>
               </tr>
             </thead>
             <tbody>
