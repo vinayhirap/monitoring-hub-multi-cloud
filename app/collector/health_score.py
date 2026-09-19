@@ -52,7 +52,9 @@ def recompute_health_scores() -> int:
                    COALESCE(SUM(CASE WHEN a.severity = 'CRITICAL' THEN 1 ELSE 0 END), 0) AS critical_count,
                    COALESCE(SUM(CASE WHEN a.severity = 'WARNING'  THEN 1 ELSE 0 END), 0) AS warning_count
             FROM resources r
-            JOIN alerts a ON a.resource_id = r.resource_id AND a.status = 'active'
+            JOIN alerts a ON a.aws_account_id = r.aws_account_id
+                         AND a.resource_id = r.resource_id
+                         AND a.status = 'active'
             GROUP BY r.resource_id, r.aws_account_id
         """)
         breaching = cursor.fetchall()
@@ -98,7 +100,9 @@ def recompute_health_scores() -> int:
         # than leaving a stale low score behind.
         cursor.execute("""
             DELETE rh FROM resource_health rh
-            LEFT JOIN alerts a ON a.resource_id = rh.resource_id AND a.status = 'active'
+            LEFT JOIN alerts a ON a.aws_account_id = rh.aws_account_id
+                              AND a.resource_id = rh.resource_id
+                              AND a.status = 'active'
             WHERE a.id IS NULL
         """)
 
