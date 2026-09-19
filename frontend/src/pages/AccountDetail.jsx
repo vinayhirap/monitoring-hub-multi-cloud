@@ -83,7 +83,7 @@ export default function AccountDetail() {
     setMetrics(null);
     setMLoading(true);
     try {
-      const data = await getLiveEC2Metrics(inst.instance_id, inst.region);
+      const data = await getLiveEC2Metrics(id, inst.instance_id, inst.region);
       setMetrics(data);
     } catch (e) {
       console.error("Metrics load error:", e);

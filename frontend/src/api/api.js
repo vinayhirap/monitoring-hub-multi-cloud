@@ -42,8 +42,8 @@ export const getGenericMetrics = (id, service, resourceId, hours = 24) =>
 export const getLiveEC2       = (id) => apiFetch(`/api/live/ec2/${id}`);
 export const getLiveRDS       = (id) => apiFetch(`/api/live/rds/${id}`);
 export const getLiveLambda    = (id) => apiFetch(`/api/live/lambda/${id}`);
-export const getLiveEC2Metrics= (instanceId, region) =>
-  apiFetch(`/api/live/metrics/ec2/${instanceId}${region ? `?region=${region}` : ""}`);
+export const getLiveEC2Metrics= (accountId, instanceId, region) =>
+  apiFetch(`/api/live/metrics/ec2/${accountId}/${instanceId}${region ? `?region=${region}` : ""}`);
 
 // ── Admin ──────────────────────────────────────────────────────────
 export const getAccounts      = ()   => apiFetch("/api/admin/accounts");

@@ -147,7 +147,20 @@ def _check_resource_scope(user: dict, resource_identifier: str):
     first. If the resource isn't tracked yet (not in `resources`),
     this intentionally does NOT block -- there's nothing to check
     against, and returning a scope error would be misleading for what
-    is really just an empty/unknown metric lookup."""
+    is really just an empty/unknown metric lookup.
+
+    2026-09-19: no longer called by any of the 5 per-resource metrics
+    endpoints below -- they now take account_db_id explicitly in the
+    URL and use _check_account_scope() instead, the same exact,
+    already-proven pattern the ELB/ECS endpoints used from day one.
+    See the comment above those 5 endpoints for why (the LIMIT-1-no-
+    account-filter query below is the same shape of cross-account
+    ambiguity that caused the 2026-09-18 metric_history leak, one
+    level up). Left in place, not deleted, in case a future resource-
+    identifier-only endpoint genuinely needs a best-effort scope check
+    with no account context available at all -- just don't reach for
+    it as the default for any NEW per-resource route; give the route
+    account_db_id in its URL instead."""
     accessible = get_accessible_account_ids(user)
     if accessible is None:
         return
@@ -906,67 +919,87 @@ def live_generic_metrics(
 
 
 # ── CloudWatch metric series endpoints ───────────────────────
+#
+# 2026-09-19 (U4RAD 7-vs-10 log-group collision follow-up): these 5
+# endpoints used to take ONLY the resource identifier in the URL
+# (instance_id/volume_id/db_id/function_name/bucket_name) and guess the
+# owning account via _resolve_resource_account()'s bare
+# "WHERE resource_id = %s LIMIT 1" -- the exact same shape of ambiguity
+# that caused the metric_history leak fixed the same day, just one
+# level up (which ACCOUNT a chart even resolves to, rather than which
+# ACCOUNT's data a resolved chart reads). EC2/EBS ids are AWS-assigned
+# and genuinely globally unique, so that guess was safe for them in
+# practice; Lambda/RDS/S3 identifiers are only unique WITHIN an
+# account, so two accounts with e.g. the same Lambda function name
+# could hit this the same way logs/events did. /metrics/elb/{account_
+# db_id} and /metrics/ecs/{account_db_id} already required an explicit
+# account id in the URL rather than guessing -- these 5 now follow
+# that exact same, already-proven pattern instead of a 6th ad hoc
+# variant. This is also the right shape for onboarding Azure/GCP:
+# every future per-resource metrics route should take account_db_id
+# explicitly, never resolve it from a bare resource identifier.
 
-@router.get("/metrics/ec2/{instance_id}")
+@router.get("/metrics/ec2/{account_db_id}/{instance_id}")
 def live_ec2_metrics(
+    account_db_id: int,
     instance_id: str,
     region: str = Query(None),
     hours: int  = Query(6),
     current_user: dict = Depends(require_permission("metrics.view")),
 ):
-    _check_resource_scope(current_user, instance_id)
-    account = _resolve_resource_account(instance_id)
+    _check_account_scope(current_user, account_db_id)
+    account = _get_db_account(account_db_id)
     return get_ec2_metric_series(instance_id, region, hours, account=account)
 
 
-@router.get("/metrics/ebs/{volume_id}")
+@router.get("/metrics/ebs/{account_db_id}/{volume_id}")
 def live_ebs_metrics(
+    account_db_id: int,
     volume_id: str,
     region: str = Query(None),
     hours: int  = Query(6),
     current_user: dict = Depends(require_permission("metrics.view")),
 ):
-    _check_resource_scope(current_user, volume_id)
-    # Same account resolution live_ec2_metrics already does a few lines
-    # up -- this endpoint never did, so _get_ebs_metric_series() had no
-    # account to scope its metric_history lookups by (2026-09-18
-    # cross-account leak fix).
-    account = _resolve_resource_account(volume_id)
+    _check_account_scope(current_user, account_db_id)
+    account = _get_db_account(account_db_id)
     return _get_ebs_metric_series(volume_id, region, hours, account=account)
 
 
-@router.get("/metrics/rds/{db_id}")
+@router.get("/metrics/rds/{account_db_id}/{db_id}")
 def live_rds_metrics(
+    account_db_id: int,
     db_id: str,
     region: str = Query(None),
     hours: int  = Query(6),
     current_user: dict = Depends(require_permission("metrics.view")),
 ):
-    _check_resource_scope(current_user, db_id)
-    account = _resolve_resource_account(db_id)
+    _check_account_scope(current_user, account_db_id)
+    account = _get_db_account(account_db_id)
     return _get_rds_metric_series(db_id, region, hours, account=account)
 
 
-@router.get("/metrics/lambda/{function_name}")
+@router.get("/metrics/lambda/{account_db_id}/{function_name}")
 def live_lambda_metrics(
+    account_db_id: int,
     function_name: str,
     region: str = Query(None),
     hours: int  = Query(6),
     current_user: dict = Depends(require_permission("metrics.view")),
 ):
-    _check_resource_scope(current_user, function_name)
-    account = _resolve_resource_account(function_name)
+    _check_account_scope(current_user, account_db_id)
+    account = _get_db_account(account_db_id)
     return _get_lambda_metric_series(function_name, region, hours, account=account)
 
 
-@router.get("/metrics/s3/{bucket_name:path}")
+@router.get("/metrics/s3/{account_db_id}/{bucket_name:path}")
 def live_s3_metrics(
+    account_db_id: int,
     bucket_name: str,
     hours: int = Query(24),
     current_user: dict = Depends(require_permission("metrics.view")),
 ):
-    _check_resource_scope(current_user, bucket_name)
-    account = _resolve_resource_account(bucket_name)
+    _check_account_scope(current_user, account_db_id)
+    account = _get_db_account(account_db_id)
     return get_s3_metric_series(bucket_name, hours, account=account)
 
 
