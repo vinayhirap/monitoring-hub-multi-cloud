@@ -15,6 +15,13 @@ export function AuthProvider({ children }) {
   // frontend should ever ask "can this user do X" -- see
   // app/auth/permissions.py for the backend enforcement this mirrors.
   const [permissions, setPermissions] = useState(new Set());
+  // Per-environment feature flags from GET /api/permissions/me (e.g.
+  // { reports: true|false } depending on REPORTS_ENABLED in that box's
+  // .env) -- separate from RBAC permissions: a flag says "does this
+  // environment have the feature at all", a permission says "can THIS
+  // user use it". Both gate the UI; only the backend's own checks are
+  // the real enforcement.
+  const [features, setFeatures] = useState({});
 
   async function loadPermissions() {
     try {
@@ -22,12 +29,14 @@ export function AuthProvider({ children }) {
       if (res.ok) {
         const data = await res.json();
         setPermissions(new Set(data.permissions || []));
+        setFeatures(data.features || {});
         return;
       }
     } catch {
       // fall through to clearing below
     }
     setPermissions(new Set());
+    setFeatures({});
   }
 
   // Source of truth for "who is logged in" is always the backend, not
@@ -83,6 +92,7 @@ export function AuthProvider({ children }) {
     clearAllCached();
     setUser(null);
     setPermissions(new Set());
+    setFeatures({});
   }
 
   // hasPermission/hasAnyPermission/hasAllPermissions -- the ONLY
@@ -100,11 +110,14 @@ export function AuthProvider({ children }) {
   function hasAllPermissions(codes) {
     return codes.every(c => permissions.has(c));
   }
+  function hasFeature(name) {
+    return !!features[name];
+  }
 
   return (
     <AuthContext.Provider value={{
       user, login, logout, isLoggedIn: !!user, loading,
-      hasPermission, hasAnyPermission, hasAllPermissions,
+      hasPermission, hasAnyPermission, hasAllPermissions, hasFeature,
     }}>
       {children}
     </AuthContext.Provider>

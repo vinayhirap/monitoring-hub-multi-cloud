@@ -15,7 +15,7 @@ const REPORT_TYPES = ["WEEKLY", "MONTHLY", "QUARTERLY", "CUSTOM"];
 const SCOPE_TYPES = ["ACCOUNT", "RESOURCE", "INCIDENT", "CLIENT"];
 
 export default function Reports() {
-  const { hasPermission } = useAuth();
+  const { hasPermission, hasFeature } = useAuth();
   const [accounts, setAccounts] = useState([]);
   const [reportType, setReportType] = useState("WEEKLY");
   const [scopeType, setScopeType] = useState("ACCOUNT");
@@ -85,6 +85,9 @@ export default function Reports() {
     }
   }
 
+  if (!hasFeature("reports")) {
+    return <div className="reports-page"><p>Reports is not enabled on this environment.</p></div>;
+  }
   if (!hasPermission("reports.view")) {
     return <div className="reports-page"><p>You do not have access to Reports.</p></div>;
   }
