@@ -457,6 +457,15 @@ export default function Login() {
         </div>
 
         <div className="login-visual" aria-hidden="true">
+          <video
+            className="login-visual-video"
+            src="/cloudops-brand-story.mp4"
+            autoPlay
+            muted
+            loop
+            playsInline
+          />
+          <div className="login-visual-video-overlay" />
           <div className="login-grid">
             {Array.from({ length: 80 }).map((_, i) => (
               <div key={i} className="login-grid-cell" />
