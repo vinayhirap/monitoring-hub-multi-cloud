@@ -62,12 +62,18 @@ function playBeep(severity) {
 }
 
 // ── AWS console deep-link ──────────────────────────────────────
-// NOTE: We no longer build a raw console.aws.amazon.com URL on the client.
-// A plain URL like that has no account context — clicking it just opens
-// whatever AWS account the browser is already signed into, which is why
-// the button used to land on the WRONG account. Instead we ask the backend
-// for an account-locked sign-in link scoped to THIS alert's account
-// (see openConsole / GET /alerts/{id}/console-url).
+// NOTE (updated 2026-09-19, see app/aws/federation.py's
+// build_federated_console_url docstring for the full story): this
+// links straight to the specific resource's console page. AWS has no
+// supported way to force a fresh, account-specific sign-in prompt AND
+// land on a deep-linked resource page for native IAM users without
+// either a SAML/SSO identity-provider relationship or minting real
+// temporary credentials (the latter being exactly the impersonation
+// this app avoids) -- so if the browser already has an AWS session
+// for a DIFFERENT account, this can open under that wrong account. If
+// no AWS session exists yet in the browser, AWS's own native sign-in
+// prompt appears and correctly returns the person to this exact page
+// after they sign in with their own credentials.
 function hasConsoleTarget(resource) {
   // Previously guessed AWS resource-ID shapes (i-.../vol-.../arn:aws:...)
   // -- an Azure ARM path or GCP asset name never matches any of those,
@@ -270,11 +276,13 @@ export default function Alerts() {
     }
   }
 
-  // Opens THIS alert's resource in THIS alert's AWS account. We can't just
-  // link straight to console.aws.amazon.com — that ignores which account
-  // is intended and opens whatever account the browser is already signed
-  // into. Instead we ask the backend for an account-locked sign-in URL scoped to
-  // the correct account, then open that.
+  // Opens THIS alert's specific resource page in THIS alert's AWS
+  // account. We can't just link straight to console.aws.amazon.com
+  // client-side without knowing the target account, so we ask the
+  // backend to build the correct resource-specific URL (see
+  // app/aws/federation.py's resource_console_destination) -- see that
+  // file's build_federated_console_url docstring for why this is a
+  // direct resource link rather than a wrapped sign-in URL.
   async function openConsole(id) {
     // Open the tab synchronously (on the click) so browsers don't block it
     // as a popup once the async fetch resolves.
@@ -284,7 +292,7 @@ export default function Alerts() {
     // every other window.open() call in this codebase (ServiceList.jsx,
     // AccountDetail.jsx, ServiceDetail.jsx), which all pass
     // "noopener,noreferrer" directly. Whatever eventually loads in `tab`
-    // (here: the AWS account-locked sign-in URL) would otherwise get script-level
+    // (here: the resource-specific console URL) would otherwise get script-level
     // access to navigate the ORIGINAL tab via window.opener.location --
     // classic reverse tabnabbing. Can't pass "noopener" as a literal
     // argument here the way the other call sites do, since this call

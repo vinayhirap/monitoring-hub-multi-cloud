@@ -98,14 +98,18 @@ export const saveAccountMetrics       = (accountId, enabledIds) =>
 export const applyDefaultTemplate     = (accountId) =>
   apiFetch(`/api/account-metrics/${accountId}/apply-default`, { method: "POST" });
 
-// ── Account-locked cloud console deep link (same endpoint the Alerts ──
-// page uses; works for AWS/Azure/GCP -- dispatches server-side through
-// the provider registry). POST, not GET: this endpoint writes an
+// ── Cloud console deep link (same endpoint the Alerts page uses; ──────
+// works for AWS/Azure/GCP -- dispatches server-side through the
+// provider registry). POST, not GET: this endpoint writes an
 // audit-log entry as a side effect (see
 // app/api/admin/accounts.py's docstring for the CSRF reasoning).
 // NOT federated/impersonated -- this only ever returns a link that
 // still requires the visiting person to sign in with their own cloud
-// credentials; see app/aws/federation.py's module docstring.
+// credentials; see app/aws/federation.py's build_federated_console_url
+// docstring for AWS specifically (links straight to the resource --
+// AWS has no supported way to wrap that in a forced account-specific
+// sign-in without either SAML/SSO or minting real credentials, both
+// out of scope here).
 // `resourceId`/`region`/`resourceName`/`ecsServiceName` are all
 // optional -- omit them for a service-level (not resource-specific)
 // link, e.g. GenericServiceDetail's top-of-page "Open Console" button.

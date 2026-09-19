@@ -144,9 +144,11 @@ export default function AccountDetail() {
         </div>
         <div className="detail-header-right">
           <button className="btn-back" onClick={() => navigate("/overview")}>← Back to Account</button>
-          {/* Account-locked console link, backend-generated -- opens the
-              correct account, but still requires the visitor's own
-              sign-in (see app/aws/federation.py's module docstring). */}
+          {/* Console link, backend-generated (see app/aws/federation.py's
+              build_federated_console_url docstring for why this links
+              straight to the resource rather than a wrapped sign-in
+              URL) -- still requires the visitor's own AWS sign-in,
+              never this app's credentials. */}
           <button className="btn-aws" onClick={() => openAccountConsole(id, "ec2")}>
             ☁ AWS Console ↗
           </button>
@@ -323,9 +325,11 @@ export default function AccountDetail() {
               )}
             </div>
 
-            {/* Account-locked console link, backend-generated -- opens the
-                correct account, but still requires the visitor's own
-                sign-in (see app/aws/federation.py's module docstring). */}
+            {/* Console link, backend-generated (see app/aws/federation.py's
+                build_federated_console_url docstring for why this links
+                straight to the resource rather than a wrapped sign-in
+                URL) -- still requires the visitor's own AWS sign-in,
+                never this app's credentials. */}
             <button className="btn-open-aws" onClick={() => openAccountConsole(id, "ec2", selected.instance_id)}>
               ☁ Open in AWS ↗
             </button>
