@@ -220,7 +220,7 @@ def _trend_context(cursor, resource_id, metric_name, breach_time):
     }
 
 
-def _check_flapping(cursor, resource_id, metric_name):
+def _check_flapping(cursor, aws_account_id, resource_id, metric_name):
     """
     True if this resource+metric's normal variability (mean +/-
     k*stddev) already crosses its own account's STATIC critical
@@ -243,13 +243,13 @@ def _check_flapping(cursor, resource_id, metric_name):
     cursor.execute("""
         SELECT t.critical_value, t.comparison, t.dynamic_k
         FROM alerts a
-        JOIN resources r ON r.resource_id = a.resource_id
-        JOIN thresholds t ON t.aws_account_id = r.aws_account_id
+        JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
+        JOIN thresholds t ON t.aws_account_id = a.aws_account_id
                           AND t.resource_type = r.resource_type AND t.use_dynamic = 0
         JOIN metric_catalog mc ON mc.id = t.metric_id AND mc.metric_name = a.metric_name
-        WHERE a.resource_id = %s AND a.metric_name = %s
+        WHERE a.aws_account_id = %s AND a.resource_id = %s AND a.metric_name = %s
         LIMIT 1
-    """, (resource_id, metric_name))
+    """, (aws_account_id, resource_id, metric_name))
     threshold = cursor.fetchone()
     if not threshold or threshold.get("critical_value") is None:
         return False
@@ -257,8 +257,8 @@ def _check_flapping(cursor, resource_id, metric_name):
     cursor.execute("""
         SELECT AVG(mean_value) AS typical_value, AVG(stddev_value) AS typical_stddev,
                SUM(sample_count) AS total_samples
-        FROM metric_baseline WHERE resource_id = %s AND metric_name = %s
-    """, (resource_id, metric_name))
+        FROM metric_baseline WHERE aws_account_id = %s AND resource_id = %s AND metric_name = %s
+    """, (aws_account_id, resource_id, metric_name))
     baseline = cursor.fetchone()
     if not baseline or not baseline.get("total_samples") or baseline["total_samples"] < 20:
         return False
@@ -363,7 +363,7 @@ def explain_alert(alert_id: int):
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT id, resource_id, metric_name, severity, triggered_at,
+            SELECT id, aws_account_id, resource_id, metric_name, severity, triggered_at,
                    current_value, threshold
             FROM alerts WHERE id = %s
         """, (alert_id,))
@@ -377,7 +377,7 @@ def explain_alert(alert_id: int):
         in_degree, cloud_events, config_changes = _gather_signals(cursor, resource_id, breach_time)
         recent_deployment = _gather_deployment_signal(cursor, resource_id, breach_time)
         trend = _trend_context(cursor, resource_id, alert["metric_name"], breach_time)
-        is_flapping = _check_flapping(cursor, resource_id, alert["metric_name"])
+        is_flapping = _check_flapping(cursor, alert["aws_account_id"], resource_id, alert["metric_name"])
 
         cursor.execute("""
             SELECT ia.incident_id, COUNT(*) AS other_count

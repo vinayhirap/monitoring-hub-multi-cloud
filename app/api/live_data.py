@@ -252,15 +252,14 @@ def _get_active_alert_counts_by_account() -> dict:
         conn   = get_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute("""
-            SELECT r.aws_account_id, a.severity, COUNT(DISTINCT a.resource_id) AS cnt
+            SELECT a.aws_account_id, a.severity, COUNT(DISTINCT a.resource_id) AS cnt
             FROM alerts a
-            JOIN resources r      ON r.resource_id = a.resource_id
-            JOIN aws_accounts acc ON acc.id = r.aws_account_id
+            JOIN aws_accounts acc ON acc.id = a.aws_account_id
                                    AND acc.status = 'active'
             WHERE a.status = 'active'
               AND a.resolved_at IS NULL
               AND a.metric_name NOT IN ({hidden})
-            GROUP BY r.aws_account_id, a.severity
+            GROUP BY a.aws_account_id, a.severity
         """.format(hidden=hidden_metrics_sql()))
         rows = cursor.fetchall()
         cursor.close()
@@ -429,6 +428,7 @@ def _get_ec2_instance_health_by_account() -> dict:
                    a.severity, a.metric_name
             FROM alerts a
             JOIN resources r      ON r.resource_id = a.resource_id
+                                   AND r.aws_account_id = a.aws_account_id
             JOIN aws_accounts acc ON acc.id = r.aws_account_id
                                    AND acc.status = 'active'
             WHERE a.status = 'active'

@@ -257,23 +257,24 @@ def count_likely_flapping_alerts(aws_account_ids=None) -> int:
             if not aws_account_ids:
                 return 0
             placeholders = ",".join(["%s"] * len(aws_account_ids))
-            where_clause = f" AND r.aws_account_id IN ({placeholders})"
+            where_clause = f" AND a.aws_account_id IN ({placeholders})"
             params = list(aws_account_ids)
 
         cursor.execute(f"""
             SELECT COUNT(*) AS flapping_count
             FROM alerts a
-            JOIN resources r ON r.resource_id = a.resource_id
-            JOIN thresholds t ON t.aws_account_id = r.aws_account_id
+            JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
+            JOIN thresholds t ON t.aws_account_id = a.aws_account_id
                               AND t.resource_type = r.resource_type AND t.use_dynamic = 0
             JOIN metric_catalog mc ON mc.id = t.metric_id AND mc.metric_name = a.metric_name
             JOIN (
-                SELECT resource_id, metric_name,
+                SELECT aws_account_id, resource_id, metric_name,
                        AVG(mean_value) AS typical_value, AVG(stddev_value) AS typical_stddev,
                        SUM(sample_count) AS total_samples
                 FROM metric_baseline
-                GROUP BY resource_id, metric_name
-            ) b ON b.resource_id = a.resource_id AND b.metric_name = a.metric_name
+                GROUP BY aws_account_id, resource_id, metric_name
+            ) b ON b.aws_account_id = a.aws_account_id
+               AND b.resource_id = a.resource_id AND b.metric_name = a.metric_name
             WHERE a.status = 'active' AND b.total_samples >= %s{where_clause}
               AND (
                   (t.comparison IN ('>', '>=')
@@ -321,8 +322,8 @@ def auto_tune_static_thresholds() -> int:
                        AVG(b.stddev_value) AS typical_stddev,
                        SUM(b.sample_count) AS total_samples
                 FROM metric_baseline b
-                JOIN resources r ON r.resource_id = b.resource_id
-                WHERE r.aws_account_id = %s AND r.resource_type = %s
+                JOIN resources r ON r.resource_id = b.resource_id AND r.aws_account_id = b.aws_account_id
+                WHERE b.aws_account_id = %s AND r.resource_type = %s
                   AND b.metric_name = %s
                 GROUP BY b.resource_id
                 HAVING total_samples >= %s

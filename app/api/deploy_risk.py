@@ -64,8 +64,7 @@ def list_deploy_risk(
             cursor.execute("""
                 SELECT a.id, a.severity, a.metric_name, a.resource_id
                 FROM alerts a
-                JOIN resources r ON r.resource_id = a.resource_id
-                WHERE r.aws_account_id = %s
+                WHERE a.aws_account_id = %s
                   AND a.metric_name != 'multivariate_anomaly'
                   AND a.triggered_at BETWEEN %s AND DATE_ADD(%s, INTERVAL %s MINUTE)
                 ORDER BY a.triggered_at ASC

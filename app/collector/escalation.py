@@ -120,15 +120,14 @@ def evaluate_escalations() -> int:
         cursor.execute("""
             SELECT
                 a.id AS alert_id, a.resource_id, a.metric_name, a.severity,
-                a.triggered_at, r.aws_account_id,
+                a.triggered_at, a.aws_account_id,
                 ep.id AS policy_id, ep.ack_sla_minutes, ep.escalate_to_group_id,
                 g.name AS group_name
             FROM alerts a
-            JOIN resources r ON r.resource_id = a.resource_id
             JOIN escalation_policies ep
                  ON ep.severity = a.severity
                 AND ep.enabled = 1
-                AND (ep.aws_account_id = r.aws_account_id OR ep.aws_account_id IS NULL)
+                AND (ep.aws_account_id = a.aws_account_id OR ep.aws_account_id IS NULL)
             JOIN org_groups g ON g.id = ep.escalate_to_group_id
             WHERE a.status = 'active'
               AND a.acked = 0
