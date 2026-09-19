@@ -81,7 +81,16 @@
   position: absolute;
   inset: 0;
   z-index: 1;
-  background: linear-gradient(165deg, rgba(10,20,36,0.88) 0%, rgba(6,12,23,0.92) 65%);
+  /* 2026-09-19: was rgba(...,0.88)/rgba(...,0.92) -- copied straight
+     from .login-visual's own solid (video-less) background gradient,
+     which made sense as an opaque backdrop but, layered ON TOP of the
+     video, crushed it to essentially invisible (confirmed: the video
+     itself is fine, its content is a normal-brightness teal-on-near-
+     black animation, verified by extracting frames with ffmpeg).
+     Dropped to 0.45/0.55 -- enough to still tie the two panel halves
+     together and keep the headline/body text readable, without
+     drowning out the one thing this whole change was for. */
+  background: linear-gradient(165deg, rgba(10,20,36,0.45) 0%, rgba(6,12,23,0.55) 65%);
   pointer-events: none;
 }
 .login-grid {
