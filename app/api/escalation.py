@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api/escalation-policies", tags=["Escalation Policies
 
 
 @router.get("/groups")
-def list_org_groups(current_user: dict = Depends(require_permission("alerts.configure"))):
+def list_org_groups(current_user: dict = Depends(require_permission("escalation.view"))):
     """
     Lean read for the policy-creation dropdown — id/name/level only, no
     membership or policy detail. There is no existing org_groups list
@@ -33,7 +33,7 @@ def list_org_groups(current_user: dict = Depends(require_permission("alerts.conf
 
 
 @router.get("")
-def list_policies(current_user: dict = Depends(require_permission("alerts.configure"))):
+def list_policies(current_user: dict = Depends(require_permission("escalation.view"))):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
@@ -49,7 +49,7 @@ def list_policies(current_user: dict = Depends(require_permission("alerts.config
 
 
 @router.post("")
-def create_policy(payload: dict = Body(...), current_user: dict = Depends(require_permission("alerts.configure"))):
+def create_policy(payload: dict = Body(...), current_user: dict = Depends(require_permission("escalation.manage"))):
     severity = payload.get("severity")
     if severity not in ("WARNING", "CRITICAL"):
         raise HTTPException(status_code=400, detail="severity must be WARNING or CRITICAL")
@@ -87,7 +87,7 @@ def create_policy(payload: dict = Body(...), current_user: dict = Depends(requir
 
 
 @router.patch("/{policy_id}")
-def update_policy(policy_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("alerts.configure"))):
+def update_policy(policy_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("escalation.manage"))):
     fields, params = [], []
     if "ack_sla_minutes" in payload:
         fields.append("ack_sla_minutes = %s"); params.append(int(payload["ack_sla_minutes"]))
@@ -112,7 +112,7 @@ def update_policy(policy_id: int, payload: dict = Body(...), current_user: dict 
 
 
 @router.delete("/{policy_id}")
-def delete_policy(policy_id: int, current_user: dict = Depends(require_permission("alerts.configure"))):
+def delete_policy(policy_id: int, current_user: dict = Depends(require_permission("escalation.manage"))):
     conn = get_connection(); cur = conn.cursor()
     try:
         cur.execute("DELETE FROM escalation_policies WHERE id = %s", (policy_id,))
