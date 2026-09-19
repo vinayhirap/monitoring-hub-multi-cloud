@@ -155,6 +155,7 @@ def _fetch_alerts_from_db():
             acc.id                                 AS account_id
         FROM alerts a
         JOIN resources r      ON r.resource_id = a.resource_id
+                               AND r.aws_account_id = a.aws_account_id
         JOIN aws_accounts acc ON acc.id = r.aws_account_id
                                AND acc.status = 'active'
         WHERE a.metric_name NOT IN ({hidden})
@@ -240,6 +241,7 @@ def open_alerts(current_user: dict = Depends(require_permission("alerts.view")))
             COALESCE(a.region, acc.default_region) AS region
         FROM alerts a
         JOIN resources r      ON r.resource_id = a.resource_id
+                               AND r.aws_account_id = a.aws_account_id
         JOIN aws_accounts acc ON acc.id = r.aws_account_id
                                AND acc.status = 'active'
         WHERE a.resolved_at IS NULL
@@ -308,6 +310,7 @@ def _fetch_counts_from_db() -> list:
             SUM(CASE WHEN a.status = 'resolved' THEN 1 ELSE 0 END) AS resolved_count
         FROM alerts a
         JOIN resources r      ON r.resource_id = a.resource_id
+                               AND r.aws_account_id = a.aws_account_id
         JOIN aws_accounts acc ON acc.id = r.aws_account_id
                                AND acc.status = 'active'
         WHERE a.metric_name NOT IN ({hidden})
@@ -401,6 +404,7 @@ def get_console_url(alert_id: int, user: dict = Depends(require_permission("aler
             acc.*
         FROM alerts a
         JOIN resources r      ON r.resource_id = a.resource_id
+                               AND r.aws_account_id = a.aws_account_id
         JOIN aws_accounts acc ON acc.id = r.aws_account_id
         WHERE a.id = %s
     """, (alert_id,))
@@ -678,6 +682,7 @@ def get_grouped_alerts(current_user: dict = Depends(require_permission("alerts.v
             acc.account_name
         FROM alerts a
         JOIN resources r      ON r.resource_id = a.resource_id
+                               AND r.aws_account_id = a.aws_account_id
         JOIN aws_accounts acc ON acc.id = r.aws_account_id
                                AND acc.status = 'active'
         WHERE a.group_key IS NOT NULL
@@ -724,6 +729,7 @@ def ack_group(group_key: str, current_user: dict = Depends(require_permission("o
         cursor.execute(f"""
             UPDATE alerts a
             JOIN resources r      ON r.resource_id = a.resource_id
+                               AND r.aws_account_id = a.aws_account_id
             JOIN aws_accounts acc ON acc.id = r.aws_account_id AND acc.id IN ({fmt})
             SET a.acked = 1, a.status = 'acknowledged'
             WHERE a.group_key = %s AND a.status = 'active'

@@ -40,6 +40,7 @@ def _gather_facts(alert_id: int) -> dict:
                    r.name AS resource_name, r.resource_type, acc.account_name
             FROM alerts a
             JOIN resources r      ON r.resource_id = a.resource_id
+                                   AND r.aws_account_id = a.aws_account_id
             JOIN aws_accounts acc ON acc.id = r.aws_account_id
             WHERE a.id = %s
         """, (alert_id,))

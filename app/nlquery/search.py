@@ -95,6 +95,7 @@ def run_nl_search(query_text: str, current_user: dict) -> dict:
                    acc.account_name
             FROM alerts a
             JOIN resources r      ON r.resource_id = a.resource_id
+                                   AND r.aws_account_id = a.aws_account_id
             JOIN aws_accounts acc ON acc.id = r.aws_account_id
             WHERE {' AND '.join(where)}
             ORDER BY a.triggered_at DESC

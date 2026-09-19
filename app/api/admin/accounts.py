@@ -493,11 +493,7 @@ def delete_account(account_id: int, current_user: dict = Depends(require_role("a
     # Clean up everything this account left behind so it can't show up
     # as stale/orphaned alerts later (this was previously a bug — removed
     # accounts left their resources/metrics/alerts behind indefinitely).
-    cursor.execute("""
-        DELETE a FROM alerts a
-        JOIN resources r ON r.resource_id = a.resource_id
-        WHERE r.aws_account_id = %s
-    """, (account_id,))
+    cursor.execute("DELETE FROM alerts WHERE aws_account_id = %s", (account_id,))
     cursor.execute("""
         DELETE m FROM metrics m
         JOIN resources r ON r.id = m.resource_id

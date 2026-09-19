@@ -204,6 +204,7 @@ def _auto_resolve_stale_alerts(cursor):
         UPDATE alerts a
         JOIN resources r
             ON r.resource_id = a.resource_id
+           AND r.aws_account_id = a.aws_account_id
         LEFT JOIN aws_accounts aa
             ON aa.id = r.aws_account_id
            AND aa.status = 'active'
@@ -216,11 +217,15 @@ def _auto_resolve_stale_alerts(cursor):
     resolved_ids = []
     account_removed = cursor.rowcount
 
-    # Case 2: resource_id has no matching row in `resources` at all.
+    # Case 2: resource_id has no matching row in `resources` at all,
+    # scoped to THIS alert's own account -- otherwise an unrelated
+    # account's resource sharing this resource_id string would make
+    # this alert look non-orphaned even though its OWN resource is gone.
     cursor.execute("""
         SELECT a.id
         FROM alerts a
         LEFT JOIN resources r ON r.resource_id = a.resource_id
+                              AND r.aws_account_id = a.aws_account_id
         WHERE a.status = 'active' AND r.id IS NULL
     """)
     orphaned_ids = [row["id"] for row in cursor.fetchall()]
