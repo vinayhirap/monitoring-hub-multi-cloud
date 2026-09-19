@@ -9,34 +9,40 @@ the person to sign in with their OWN IAM user and whatever permissions
 THEY personally have -- this app never mints, embeds, or hands over any
 credential that could authenticate anyone.
 
-Why an account-LOCKED link still matters even without minting credentials
+Why this links straight to the resource, not a wrapped sign-in URL
 --------------------------------------------------------------------------
-Just linking to https://<region>.console.aws.amazon.com/... does NOT select
-an AWS account -- it opens whatever account is already active in the
-person's browser session (via existing sign-in cookies). If they're signed
-into a different account than the one the alert belongs to, the console
-opens the WRONG account. The fix is the account-locked sign-in URL AWS
-itself provides (see build_federated_console_url()) -- it carries the
-account ID and a `redirect_uri` to the specific resource page, so after
-the person manually signs in with their own credentials, they land
-exactly where the alert happened, in the right account, without ever
-having had to type an account ID/alias first.
-
-Docs: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_enable-console-custom-url.html
+An earlier version of this module wrapped the destination in
+https://{account}.signin.aws.amazon.com/console?redirect_uri=..., on
+the theory that AWS's account-locked sign-in URL would carry the
+person through to the specific resource page after they signed in.
+Reported broken by direct testing (2026-09-19): AWS's own
+documentation for that URL
+(docs.aws.amazon.com/IAM/latest/UserGuide/id_users_sign-in.html) only
+documents a `region` parameter -- `redirect_uri` isn't a real,
+supported mechanism there. Genuine post-login deep-linking is only
+supported by AWS via SAML `RelayState` (needs a SAML/SSO identity
+provider this app doesn't set up) or STS federation's `Destination`
+parameter (needs minting real temporary credentials -- the exact
+impersonation this app was told never to do). With neither available,
+linking straight to the destination is the tradeoff taken -- see
+build_federated_console_url()'s docstring for the full explanation,
+including the one known tradeoff (a browser already signed into a
+DIFFERENT AWS account will open that wrong account instead of getting
+a fresh sign-in prompt).
 
 NOTE (2026-09-18 audit): this module previously (pre-2026-09-12) minted
 real temporary credentials via STS + the AWS federation endpoint,
 scoped by a session policy (build_scoped_session_policy() and its
 helpers below) -- effectively auto-signing the visiting person in AS
-this app's own monitoring role. That approach was removed in favor of
-the account-locked-link approach build_federated_console_url()
-describes. _service_read_actions/_service_resource_arns/
-build_scoped_session_policy are kept only because a future, genuinely
-different feature (e.g. a "read-only session for support staff without
-their own IAM user" tool, which would need its own explicit design
-and consent flow) might reuse the scoping logic -- they are NOT called
-by anything in this app today. Verified via repo-wide grep before
-writing this note.
+this app's own monitoring role. That approach was removed first in
+favor of an account-locked sign-in URL (itself replaced 2026-09-19,
+see above, once THAT was found not to actually deep-link either).
+_service_read_actions/_service_resource_arns/build_scoped_session_policy
+are kept only because a future, genuinely different feature (e.g. a
+"read-only session for support staff without their own IAM user"
+tool, which would need its own explicit design and consent flow)
+might reuse the scoping logic -- they are NOT called by anything in
+this app today. Verified via repo-wide grep before writing this note.
 """
 import datetime
 import json
@@ -482,57 +488,56 @@ def build_federated_console_url(role_arn: str | None, external_id: str | None,
                                  resource_name: str | None = None,
                                  ecs_service_name: str | None = None) -> str:
     """
-    Returns an account-LOCKED AWS Console sign-in URL for `destination`
-    -- NO session is minted, NO identity is assumed on the person's
-    behalf, and NO password is ever seen or handled by this app. Every
-    AWS account has this exact URL built in (Account Settings > "IAM
-    users sign-in link" shows the identical format) -- pointing the
-    browser at it is not a workaround, it's the standard way AWS
-    itself expects a company to link people straight to sign-in for a
-    SPECIFIC account instead of AWS's blank, generic sign-in page.
+    Returns `destination` (the exact resource-specific console URL)
+    directly -- NO session is minted, NO identity is assumed on the
+    person's behalf, and NO password is ever seen or handled by this
+    app. Still records the click in this app's own audit log via
+    `requested_by`/`service`/`resource_id`, and `role_arn`/
+    `external_id` are accepted for backward compatibility with callers
+    but unused (no credentials are minted here or ever were, post-
+    2026-09-12 -- see this module's docstring).
 
-    What this fixes: the generic https://signin.aws.amazon.com page
-    shows an empty "Account ID or alias" field the person has to know
-    and type before they can even get to the username/password
-    fields. The account-locked URL below skips that field entirely --
-    the account is already implied by the URL itself -- so the person
-    only ever sees IAM username + password, which are theirs alone.
-    AWS's own sign-in flow carries the `redirect_uri` through to
-    `destination` after a successful login, landing them on the
-    specific resource page, not just the account's console home.
+    HISTORY / WHY THIS ISN'T WRAPPED IN A SIGN-IN URL (2026-09-19):
+    an earlier version of this function wrapped `destination` in
+    https://{account}.signin.aws.amazon.com/console?redirect_uri=...,
+    intending an "account-locked sign-in that lands you on the right
+    page after login" -- reported broken by direct user testing
+    (landed on the console after sign-in, but not the specific
+    resource). Researched AWS's own documentation
+    (docs.aws.amazon.com/IAM/latest/UserGuide/id_users_sign-in.html)
+    plus multiple independent real-world sources afterward: that
+    sign-in endpoint documents exactly ONE query parameter (`region`)
+    -- `redirect_uri` is not a real, supported mechanism for it. Post-
+    login deep-linking for a specific console page is only genuinely
+    supported by AWS via SAML `RelayState` (requires a SAML/SSO
+    identity-provider relationship this app doesn't set up) or the
+    STS-federation `Destination` parameter (requires minting real
+    temporary credentials via GetSigninToken -- exactly the
+    impersonation this app was told never to do). Neither is
+    available without either infrastructure this app doesn't own or
+    reintroducing the exact anti-pattern already ruled out.
 
-    This is NOT federation: no STS call happens here, no temporary
-    credentials are minted, and there is nothing embedded in this URL
-    that can authenticate anyone -- it is exactly as safe to share/
-    log/click as a plain https://console.aws.amazon.com link. Each
-    person still needs their own, separately provisioned native AWS
-    IAM user (this app cannot create or manage AWS IAM users), and
-    whatever THEIR OWN IAM permissions allow is what they'll be able
-    to do in the console -- this app has no bearing on that either
-    way.
-
-    `role_arn`/`external_id` are accepted for backward compatibility
-    with callers but are not used here (no credentials are minted).
-    `requested_by`/`service`/`resource_id` are used only to record the
-    click in the app's own audit log, since the app is no longer in a
-    position to attribute anything on the AWS side.
+    Given that hard constraint, linking straight to `destination` is
+    the tradeoff actually taken, matching how every real-world AWS
+    deep-linking tool (e.g. the aws-link-accountifier browser
+    extension, or simply bookmarking a console page, which AWS's own
+    docs explicitly describe as supported) already works: if the
+    browser has no AWS session yet, visiting `destination` triggers
+    AWS's own native username/password sign-in prompt and correctly
+    returns the person to that exact page afterward -- genuine
+    deep-linking, with their own IAM credentials, no app involvement.
+    The known tradeoff: if that browser already has an authenticated
+    AWS session for a DIFFERENT account, `destination` opens under
+    that wrong account instead of prompting a fresh sign-in (AWS has
+    no way to know a different account was intended from a plain
+    resource URL alone) -- there is no way to force an account
+    mismatch to re-prompt without either of the two options ruled out
+    above. If this becomes a recurring problem, AWS IAM Identity
+    Center's "Create shortcut" feature is the AWS-native way to get
+    real cross-account deep-linking safely, but it requires migrating
+    off native per-account IAM users onto IAM Identity Center first --
+    a real infrastructure decision, not something this function can
+    silently assume or set up on its own.
     """
     _write_console_open_audit(requested_by, target_account_id, service, resource_id)
-
-    if target_account_id:
-        # region is quote()'d into a query VALUE here, not a host
-        # position, so it can't split the URL's authority the way the
-        # other builders in this file could -- but it's still
-        # unvalidated attacker-reachable input being forwarded to an
-        # external domain (signin.aws.amazon.com), even if only inside
-        # an encoded query string. Routed through _safe_region() for
-        # consistency with resource_console_destination/
-        # service_console_list_url, and so this app never hands
-        # AWS's own sign-in service a garbage/spoofed-looking region
-        # value on a caller's behalf.
-        return (
-            f"https://{target_account_id}.signin.aws.amazon.com/console"
-            f"?region={urllib.parse.quote(_safe_region(region), safe='')}"
-            f"&redirect_uri={urllib.parse.quote(destination, safe='')}"
-        )
     return destination
