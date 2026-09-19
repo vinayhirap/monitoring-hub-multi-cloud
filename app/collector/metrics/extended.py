@@ -208,6 +208,22 @@ def _build_dimensions(resource, cw_metric_name=None):
     if extra:
         for k, v in extra.items():
             dims.append({"Name": k, "Value": v})
+    if rt == "wafv2":
+        # 2026-09-19: AWS WAFv2 metrics require a Rule dimension --
+        # it's not optional like it looks from the AWS/WAFV2 API
+        # shape. Per AWS's own WAF metrics/dimensions docs: Region is
+        # required for all non-CloudFront resource types, Rule is one
+        # of a specific rule's metric name, "ALL" (every rule in the
+        # WebACL/RuleGroup), or "Default_Action" (paired with WebACL).
+        # AllowedRequests/BlockedRequests at the WebACL-wide level --
+        # what this app charts -- only ever publish under Rule=ALL.
+        # This code sent WebACL+Region only, omitting Rule entirely,
+        # so GetMetricData queried a (metric, dimension-set) AWS never
+        # publishes -- silently empty forever, same failure shape as
+        # the S3 StorageType bug just above, confirmed live: two
+        # WebACLs, both CloudWatchMetricsEnabled=True and attached to
+        # real ALBs with traffic, zero datapoints in 24h+ until this.
+        dims.append({"Name": "Rule", "Value": "ALL"})
     if rt == "s3":
         # S3's CloudWatch dimensions differ by WHICH metric is being
         # requested, not just by resource: storage metrics (free,
