@@ -86,6 +86,9 @@ def generate_report(
         raise HTTPException(status_code=400, detail=f"report_type must be one of {sorted(_VALID_REPORT_TYPES)}")
     if scope_type not in _VALID_SCOPE_TYPES:
         raise HTTPException(status_code=400, detail=f"scope_type must be one of {sorted(_VALID_SCOPE_TYPES)}")
+    if scope_type == "INCIDENT" and not account_id:
+        raise HTTPException(status_code=400, detail="account_id is required for scope_type=INCIDENT "
+                                                      "(incidents are looked up per-account, same as the Incidents page)")
     _require_account_access(account_id, current_user)
 
     start, end = _resolve_period(report_type, period_start, period_end)

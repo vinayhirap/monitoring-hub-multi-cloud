@@ -87,6 +87,20 @@ def _status_color(status: str):
 
 
 # ── Data gathering ────────────────────────────────────────────────────
+#
+# Column-name correction (found while adding the incident narrative
+# below): the ORIGINAL version of this function queried
+# `a.value`/`a.created_at` and joined `resources r ON r.id = a.resource_id`
+# -- both wrong against the live schema. db/schema.sql's baseline
+# (`value`, `created_at`, resource_id as an int FK) was superseded long
+# ago: alerts.current_value / alerts.triggered_at / alerts.resolved_at
+# are the real columns (see app/collector/alert_evaluator.py's INSERT,
+# app/api/incidents.py's own query), and alerts.resource_id stores the
+# STRING cloud resource id (e.g. "i-0abc..."), not resources.id -- see
+# alert_evaluator.py's `r.resource_id AS aws_resource_id`. The wrong
+# join wouldn't error, it would just silently match nothing (or the
+# wrong rows), so this shipped once already without being caught by
+# py_compile. Fixed here: `r.resource_id = a.resource_id`.
 
 def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
                         period_start: datetime, period_end: datetime) -> dict:
@@ -94,36 +108,70 @@ def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
         account = None
         if account_id:
             cur.execute(
-                "SELECT id, account_id, name, region_default FROM aws_accounts WHERE id=%s",
+                "SELECT id, account_id, name, region_default, provider FROM aws_accounts WHERE id=%s",
                 (account_id,),
             )
             account = cur.fetchone()
 
         params = [period_start, period_end]
-        where = ["a.created_at BETWEEN %s AND %s"]
+        where = ["a.triggered_at BETWEEN %s AND %s"]
 
         if scope_type == "RESOURCE":
             where.append("r.resource_id = %s")
-            params.append(scope_id)
-        elif scope_type == "INCIDENT":
-            # This app's alert id doubles as the correlated-incident
-            # anchor for report purposes; scope_id is that alert id.
-            where.append("a.id = %s")
             params.append(scope_id)
         if account_id:
             where.append("r.aws_account_id = %s")
             params.append(account_id)
 
         sql = f"""
-            SELECT a.id, a.metric_name, a.value, a.severity, a.status, a.created_at,
-                   r.resource_type, r.resource_id, r.name AS resource_name
+            SELECT a.id, a.metric_name, a.current_value AS value, a.threshold,
+                   a.severity, a.status, a.triggered_at, a.resolved_at,
+                   r.resource_type, r.resource_id, r.name AS resource_name, r.region
             FROM alerts a
-            JOIN resources r ON r.id = a.resource_id
+            JOIN resources r ON r.resource_id = a.resource_id
             WHERE {' AND '.join(where)}
-            ORDER BY a.created_at ASC
+            ORDER BY a.triggered_at ASC
         """
         cur.execute(sql, params)
         alerts = cur.fetchall()
+
+        # Real correlated incidents (app/collector/correlate.py +
+        # app/api/incidents.py) overlapping the period -- these give
+        # the actual "incident" narrative: title, probable cause,
+        # start/end, member alerts/resources. A scope_type=INCIDENT
+        # request always has account_id set (enforced in
+        # app/api/reports.py) since incidents are looked up
+        # (id, account_id) just like the Incidents page does.
+        incidents = []
+        if scope_type != "RESOURCE":  # a single-resource report has no incident grouping to show
+            inc_where = ["i.started_at <= %s", "(i.resolved_at IS NULL OR i.resolved_at >= %s)"]
+            inc_params = [period_end, period_start]
+            if scope_type == "INCIDENT":
+                inc_where.append("i.id = %s")
+                inc_params.append(scope_id)
+            if account_id:
+                inc_where.append("i.aws_account_id = %s")
+                inc_params.append(account_id)
+            cur.execute(
+                f"""SELECT i.id, i.title, i.severity, i.status, i.primary_resource_id,
+                           i.probable_cause, i.started_at, i.resolved_at, i.last_seen_at
+                    FROM incidents i WHERE {' AND '.join(inc_where)}
+                    ORDER BY i.started_at ASC""",
+                inc_params,
+            )
+            incidents = cur.fetchall()
+            for inc in incidents:
+                cur.execute(
+                    """SELECT a.id, a.resource_id, a.metric_name, a.current_value AS value,
+                              a.severity, a.status, a.triggered_at, a.resolved_at,
+                              r.resource_type, r.name AS resource_name, r.region
+                       FROM incident_alerts ia
+                       JOIN alerts a ON a.id = ia.alert_id
+                       LEFT JOIN resources r ON r.resource_id = a.resource_id
+                       WHERE ia.incident_id = %s ORDER BY a.triggered_at ASC""",
+                    (inc["id"],),
+                )
+                inc["member_alerts"] = cur.fetchall()
 
         affected_resources = {}
         for a in alerts:
@@ -131,6 +179,7 @@ def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
                 "resource_id": a["resource_id"],
                 "resource_type": a["resource_type"],
                 "name": a["resource_name"],
+                "region": a.get("region"),
             })
 
     severity_counts = {"CRITICAL": 0, "WARNING": 0, "OTHER": 0}
@@ -148,13 +197,14 @@ def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
         daily_counts[cursor_day] = 0
         cursor_day += timedelta(days=1)
     for a in alerts:
-        d = a["created_at"].date()
+        d = a["triggered_at"].date()
         if d in daily_counts:
             daily_counts[d] += 1
 
     return {
         "account": account,
         "alerts": alerts,
+        "incidents": incidents,
         "affected_resources": list(affected_resources.values()),
         "severity_counts": severity_counts,
         "open_count": open_count,
@@ -239,6 +289,92 @@ class ReportPDF(FPDF):
         self.set_xy(x, y)
         self.cell(w, h, _safe(text), align="C", fill=True)
         self.set_text_color(*_INK)
+
+
+    def incident_card(self, inc: dict):
+        """One incident's full narrative -- title, severity/status,
+        start/end + duration, cloud/account/region, probable cause
+        (impact), every alert/resource that makes up the incident, and
+        a plain-language resolution line. This is the section a client
+        actually reads; the raw alert table further down is backup
+        detail for whoever wants to verify it."""
+        # Keep a card from splitting right after its header if it
+        # barely fits -- force it onto a fresh page instead.
+        if self.get_y() > self.h - 70:
+            self.add_page()
+
+        started = inc["started_at"]
+        resolved = inc.get("resolved_at")
+        # DB datetimes (mysql-connector) come back naive; strip tzinfo
+        # defensively so this works the same whether the caller (or a
+        # test harness) passes naive or aware datetimes.
+        _naive = lambda dt: dt.replace(tzinfo=None) if dt and dt.tzinfo else dt
+        now_naive = datetime.utcnow()
+        duration = (_naive(resolved) or now_naive) - _naive(started)
+        status = (inc.get("status") or "").lower()
+        is_resolved = status in ("resolved", "closed")
+
+        y0 = self.get_y()
+        self.set_draw_color(*_GRAY_LINE)
+        self.set_fill_color(252, 252, 253)
+        # Left accent bar colored by severity, card body below the title row.
+        card_x, card_w = self.l_margin, self.epw
+        self.rect(card_x, y0, card_w, 8, style="DF")
+        self.set_fill_color(*_severity_color(inc.get("severity")))
+        self.rect(card_x, y0, 2.2, 8, style="F")
+
+        self.set_xy(card_x + 4, y0 + 1)
+        self.set_font("Helvetica", "B", 10.5)
+        self.set_text_color(*_INK)
+        self.cell(card_w * 0.6, 6, _safe(f"Incident #{inc['id']}: {inc.get('title') or 'Untitled incident'}"))
+        sev_pill_x = card_x + card_w - 48
+        status_pill_x = sev_pill_x + 20 + 2  # 20mm severity pill + 2mm gap
+        self.pill(sev_pill_x, y0 + 1.2, inc.get("severity") or "-", _severity_color(inc.get("severity")), w=20)
+        self.pill(status_pill_x, y0 + 1.2, "RESOLVED" if is_resolved else "ACTIVE",
+                  _GREEN if is_resolved else _RED, w=24)
+        self.set_text_color(*_INK)
+        self.set_y(y0 + 9)
+
+        self.set_font("Helvetica", "", 9)
+        hours = duration.total_seconds() / 3600
+        dur_txt = f"{hours:.1f} hours" if hours < 48 else f"{hours/24:.1f} days"
+        self.set_x(card_x + 4)
+        self.cell(0, 5.5, _safe(
+            f"Started: {started:%Y-%m-%d %H:%M} UTC   "
+            f"{'Resolved: ' + resolved.strftime('%Y-%m-%d %H:%M') + ' UTC' if resolved else 'Status: still open'}   "
+            f"Duration: {dur_txt}"
+        ), new_x="LMARGIN", new_y="NEXT")
+
+        members = inc.get("member_alerts") or []
+        regions = sorted({m.get("region") for m in members if m.get("region")})
+        resource_names = sorted({(m.get("resource_name") or m.get("resource_id")) for m in members})
+        self.set_x(card_x + 4)
+        self.multi_cell(card_w - 8, 5.5, _safe(
+            f"Affected resources ({len(resource_names)}): " + (", ".join(resource_names) or "n/a") +
+            (f"   |   Region(s): {', '.join(regions)}" if regions else "")
+        ))
+
+        if inc.get("probable_cause"):
+            self.set_x(card_x + 4)
+            self.set_font("Helvetica", "B", 9)
+            self.cell(0, 5.5, _safe("Impact / probable cause:"), new_x="LMARGIN", new_y="NEXT")
+            self.set_x(card_x + 4)
+            self.set_font("Helvetica", "", 9)
+            self.multi_cell(card_w - 8, 5.5, _safe(inc["probable_cause"]))
+
+        self.set_x(card_x + 4)
+        self.set_font("Helvetica", "B", 9)
+        self.cell(0, 5.5, _safe("Resolution / current status:"), new_x="LMARGIN", new_y="NEXT")
+        self.set_x(card_x + 4)
+        self.set_font("Helvetica", "", 9)
+        if is_resolved:
+            note = (f"Resolved after {dur_txt} once all correlated metrics returned within threshold. "
+                    f"Last confirmed healthy at {inc['last_seen_at']:%Y-%m-%d %H:%M} UTC.")
+        else:
+            note = (f"Still active as of report generation ({dur_txt} and counting) -- "
+                    f"being tracked live in CloudOps; last activity {inc['last_seen_at']:%Y-%m-%d %H:%M} UTC.")
+        self.multi_cell(card_w - 8, 5.5, _safe(note))
+        self.ln(3)
 
 
 def _draw_cover(pdf: ReportPDF, *, title: str, subtitle: str, meta_lines: list[str]):
@@ -348,7 +484,7 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
     else:
         pdf.multi_cell(0, 6, _safe(f"Scope: {scope_type} = {scope_id}"))
 
-    pdf.section_title("Incident Summary")
+    pdf.section_title("Executive Summary")
     sc = data["severity_counts"]
     card_w = pdf.epw / 4 - 3
     y = pdf.get_y()
@@ -360,6 +496,24 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
 
     pdf.section_title("Event Trend Over Period")
     _draw_trend_chart(pdf, data["daily_counts"])
+
+    incidents = data.get("incidents") or []
+    pdf.section_title(f"Incident Summary ({len(incidents)} incident{'s' if len(incidents) != 1 else ''} in period)")
+    if incidents:
+        pdf.set_font("Helvetica", "", 9.5)
+        pdf.multi_cell(0, 5.5, _safe(
+            "Each incident below groups the correlated alerts CloudOps identified as one connected "
+            "event (see Incident Timeline for every individual alert)."
+        ))
+        pdf.ln(1)
+        for inc in incidents:
+            pdf.incident_card(inc)
+    else:
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(0, 6, _safe(
+            "No correlated incidents were identified in this period. Individual alerts, if any, "
+            "are listed in the Incident Timeline below."
+        ))
 
     pdf.section_title("Affected Resources")
     pdf.set_font("Helvetica", "", 10)
@@ -389,7 +543,7 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
             pdf.set_fill_color(248, 249, 251)
             pdf.rect(pdf.l_margin, row_y, sum(col_w), 6.5, style="F")
         pdf.set_xy(pdf.l_margin, row_y)
-        pdf.cell(col_w[0], 6.5, _safe(a["created_at"].strftime("%Y-%m-%d %H:%M")))
+        pdf.cell(col_w[0], 6.5, _safe(a["triggered_at"].strftime("%Y-%m-%d %H:%M")))
         pdf.pill(pdf.get_x(), row_y + 0.4, a.get("severity") or "-", _severity_color(a.get("severity")), w=col_w[1] - 2)
         pdf.set_xy(pdf.get_x() + col_w[1], row_y)
         pdf.pill(pdf.get_x(), row_y + 0.4, a.get("status") or "-", _status_color(a.get("status")), w=col_w[2] - 2)
