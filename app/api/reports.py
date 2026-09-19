@@ -14,8 +14,25 @@ RBAC: reports.view / reports.generate / reports.download / reports.email
 account-scope check as incidents/alerts (get_accessible_account_ids) --
 a report is just another account-scoped artifact, not a separate
 authorization model.
+
+Per-environment enable flag (2026-09-19): REPORTS_ENABLED=true|false in
+.env, defaulting to false -- deliberately opt-IN, unlike most flags in
+this app, so a fresh checkout never spins up the S3-writing background
+sweeper (app/reports/worker.py's run_sweeper_loop) or accepts report
+requests until someone explicitly turns it on for that box. Intended
+use: enabled on prod only, left off on dev, so dev doesn't run S3
+background jobs, doesn't need the IAM policy live there at all (even
+though the instance role is shared with prod), and its logs/journalctl
+stay free of report-sweeper noise. Every endpoint here calls
+_require_enabled() first and returns 503 until then, same pattern as
+app/api/sso.py's _check_enabled() for SSO_SAML_ENABLED. This is a
+dependency check, not conditional router mounting, so the route always
+exists (consistent 503 with a clear message rather than a bare 404)
+and flipping the flag needs nothing but a restart -- no code change,
+no redeploy.
 """
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
@@ -31,7 +48,19 @@ from app.reports import s3_client
 from app.reports.worker import run_job
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/reports", tags=["Reports"])
+def is_enabled() -> bool:
+    return os.getenv("REPORTS_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+
+
+def _require_enabled():
+    if not is_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Reports is not enabled on this environment -- set REPORTS_ENABLED=true in .env to activate it",
+        )
+
+
+router = APIRouter(prefix="/api/reports", tags=["Reports"], dependencies=[Depends(_require_enabled)])
 
 _VALID_REPORT_TYPES = {"WEEKLY", "MONTHLY", "QUARTERLY", "CUSTOM"}
 _VALID_SCOPE_TYPES = {"ACCOUNT", "RESOURCE", "INCIDENT", "CLIENT"}

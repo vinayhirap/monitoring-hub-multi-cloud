@@ -27,7 +27,17 @@ router = APIRouter(prefix="/api/permissions", tags=["Permissions"])
 @router.get("/me")
 def my_permissions(current_user: dict = Depends(get_current_user)):
     codes = get_role_permissions(current_user["role"])
-    return {"role": current_user["role"], "permissions": sorted(codes)}
+    from app.api.reports import is_enabled as reports_enabled
+    return {
+        "role": current_user["role"],
+        "permissions": sorted(codes),
+        # Per-environment feature flags -- piggybacked on this call
+        # (already fetched once per session by AuthContext) rather than
+        # adding a separate endpoint/fetch just for this. Reports is
+        # the first thing here (2026-09-19); add more the same way if
+        # another environment-gated feature shows up.
+        "features": {"reports": reports_enabled()},
+    }
 
 
 @router.get("")

@@ -110,8 +110,13 @@ def _start_all_collector_threads(leader_event, collector_enabled=True, describe_
     # Report-job sweeper: independent of collector_enabled/describe_poll_enabled
     # (it requeues stuck report_jobs, unrelated to CloudWatch/Describe polling
     # cost) but still leader-guarded so only one app instance runs it.
-    from app.reports.worker import run_sweeper_loop
-    threading.Thread(target=run_sweeper_loop, args=(leader_event,), daemon=True, name="report-sweeper").start()
+    # Gated on REPORTS_ENABLED (2026-09-19) -- this is the actual source of
+    # the "table doesn't exist" log noise on any box where the feature is
+    # off (e.g. dev, if only prod has REPORTS_ENABLED=true): with the flag
+    # off, don't even start the thread rather than let it loop and log.
+    if os.getenv("REPORTS_ENABLED", "false").strip().lower() in ("true", "1", "yes"):
+        from app.reports.worker import run_sweeper_loop
+        threading.Thread(target=run_sweeper_loop, args=(leader_event,), daemon=True, name="report-sweeper").start()
 
 
 @asynccontextmanager

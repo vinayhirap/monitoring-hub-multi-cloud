@@ -40,12 +40,12 @@ const NAV_ITEMS = [
   // { to: "/deploy-risk",         label: "Deploy Risk",         icon: DeployRiskIcon, roles: ["admin","editor","viewer"], perm: "deploy_risk.view" },
   { to: "/search",              label: "Search",              icon: SearchNavIcon,  roles: ["admin","editor","viewer"], perm: "search.query" },
   { to: "/status-page-admin",   label: "Status Page",         icon: StatusPageIcon, roles: ["admin","editor"],          perm: "status_page.manage" },
-  { to: "/reports",             label: "Reports",             icon: ReportsIcon,    roles: ["admin","editor","viewer"], perm: "reports.view" },
+  { to: "/reports",             label: "Reports",             icon: ReportsIcon,    roles: ["admin","editor","viewer"], perm: "reports.view", feature: "reports" },
   { to: "/settings",   label: "Settings",           icon: SettingsIcon,   roles: ["admin","editor"] },
 ];
 
 export default function Layout() {
-  const { user, logout, hasPermission } = useAuth();
+  const { user, logout, hasPermission, hasFeature } = useAuth();
   const navigate          = useNavigate();
   const location          = useLocation();
   const { timezone, setTimezone, ianaName } = useTimezone();
@@ -100,8 +100,15 @@ export default function Layout() {
   // else, `perm` is the actual RBAC-spec authorization decision where
   // it's defined. Backend enforcement (app/auth/permissions.py) is
   // independent of this either way; this only controls what's shown.
+  // An item with a `feature` must ALSO pass that per-environment flag
+  // (GET /api/permissions/me's features field) -- e.g. Reports is
+  // hidden entirely on any box with REPORTS_ENABLED=false, not just
+  // permission-gated, so dev shows no dead nav entry for a feature
+  // that isn't running there.
   const visibleNav = NAV_ITEMS.filter(item =>
-    item.roles.includes(role) && (!item.perm || hasPermission(item.perm))
+    item.roles.includes(role) &&
+    (!item.perm || hasPermission(item.perm)) &&
+    (!item.feature || hasFeature(item.feature))
   );
 
   // Gives the topbar a current-page label without every page having to
