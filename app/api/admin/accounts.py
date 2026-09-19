@@ -91,6 +91,49 @@ def get_account(account_id: int, current_user: dict = Depends(require_permission
     return _serialize(row)
 
 
+def _check_duplicate_account_id(account_id_value: str, id_label: str) -> None:
+    """Guard against onboarding the same underlying account twice under a
+    different-but-equivalent identifier string.
+
+    `aws_accounts.account_id` already has a DB-level UNIQUE constraint, but
+    it only enforces an *exact* string match -- it does nothing for a typo,
+    stray whitespace, or a case difference (Azure subscription_id/GCP
+    project_id can both vary in case in the wild). Two such near-identical
+    values sail straight past that constraint and land as two separate rows.
+
+    This is the confirmed root cause of two real incidents: the "U4RAD"
+    duplicate (ids 9 and 10, onboarded ~2 hours apart) and the account
+    7/10 identically-named CloudWatch Log Group collision that caused the
+    cross-account metric_history leak fixed in 20dbcac. Checking a
+    normalized (trimmed, case-insensitive) match here -- before any DB
+    write or external credential validation -- closes that gap and fails
+    fast with a clear message instead of a generic 500 or a silent dup.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, account_name, provider, status FROM aws_accounts "
+            "WHERE LOWER(TRIM(account_id)) = LOWER(TRIM(%s))",
+            (account_id_value,),
+        )
+        existing = cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
+
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This account is already onboarded as '{existing['account_name']}' "
+                f"(id={existing['id']}, provider={existing['provider']}, status={existing['status']}). "
+                f"Double-check the {id_label} for a typo or case difference if you meant to "
+                f"onboard a different account."
+            ),
+        )
+
+
 def _add_aws_account(payload: dict) -> tuple[int, str, str]:
     import json as _json
     from app.credentials import save_credential, new_credential_ref
@@ -105,6 +148,8 @@ def _add_aws_account(payload: dict) -> tuple[int, str, str]:
         raise HTTPException(status_code=400, detail="account_id is required")
     if not region:
         raise HTTPException(status_code=400, detail="default_region is required")
+
+    _check_duplicate_account_id(account_id, "AWS account ID")
 
     region = region.split(" ")[0]
     role_arn    = (payload.get("role_arn") or payload.get("iam_role_arn") or "").strip()
@@ -235,6 +280,8 @@ def _add_azure_account(payload: dict) -> tuple[int, str, str]:
             detail="default_region must be a valid Azure region short-name (e.g. 'centralindia', 'eastus2') -- lowercase letters/digits only",
         )
 
+    _check_duplicate_account_id(subscription_id, "Azure subscription ID")
+
     # Validate against real Azure ARM before writing anything.
     provider = get_provider("azure")
     try:
@@ -302,6 +349,8 @@ def _add_gcp_account(payload: dict) -> tuple[int, str, str]:
                if not v]
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing required field(s): {', '.join(missing)}")
+
+    _check_duplicate_account_id(project_id, "GCP project ID")
 
     try:
         key_obj = _json.loads(service_account_key)
