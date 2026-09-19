@@ -519,7 +519,6 @@ export default function Login() {
                 loop
                 playsInline
               />
-              <span className="login-visual-video-label">See it in action</span>
             </div>
           </div>
         </div>

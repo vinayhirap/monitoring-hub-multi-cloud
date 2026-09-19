@@ -125,7 +125,17 @@
 .login-visual-content {
   position: relative;
   z-index: 2;
-  max-width: 420px;
+  /* Was 420px -- that capped the ENTIRE right-column composition,
+     text and video alike, which is why there was a wide dead strip
+     between the (small, capped) video frame and the panel's actual
+     right edge (reported live, with a screenshot, 2026-09-19). The
+     paragraph itself still gets its own tighter max-width just below
+     for readability -- this only raises the ceiling for the column
+     as a whole, so the video frame has real room to be larger without
+     a structural layout change. max-width still naturally shrinks to
+     whatever's actually available on a narrower panel, same as
+     before, just with more headroom on wider ones. */
+  max-width: 560px;
 }
 .login-orbit {
   position: relative;
@@ -208,9 +218,9 @@
    max-width, so it never needs its own responsive breakpoints. */
 .login-visual-video-frame {
   position: relative;
-  margin-top: 22px;
+  margin-top: 24px;
   width: 100%;
-  max-width: 280px;
+  max-width: 400px;
   aspect-ratio: 16 / 9;
   border-radius: 12px;
   overflow: hidden;
@@ -224,19 +234,6 @@
   height: 100%;
   object-fit: cover;
 }
-.login-visual-video-label {
-  position: absolute;
-  left: 10px;
-  bottom: 8px;
-  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(220,230,245,0.85);
-  background: rgba(6,12,23,0.6);
-  padding: 3px 8px;
-  border-radius: 4px;
-}
 
 /* ── card ── */
 .login-card {
@@ -244,15 +241,20 @@
   z-index: 10;
   width: 100%;
   max-width: 420px;
-  background: rgba(10, 18, 32, 0.92);
+  /* Was a flat rgba(10,18,32,0.92) -- a subtle diagonal gradient
+     reads as an intentionally crafted surface rather than a plain
+     tinted panel, same "premium auth screen" cue as the top hairline
+     just below (2026-09-19, requested pass to make the whole card
+     feel more premium/professional). */
+  background: linear-gradient(165deg, rgba(15,24,42,0.94) 0%, rgba(8,14,26,0.94) 100%);
   border: 1px solid rgba(43,179,172, 0.15);
   border-radius: 16px;
   padding: 40px 36px 32px;
   box-shadow:
-    0 0 0 1px rgba(43,179,172,0.05),
+    0 0 0 1px rgba(43,179,172,0.06),
     0 32px 80px rgba(0, 0, 0, 0.55),
     0 8px 24px rgba(0, 0, 0, 0.35),
-    0 0 90px rgba(43,179,172,0.05);
+    0 0 100px rgba(43,179,172,0.09);
   backdrop-filter: blur(12px);
   animation: card-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
   overflow: hidden;
@@ -314,11 +316,18 @@
 
 /* ── headings ── */
 .login-title {
-  font-size: 22px;
+  /* Was 22px, no text-shadow -- bumped for more hero-like presence as
+     the first thing a returning user reads, plus a soft, very low-
+     opacity glow (not a hard shadow) for the same subtle-depth
+     treatment as the card background above. Kept the color/weight
+     otherwise identical so this stays a size/depth refinement, not a
+     new visual language. */
+  font-size: 25px;
   font-weight: 700;
   color: #e2e8f0;
   margin: 0 0 6px;
   letter-spacing: -0.01em;
+  text-shadow: 0 2px 24px rgba(43,179,172,0.18);
 }
 .login-desc {
   font-size: 12px;
@@ -357,6 +366,14 @@
   color: rgba(99, 130, 190, 0.65);
   display: flex;
   pointer-events: none;
+  transition: color 0.2s;
+}
+/* :focus-within on the wrapper (not a sibling selector off the input)
+   so this highlights correctly regardless of the icon/input's actual
+   DOM order -- small premium-feel touch: the icon confirms which
+   field is active the same instant the border/glow does. */
+.login-input-wrap:focus-within .login-input-icon {
+  color: #2bb3ac;
 }
 .login-input {
   width: 100%;
