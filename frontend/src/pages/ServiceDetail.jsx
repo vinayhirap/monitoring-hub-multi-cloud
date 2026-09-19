@@ -80,22 +80,26 @@ async function fetchAccount(id) {
 }
 
 // FIX: accountId param added — ELB was using undefined `id` from outer scope
+// 2026-09-19: EC2/EBS/Lambda/RDS/S3 now also take accountId explicitly in
+// the URL, same as ELB/ECS already did — closes the same cross-account
+// resolution ambiguity fixed in the backend the same day (see the comment
+// above live_ec2_metrics() etc. in app/api/live_data.py).
 async function fetchMetrics(service, row, region, hours, accountId) {
   const h = `hours=${hours}`;
   const r = `region=${region}`;
   switch (service) {
     case "EC2":
       if (row.state !== "running") return null;
-      return fetch(`${BASE}/api/live/metrics/ec2/${row.instance_id}?${r}&${h}`).then(res => res.json());
+      return fetch(`${BASE}/api/live/metrics/ec2/${accountId}/${row.instance_id}?${r}&${h}`).then(res => res.json());
     case "EBS":
       if (row.state !== "in-use") return null;
-      return fetch(`${BASE}/api/live/metrics/ebs/${row.volume_id}?${r}&${h}`).then(res => res.json());
+      return fetch(`${BASE}/api/live/metrics/ebs/${accountId}/${row.volume_id}?${r}&${h}`).then(res => res.json());
     case "Lambda":
-      return fetch(`${BASE}/api/live/metrics/lambda/${row.function_name}?${r}&${h}`).then(res => res.json());
+      return fetch(`${BASE}/api/live/metrics/lambda/${accountId}/${row.function_name}?${r}&${h}`).then(res => res.json());
     case "RDS":
-      return fetch(`${BASE}/api/live/metrics/rds/${row.db_instance_id}?${r}&${h}`).then(res => res.json());
+      return fetch(`${BASE}/api/live/metrics/rds/${accountId}/${row.db_instance_id}?${r}&${h}`).then(res => res.json());
     case "S3":
-      return fetch(`${BASE}/api/live/metrics/s3/${row.bucket_name || row.name}?${h}`).then(res => res.json());
+      return fetch(`${BASE}/api/live/metrics/s3/${accountId}/${row.bucket_name || row.name}?${h}`).then(res => res.json());
     case "ELB":
       // FIX: was using `id` (undefined) — now correctly uses accountId param
       return fetch(
