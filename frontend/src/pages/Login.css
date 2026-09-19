@@ -59,16 +59,41 @@
 }
 
 /* ── animated grid ── */
+/* ── background video ──
+   The .mp4 itself was committed (frontend/public/cloudops-brand-story.mp4)
+   but never actually referenced by any element -- the whole reason it
+   never rendered was a missing <video> tag, not a CSS/z-index/path
+   issue. Sits at z-index 0, below every other decorative layer;
+   .login-visual-video-overlay (z-index 1) keeps the existing dark,
+   teal-tinted look and text contrast regardless of the video's own
+   brightness/color, and the grid/blob/content layers above it are
+   completely unchanged. */
+.login-visual-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+  pointer-events: none;
+}
+.login-visual-video-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(165deg, rgba(10,20,36,0.88) 0%, rgba(6,12,23,0.92) 65%);
+  pointer-events: none;
+}
 .login-grid {
   position: absolute;
   inset: 0;
+  z-index: 1;
   display: grid;
   grid-template-columns: repeat(10, 1fr);
   grid-template-rows: repeat(8, 1fr);
   opacity: 0.06;
   pointer-events: none;
-}
-.login-grid-cell {
+}.login-grid-cell {
   border: 1px solid rgba(43,179,172, 0.5);
   animation: grid-pulse 4s ease-in-out infinite;
 }
@@ -84,6 +109,7 @@
 /* ── glow blobs ── */
 .login-blob {
   position: absolute;
+  z-index: 1;
   border-radius: 50%;
   filter: blur(80px);
   pointer-events: none;
