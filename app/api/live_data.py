@@ -882,8 +882,17 @@ def live_generic_metrics(
 
     result = {}
     for row in catalog_rows:
+        # account_id=account_db_id here closes the exact cross-account
+        # leak found live on U4RAD (accounts 7 & 10 both discovered a
+        # log group literally named "System") -- unlike every other
+        # caller of _metric_history_query_range, this endpoint's URL
+        # already carries account_db_id explicitly (no _resolve_
+        # resource_account() guess needed), so there's no excuse for
+        # leaving this unscoped. See the account_id note on
+        # _metric_history_query_range's docstring in collector_direct.py.
         series = _metric_history_query_range(
-            service, resource_id, row["metric_name"], start, end, match_field="resource_id"
+            service, resource_id, row["metric_name"], start, end,
+            match_field="resource_id", account_id=account_db_id,
         )
         if not series:
             continue  # no data yet for this metric/resource combo -- skip, don't render an empty chart
@@ -918,7 +927,12 @@ def live_ebs_metrics(
     current_user: dict = Depends(require_permission("metrics.view")),
 ):
     _check_resource_scope(current_user, volume_id)
-    return _get_ebs_metric_series(volume_id, region, hours)
+    # Same account resolution live_ec2_metrics already does a few lines
+    # up -- this endpoint never did, so _get_ebs_metric_series() had no
+    # account to scope its metric_history lookups by (2026-09-18
+    # cross-account leak fix).
+    account = _resolve_resource_account(volume_id)
+    return _get_ebs_metric_series(volume_id, region, hours, account=account)
 
 
 @router.get("/metrics/rds/{db_id}")
@@ -929,7 +943,8 @@ def live_rds_metrics(
     current_user: dict = Depends(require_permission("metrics.view")),
 ):
     _check_resource_scope(current_user, db_id)
-    return _get_rds_metric_series(db_id, region, hours)
+    account = _resolve_resource_account(db_id)
+    return _get_rds_metric_series(db_id, region, hours, account=account)
 
 
 @router.get("/metrics/lambda/{function_name}")
