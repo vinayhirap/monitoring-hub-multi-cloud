@@ -439,11 +439,18 @@ def _evaluate_alerts_body(conn, cursor):
         is_breaching = is_critical or is_warning
 
         # ── Existing open alert for this resource+metric? ─────
+        # aws_account_id is REQUIRED here, not optional -- see
+        # migration 047 and _dynamic_bounds()'s own comment a few lines
+        # up in this file for the 2026-09-16 AuroGov Mumbai/U4RAD
+        # resource_id collision this exact unscoped lookup caused:
+        # without the account match, this could find and silently
+        # update/resolve the OTHER account's alert row for a resource
+        # sharing this one's raw AWS resource_id.
         cursor.execute("""
             SELECT id, severity FROM alerts
-            WHERE resource_id = %s AND metric_name = %s AND status = 'active'
+            WHERE aws_account_id = %s AND resource_id = %s AND metric_name = %s AND status = 'active'
             LIMIT 1
-        """, (aws_resource_id, metric_name))
+        """, (aws_account_id, aws_resource_id, metric_name))
         existing = cursor.fetchone()
 
         if not is_breaching:
@@ -553,12 +560,12 @@ def _evaluate_alerts_body(conn, cursor):
         group_key = f"{aws_account_id}:{row['resource_type']}:{metric_name}"
         cursor.execute("""
             INSERT INTO alerts
-                (resource_id, metric_name, severity,
+                (aws_account_id, resource_id, metric_name, severity,
                  environment, group_key, status, triggered_at, last_seen_at,
                  healthy_streak, current_value, threshold)
-            VALUES (%s, %s, %s, %s, %s, 'active', %s, NOW(), 0, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, NOW(), 0, %s, %s)
         """, (
-            aws_resource_id, metric_name, promoted_severity, environment,
+            aws_account_id, aws_resource_id, metric_name, promoted_severity, environment,
             group_key, pending["first_breach_at"], metric_value, threshold_value,
         ))
         new_alert_id = cursor.lastrowid

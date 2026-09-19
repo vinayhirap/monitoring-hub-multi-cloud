@@ -67,15 +67,24 @@ def _get_alert_account_id(alert_id: int):
     """Returns the aws_accounts.id an alert belongs to, or None if the
     alert doesn't exist. Used to authorize single-alert actions
     (ack/resolve/mute/console-url) against the caller's scope before
-    touching the row -- see _require_alert_access."""
+    touching the row -- see _require_alert_access.
+
+    Reads alerts.aws_account_id directly (migration 047) rather than
+    re-deriving it via `JOIN resources ON resource_id = resource_id`.
+    That join was a real authorization bug, not just a display one:
+    resource_id is only unique WITHIN one AWS account (confirmed
+    colliding in production between two real accounts -- see
+    alert_evaluator.py's _dynamic_bounds() comment), so the join could
+    match resources rows in a DIFFERENT account and fetchone() would
+    silently pick one, potentially authorizing this action against the
+    wrong account's scope.
+    """
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
-        SELECT acc.id AS account_id
-        FROM alerts a
-        JOIN resources r      ON r.resource_id = a.resource_id
-        JOIN aws_accounts acc ON acc.id = r.aws_account_id
-        WHERE a.id = %s
+        SELECT aws_account_id AS account_id
+        FROM alerts
+        WHERE id = %s
     """, (alert_id,))
     row = cursor.fetchone()
     cursor.close()

@@ -52,9 +52,8 @@ def correlate_alerts_into_incidents():
     try:
         cursor.execute("""
             SELECT a.id, a.resource_id, a.severity, a.triggered_at AS created_at,
-                   r.aws_account_id
+                   a.aws_account_id
             FROM alerts a
-            JOIN resources r ON r.resource_id = a.resource_id
             LEFT JOIN incident_alerts ia ON ia.alert_id = a.id
             LEFT JOIN incidents i ON i.id = ia.incident_id AND i.status = 'active'
             WHERE a.status = 'active' AND i.id IS NULL
