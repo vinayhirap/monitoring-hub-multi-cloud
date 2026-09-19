@@ -37,7 +37,7 @@ from app.aws.boto_config import STANDARD_RETRY
 logger = logging.getLogger(__name__)
 
 
-def _metric_snapshot_query_all(resource_type, db_metric_name):
+def _metric_snapshot_query_all(resource_type, db_metric_name, account_id=None):
     """
     Drop-in replacement for vm_client.vm_query_all's role in the
     list-view snapshot functions below (_ec2_raw, _ebs_raw): every
@@ -48,18 +48,40 @@ def _metric_snapshot_query_all(resource_type, db_metric_name):
     maintains -- no time range needed, this is a snapshot, not a series.
     Returns {} on any error -- same never-raises contract vm_query_all
     had. See apply_list_view_snapshots_metrics.py (Phase 4b).
+
+    account_id (2026-09-18 cross-account leak fix, U4RAD accounts 7 vs
+    10): resource_id is only unique WITHIN a provider account, not
+    globally -- two different AWS accounts can (and, confirmed live,
+    do) discover a resource with the identical resource_id/name (e.g.
+    a Lambda function or CloudWatch Logs log group named the same
+    generic thing in both). Without this filter, a resource_type+
+    resource_id collision across accounts made this silently return
+    whichever account's row happened to match first, handing one
+    account's list-view numbers to another. Optional (defaults to the
+    old unscoped behavior) only because a couple of call sites don't
+    have an account_id to pass yet -- see the same note on
+    _metric_history_query_range below.
     """
     out = {}
     try:
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
         try:
-            cur.execute(
-                """SELECT r.resource_id, m.metric_value
-                   FROM metrics m JOIN resources r ON r.id = m.resource_id
-                   WHERE r.resource_type = %s AND m.metric_name = %s""",
-                (resource_type, db_metric_name),
-            )
+            if account_id is not None:
+                cur.execute(
+                    """SELECT r.resource_id, m.metric_value
+                       FROM metrics m JOIN resources r ON r.id = m.resource_id
+                       WHERE r.resource_type = %s AND m.metric_name = %s
+                             AND r.aws_account_id = %s""",
+                    (resource_type, db_metric_name, account_id),
+                )
+            else:
+                cur.execute(
+                    """SELECT r.resource_id, m.metric_value
+                       FROM metrics m JOIN resources r ON r.id = m.resource_id
+                       WHERE r.resource_type = %s AND m.metric_name = %s""",
+                    (resource_type, db_metric_name),
+                )
             for row in cur.fetchall():
                 if row["metric_value"] is not None:
                     out[row["resource_id"]] = float(row["metric_value"])
@@ -72,7 +94,8 @@ def _metric_snapshot_query_all(resource_type, db_metric_name):
 
 
 def _metric_history_query_range(resource_type, identifier, db_metric_name,
-                                 start_dt, end_dt, match_field="resource_id"):
+                                 start_dt, end_dt, match_field="resource_id",
+                                 account_id=None):
     """
     Drop-in replacement for vm_client.vm_query_range's role in the 6
     chart-series functions below. Reads app/collector/metrics/runner.py's
@@ -83,15 +106,41 @@ def _metric_history_query_range(resource_type, identifier, db_metric_name,
     same never-raises, degrade-to-empty contract vm_query_range already
     had. match_field is always one of the two literal strings this file
     passes in below ("resource_id" or "name"), never user input.
+
+    account_id (2026-09-18 cross-account leak fix, found chasing a
+    U4RAD "logs/events show no data" report): this lookup used to be
+    `WHERE resource_type = %s AND {match_field} = %s LIMIT 1` with NO
+    account filter at all. resource_id/name is only unique WITHIN a
+    provider account -- confirmed live, U4RAD's own accounts 7 and 10
+    both discovered log groups literally named
+    "/aws/lambda/cid-CID-Analytics-DataExports" and "System". LIMIT 1
+    with no account filter meant whichever of the two accounts'
+    resources row sorted first silently won, so a chart requested for
+    account 10 could render account 7's collected data with no
+    indication anything was wrong. Passing account_id (every caller
+    below now has one available -- either threaded in via `account`,
+    or, for the generic endpoint, already sitting in the URL as
+    account_db_id, requiring no new resolution at all) makes the match
+    unambiguous. Optional/defaulted to None only so this doesn't have
+    to be a single all-or-nothing change across every caller in this
+    file at once.
     """
     try:
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
         try:
-            cur.execute(
-                f"SELECT id FROM resources WHERE resource_type = %s AND {match_field} = %s LIMIT 1",
-                (resource_type, identifier),
-            )
+            if account_id is not None:
+                cur.execute(
+                    f"""SELECT id FROM resources
+                        WHERE resource_type = %s AND {match_field} = %s
+                              AND aws_account_id = %s LIMIT 1""",
+                    (resource_type, identifier, account_id),
+                )
+            else:
+                cur.execute(
+                    f"SELECT id FROM resources WHERE resource_type = %s AND {match_field} = %s LIMIT 1",
+                    (resource_type, identifier),
+                )
             row = cur.fetchone()
             if not row:
                 return []
@@ -342,9 +391,10 @@ def _ec2_raw(region, role_arn=None, external_id=None, account=None) -> list:
         # One DB query per metric gets EVERY instance's current value at
         # once -- same "one call, not one per instance" shape the VM call
         # this replaces had, just against the local `metrics` cache now.
-        cpu_map    = _metric_snapshot_query_all("ec2", "cpuutilization")
-        netin_map  = _metric_snapshot_query_all("ec2", "networkin")
-        netout_map = _metric_snapshot_query_all("ec2", "networkout")
+        acc_id     = (account or {}).get("id")
+        cpu_map    = _metric_snapshot_query_all("ec2", "cpuutilization", account_id=acc_id)
+        netin_map  = _metric_snapshot_query_all("ec2", "networkin", account_id=acc_id)
+        netout_map = _metric_snapshot_query_all("ec2", "networkout", account_id=acc_id)
 
         out = []
         for inst in instances:
@@ -393,11 +443,12 @@ def _ebs_raw(region, role_arn=None, external_id=None, account=None) -> list:
         ec2  = get_session(region, role_arn, external_id, account).client("ec2")
         vols = ec2.describe_volumes().get("Volumes", [])
 
-        read_ops_map  = _metric_snapshot_query_all("ebs", "volumereadops")
-        write_ops_map = _metric_snapshot_query_all("ebs", "volumewriteops")
-        read_b_map    = _metric_snapshot_query_all("ebs", "volumereadbytes")
-        write_b_map   = _metric_snapshot_query_all("ebs", "volumewritebytes")
-        queue_map     = _metric_snapshot_query_all("ebs", "volumequeuelength")
+        acc_id        = (account or {}).get("id")
+        read_ops_map  = _metric_snapshot_query_all("ebs", "volumereadops", account_id=acc_id)
+        write_ops_map = _metric_snapshot_query_all("ebs", "volumewriteops", account_id=acc_id)
+        read_b_map    = _metric_snapshot_query_all("ebs", "volumereadbytes", account_id=acc_id)
+        write_b_map   = _metric_snapshot_query_all("ebs", "volumewritebytes", account_id=acc_id)
+        queue_map     = _metric_snapshot_query_all("ebs", "volumequeuelength", account_id=acc_id)
         # burst_balance: Phase 1's GMD collector never collects this
         # (dropped per its own triage note, "gp3 irrelevant") -- always
         # empty now, same documented gap as the EBS chart-detail page
@@ -406,7 +457,7 @@ def _ebs_raw(region, role_arn=None, external_id=None, account=None) -> list:
         # rather than showing "no data", so the visible behavior here is
         # unchanged either way -- just always 0.0 now instead of
         # sometimes-VM-sometimes-0.0.
-        burst_map     = _metric_snapshot_query_all("ebs", "volumeburstbalance")
+        burst_map     = _metric_snapshot_query_all("ebs", "volumeburstbalance", account_id=acc_id)
 
         out = []
         for v in vols:
@@ -1318,7 +1369,8 @@ def get_ec2_metric_series(instance_id, region=None, hours=6, account=None) -> di
         dim    = f'dimension_InstanceId="{instance_id}"'
 
         def s(db_metric_name):
-            return _metric_history_query_range("ec2", instance_id, db_metric_name, start, end)
+            return _metric_history_query_range("ec2", instance_id, db_metric_name, start, end,
+                                                account_id=(account or {}).get("id"))
 
         cwagent_installed = _ec2_cwagent_installed(instance_id, region, account)
 
@@ -1386,7 +1438,7 @@ def get_ec2_metric_series(instance_id, region=None, hours=6, account=None) -> di
 
 # ── Metric series — EBS (now VM-backed) ──────────────────────────────────
 
-def _get_ebs_metric_series(volume_id, region=None, hours=6) -> dict:
+def _get_ebs_metric_series(volume_id, region=None, hours=6, account=None) -> dict:
     try:
         end    = datetime.now(timezone.utc)
         start  = end - timedelta(hours=hours)
@@ -1394,7 +1446,8 @@ def _get_ebs_metric_series(volume_id, region=None, hours=6) -> dict:
         dim    = f'dimension_VolumeId="{volume_id}"'
 
         def s(db_metric_name):
-            return _metric_history_query_range("ebs", volume_id, db_metric_name, start, end)
+            return _metric_history_query_range("ebs", volume_id, db_metric_name, start, end,
+                                                account_id=(account or {}).get("id"))
         return {
             "volume_id":    volume_id,
             "read_ops":     s("volumereadops"),
@@ -1454,7 +1507,8 @@ def _get_lambda_metric_series_raw(function_name, region=None, hours=6, account=N
 
         def vm_series(db_metric_name):
             return _metric_history_query_range("lambda", function_name, db_metric_name,
-                                                start, end, match_field="name")
+                                                start, end, match_field="name",
+                                                account_id=(account or {}).get("id"))
 
         result = {
             "invocations": vm_series("invocations"),
@@ -1504,7 +1558,7 @@ def _get_lambda_metric_series_raw(function_name, region=None, hours=6, account=N
 
 # ── Metric series — RDS (now VM-backed) ──────────────────────────────────
 
-def _get_rds_metric_series(db_id, region=None, hours=6) -> dict:
+def _get_rds_metric_series(db_id, region=None, hours=6, account=None) -> dict:
     try:
         end    = datetime.now(timezone.utc)
         start  = end - timedelta(hours=hours)
@@ -1512,7 +1566,8 @@ def _get_rds_metric_series(db_id, region=None, hours=6) -> dict:
         dim    = f'dimension_DBInstanceIdentifier="{db_id}"'
 
         def s(db_metric_name):
-            return _metric_history_query_range("rds", db_id, db_metric_name, start, end)
+            return _metric_history_query_range("rds", db_id, db_metric_name, start, end,
+                                                account_id=(account or {}).get("id"))
         return {
             "db_id":           db_id,
             "cpu":             s("cpuutilization"),
@@ -1591,7 +1646,8 @@ def _get_elb_metric_series(lb_name: str, region=None, hours=6, account=None) -> 
         # app/collector/discovery/runner.py's _discover_elb().
         def vm_series(db_metric_name):
             return _metric_history_query_range("elb", lb_name, db_metric_name,
-                                                start, end, match_field="name")
+                                                start, end, match_field="name",
+                                                account_id=(account or {}).get("id"))
 
         # requests/errors_5xx/latency/healthy_hosts: Phase 1's GMD collector
         # covers these (ELB_METRICS). The other 5 keys were deliberately
@@ -1617,8 +1673,8 @@ def _get_elb_metric_series(lb_name: str, region=None, hours=6, account=None) -> 
             # aggregation instead (no CloudWatch dimension problem at all,
             # since it's not a CloudWatch call). See
             # apply_fix_alb_healthy_hosts.py.
-            "healthy_hosts":      _metric_history_query_range("elb", lb_name, "healthyhosts_describe", start, end, match_field="name"),
-            "unhealthy_hosts":    _metric_history_query_range("elb", lb_name, "unhealthyhosts_describe", start, end, match_field="name"),
+            "healthy_hosts":      _metric_history_query_range("elb", lb_name, "healthyhosts_describe", start, end, match_field="name", account_id=(account or {}).get("id")),
+            "unhealthy_hosts":    _metric_history_query_range("elb", lb_name, "unhealthyhosts_describe", start, end, match_field="name", account_id=(account or {}).get("id")),
             "active_connections": vm_series("activeconnections"),
             "new_connections":    vm_series("newconnections"),
         }
@@ -1699,7 +1755,8 @@ def _get_ecs_metric_series(cluster_name: str, service_name: str = None,
         # against app/collector/discovery/runner.py's _discover_ecs().
         def vm_series(db_metric_name):
             return _metric_history_query_range("ecs", cluster_name, db_metric_name,
-                                                start, end, match_field="name")
+                                                start, end, match_field="name",
+                                                account_id=(account or {}).get("id"))
 
         # AWS/ECS CPUUtilization/MemoryUtilization are EXCLUDED from Phase
         # 1's GMD collector entirely (its own docstring: "AWS/ECS basic
