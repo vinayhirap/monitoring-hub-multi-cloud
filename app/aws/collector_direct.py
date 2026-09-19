@@ -188,10 +188,12 @@ def get_session(region=None, role_arn=None, external_id=None, account=None):
     """
     Cross-account credentials for a SPECIFIC AWS account (role_arn
     given) come from a real STS AssumeRole (app.aws.sts.assume_role) —
-    the same helper already used correctly by discovery and console
-    federation. Without role_arn, falls back to ambient credentials
-    (env vars / instance profile / shared config), unchanged from
-    before — every OTHER caller of get_session in this file that
+    the same helper already used correctly by discovery. (NOT used for
+    console links any more -- app/aws/federation.py's account-locked
+    sign-in links require no credential-minting step at all; see that
+    module's docstring.) Without role_arn, falls back to ambient
+    credentials (env vars / instance profile / shared config), unchanged
+    from before — every OTHER caller of get_session in this file that
     doesn't pass role_arn/account is unaffected.
 
     `account` (optional): the full aws_accounts DB row dict. When given,

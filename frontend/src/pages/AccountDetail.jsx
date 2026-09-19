@@ -2,20 +2,23 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { getLiveEC2, getLiveEC2Metrics } from "../api/api";
+import { getLiveEC2, getLiveEC2Metrics, getConsoleUrl } from "../api/api";
 import "./AccountDetail.css";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached } from "../utils/dataCache";
 
+// NOTE (2026-09-18 console-link audit): this page used to keep its own
+// local openAccountConsole() that called fetch() directly instead of
+// api.js's shared apiFetch() -- functionally similar for this
+// same-origin app, but it silently skipped apiFetch's 401-session-
+// expiry redirect and clearAllCached() cleanup (see api.js's apiFetch
+// docstring), so a mid-session-expiry click here would have shown a
+// confusing generic error instead of bouncing to /login like every
+// other console button in the app does. Replaced with the shared
+// getConsoleUrl() helper below -- one implementation, one behavior.
 async function openAccountConsole(accountId, service, resourceId) {
   try {
-    const params = new URLSearchParams({ service });
-    if (resourceId) params.set("resource_id", resourceId);
-    // POST, not GET: see app/api/admin/accounts.py's console-url
-    // docstring for the CSRF/audit-log-side-effect reasoning.
-    const res = await fetch(`/api/admin/accounts/${accountId}/console-url?${params}`, { method: "POST" });
-    if (!res.ok) throw new Error(String(res.status));
-    const data = await res.json();
+    const data = await getConsoleUrl(accountId, service, { resourceId });
     window.open(data.url, "_blank", "noopener,noreferrer");
   } catch (e) {
     console.error("Console link failed:", e);
@@ -141,7 +144,9 @@ export default function AccountDetail() {
         </div>
         <div className="detail-header-right">
           <button className="btn-back" onClick={() => navigate("/overview")}>← Back to Account</button>
-          {/* Console link now backend-generated — federated, correct account */}
+          {/* Account-locked console link, backend-generated -- opens the
+              correct account, but still requires the visitor's own
+              sign-in (see app/aws/federation.py's module docstring). */}
           <button className="btn-aws" onClick={() => openAccountConsole(id, "ec2")}>
             ☁ AWS Console ↗
           </button>
@@ -318,7 +323,9 @@ export default function AccountDetail() {
               )}
             </div>
 
-            {/* Console link now backend-generated — federated, correct account */}
+            {/* Account-locked console link, backend-generated -- opens the
+                correct account, but still requires the visitor's own
+                sign-in (see app/aws/federation.py's module docstring). */}
             <button className="btn-open-aws" onClick={() => openAccountConsole(id, "ec2", selected.instance_id)}>
               ☁ Open in AWS ↗
             </button>

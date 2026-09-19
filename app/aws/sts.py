@@ -77,6 +77,19 @@ def get_self_federation_session(session_name: str | None = None,
     that further narrows the session below ReadOnlyAccess — AWS
     always takes the INTERSECTION of PolicyArns and Policy, so this
     can only restrict, never expand, what the session can do.
+
+    NOT CURRENTLY CALLED ANYWHERE (confirmed by repo-wide grep,
+    2026-09-18 console-link audit) -- this was the credential-minting
+    step of the OLD AWS console-link approach, removed 2026-09-12 in
+    favor of an account-locked sign-in link that mints no credentials
+    at all (see app/aws/federation.py's module docstring for the full
+    explanation and why that change was made). Do not wire this back
+    into console-link generation to "fix" a link problem -- that would
+    silently reintroduce auto-signing the visiting person in AS this
+    app's own server identity, exactly the behavior that audit removed.
+    If a genuinely new feature needs a real scoped session (not just a
+    link), that decision and its consent/audit story should be made
+    explicitly, not by resurrecting this function's old call site.
     """
     sts = boto3.client("sts", config=STANDARD_RETRY)
     kwargs = {

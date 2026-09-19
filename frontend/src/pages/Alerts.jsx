@@ -66,7 +66,7 @@ function playBeep(severity) {
 // A plain URL like that has no account context — clicking it just opens
 // whatever AWS account the browser is already signed into, which is why
 // the button used to land on the WRONG account. Instead we ask the backend
-// for a federated sign-in link scoped to THIS alert's account
+// for an account-locked sign-in link scoped to THIS alert's account
 // (see openConsole / GET /alerts/{id}/console-url).
 function hasConsoleTarget(resource) {
   // Previously guessed AWS resource-ID shapes (i-.../vol-.../arn:aws:...)
@@ -273,7 +273,7 @@ export default function Alerts() {
   // Opens THIS alert's resource in THIS alert's AWS account. We can't just
   // link straight to console.aws.amazon.com — that ignores which account
   // is intended and opens whatever account the browser is already signed
-  // into. Instead we ask the backend for a federated sign-in URL scoped to
+  // into. Instead we ask the backend for an account-locked sign-in URL scoped to
   // the correct account, then open that.
   async function openConsole(id) {
     // Open the tab synchronously (on the click) so browsers don't block it
@@ -284,7 +284,7 @@ export default function Alerts() {
     // every other window.open() call in this codebase (ServiceList.jsx,
     // AccountDetail.jsx, ServiceDetail.jsx), which all pass
     // "noopener,noreferrer" directly. Whatever eventually loads in `tab`
-    // (here: the AWS federation URL) would otherwise get script-level
+    // (here: the AWS account-locked sign-in URL) would otherwise get script-level
     // access to navigate the ORIGINAL tab via window.opener.location --
     // classic reverse tabnabbing. Can't pass "noopener" as a literal
     // argument here the way the other call sites do, since this call

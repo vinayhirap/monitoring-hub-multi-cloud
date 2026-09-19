@@ -98,6 +98,24 @@
 
 .inst-name { font-weight: 600; color: var(--text-primary); font-size: 12px; }
 .inst-id   { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+
+/* Per-row "open in cloud console" icon button -- GenericServiceDetail.jsx
+   (added 2026-09-18 console-link audit, to cover the ~30 AWS-extended
+   resource types plus every GCP/Azure service that page renders, none
+   of which previously had any way to deep-link to a specific resource,
+   only the service-wide list). Kept quiet/transparent by default so a
+   long resource table doesn't turn into a wall of buttons; teal on
+   hover, matching this app's --accent color everywhere else. */
+.btn-icon-console {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; border-radius: 6px;
+  background: transparent; border: 1px solid transparent;
+  color: var(--text-muted); cursor: pointer; transition: all .15s;
+}
+.btn-icon-console:hover:not(:disabled) {
+  color: var(--accent); border-color: var(--accent); background: rgba(43,179,172,.08);
+}
+.btn-icon-console:disabled { opacity: .4; cursor: default; }
 .mono  { font-family: var(--font-mono); }
 .small { font-size: 11px; color: var(--text-secondary); }
 .muted { color: var(--text-muted); }
