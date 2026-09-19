@@ -59,40 +59,16 @@
 }
 
 /* ── animated grid ── */
-/* ── background video ──
-   The .mp4 itself was committed (frontend/public/cloudops-brand-story.mp4)
-   but never actually referenced by any element -- the whole reason it
-   never rendered was a missing <video> tag, not a CSS/z-index/path
-   issue. Sits at z-index 0, below every other decorative layer;
-   .login-visual-video-overlay (z-index 1) keeps the existing dark,
-   teal-tinted look and text contrast regardless of the video's own
-   brightness/color, and the grid/blob/content layers above it are
-   completely unchanged. */
-.login-visual-video {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  z-index: 0;
-  pointer-events: none;
-}
-.login-visual-video-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  /* 2026-09-19: was rgba(...,0.88)/rgba(...,0.92) -- copied straight
-     from .login-visual's own solid (video-less) background gradient,
-     which made sense as an opaque backdrop but, layered ON TOP of the
-     video, crushed it to essentially invisible (confirmed: the video
-     itself is fine, its content is a normal-brightness teal-on-near-
-     black animation, verified by extracting frames with ffmpeg).
-     Dropped to 0.45/0.55 -- enough to still tie the two panel halves
-     together and keep the headline/body text readable, without
-     drowning out the one thing this whole change was for. */
-  background: linear-gradient(165deg, rgba(10,20,36,0.45) 0%, rgba(6,12,23,0.55) 65%);
-  pointer-events: none;
-}
+/* 2026-09-19: brand-story video moved OUT of this full-bleed
+   background layer entirely -- see .login-visual-video-frame further
+   down. It used to sit here (z-index 0, with a dark overlay on top to
+   keep text contrast) directly behind .login-visual-content's
+   headline, but the video has its own baked-in labels
+   (COLLECT/ANALYZE/DETECT) that visually collided with "Total
+   visibility. Across every cloud." sitting on top of it. Grid/blob
+   below keep the z-index:1 they picked up while the video was here --
+   harmless now that nothing else shares this stacking context, not
+   worth the risk of an unnecessary extra diff to revert it. */
 .login-grid {
   position: absolute;
   inset: 0;
@@ -222,6 +198,44 @@
   flex-shrink: 0; width: 18px; height: 18px; margin-top: 1px;
   border-radius: 50%; background: rgba(43,179,172,0.15); border: 1px solid rgba(43,179,172,0.4);
   color: #2bb3ac; display: flex; align-items: center; justify-content: center;
+}
+
+/* ── brand-story video preview ──
+   Small framed clip in normal document flow, below the feature list --
+   deliberately NOT absolutely positioned, so it can never overlap the
+   copy above it (headline/description/features) at any panel width.
+   max-width caps it well inside .login-visual-content's own 420px
+   max-width, so it never needs its own responsive breakpoints. */
+.login-visual-video-frame {
+  position: relative;
+  margin-top: 22px;
+  width: 100%;
+  max-width: 280px;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(43,179,172,0.25);
+  box-shadow: 0 8px 30px rgba(0,0,0,0.35), 0 0 0 1px rgba(43,179,172,0.06);
+  background: #060c17;
+}
+.login-visual-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.login-visual-video-label {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(220,230,245,0.85);
+  background: rgba(6,12,23,0.6);
+  padding: 3px 8px;
+  border-radius: 4px;
 }
 
 /* ── card ── */
