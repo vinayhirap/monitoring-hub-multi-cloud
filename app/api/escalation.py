@@ -5,14 +5,57 @@ roadmap phase 9). Gated on alerts.configure — same permission that
 already governs threshold configuration (app/api/settings.py) — since
 an escalation policy is, functionally, another kind of alert-behavior
 configuration, not a separate privileged surface.
+
+SECURITY: every endpoint below additionally enforces account scope via
+get_accessible_account_ids() (app/auth/authorization.py) -- the same
+deny-by-default access_scopes system already used by
+app/api/admin/accounts.py and 14 other endpoint files. Before this fix,
+none of the four endpoints here checked it at all: list_policies
+returned every account's policies to any editor regardless of their
+own access_scopes grants, create_policy accepted any aws_account_id
+with no ownership check, and update_policy/delete_policy took a bare
+policy_id with NO scope check whatsoever -- a pure IDOR, since neither
+looked up which account the policy even belonged to before mutating
+it. An editor scoped to exactly one client account could view, create,
+modify, or delete another client's escalation policy. Found while
+scoping Phase 3 of the RBAC audit plan (this is a live gap in the
+CURRENT, already-enforced v1 access_scopes system, not something that
+needs the v2 cutover to fix -- same pattern already proven in
+app/api/admin/accounts.py).
+
+A NULL aws_account_id policy is the org-wide fallback that applies to
+every account not covered by a specific policy, so it affects
+everyone -- creating, editing, or deleting one is treated as an
+admin-rank action regardless of the caller's per-account scope grants.
 """
 import logging
 from fastapi import APIRouter, Body, HTTPException, Depends
 from app.db import get_connection
 from app.auth.permissions import require_permission
+from app.auth.authorization import get_accessible_account_ids
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/escalation-policies", tags=["Escalation Policies"])
+
+
+def _check_account_access(current_user: dict, account_id):
+    """
+    None (account_id) => the org-wide fallback policy -- admin only.
+    Otherwise the caller must be admin or have this specific account
+    in their get_accessible_account_ids() set. Raises 403 rather than
+    404 for an inaccessible-but-real account: existence of another
+    client's account row is not itself sensitive (accounts.py's own
+    list already reveals it exists to anyone with accounts.view via
+    other means), only its escalation configuration is being gated
+    here.
+    """
+    if current_user["role"] == "admin":
+        return
+    if account_id is None:
+        raise HTTPException(status_code=403, detail="Only an admin may manage the org-wide fallback escalation policy")
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is not None and account_id not in accessible:
+        raise HTTPException(status_code=403, detail="You do not have access to this account")
 
 
 @router.get("/groups")
@@ -43,9 +86,20 @@ def list_policies(current_user: dict = Depends(require_permission("escalation.vi
             LEFT JOIN aws_accounts acc ON acc.id = ep.aws_account_id
             ORDER BY ep.aws_account_id IS NULL, ep.severity
         """)
-        return cur.fetchall()
+        rows = cur.fetchall()
     finally:
         cur.close(); conn.close()
+
+    if current_user["role"] == "admin":
+        return rows
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is None:
+        return rows
+    # The org-wide fallback (aws_account_id IS NULL) is visible to
+    # everyone with escalation.view -- it's read-only exposure of a
+    # policy that already applies to every account, not a leak of any
+    # one client's configuration.
+    return [r for r in rows if r["aws_account_id"] is None or r["aws_account_id"] in accessible]
 
 
 @router.post("")
@@ -60,6 +114,8 @@ def create_policy(payload: dict = Body(...), current_user: dict = Depends(requir
     if not escalate_to_group_id:
         raise HTTPException(status_code=400, detail="escalate_to_group_id is required")
     account_id = payload.get("aws_account_id")  # None = global fallback policy
+
+    _check_account_access(current_user, account_id)
 
     conn = get_connection(); cur = conn.cursor()
     try:
@@ -99,11 +155,19 @@ def update_policy(policy_id: int, payload: dict = Body(...), current_user: dict 
         raise HTTPException(status_code=400, detail="No updatable fields provided")
     params.append(policy_id)
 
-    conn = get_connection(); cur = conn.cursor()
+    conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
-        cur.execute(f"UPDATE escalation_policies SET {', '.join(fields)} WHERE id = %s", params)
+        cur.execute("SELECT aws_account_id FROM escalation_policies WHERE id = %s", (policy_id,))
+        existing = cur.fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Policy not found")
+        _check_account_access(current_user, existing["aws_account_id"])
+
+        cur2 = conn.cursor()
+        cur2.execute(f"UPDATE escalation_policies SET {', '.join(fields)} WHERE id = %s", params)
         conn.commit()
-        updated = cur.rowcount
+        updated = cur2.rowcount
+        cur2.close()
     finally:
         cur.close(); conn.close()
     if not updated:
@@ -113,13 +177,22 @@ def update_policy(policy_id: int, payload: dict = Body(...), current_user: dict 
 
 @router.delete("/{policy_id}")
 def delete_policy(policy_id: int, current_user: dict = Depends(require_permission("escalation.manage"))):
-    conn = get_connection(); cur = conn.cursor()
+    conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
-        cur.execute("DELETE FROM escalation_policies WHERE id = %s", (policy_id,))
+        cur.execute("SELECT aws_account_id FROM escalation_policies WHERE id = %s", (policy_id,))
+        existing = cur.fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Policy not found")
+        _check_account_access(current_user, existing["aws_account_id"])
+
+        cur2 = conn.cursor()
+        cur2.execute("DELETE FROM escalation_policies WHERE id = %s", (policy_id,))
         conn.commit()
-        deleted = cur.rowcount
+        deleted = cur2.rowcount
+        cur2.close()
     finally:
         cur.close(); conn.close()
     if not deleted:
         raise HTTPException(status_code=404, detail="Policy not found")
     return {"status": "deleted"}
+
