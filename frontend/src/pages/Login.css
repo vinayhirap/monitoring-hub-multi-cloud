@@ -58,27 +58,55 @@
   .login-visual { display: none; }
 }
 
-/* ── animated grid ── */
-/* 2026-09-19: brand-story video moved OUT of this full-bleed
-   background layer entirely -- see .login-visual-video-frame further
-   down. It used to sit here (z-index 0, with a dark overlay on top to
-   keep text contrast) directly behind .login-visual-content's
-   headline, but the video has its own baked-in labels
-   (COLLECT/ANALYZE/DETECT) that visually collided with "Total
-   visibility. Across every cloud." sitting on top of it. Grid/blob
-   below keep the z-index:1 they picked up while the video was here --
-   harmless now that nothing else shares this stacking context, not
-   worth the risk of an unnecessary extra diff to revert it. */
-.login-grid {
+/* ── background video ──
+   2026-09-19: back to full-bleed (position:absolute inset:0), per
+   explicit request to fill the whole panel rather than sit in a
+   small boxed card. The difference from the FIRST full-bleed attempt
+   (which got reverted for exactly this reason) is the overlay right
+   below: a left-anchored horizontal scrim instead of a flat wash
+   across the entire frame. The video's own baked-in labels
+   (COLLECT/ANALYZE/DETECT) run left-to-right across the middle of the
+   clip; the scrim is opaque specifically behind the text column on
+   the left and fades out by the right edge, so the copy stays
+   readable while the panel's right portion -- where nothing else is
+   competing with it -- shows the video clearly instead of being
+   washed out uniformly like the first attempt was. */
+.login-visual-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+  pointer-events: none;
+}
+.login-visual-video-overlay {
   position: absolute;
   inset: 0;
   z-index: 1;
+  background: linear-gradient(
+    90deg,
+    rgba(6,12,23,0.88) 0%,
+    rgba(6,12,23,0.82) 38%,
+    rgba(6,12,23,0.55) 62%,
+    rgba(6,12,23,0.18) 85%,
+    rgba(6,12,23,0.05) 100%
+  );
+  pointer-events: none;
+}
+
+/* ── animated grid ── */
+.login-grid {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
   display: grid;
   grid-template-columns: repeat(10, 1fr);
   grid-template-rows: repeat(8, 1fr);
   opacity: 0.06;
   pointer-events: none;
-}.login-grid-cell {
+}
+.login-grid-cell {
   border: 1px solid rgba(43,179,172, 0.5);
   animation: grid-pulse 4s ease-in-out infinite;
 }
@@ -94,7 +122,7 @@
 /* ── glow blobs ── */
 .login-blob {
   position: absolute;
-  z-index: 1;
+  z-index: 2;
   border-radius: 50%;
   filter: blur(80px);
   pointer-events: none;
@@ -124,18 +152,16 @@
 /* ── visual panel copy + animated multi-cloud badges ── */
 .login-visual-content {
   position: relative;
-  z-index: 2;
-  /* Was 420px -- that capped the ENTIRE right-column composition,
-     text and video alike, which is why there was a wide dead strip
-     between the (small, capped) video frame and the panel's actual
-     right edge (reported live, with a screenshot, 2026-09-19). The
-     paragraph itself still gets its own tighter max-width just below
-     for readability -- this only raises the ceiling for the column
-     as a whole, so the video frame has real room to be larger without
-     a structural layout change. max-width still naturally shrinks to
-     whatever's actually available on a narrower panel, same as
-     before, just with more headroom on wider ones. */
-  max-width: 560px;
+  z-index: 3;
+  /* Back to the original 420px -- that widening to 560px on
+     2026-09-19 was specifically to give the (now-removed) boxed video
+     card more room inside this column. Now that the video is a
+     full-bleed background independent of this column's width, a
+     narrower, more traditionally-readable text column is both better
+     typography and a better match for .login-visual-video-overlay's
+     scrim, which is calibrated to stay solidly opaque roughly through
+     this width and fade out beyond it. */
+  max-width: 420px;
 }
 .login-orbit {
   position: relative;
@@ -208,31 +234,6 @@
   flex-shrink: 0; width: 18px; height: 18px; margin-top: 1px;
   border-radius: 50%; background: rgba(43,179,172,0.15); border: 1px solid rgba(43,179,172,0.4);
   color: #2bb3ac; display: flex; align-items: center; justify-content: center;
-}
-
-/* ── brand-story video preview ──
-   Small framed clip in normal document flow, below the feature list --
-   deliberately NOT absolutely positioned, so it can never overlap the
-   copy above it (headline/description/features) at any panel width.
-   max-width caps it well inside .login-visual-content's own 420px
-   max-width, so it never needs its own responsive breakpoints. */
-.login-visual-video-frame {
-  position: relative;
-  margin-top: 24px;
-  width: 100%;
-  max-width: 400px;
-  aspect-ratio: 16 / 9;
-  border-radius: 12px;
-  overflow: hidden;
-  border: 1px solid rgba(43,179,172,0.25);
-  box-shadow: 0 8px 30px rgba(0,0,0,0.35), 0 0 0 1px rgba(43,179,172,0.06);
-  background: #060c17;
-}
-.login-visual-video {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 
 /* ── card ── */
