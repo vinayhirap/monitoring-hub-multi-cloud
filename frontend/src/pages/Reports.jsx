@@ -8,11 +8,19 @@ import { useAuth } from "../auth/AuthContext";
 import {
   getLiveAccounts, generateReport, getReportJobStatus,
   listReports, reportDownloadUrl, emailReport,
+  listReportScopeResources, listReportScopeIncidents,
 } from "../api/api";
 import "./Reports.css";
 
 const REPORT_TYPES = ["WEEKLY", "MONTHLY", "QUARTERLY", "CUSTOM"];
-const SCOPE_TYPES = ["ACCOUNT", "RESOURCE", "INCIDENT", "CLIENT"];
+// CLIENT was in the original spec ("select a client/account/resource/
+// incident") but this app has no actual "client" entity distinct from
+// an AWS account -- no table, no ID scheme, nothing to populate a
+// dropdown from or validate a typed value against. Rather than expose
+// a scope type with nothing behind it, it's left out of the UI until
+// there's a real client concept; app/api/reports.py's ScopeType enum
+// still accepts "CLIENT" so the API isn't blocked on this decision.
+const SCOPE_TYPES = ["ACCOUNT", "RESOURCE", "INCIDENT"];
 
 export default function Reports() {
   const { hasPermission, hasFeature } = useAuth();
@@ -21,6 +29,9 @@ export default function Reports() {
   const [scopeType, setScopeType] = useState("ACCOUNT");
   const [accountId, setAccountId] = useState("");
   const [scopeId, setScopeId] = useState("");
+  const [scopeResources, setScopeResources] = useState([]);
+  const [scopeIncidents, setScopeIncidents] = useState([]);
+  const [manualScopeId, setManualScopeId] = useState(false);
   const [periodStart, setPeriodStart] = useState("");
   const [periodEnd, setPeriodEnd] = useState("");
   const [pending, setPending] = useState(null); // { job_id, status }
@@ -36,6 +47,22 @@ export default function Reports() {
     getLiveAccounts().then(setAccounts).catch(() => setAccounts([]));
     refreshHistory();
   }, [refreshHistory]);
+
+  // Populate the RESOURCE/INCIDENT pick-lists whenever the account or
+  // scope type changes. scopeId is reset each time so a stale
+  // selection from a different account/scope can't slip through --
+  // e.g. picking an incident under Account A, then switching to
+  // Account B, must not silently submit Account A's incident id.
+  useEffect(() => {
+    setScopeId("");
+    setManualScopeId(false);
+    if (!accountId) { setScopeResources([]); setScopeIncidents([]); return; }
+    if (scopeType === "RESOURCE") {
+      listReportScopeResources(accountId).then(setScopeResources).catch(() => setScopeResources([]));
+    } else if (scopeType === "INCIDENT") {
+      listReportScopeIncidents(accountId).then(setScopeIncidents).catch(() => setScopeIncidents([]));
+    }
+  }, [accountId, scopeType]);
 
   // Poll a queued job until it completes/fails, then refresh history.
   useEffect(() => {
@@ -59,7 +86,8 @@ export default function Reports() {
     e.preventDefault();
     setError("");
     if (scopeType === "ACCOUNT" && !accountId) { setError("Select an account."); return; }
-    if (scopeType !== "ACCOUNT" && !scopeId) { setError("Enter a resource/incident/client id."); return; }
+    if (scopeType !== "ACCOUNT" && !accountId) { setError("Select the account this resource/incident belongs to first."); return; }
+    if (scopeType !== "ACCOUNT" && !scopeId) { setError("Select or enter a resource/incident id."); return; }
     try {
       const resp = await generateReport({
         reportType, scopeType,
@@ -113,12 +141,53 @@ export default function Reports() {
             <label>Account
               <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
                 <option value="">-- select --</option>
-                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name || a.account_id}</option>)}
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name ? `${a.name} (${a.account_id})` : a.account_id}
+                  </option>
+                ))}
               </select>
             </label>
-            {scopeType !== "ACCOUNT" && (
-              <label>{scopeType === "RESOURCE" ? "Resource ID" : scopeType === "INCIDENT" ? "Incident/Alert ID" : "Client name"}
-                <input value={scopeId} onChange={(e) => setScopeId(e.target.value)} placeholder="id / name" />
+            {scopeType === "RESOURCE" && (
+              <label>Resource
+                {manualScopeId ? (
+                  <input value={scopeId} onChange={(e) => setScopeId(e.target.value)} placeholder="resource id" />
+                ) : (
+                  <select value={scopeId} onChange={(e) => setScopeId(e.target.value)} disabled={!accountId}>
+                    <option value="">{accountId ? "-- select --" : "select an account first"}</option>
+                    {scopeResources.map((r) => (
+                      <option key={r.resource_id} value={r.resource_id}>
+                        [{r.resource_type}] {r.name || r.resource_id}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {accountId && (
+                  <button type="button" className="reports-link-btn" onClick={() => { setManualScopeId(!manualScopeId); setScopeId(""); }}>
+                    {manualScopeId ? "pick from list instead" : "enter id manually"}
+                  </button>
+                )}
+              </label>
+            )}
+            {scopeType === "INCIDENT" && (
+              <label>Incident
+                {manualScopeId ? (
+                  <input value={scopeId} onChange={(e) => setScopeId(e.target.value)} placeholder="incident id" />
+                ) : (
+                  <select value={scopeId} onChange={(e) => setScopeId(e.target.value)} disabled={!accountId}>
+                    <option value="">{accountId ? "-- select (most recent 50) --" : "select an account first"}</option>
+                    {scopeIncidents.map((i) => (
+                      <option key={i.id} value={i.id}>
+                        #{i.id} [{i.severity}/{i.status}] {i.title}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {accountId && (
+                  <button type="button" className="reports-link-btn" onClick={() => { setManualScopeId(!manualScopeId); setScopeId(""); }}>
+                    {manualScopeId ? "pick from list instead" : "not in list? enter id manually"}
+                  </button>
+                )}
               </label>
             )}
             {reportType === "CUSTOM" && (

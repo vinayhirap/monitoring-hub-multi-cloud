@@ -155,6 +155,50 @@ def get_job_status(job_id: int, current_user: dict = Depends(require_permission(
     return job
 
 
+@router.get("/resources")
+def list_scopeable_resources(
+    account_id: int = Query(...),
+    current_user: dict = Depends(require_permission("reports.view")),
+):
+    """Resources for the RESOURCE-scope dropdown on the Reports page.
+    Deliberately its own query rather than reusing app/api/live_data.py's
+    per-service endpoints (/api/live/ec2/{id}, /api/live/rds/{id}, ...)
+    -- those need a service picked first and would mean 7 separate
+    dropdowns; this reads the resources table directly, which already
+    has every service in one place. Capped at 1000, generous for
+    per-account resource counts (unlike incidents/alerts, which can
+    genuinely run into the thousands -- see /reports/incidents below)."""
+    _require_account_access(account_id, current_user)
+    with get_db_cursor(dictionary=True, commit=False) as (_, cur):
+        cur.execute(
+            "SELECT resource_id, resource_type, name, region FROM resources "
+            "WHERE aws_account_id=%s ORDER BY resource_type, name LIMIT 1000",
+            (account_id,),
+        )
+        return cur.fetchall()
+
+
+@router.get("/incidents")
+def list_scopeable_incidents(
+    account_id: int = Query(...),
+    limit: int = Query(50, le=200),
+    current_user: dict = Depends(require_permission("reports.view")),
+):
+    """Incidents for the INCIDENT-scope dropdown. Capped at 50 by
+    default (200 max) -- an account's full incident history can be
+    large, so this intentionally shows only the most recent ones
+    rather than trying to be exhaustive; the UI also keeps a manual
+    ID entry field for anything older than what's listed here."""
+    _require_account_access(account_id, current_user)
+    with get_db_cursor(dictionary=True, commit=False) as (_, cur):
+        cur.execute(
+            "SELECT id, title, severity, status, started_at FROM incidents "
+            "WHERE aws_account_id=%s ORDER BY last_seen_at DESC LIMIT %s",
+            (account_id, limit),
+        )
+        return cur.fetchall()
+
+
 @router.get("")
 def list_reports(
     account_id: int | None = Query(None),

@@ -218,6 +218,8 @@ export const generateReport = ({ reportType, scopeType, scopeId, accountId, peri
   return apiFetch(`/api/reports/generate?${params}`, { method: "POST" });
 };
 export const getReportJobStatus = (jobId) => apiFetch(`/api/reports/jobs/${jobId}/status`);
+export const listReportScopeResources = (accountId) => apiFetch(`/api/reports/resources?account_id=${accountId}`);
+export const listReportScopeIncidents = (accountId) => apiFetch(`/api/reports/incidents?account_id=${accountId}`);
 export const listReports = (filters = {}) => {
   const params = new URLSearchParams(filters);
   return apiFetch(`/api/reports?${params}`);
