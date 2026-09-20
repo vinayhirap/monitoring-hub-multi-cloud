@@ -107,14 +107,35 @@ def write_audit(actor: str, action: str, detail: str = None, *,
         elif role is not None and "role" not in payload:
             payload = {**payload, "role": role}
 
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO audit_logs (actor, action, payload, ip_address) VALUES (%s,%s,%s,%s)",
-            (actor or "unknown", action, json.dumps(payload), _client_ip(request)),
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
+        conn = None
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO audit_logs (actor, action, payload, ip_address) VALUES (%s,%s,%s,%s)",
+                (actor or "unknown", action, json.dumps(payload), _client_ip(request)),
+            )
+            conn.commit()
+            cur.close()
+        finally:
+            # SECURITY/RELIABILITY: conn.close() previously sat after
+            # cur.execute()/conn.commit() with no try/finally around
+            # it -- any failure in the INSERT itself (audit_logs
+            # missing/locked, a bad payload, a replica hiccup, anything
+            # that lands in the except below) skipped conn.close()
+            # entirely and leaked a pooled connection. write_audit() is
+            # the single most-called shared helper in the app (every
+            # admin mutation across the codebase goes through it, per
+            # this module's own docstring on why it was consolidated),
+            # so a leak here isn't a rare edge case, it's the same
+            # pool-exhaustion failure mode app/db.py's leak-guard
+            # module docstring names as a real prior outage (Sep 5
+            # 2026), except this call site could trip it on every
+            # single failed audit write instead of one bad request.
+            # Caught here during Phase 2 verification precisely
+            # because a local test DB was missing audit_logs and
+            # exercised this exact path repeatedly.
+            if conn is not None:
+                conn.close()
     except Exception as e:
         logger.warning("Audit write failed (actor=%s action=%s): %s", actor, action, e)
