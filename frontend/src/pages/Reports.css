@@ -10,3 +10,5 @@
 .reports-table th, .reports-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border, #2a2d34); font-size: 0.85rem; }
 .reports-actions { display: flex; gap: 8px; align-items: center; }
 .reports-email-input { width: 160px; margin-right: 4px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border, #2a2d34); background: var(--input-bg, #0f1115); color: inherit; }
+.reports-link-btn { background: none; border: none; color: var(--accent, #2bb3ac); font-size: 0.75rem; padding: 2px 0; text-align: left; cursor: pointer; text-decoration: underline; }
+
