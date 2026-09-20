@@ -457,25 +457,24 @@ export default function Login() {
         </div>
 
         <div className="login-visual" aria-hidden="true">
-          {/* 2026-09-19: back to a full-bleed background (per explicit
-              request: fill the whole panel, no boxed card, no added
-              scroll height) -- but not the same uniform overlay as the
-              first attempt, which is what caused the original text
-              collision. .login-visual-video-overlay is now a LEFT-
-              anchored horizontal scrim (opaque behind the text column,
-              fading to nearly clear by the right edge) instead of a
-              flat wash across the whole frame, so the copy stays
-              readable without hiding the video across the panel's
-              right portion where nothing else is competing with it. */}
-          <video
-            className="login-visual-video"
-            src="/cloudops-brand-story.mp4"
-            autoPlay
-            muted
-            loop
-            playsInline
-          />
-          <div className="login-visual-video-overlay" />
+          {/* 2026-09-20: dropped video-as-background entirely, per
+              explicit direction with a reference screenshot of the
+              FinOps tool's login page -- that page never puts text on
+              top of anything in motion: solid/gradient background
+              behind the copy, and a single self-contained proof card
+              (their cost-savings chart) sitting below it in its own
+              bordered box. Every version of "video behind the text"
+              tried so far (full-bleed with a heavy overlay, full-bleed
+              with a light overlay, full-bleed with an asymmetric
+              scrim) hit the same wall: a moving video with its own
+              baked-in imagery/wordmark fighting for attention with
+              foreground text is a harder pattern to get right than a
+              plain background ever needed to be. .login-visual keeps
+              its existing flat gradient background (unchanged, see
+              Login.css); the video now lives in .login-visual-video-frame,
+              a bordered card below the feature list -- same structural
+              role as the reference's chart card, sized to feel
+              intentional rather than squeezed into a corner. */}
           <div className="login-grid">
             {Array.from({ length: 80 }).map((_, i) => (
               <div key={i} className="login-grid-cell" />
@@ -517,6 +516,17 @@ export default function Login() {
               <li><span className="login-feature-check"><CheckIcon size={11} /></span>Unified, severity-based alerting</li>
               <li><span className="login-feature-check"><CheckIcon size={11} /></span>Fine-grained RBAC for teams and groups</li>
             </ul>
+
+            <div className="login-visual-video-frame">
+              <video
+                className="login-visual-video"
+                src="/cloudops-brand-story.mp4"
+                autoPlay
+                muted
+                loop
+                playsInline
+              />
+            </div>
           </div>
         </div>
       </div>
