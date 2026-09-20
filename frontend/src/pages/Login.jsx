@@ -457,6 +457,25 @@ export default function Login() {
         </div>
 
         <div className="login-visual" aria-hidden="true">
+          {/* 2026-09-19: back to a full-bleed background (per explicit
+              request: fill the whole panel, no boxed card, no added
+              scroll height) -- but not the same uniform overlay as the
+              first attempt, which is what caused the original text
+              collision. .login-visual-video-overlay is now a LEFT-
+              anchored horizontal scrim (opaque behind the text column,
+              fading to nearly clear by the right edge) instead of a
+              flat wash across the whole frame, so the copy stays
+              readable without hiding the video across the panel's
+              right portion where nothing else is competing with it. */}
+          <video
+            className="login-visual-video"
+            src="/cloudops-brand-story.mp4"
+            autoPlay
+            muted
+            loop
+            playsInline
+          />
+          <div className="login-visual-video-overlay" />
           <div className="login-grid">
             {Array.from({ length: 80 }).map((_, i) => (
               <div key={i} className="login-grid-cell" />
@@ -498,28 +517,6 @@ export default function Login() {
               <li><span className="login-feature-check"><CheckIcon size={11} /></span>Unified, severity-based alerting</li>
               <li><span className="login-feature-check"><CheckIcon size={11} /></span>Fine-grained RBAC for teams and groups</li>
             </ul>
-
-            {/* 2026-09-19: the brand-story video used to be a full-bleed
-                background behind ALL of this copy, with the headline
-                overlaid directly on top of it -- but the video has its
-                own baked-in labels (COLLECT/ANALYZE/DETECT), which
-                collided visually with "Total visibility. Across every
-                cloud." sitting right on top of it. Pulled the video out
-                of the background entirely; it's now a small framed
-                preview clip in normal document flow below the feature
-                list, so it can never overlap the copy above it at any
-                panel width, and reads as a deliberate "see it in
-                action" teaser rather than a wash behind the text. */}
-            <div className="login-visual-video-frame">
-              <video
-                className="login-visual-video"
-                src="/cloudops-brand-story.mp4"
-                autoPlay
-                muted
-                loop
-                playsInline
-              />
-            </div>
           </div>
         </div>
       </div>
