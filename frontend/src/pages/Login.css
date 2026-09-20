@@ -58,44 +58,15 @@
   .login-visual { display: none; }
 }
 
-/* ── background video ──
-   2026-09-19: back to full-bleed (position:absolute inset:0), per
-   explicit request to fill the whole panel rather than sit in a
-   small boxed card. The difference from the FIRST full-bleed attempt
-   (which got reverted for exactly this reason) is the overlay right
-   below: a left-anchored horizontal scrim instead of a flat wash
-   across the entire frame. The video's own baked-in labels
-   (COLLECT/ANALYZE/DETECT) run left-to-right across the middle of the
-   clip; the scrim is opaque specifically behind the text column on
-   the left and fades out by the right edge, so the copy stays
-   readable while the panel's right portion -- where nothing else is
-   competing with it -- shows the video clearly instead of being
-   washed out uniformly like the first attempt was. */
-.login-visual-video {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  z-index: 0;
-  pointer-events: none;
-}
-.login-visual-video-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  background: linear-gradient(
-    90deg,
-    rgba(6,12,23,0.88) 0%,
-    rgba(6,12,23,0.82) 38%,
-    rgba(6,12,23,0.55) 62%,
-    rgba(6,12,23,0.18) 85%,
-    rgba(6,12,23,0.05) 100%
-  );
-  pointer-events: none;
-}
-
-/* ── animated grid ── */
+/* ── animated grid ──
+   2026-09-20: video-as-full-bleed-background removed entirely -- see
+   the JSX comment on .login-visual for why. .login-visual's own flat
+   gradient (declared where the class is defined, above) is the only
+   background now, same as it was before the video work started.
+   z-index numbering left as 2/2/3 (grid/blob/content) rather than
+   renumbered back to 1/1/2, since nothing above them needs the
+   0-and-1 slots any more and it's not worth the risk of an
+   unnecessary extra diff. */
 .login-grid {
   position: absolute;
   inset: 0;
@@ -153,15 +124,14 @@
 .login-visual-content {
   position: relative;
   z-index: 3;
-  /* Back to the original 420px -- that widening to 560px on
-     2026-09-19 was specifically to give the (now-removed) boxed video
-     card more room inside this column. Now that the video is a
-     full-bleed background independent of this column's width, a
-     narrower, more traditionally-readable text column is both better
-     typography and a better match for .login-visual-video-overlay's
-     scrim, which is calibrated to stay solidly opaque roughly through
-     this width and fade out beyond it. */
-  max-width: 420px;
+  /* 480px: wide enough that .login-visual-video-frame below (which
+     fills 100% of this column) reads as a real, intentionally-sized
+     proof card -- same structural weight as the reference FinOps
+     page's chart card -- rather than a small tucked-away thumbnail.
+     .login-visual-sub keeps its own tighter max-width just below for
+     paragraph readability, so this only affects the column's overall
+     width and the card's size, not line length. */
+  max-width: 480px;
 }
 .login-orbit {
   position: relative;
@@ -234,6 +204,39 @@
   flex-shrink: 0; width: 18px; height: 18px; margin-top: 1px;
   border-radius: 50%; background: rgba(43,179,172,0.15); border: 1px solid rgba(43,179,172,0.4);
   color: #2bb3ac; display: flex; align-items: center; justify-content: center;
+}
+
+/* ── brand-story video card ──
+   2026-09-20: styled to match the structural role of the reference
+   FinOps page's chart card -- a clearly self-contained, bordered
+   proof element sitting below the copy, sized to feel intentional
+   (not squeezed into a corner) rather than tiny. Deliberately NOT
+   full-bleed and NOT absolutely positioned, same reasoning as the
+   very first version of this card: normal document flow means it
+   physically cannot overlap the text above it at any panel width,
+   and sizing it against .login-visual-content's own max-width (not a
+   fixed px value) means it scales sensibly with the column instead
+   of ever looking arbitrarily small on a wide panel or arbitrarily
+   cramped on a narrower one. */
+.login-visual-video-frame {
+  position: relative;
+  margin-top: 26px;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(43,179,172,0.22);
+  box-shadow:
+    0 20px 50px rgba(0,0,0,0.45),
+    0 0 0 1px rgba(43,179,172,0.05),
+    0 0 60px rgba(43,179,172,0.06);
+  background: #060c17;
+}
+.login-visual-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 /* ── card ── */
