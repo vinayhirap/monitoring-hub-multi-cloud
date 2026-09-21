@@ -68,7 +68,7 @@ def clear_session_cookie(response) -> None:
 
 
 def _schema_missing(exc: Exception) -> bool:
-    # 1054 = unknown column, 1146 = table doesn't exist (migration 050 not applied)
+    # 1054 = unknown column, 1146 = table doesn't exist (migration 052 not applied)
     return (_mysql_errors is not None
             and isinstance(exc, _mysql_errors.ProgrammingError)
             and getattr(exc, "errno", None) in (1054, 1146))
@@ -144,7 +144,7 @@ def validate_session_claims(claims: dict) -> str:
                 if not _warned_schema:
                     _warned_schema = True
                     logger.error("Session revocation disabled: run migrate.py apply "
-                                 "--all-pending (migration 050) — %s", e)
+                                 "--all-pending (migration 052) — %s", e)
                 return claims["role"]
             logger.exception("Session state lookup failed")
             raise HTTPException(status_code=503, detail="Session check temporarily unavailable")

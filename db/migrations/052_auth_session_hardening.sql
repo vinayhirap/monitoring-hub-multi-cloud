@@ -1,4 +1,4 @@
--- db/migrations/050_auth_session_hardening.sql
+-- db/migrations/052_auth_session_hardening.sql
 --
 -- Audit B01 (auth / session / SSO). Idempotent -- safe to re-run.
 --
