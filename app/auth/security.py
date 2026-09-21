@@ -27,6 +27,17 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 12 * 60  # 12 hours
 
 _BCRYPT_MAX_BYTES = 72
+
+
+def _rounds_from_env() -> int:
+    try:
+        n = int(os.getenv("BCRYPT_ROUNDS", "12"))
+    except ValueError:
+        return 12
+    return max(10, min(15, n))   # <10 is too weak, >15 makes login take seconds
+
+
+BCRYPT_ROUNDS = _rounds_from_env()
 _MIN_SECRET_LEN = 32
 _warned_weak_secret = False
 
@@ -66,7 +77,7 @@ def hash_password(password: str) -> str:
     # broken with modern bcrypt versions (the same class of issue the
     # deployment log already hit once; app/api/auth.py avoids passlib
     # for this exact reason).
-    return bcrypt.hashpw(_pw_bytes(password), bcrypt.gensalt()).decode()
+    return bcrypt.hashpw(_pw_bytes(password), bcrypt.gensalt(rounds=BCRYPT_ROUNDS)).decode()
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -74,6 +85,15 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return bcrypt.checkpw(_pw_bytes(plain_password), hashed_password.encode())
     except Exception as e:
         logger.warning("Password verify error: %s", type(e).__name__)
+        return False
+
+
+def needs_rehash(hashed_password) -> bool:
+    """True if a stored bcrypt hash was made with a different cost than the
+    current BCRYPT_ROUNDS (auto-upgraded on the user's next successful login)."""
+    try:
+        return int(hashed_password.split("$")[2]) != BCRYPT_ROUNDS
+    except Exception:
         return False
 
 

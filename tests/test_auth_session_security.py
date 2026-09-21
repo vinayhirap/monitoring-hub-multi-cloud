@@ -353,6 +353,10 @@ class _AuthCursor:
         elif sql.startswith("DELETE FROM password_reset_tokens WHERE user_id"):
             for k in [k for k, t in st.tokens.items() if t["user_id"] == p[0]]:
                 del st.tokens[k]
+        elif sql.startswith("UPDATE users SET password") and "AND password" in sql:
+            if st.users[p[1]]["pw"] == p[2]:
+                st.users[p[1]]["pw"] = p[0]
+                st.rehashed = getattr(st, "rehashed", 0) + 1
         elif sql.startswith("UPDATE users SET password"):
             st.users[p[1]]["pw"] = p[0]; st.users[p[1]]["token_version"] += 1
         elif sql.startswith("SELECT token_version"):
@@ -379,7 +383,9 @@ def _auth(st, mail_configured=True):
     install_stub("app.db", get_connection=lambda: _AuthConn(st))
     install_stub("app.auth.security", create_access_token=sec.create_access_token,
                  decode_token=sec.decode_token,
-                 hash_password=lambda p: "H:" + p, verify_password=lambda p, h: h == "H:" + p)
+                 hash_password=lambda p: "H:" + p,
+                 verify_password=lambda p, h: h in ("H:" + p, "OLD:" + p),
+                 needs_rehash=lambda h: bool(h) and h.startswith("OLD:"))
     install_stub("app.auth.deps", get_current_user=lambda: None, COOKIE_NAME="mh_session",
                  COOKIE_SECURE=False, COOKIE_MAX_AGE_SECONDS=1,
                  set_session_cookie=lambda r, t: r.set_cookie("mh_session", t),
@@ -388,7 +394,9 @@ def _auth(st, mail_configured=True):
                  forget_user_sessions=lambda uid: sent.append(("forget", uid)))
     install_stub("app.auth.rate_limit", enforce_login_rate_limit=lambda *a: None,
                  enforce_forgot_password_rate_limit=lambda *a: None,
-                 enforce_reset_password_rate_limit=lambda *a: None)
+                 enforce_reset_password_rate_limit=lambda *a: None,
+                 enforce_change_password_rate_limit=lambda uid: sent.append(("cp-limit", uid)),
+                 record_login_success=lambda req, u: sent.append(("login-ok", u)))
     install_stub("app.email", mailer=types.SimpleNamespace(
         is_configured=lambda: mail_configured, get_public_app_url=lambda: "https://hub",
         send_email=lambda **kw: sent.append(("mail", kw)) or True))
@@ -511,7 +519,7 @@ def test_login_unknown_user_burns_a_bcrypt_verify_and_releases_connection():
     auth._verify_password = lambda p, h: seen.append(h) or False
     with pytest.raises(HTTPException) as e:
         auth.login(_req(), Response(), {"username": "ghost", "password": "whatever1"})
-    assert e.value.status_code == 401 and seen and seen[0].startswith("$2") and st.opened == st.closed
+    assert e.value.status_code == 401 and seen == ["H:timing-equaliser"] and st.opened == st.closed
 
 
 def test_login_non_string_fields_are_400_not_500():
@@ -544,3 +552,114 @@ def test_logout_revokes_the_session_server_side():
     # garbage / missing cookies still succeed
     assert auth.logout(types.SimpleNamespace(cookies={"mh_session": "junk"}, client=None), Response()) == {"status": "ok"}
     assert auth.logout(types.SimpleNamespace(cookies={}, client=None), Response()) == {"status": "ok"}
+
+
+# ───────────────────────── follow-up: M8 / L6 ─────────────────────────
+
+class _LimRedis(_FakeRedis):
+    """_FakeRedis + the three extra calls the known-IP logic uses."""
+    def exists(self, k): return 1 if k in self.kv else 0
+    def set(self, k, v, ex=None): self.kv[k] = v
+    def delete(self, k):
+        self.store.pop(k, None); self.expiries.pop(k, None); return 1 if self.kv.pop(k, None) else 0
+    def __init__(self):
+        super().__init__(); self.kv = {}
+
+
+def _limiter(r):
+    mod = load_module("app/auth/rate_limit.py")
+    mod._get_redis = lambda: r
+    return mod
+
+
+def _ip_req(ip):
+    return types.SimpleNamespace(client=types.SimpleNamespace(host=ip))
+
+
+def test_attacker_cannot_lock_a_real_user_out_of_their_known_ip():
+    r = _LimRedis(); mod = _limiter(r)
+    mod.record_login_success(_ip_req("198.51.100.7"), "alice")      # alice's office IP
+    for i in range(10):                                              # attacker, other IPs
+        mod.enforce_login_rate_limit(_ip_req(f"203.0.113.{i}"), "alice")
+    with pytest.raises(HTTPException):                               # attacker is throttled
+        mod.enforce_login_rate_limit(_ip_req("203.0.113.99"), "alice")
+    mod.enforce_login_rate_limit(_ip_req("198.51.100.7"), "alice")   # alice from her IP still gets in
+
+
+def test_known_ip_bucket_still_limits_brute_force_from_that_ip():
+    r = _LimRedis(); mod = _limiter(r)
+    mod.record_login_success(_ip_req("198.51.100.7"), "alice")
+    with pytest.raises(HTTPException):
+        for _ in range(11):
+            mod.enforce_login_rate_limit(_ip_req("198.51.100.7"), "alice")
+
+
+def test_unknown_ip_still_hits_shared_username_bucket_and_success_clears_it():
+    r = _LimRedis(); mod = _limiter(r)
+    for i in range(10):
+        mod.enforce_login_rate_limit(_ip_req(f"203.0.113.{i}"), "bob")
+    with pytest.raises(HTTPException):
+        mod.enforce_login_rate_limit(_ip_req("203.0.113.50"), "bob")
+    mod.record_login_success(_ip_req("203.0.113.50"), "bob")         # verified login
+    assert "ratelimit:login:user:bob" not in r.store
+    mod.enforce_login_rate_limit(_ip_req("203.0.113.51"), "bob")
+
+
+def test_fake_redis_without_exists_falls_back_to_shared_bucket():
+    mod = _limiter(_FakeRedis())          # no .exists(): must not crash
+    mod.enforce_login_rate_limit(_ip_req("203.0.113.1"), "carol")
+
+
+def test_change_password_limit_is_per_user():
+    r = _FakeRedis(); mod = _limiter(r)
+    for _ in range(10):
+        mod.enforce_change_password_rate_limit(7)
+    with pytest.raises(HTTPException) as e:
+        mod.enforce_change_password_rate_limit(7)
+    assert e.value.status_code == 429
+    mod.enforce_change_password_rate_limit(8)
+
+
+def test_needs_rehash_and_configurable_cost(monkeypatch):
+    sec = _security()
+    h12 = sec.hash_password("pw-1234567")
+    assert h12.startswith("$2b$12$") and sec.needs_rehash(h12) is False
+    assert sec.needs_rehash("$2b$10$" + "a" * 53) is True
+    assert sec.needs_rehash(None) is False and sec.needs_rehash("garbage") is False
+    monkeypatch.setenv("BCRYPT_ROUNDS", "3")           # below floor -> clamped to 10
+    assert load_module("app/auth/security.py").BCRYPT_ROUNDS == 10
+    monkeypatch.setenv("BCRYPT_ROUNDS", "abc")
+    assert load_module("app/auth/security.py").BCRYPT_ROUNDS == 12
+
+
+def test_login_upgrades_old_cost_hash_once_and_never_bumps_token_version():
+    st = _Store(); st.users[1]["pw"] = "OLD:Secret12345"
+    auth = _auth(st)
+    auth.login(_req(), Response(), {"username": "amy", "password": "Secret12345"})
+    assert st.users[1]["pw"] == "H:Secret12345" and st.users[1]["token_version"] == 0
+    assert ("login-ok", "amy") in auth._sent
+    auth.login(_req(), Response(), {"username": "amy", "password": "Secret12345"})
+    assert st.rehashed == 1                                       # already current: no second write
+
+
+def test_login_still_succeeds_if_rehash_write_fails():
+    st = _Store(); st.users[1]["pw"] = "OLD:Secret12345"
+    auth = _auth(st)
+    real, calls = auth.get_connection, {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 2:                      # 1st = login SELECT, 2nd = rehash UPDATE
+            raise RuntimeError("db hiccup on the rehash write")
+        return real()
+    auth.get_connection = flaky
+    out = auth.login(_req(), Response(), {"username": "amy", "password": "Secret12345"})
+    assert out["username"] == "amy" and st.users[1]["pw"] == "OLD:Secret12345"
+
+
+def test_change_password_is_rate_limited_per_user():
+    st = _Store(); st.users[1]["pw"] = "H:OldPassw0rd"
+    auth = _auth(st)
+    auth.change_password(Response(), {"current_password": "OldPassw0rd", "new_password": "BrandNew123"},
+                         {"id": 1, "username": "amy", "role": "editor"})
+    assert ("cp-limit", 1) in auth._sent

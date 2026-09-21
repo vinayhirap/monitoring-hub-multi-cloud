@@ -4,7 +4,7 @@ import os
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Body, Response, Request, Depends
 from app.db import get_connection
 from app.auth.security import (
-    create_access_token, decode_token, hash_password, verify_password,
+    create_access_token, decode_token, hash_password, verify_password, needs_rehash,
 )
 from app.auth.deps import (
     get_current_user, COOKIE_NAME, COOKIE_SECURE, COOKIE_MAX_AGE_SECONDS,
@@ -14,9 +14,10 @@ from app.auth.rate_limit import (
     enforce_login_rate_limit,
     enforce_forgot_password_rate_limit,
     enforce_reset_password_rate_limit,
+    enforce_change_password_rate_limit,
+    record_login_success,
 )
 from app.email import mailer
-import bcrypt
 import hashlib
 import jwt
 import logging
@@ -61,8 +62,30 @@ def _dummy_hash() -> str:
     unknown-user and wrong-password logins take the same time."""
     global _dummy_hash_cache
     if _dummy_hash_cache is None:
-        _dummy_hash_cache = bcrypt.hashpw(b"timing-equaliser", bcrypt.gensalt()).decode()
+        _dummy_hash_cache = hash_password("timing-equaliser")   # same cost as real hashes
     return _dummy_hash_cache
+
+
+def _rehash_password(user_id: int, old_hash: str, plain: str) -> None:
+    """Best-effort upgrade of a hash made with an old bcrypt cost (login already
+    succeeded, so this must never fail the request). The `AND password = old`
+    guard means a concurrent password change is never overwritten."""
+    try:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    "UPDATE users SET password = %s WHERE id = %s AND password = %s",
+                    (hash_password(plain), user_id, old_hash),
+                )
+                conn.commit()
+            finally:
+                cursor.close()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"Password rehash skipped for user id {user_id}: {e}")
 
 
 def _text_field(payload: dict, name: str) -> str:
@@ -130,6 +153,10 @@ def login(request: Request, response: Response, payload: dict = Body(...)):
                       payload={"username": username, "reason": "incorrect password"})
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    record_login_success(request, username)
+    if needs_rehash(user["pw"]):
+        _rehash_password(user["id"], user["pw"], password)
+
     token = create_access_token(user["id"], user["username"], user["role"],
                                  token_version=user["token_version"])
     set_session_cookie(response, token)
@@ -194,6 +221,9 @@ def change_password(response: Response, payload: dict = Body(...),
         raise HTTPException(status_code=400, detail="current_password and new_password are required")
     if len(new_pw) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+
+    # current_password is verified below, so throttle guessing per session user
+    enforce_change_password_rate_limit(current_user["id"])
 
     conn = get_connection()
     try:
