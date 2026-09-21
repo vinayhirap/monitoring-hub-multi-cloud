@@ -52,10 +52,13 @@ GROUP HIERARCHY (L1 / L2 / L3)
   are attached to it (or to one of its descendants).
 """
 import json
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
 from app.db import get_connection
+
+logger = logging.getLogger(__name__)
 
 FULL_ACCESS = "FULL_ACCESS"  # sentinel: this user's effective scope is "everything"
 
@@ -98,11 +101,26 @@ class ScopeGrant:
 
 
 def _parse_json_list(value):
+    """
+    Unlike rbac.py's _json_list, this previously did not catch a
+    malformed JSON value (json.loads on a corrupt access_scopes /
+    group_policies column) -- the exception propagated straight out of
+    get_effective_scope with the connection open (see the try/finally
+    fix above), and would have surfaced as a raw, uncaught 500 rather
+    than a scope resolving to "no access". Now matches rbac.py's
+    fail-closed behaviour: an unparsable value is treated the same as
+    a missing one, and the fact that it happened is logged so a
+    corrupt row still gets noticed and fixed.
+    """
     if value is None:
         return None
     if isinstance(value, list):
         return value
-    parsed = json.loads(value)
+    try:
+        parsed = json.loads(value)
+    except (ValueError, TypeError):
+        logger.warning("authorization: unparsable JSON scope value %r", value)
+        return None
     return parsed if parsed else None
 
 
@@ -253,49 +271,51 @@ def get_effective_scope(user: dict):
         return FULL_ACCESS
 
     conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        "SELECT id, user_id, cloud, account_ref_id, regions, resource_groups, "
-        "resource_types, resource_ids, granted_by FROM access_scopes WHERE user_id = %s",
-        (user["id"],),
-    )
-    own_rows = cursor.fetchall()
-    cursor.close()
-
-    grants = [
-        ScopeGrant(
-            id=r["id"], user_id=r["user_id"], cloud=r["cloud"],
-            account_ref_id=r["account_ref_id"],
-            regions=_parse_json_list(r["regions"]),
-            resource_groups=_parse_json_list(r["resource_groups"]),
-            resource_types=_parse_json_list(r["resource_types"]),
-            resource_ids=_parse_json_list(r["resource_ids"]),
-            granted_by=r["granted_by"], source="user",
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT id, user_id, cloud, account_ref_id, regions, resource_groups, "
+            "resource_types, resource_ids, granted_by FROM access_scopes WHERE user_id = %s",
+            (user["id"],),
         )
-        for r in own_rows
-    ]
+        own_rows = cursor.fetchall()
+        cursor.close()
 
-    direct_group_ids = get_user_group_memberships(conn, user["id"])
-    inherited_group_ids = set()
-    for gid in direct_group_ids:
-        for g in get_group_chain(conn, gid):
-            inherited_group_ids.add(g["id"])
+        grants = [
+            ScopeGrant(
+                id=r["id"], user_id=r["user_id"], cloud=r["cloud"],
+                account_ref_id=r["account_ref_id"],
+                regions=_parse_json_list(r["regions"]),
+                resource_groups=_parse_json_list(r["resource_groups"]),
+                resource_types=_parse_json_list(r["resource_types"]),
+                resource_ids=_parse_json_list(r["resource_ids"]),
+                granted_by=r["granted_by"], source="user",
+            )
+            for r in own_rows
+        ]
 
-    for r in _group_policy_rows(conn, list(inherited_group_ids)):
-        grants.append(ScopeGrant(
-            id=r["id"], user_id=user["id"], cloud=r["cloud"],
-            account_ref_id=r["account_ref_id"],
-            regions=_parse_json_list(r["regions"]),
-            resource_groups=_parse_json_list(r["resource_groups"]),
-            resource_types=_parse_json_list(r["resource_types"]),
-            resource_ids=_parse_json_list(r["resource_ids"]),
-            granted_by=r["granted_by"], source="group",
-            group_id=r["group_id"], group_name=r["group_name"],
-            group_level=r["group_level"],
-        ))
+        direct_group_ids = get_user_group_memberships(conn, user["id"])
+        inherited_group_ids = set()
+        for gid in direct_group_ids:
+            for g in get_group_chain(conn, gid):
+                inherited_group_ids.add(g["id"])
 
-    conn.close()
-    return grants
+        for r in _group_policy_rows(conn, list(inherited_group_ids)):
+            grants.append(ScopeGrant(
+                id=r["id"], user_id=user["id"], cloud=r["cloud"],
+                account_ref_id=r["account_ref_id"],
+                regions=_parse_json_list(r["regions"]),
+                resource_groups=_parse_json_list(r["resource_groups"]),
+                resource_types=_parse_json_list(r["resource_types"]),
+                resource_ids=_parse_json_list(r["resource_ids"]),
+                granted_by=r["granted_by"], source="group",
+                group_id=r["group_id"], group_name=r["group_name"],
+                group_level=r["group_level"],
+            ))
+
+        return grants
+    finally:
+        conn.close()
 
 
 def get_accessible_account_ids(user: dict) -> Optional[set]:
@@ -313,11 +333,13 @@ def get_accessible_account_ids(user: dict) -> Optional[set]:
         return set()
 
     conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT id, provider FROM aws_accounts")
-    all_accounts = cursor.fetchall()
-    cursor.close()
-    conn.close()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id, provider FROM aws_accounts")
+        all_accounts = cursor.fetchall()
+        cursor.close()
+    finally:
+        conn.close()
 
     explicit_ids = {g.account_ref_id for g in scope if g.account_ref_id is not None}
     wildcard_clouds = {g.cloud for g in scope if g.account_ref_id is None}

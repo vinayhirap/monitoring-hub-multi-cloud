@@ -27,7 +27,7 @@ if "app.db" not in sys.modules:
 
 from app.auth.rbac import (  # noqa: E402
     AccessFilter, Binding, Denial, ResolvedAccess, Scope, Target,
-    _scope_contains, can, explain,
+    _scope_contains, accessible_filter, can, explain,
 )
 
 GLOBAL = Scope(label="Organization")
@@ -218,3 +218,137 @@ def test_empty_service_set_matches_nothing():
     """
     where, _ = AccessFilter(account_ids={2}, services=set()).sql()
     assert where == "1=0"
+
+
+# ── accessible_filter() honours deny overrides (audit b02, CRIT-1) ──
+# Before this fix, accessible_filter() only ever looked at
+# access.bindings -- a Denial resolved onto the same ResolvedAccess
+# was silently ignored by every list endpoint that filters through
+# this function, even though can()/assert_can() (tested above) already
+# enforce it correctly for single-object checks. These tests pin the
+# fixed behaviour so a future refactor can't reopen the gap.
+
+class _FakeCursor:
+    def __init__(self, rows):
+        self._rows = rows
+    def execute(self, *a, **k):
+        pass
+    def fetchall(self):
+        return self._rows
+    def close(self):
+        pass
+
+
+class _FakeConn:
+    def __init__(self, rows):
+        self._rows = rows
+    def cursor(self, dictionary=True):
+        return _FakeCursor(self._rows)
+    def close(self):
+        pass
+
+
+ACCOUNTS = [
+    {"id": 2, "provider": "aws"},
+    {"id": 3, "provider": "aws"},
+]
+
+
+def _patched_filter(monkeypatch, access):
+    monkeypatch.setattr("app.auth.rbac.resolve", lambda user: access)
+    monkeypatch.setattr("app.auth.rbac.get_connection", lambda: _FakeConn(ACCOUNTS))
+    return {"id": 1, "role": "editor"}
+
+
+def test_unconditional_deny_empties_the_filter(monkeypatch):
+    """A scope=None deny revokes the permission everywhere -- the
+    filter must match nothing, not fall back to the allow bindings."""
+    access = _access(
+        bindings=[Binding("admin", 30, frozenset({"alerts.view"}), GLOBAL)],
+        denials=[Denial("alerts.view", scope=None)],
+    )
+    user = _patched_filter(monkeypatch, access)
+    f = accessible_filter(user, "alerts.view")
+    assert f.sql() == ("1=0", [])
+
+
+def test_scoped_deny_removes_just_that_account(monkeypatch):
+    dev = Scope(id=9, cloud="aws", account_ref_id=3)
+    access = _access(
+        bindings=[Binding("editor", 20, frozenset({"alerts.view"}), GLOBAL)],
+        denials=[Denial("alerts.view", scope=dev)],
+    )
+    user = _patched_filter(monkeypatch, access)
+    f = accessible_filter(user, "alerts.view")
+    assert f.account_ids == {2}
+
+
+def test_scoped_deny_by_region_narrows_without_dropping_the_account(monkeypatch):
+    prod = Scope(id=7, cloud="aws", account_ref_id=2, regions=["ap-south-1", "us-east-1"])
+    deny_region = Scope(id=10, cloud="aws", account_ref_id=2, regions=["us-east-1"])
+    access = _access(
+        bindings=[Binding("editor", 20, frozenset({"alerts.view"}), prod)],
+        denials=[Denial("alerts.view", scope=deny_region)],
+    )
+    user = _patched_filter(monkeypatch, access)
+    f = accessible_filter(user, "alerts.view")
+    assert f.account_ids == {2}
+    assert f.regions_by_account[2] == {"ap-south-1"}
+
+
+def test_deny_scoped_by_service_fails_closed_to_whole_account(monkeypatch):
+    """
+    A deny narrowed by service can't be represented per-account by
+    this filter's flat `services` set (it applies across every
+    account, not one). Rather than silently ignore that part of the
+    deny -- which is what the pre-fix code effectively did for every
+    deny -- the whole matched account is dropped: fail closed, not
+    fail open.
+    """
+    prod = Scope(id=7, cloud="aws", account_ref_id=2)
+    deny_service = Scope(id=11, cloud="aws", account_ref_id=2, services=["rds"])
+    access = _access(
+        bindings=[Binding("editor", 20, frozenset({"alerts.view"}), prod)],
+        denials=[Denial("alerts.view", scope=deny_service)],
+    )
+    user = _patched_filter(monkeypatch, access)
+    f = accessible_filter(user, "alerts.view")
+    assert 2 not in f.account_ids
+
+
+def test_global_allow_with_scoped_deny_expands_and_subtracts(monkeypatch):
+    """A global (org-wide) allow combined with one scoped deny must no
+    longer collapse to unconditional 'unrestricted=True' -- it has to
+    expand to concrete accounts so the deny has something to remove."""
+    dev = Scope(id=9, cloud="aws", account_ref_id=3)
+    access = _access(
+        bindings=[Binding("admin", 30, frozenset({"alerts.view"}), GLOBAL)],
+        denials=[Denial("alerts.view", scope=dev)],
+    )
+    user = _patched_filter(monkeypatch, access)
+    f = accessible_filter(user, "alerts.view")
+    assert f.unrestricted is False
+    assert f.account_ids == {2}
+
+
+def test_global_allow_with_no_denials_is_still_unrestricted(monkeypatch):
+    """No applicable deny -> unchanged fast path, still a plain 1=1."""
+    access = _access(
+        bindings=[Binding("admin", 30, frozenset({"alerts.view"}), GLOBAL)],
+    )
+    user = _patched_filter(monkeypatch, access)
+    f = accessible_filter(user, "alerts.view")
+    assert f.unrestricted is True
+    assert f.sql() == ("1=1", [])
+
+
+def test_deny_for_a_different_permission_is_not_applied(monkeypatch):
+    dev = Scope(id=9, cloud="aws", account_ref_id=3)
+    prod_and_dev = Scope(cloud="aws")
+    access = _access(
+        bindings=[Binding("editor", 20, frozenset({"alerts.view"}), prod_and_dev)],
+        denials=[Denial("alerts.resolve", scope=dev)],
+    )
+    user = _patched_filter(monkeypatch, access)
+    f = accessible_filter(user, "alerts.view")
+    assert f.account_ids == {2, 3}

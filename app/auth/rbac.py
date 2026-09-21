@@ -651,6 +651,19 @@ def accessible_filter(user: dict, permission: Optional[str] = None) -> AccessFil
     gets both accounts for 'alerts.view' but only prod for
     'alerts.resolve'. Omitting it means "any binding", which is almost
     never what a data endpoint wants; pass it.
+
+    Deny overrides are subtracted from the allow before the filter is
+    returned -- "deny always wins" applies here exactly as it does in
+    can()/assert_can(); a list endpoint that only ever called this
+    function previously had NO deny enforcement at all (audit b02
+    finding CRIT-1). An unconditional (scope=None) deny revokes
+    `permission` everywhere. A scoped deny removes the accounts/
+    regions it covers. A deny further restricted by service /
+    resource_group / resource_id / tag cannot be represented precisely
+    by this filter's per-account/per-region shape (services here are a
+    single set applied across every account, not per-account), so it
+    removes the whole matched account instead of silently letting rows
+    through -- fail closed, not fail precise.
     """
     access = resolve(user)
     relevant = [
@@ -661,7 +674,15 @@ def accessible_filter(user: dict, permission: Optional[str] = None) -> AccessFil
     if not relevant:
         return AccessFilter(account_ids=set())
 
-    if any(b.scope.is_global() for b in relevant):
+    applicable_denials = [
+        d for d in access.denials
+        if permission is None or d.permission_code == permission
+    ]
+    if any(d.scope is None for d in applicable_denials):
+        return AccessFilter(account_ids=set())
+
+    is_global = any(b.scope.is_global() for b in relevant)
+    if is_global and not applicable_denials:
         return AccessFilter(unrestricted=True)
 
     conn = get_connection()
@@ -678,38 +699,86 @@ def accessible_filter(user: dict, permission: Optional[str] = None) -> AccessFil
     services: Optional[set] = set()
     resource_ids: Optional[set] = set()
 
-    for b in relevant:
-        s = b.scope
-        if s.account_ref_id is not None:
-            matched = [s.account_ref_id]
-        else:
-            # Cloud-wide (or org-wide) grant: expand to the concrete
-            # account ids so the caller always gets ids, never a
-            # provider string it would have to re-resolve.
-            matched = [
-                a["id"] for a in accounts
-                if s.cloud is None or a["provider"] == s.cloud
-            ]
-
-        for acct_id in matched:
-            account_ids.add(acct_id)
-            if not s.regions:
-                regions_by_account[acct_id] = None      # all regions
-            elif regions_by_account.get(acct_id, "unset") is not None:
-                existing = regions_by_account.get(acct_id) or set()
-                regions_by_account[acct_id] = set(existing) | set(s.regions)
-
-        if services is not None:
-            if not s.services:
-                services = None                          # any one unrestricted grant wins
+    if is_global:
+        # A global allow plus at least one scoped deny: expand to the
+        # concrete account list so the deny loop below has something
+        # to subtract from -- "1=1" cannot be narrowed afterwards.
+        account_ids = {a["id"] for a in accounts}
+        for acct_id in account_ids:
+            regions_by_account[acct_id] = None
+        services = None
+        resource_ids = None
+    else:
+        for b in relevant:
+            s = b.scope
+            if s.account_ref_id is not None:
+                matched = [s.account_ref_id]
             else:
-                services |= set(s.services)
+                # Cloud-wide (or org-wide) grant: expand to the concrete
+                # account ids so the caller always gets ids, never a
+                # provider string it would have to re-resolve.
+                matched = [
+                    a["id"] for a in accounts
+                    if s.cloud is None or a["provider"] == s.cloud
+                ]
 
-        if resource_ids is not None:
-            if not s.resource_ids:
-                resource_ids = None
+            for acct_id in matched:
+                account_ids.add(acct_id)
+                if not s.regions:
+                    regions_by_account[acct_id] = None      # all regions
+                elif regions_by_account.get(acct_id, "unset") is not None:
+                    existing = regions_by_account.get(acct_id) or set()
+                    regions_by_account[acct_id] = set(existing) | set(s.regions)
+
+            if services is not None:
+                if not s.services:
+                    services = None                          # any one unrestricted grant wins
+                else:
+                    services |= set(s.services)
+
+            if resource_ids is not None:
+                if not s.resource_ids:
+                    resource_ids = None
+                else:
+                    resource_ids |= set(s.resource_ids)
+
+    for d in applicable_denials:
+        ds = d.scope
+        matched_accounts = [
+            a["id"] for a in accounts
+            if (ds.account_ref_id is None or a["id"] == ds.account_ref_id)
+            and (ds.cloud is None or a["provider"] == ds.cloud)
+        ]
+        # "precise" = this deny only narrows by cloud/account/region,
+        # so subtracting just those regions (or just the account) is
+        # exactly correct rather than an over-approximation.
+        precise = not (ds.services or ds.resource_groups or ds.resource_ids or ds.tag_selector)
+        for acct_id in matched_accounts:
+            if acct_id not in account_ids:
+                continue
+            if precise and ds.regions:
+                current = regions_by_account.get(acct_id)
+                if current is None:
+                    # Currently unrestricted for this account -- "all
+                    # regions except these" isn't expressible as a
+                    # positive IN-list without a region catalog, so
+                    # fail closed and drop the whole account rather
+                    # than risk under-denying.
+                    account_ids.discard(acct_id)
+                    regions_by_account.pop(acct_id, None)
+                else:
+                    remaining = set(current) - set(ds.regions)
+                    if remaining:
+                        regions_by_account[acct_id] = remaining
+                    else:
+                        account_ids.discard(acct_id)
+                        regions_by_account.pop(acct_id, None)
             else:
-                resource_ids |= set(s.resource_ids)
+                # Whole-account deny, or a deny scoped by a dimension
+                # this filter can't represent per-account -- remove
+                # the account entirely (fail closed).
+                account_ids.discard(acct_id)
+                regions_by_account.pop(acct_id, None)
 
     return AccessFilter(
         account_ids=account_ids,
