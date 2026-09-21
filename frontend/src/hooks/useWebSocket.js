@@ -2,7 +2,9 @@
 // Singleton per channel — prevents duplicate connections across components
 import { useEffect, useRef, useState } from "react";
 
-const WS_BASE = `ws://${window.location.host}/ws`;
+// wss:// when the page is served over HTTPS (browsers block ws:// from an https
+// page as mixed content, which would silently kill live alert/overview updates).
+const WS_BASE = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws`;
 const _sockets    = {};          // channel → WebSocket
 const _listeners  = {};          // channel → Set of {onMsg, onStatus}
 const _reconnect  = {};          // channel → timeout handle

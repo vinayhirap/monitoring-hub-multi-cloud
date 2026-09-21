@@ -109,12 +109,35 @@ def check_rate_limit(key: str, max_attempts: int, window_seconds: int) -> None:
         logger.warning(f"Rate limiter check failed ({e}) -- failing open for this request")
 
 
+def _known_ip_key(uname: str, ip: str) -> str:
+    return f"login:known:{uname}:{ip}"
+
+
+def _is_known_login_ip(uname: str, ip: str) -> bool:
+    """True if this username has previously logged in successfully from this
+    IP (see record_login_success). Any Redis problem => False (treated as an
+    unknown IP, i.e. the stricter shared bucket)."""
+    r = _get_redis()
+    if r is None:
+        return False
+    try:
+        return bool(r.exists(_known_ip_key(uname, ip)))
+    except Exception:
+        return False
+
+
 def enforce_login_rate_limit(request: Request, username: str) -> None:
     """
     Two independent limits, both must pass:
       - Per-IP: stops a single source from brute-forcing ANY account.
       - Per-username: stops a distributed attack (many IPs/a botnet)
         from brute-forcing ONE specific account, e.g. 'admin'.
+    A shared per-username bucket lets anyone lock a real user out just by
+    failing 10 logins for that name, so an IP the user has ALREADY logged in
+    from successfully (last LOGIN_KNOWN_IP_TTL_DAYS days) is counted in its
+    own (username, ip) bucket instead: an attacker elsewhere can no longer
+    exhaust it. Attackers on unknown IPs still share the strict per-username
+    bucket, so brute-force protection is unchanged.
     Defaults are generous enough not to lock out a real user who
     mistypes their password a few times, tight enough to make online
     brute-forcing impractical. Configurable via env vars for
@@ -128,7 +151,37 @@ def enforce_login_rate_limit(request: Request, username: str) -> None:
     ip = _client_ip(request)
     check_rate_limit(f"login:ip:{ip}", ip_max, ip_window)
     if username:
-        check_rate_limit(f"login:user:{username.lower().strip()}", user_max, user_window)
+        uname = username.lower().strip()
+        if _is_known_login_ip(uname, ip):
+            check_rate_limit(f"login:userip:{uname}:{ip}", user_max, user_window)
+        else:
+            check_rate_limit(f"login:user:{uname}", user_max, user_window)
+
+
+def record_login_success(request: Request, username: str) -> None:
+    """Call after a VERIFIED login: remembers (username, ip) as a known pair
+    and clears the shared per-username bucket. Best-effort; never raises."""
+    r = _get_redis()
+    if r is None or not username:
+        return
+    try:
+        uname = username.lower().strip()
+        days = int(os.getenv("LOGIN_KNOWN_IP_TTL_DAYS", 30))
+        r.set(_known_ip_key(uname, _client_ip(request)), "1", ex=days * 86400)
+        r.delete(f"ratelimit:login:user:{uname}")
+    except Exception as e:
+        logger.warning(f"Rate limiter: could not record login success ({e})")
+
+
+def enforce_change_password_rate_limit(user_id: int) -> None:
+    """
+    Per session-user. change-password verifies the CURRENT password, so
+    without a limit a stolen session cookie doubles as an unthrottled online
+    guessing oracle for that password (login's limiter never sees it).
+    """
+    max_attempts = int(os.getenv("CHANGE_PASSWORD_RATE_LIMIT_PER_USER", 10))
+    window       = int(os.getenv("CHANGE_PASSWORD_RATE_LIMIT_WINDOW_SECONDS", 900))
+    check_rate_limit(f"change-password:user:{int(user_id)}", max_attempts, window)
 
 
 def enforce_forgot_password_rate_limit(request: Request) -> None:
