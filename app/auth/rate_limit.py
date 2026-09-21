@@ -86,8 +86,17 @@ def check_rate_limit(key: str, max_attempts: int, window_seconds: int) -> None:
         count = r.incr(redis_key)
         if count == 1:
             r.expire(redis_key, window_seconds)
-        if count > max_attempts:
+            ttl = window_seconds
+        else:
             ttl = r.ttl(redis_key)
+            if ttl == -1:
+                # INCR succeeded but the EXPIRE that should have followed it
+                # never did (crash/timeout between the two calls). Without
+                # this repair the key would live forever and permanently
+                # lock out that IP/username once it passes max_attempts.
+                r.expire(redis_key, window_seconds)
+                ttl = window_seconds
+        if count > max_attempts:
             retry_after = ttl if ttl and ttl > 0 else window_seconds
             raise HTTPException(
                 status_code=429,
@@ -146,3 +155,14 @@ def enforce_reset_password_rate_limit(request: Request) -> None:
     max_attempts = int(os.getenv("RESET_PASSWORD_RATE_LIMIT_PER_IP", 10))
     window       = int(os.getenv("RESET_PASSWORD_RATE_LIMIT_WINDOW_SECONDS", 900))
     check_rate_limit(f"reset-password:ip:{_client_ip(request)}", max_attempts, window)
+
+
+def enforce_sso_rate_limit(request: Request) -> None:
+    """
+    Per-IP limit for the unauthenticated SAML endpoints. /sso/login writes
+    a Redis key per call and /sso/acs runs XML-signature verification, so
+    both are cheap for an attacker to spam and costly for the app.
+    """
+    max_attempts = int(os.getenv("SSO_RATE_LIMIT_PER_IP", 30))
+    window       = int(os.getenv("SSO_RATE_LIMIT_WINDOW_SECONDS", 300))
+    check_rate_limit(f"sso:ip:{_client_ip(request)}", max_attempts, window)

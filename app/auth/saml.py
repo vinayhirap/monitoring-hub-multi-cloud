@@ -37,6 +37,18 @@ SaaS) is a real feature but a different, bigger one than what's
 being asked for here.
 """
 import os
+import re
+from typing import Optional
+from urllib.parse import urlparse
+
+
+class SamlStateUnavailable(RuntimeError):
+    """Redis (SAML request-id store) unreachable — SSO fails CLOSED."""
+
+
+_REQ_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")
+_REQ_TTL_SECONDS = 600
+_redis_client = None
 
 
 def is_enabled() -> bool:
@@ -87,6 +99,7 @@ def build_saml_settings() -> dict:
             "wantMessagesSigned": True,
             "wantNameIdEncrypted": False,
             "requestedAuthnContext": False,
+            "rejectDeprecatedAlgorithm": True,   # refuse SHA-1 signatures/digests
         },
     }
 
@@ -94,17 +107,68 @@ def build_saml_settings() -> dict:
 async def build_request_data(request) -> dict:
     """Converts a FastAPI Request into the plain dict python3-saml's
     OneLogin_Saml2_Auth expects (it's framework-agnostic and doesn't
-    know about FastAPI/Starlette). https flag reads X-Forwarded-Proto
-    first -- this app sits behind a reverse proxy in production (see
-    COOKIE_SECURE's own reasoning in app/api/auth.py), so
-    request.url.scheme alone would report 'http' even when the
-    actual public-facing connection is HTTPS."""
+    know about FastAPI/Starlette).
+
+    scheme/host/path come from the configured SSO_SP_ACS_URL, NOT from the
+    Host / X-Forwarded-Proto request headers: those are client-influenced
+    and nginx here does not set X-Forwarded-Proto, so header-derived values
+    made the Destination check depend on proxy config (and on attacker
+    input). The ACS URL is exactly what the IdP signs as Destination."""
     form = await request.form()
-    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    acs = urlparse(os.getenv("SSO_SP_ACS_URL", ""))
     return {
-        "https": "on" if forwarded_proto == "https" else "off",
-        "http_host": request.headers.get("host", request.url.hostname),
-        "script_name": request.url.path,
+        "https": "on" if acs.scheme == "https" else "off",
+        "http_host": acs.netloc,
+        "script_name": acs.path,
         "get_data": dict(request.query_params),
         "post_data": dict(form),
     }
+
+
+def extract_in_response_to(saml_response_b64: str) -> Optional[str]:
+    """InResponseTo attribute of the (not yet verified) SAMLResponse root.
+    Only used to look up a request id WE issued; python3-saml then verifies
+    the signed value equals it (process_response(request_id=...))."""
+    try:
+        from onelogin.saml2.utils import OneLogin_Saml2_Utils
+        from onelogin.saml2.xml_utils import OneLogin_Saml2_XML
+        root = OneLogin_Saml2_XML.to_etree(OneLogin_Saml2_Utils.b64decode(saml_response_b64))
+        value = root.get("InResponseTo")
+    except Exception:
+        return None
+    return value if value and _REQ_ID_RE.match(value) else None
+
+
+def _redis():
+    global _redis_client
+    if _redis_client is None:
+        try:
+            import redis
+            c = redis.Redis(host="127.0.0.1", port=6379, decode_responses=True,
+                            socket_connect_timeout=2, socket_timeout=2)
+            c.ping()
+            _redis_client = c
+        except Exception as e:
+            raise SamlStateUnavailable(str(e))
+    return _redis_client
+
+
+def remember_request_id(request_id: str) -> None:
+    """Record an AuthnRequest id we issued (10 min TTL)."""
+    try:
+        _redis().set(f"saml:req:{request_id}", "1", ex=_REQ_TTL_SECONDS)
+    except SamlStateUnavailable:
+        raise
+    except Exception as e:
+        raise SamlStateUnavailable(str(e))
+
+
+def consume_request_id(request_id: str) -> bool:
+    """Atomically use up an id we issued. False = unknown, expired, or already
+    used (=> replay / unsolicited IdP-initiated response)."""
+    try:
+        return _redis().delete(f"saml:req:{request_id}") == 1
+    except SamlStateUnavailable:
+        raise
+    except Exception as e:
+        raise SamlStateUnavailable(str(e))

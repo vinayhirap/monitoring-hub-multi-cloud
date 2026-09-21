@@ -7,26 +7,38 @@ the required IdP env vars are set -- see app/auth/saml.py's
 _require_config(). No _auth_dep on this router (see main.py) --
 these ARE the pre-authentication login flow, same as
 app/api/auth.py's POST /login, which also has none.
+
+Audit B01: only SP-initiated logins are accepted. /login records the
+AuthnRequest id in Redis; /acs consumes it exactly once and passes it to
+python3-saml as request_id, so InResponseTo is verified and a captured
+assertion cannot be replayed or pushed at us unsolicited. If Redis is
+down SSO fails closed (local login is unaffected).
 """
 import logging
 import os
 import secrets
 
 import bcrypt
+from mysql.connector import errors as mysql_errors
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
 from app.db import get_connection
 from app.auth.security import create_access_token
-from app.auth.deps import COOKIE_NAME
+from app.auth.deps import set_session_cookie
+from app.auth.rate_limit import enforce_sso_rate_limit
 from app.auth import saml
 from app.audit import write_audit
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth/sso", tags=["SSO"])
 
-COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").strip().lower() == "true"
-COOKIE_MAX_AGE_SECONDS = 12 * 60 * 60  # matches app/api/auth.py's local-login session length
+_LOGIN_FAILED = "SSO login failed"
+_USERNAME_MAX = 100   # users.username is VARCHAR(100)
+
+
+class _SsoDenied(Exception):
+    """Login refused; str(e) is the audit reason (never shown to the client)."""
 
 
 def _check_enabled():
@@ -44,47 +56,62 @@ def _saml_auth(request_data: dict):
 
 
 def _find_or_provision_user(email: str):
-    """Returns (id, username, role) for an existing user matching this
-    email, or auto-provisions one if SSO_AUTO_PROVISION=true. Returns
-    None if no match and auto-provisioning is off -- caller rejects the
-    login with a clear message rather than silently creating accounts
-    an admin didn't opt into."""
+    """Returns (id, username, role, token_version) for the single ACTIVE user
+    matching this email, or auto-provisions one if SSO_AUTO_PROVISION=true.
+    Returns None if no match and auto-provisioning is off. Raises _SsoDenied
+    for a deactivated match, an ambiguous match, or an unprovisionable email
+    -- a deactivated account must never be silently re-created by SSO."""
     conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "SELECT id, username, role FROM users WHERE email = %s AND active = 1",
-            (email,),
-        )
-        user = cursor.fetchone()
-        if user:
-            return user["id"], user["username"], user["role"]
+        cursor = conn.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                "SELECT id, username, role, active, token_version FROM users WHERE email = %s",
+                (email,),
+            )
+            rows = cursor.fetchall()
+            if rows:
+                active = [r for r in rows if r["active"]]
+                if not active:
+                    raise _SsoDenied("matching local account is deactivated")
+                if len(active) > 1:
+                    raise _SsoDenied("email matches more than one active account")
+                u = active[0]
+                return u["id"], u["username"], u["role"], int(u["token_version"] or 0)
 
-        if os.getenv("SSO_AUTO_PROVISION", "false").strip().lower() != "true":
-            return None
+            if os.getenv("SSO_AUTO_PROVISION", "false").strip().lower() != "true":
+                return None
 
-        default_role = os.getenv("SSO_DEFAULT_ROLE", "viewer")
-        if default_role not in ("viewer", "editor", "admin"):
-            logger.warning(f"[sso] SSO_DEFAULT_ROLE={default_role!r} is invalid, defaulting to 'viewer'")
-            default_role = "viewer"
+            if len(email) > _USERNAME_MAX:
+                raise _SsoDenied(f"email longer than {_USERNAME_MAX} chars cannot be used as username")
 
-        # SSO-provisioned accounts have no usable local password -- a
-        # random 32-byte secret, bcrypt-hashed like any real password,
-        # so local POST /api/auth/login can never authenticate as this
-        # user (the random value was never returned to anyone and isn't
-        # stored anywhere else) while the users.password_hash NOT NULL
-        # constraint is still satisfied without a schema change.
-        unusable_password_hash = bcrypt.hashpw(secrets.token_bytes(32), bcrypt.gensalt()).decode()
+            # Auto-provisioning may only create least-privilege roles; an
+            # IdP-authenticated principal must never be minted as admin here.
+            default_role = os.getenv("SSO_DEFAULT_ROLE", "viewer")
+            if default_role not in ("viewer", "editor"):
+                logger.warning(f"[sso] SSO_DEFAULT_ROLE={default_role!r} is not allowed for "
+                               f"auto-provisioning (viewer/editor only), using 'viewer'")
+                default_role = "viewer"
 
-        cursor.execute("""
-            INSERT INTO users (username, email, password_hash, role, auth_source, active)
-            VALUES (%s, %s, %s, %s, 'sso', 1)
-        """, (email, email, unusable_password_hash, default_role))
-        conn.commit()
-        logger.info(f"[sso] auto-provisioned new user {email!r} with role={default_role!r}")
-        return cursor.lastrowid, email, default_role
+            # No usable local password: random 32-byte secret, bcrypt-hashed,
+            # never stored or returned, so POST /api/auth/login can't succeed.
+            unusable_password_hash = bcrypt.hashpw(secrets.token_bytes(32), bcrypt.gensalt()).decode()
+
+            try:
+                cursor.execute(
+                    "INSERT INTO users (username, email, password, role, auth_source, active) "
+                    "VALUES (%s, %s, %s, %s, 'sso', 1)",
+                    (email, email, unusable_password_hash, default_role),
+                )
+                conn.commit()
+            except mysql_errors.IntegrityError:
+                conn.rollback()
+                raise _SsoDenied("username already taken by a different account")
+            logger.info(f"[sso] auto-provisioned new user {email!r} with role={default_role!r}")
+            return cursor.lastrowid, email, default_role, 0
+        finally:
+            cursor.close()
     finally:
-        cursor.close()
         conn.close()
 
 
@@ -95,9 +122,16 @@ async def sso_login(request: Request):
     'Log in with SSO' button) when SSO is enabled -- see /metadata for
     how the IdP itself gets configured to trust this app."""
     _check_enabled()
+    enforce_sso_rate_limit(request)
     request_data = await saml.build_request_data(request)
     auth = _saml_auth(request_data)
-    return RedirectResponse(url=auth.login(), status_code=302)
+    url = auth.login()
+    try:
+        saml.remember_request_id(auth.get_last_request_id())
+    except saml.SamlStateUnavailable as e:
+        logger.error(f"[sso] request-id store unavailable: {e}")
+        raise HTTPException(status_code=503, detail="SSO temporarily unavailable")
+    return RedirectResponse(url=url, status_code=302)
 
 
 @router.post("/acs")
@@ -115,19 +149,37 @@ async def sso_acs(request: Request):
     working unchanged).
     """
     _check_enabled()
+    enforce_sso_rate_limit(request)
     request_data = await saml.build_request_data(request)
+
+    in_response_to = saml.extract_in_response_to(request_data["post_data"].get("SAMLResponse", ""))
+    if not in_response_to:
+        write_audit("sso", "SSO login failed", request=request,
+                     payload={"reason": "missing/invalid InResponseTo (IdP-initiated not supported)"})
+        raise HTTPException(status_code=401, detail=_LOGIN_FAILED)
+    try:
+        known = saml.consume_request_id(in_response_to)
+    except saml.SamlStateUnavailable as e:
+        logger.error(f"[sso] request-id store unavailable: {e}")
+        raise HTTPException(status_code=503, detail="SSO temporarily unavailable")
+    if not known:
+        write_audit("sso", "SSO login failed", request=request,
+                     payload={"reason": "unknown, expired or already-used request id"})
+        raise HTTPException(status_code=401, detail=_LOGIN_FAILED)
+
     auth = _saml_auth(request_data)
-    auth.process_response()
+    auth.process_response(request_id=in_response_to)
 
     errors = auth.get_errors()
     if errors:
         reason = auth.get_last_error_reason()
+        logger.warning(f"[sso] SAML response rejected: {errors} {reason}")
         write_audit("sso", "SSO login failed", request=request,
                      payload={"errors": errors, "reason": reason})
-        raise HTTPException(status_code=401, detail=f"SAML authentication failed: {reason}")
+        raise HTTPException(status_code=401, detail=_LOGIN_FAILED)
 
     if not auth.is_authenticated():
-        raise HTTPException(status_code=401, detail="SAML authentication was not confirmed by the IdP")
+        raise HTTPException(status_code=401, detail=_LOGIN_FAILED)
 
     email_attribute = os.getenv("SSO_EMAIL_ATTRIBUTE", "")
     if email_attribute:
@@ -136,26 +188,29 @@ async def sso_acs(request: Request):
     else:
         email = auth.get_nameid()  # NameIDFormat is emailAddress, see build_saml_settings()
 
+    email = (email or "").strip()
     if not email:
         raise HTTPException(status_code=401, detail="SAML response did not include an email address")
 
-    match = _find_or_provision_user(email)
+    try:
+        match = _find_or_provision_user(email)
+    except _SsoDenied as e:
+        write_audit("sso", "SSO login rejected", request=request,
+                     payload={"email": email, "reason": str(e)})
+        raise HTTPException(status_code=403, detail="SSO login is not permitted for this account -- contact an administrator")
     if match is None:
         write_audit("sso", "SSO login rejected -- no matching local user", request=request,
                      payload={"email": email})
         raise HTTPException(
             status_code=403,
-            detail=f"No account exists for {email} and SSO_AUTO_PROVISION is not enabled -- "
-                   f"ask an admin to create your account first",
+            detail="No account exists for this identity and SSO_AUTO_PROVISION is not enabled -- "
+                   "ask an admin to create your account first",
         )
 
-    user_id, username, role = match
-    token = create_access_token(user_id, username, role)
+    user_id, username, role, token_version = match
+    token = create_access_token(user_id, username, role, token_version=token_version)
     response = RedirectResponse(url=os.getenv("PUBLIC_APP_URL", "/"), status_code=302)
-    response.set_cookie(
-        key=COOKIE_NAME, value=token, httponly=True, secure=COOKIE_SECURE,
-        samesite="lax", max_age=COOKIE_MAX_AGE_SECONDS, path="/",
-    )
+    set_session_cookie(response, token)
     write_audit(username, "Login successful (SSO)", role=role.upper(), request=request,
                  payload={"username": username, "auth_source": "sso"})
     return response
@@ -175,5 +230,6 @@ def sso_metadata():
     metadata = settings.get_sp_metadata()
     errors = settings.validate_metadata(metadata)
     if errors:
-        raise HTTPException(status_code=500, detail=f"Invalid SP metadata configuration: {errors}")
+        logger.error(f"[sso] invalid SP metadata configuration: {errors}")
+        raise HTTPException(status_code=500, detail="Invalid SP metadata configuration (see server log)")
     return Response(content=metadata, media_type="application/xml")

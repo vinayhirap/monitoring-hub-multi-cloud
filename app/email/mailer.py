@@ -104,7 +104,11 @@ def send_email(to_addr: str, subject: str, body_text: str) -> bool:
         return False
 
     host      = os.getenv("SMTP_HOST")
-    port      = int(os.getenv("SMTP_PORT", "587"))
+    try:
+        port  = int(os.getenv("SMTP_PORT", "587"))
+    except ValueError:
+        logger.error(f"Mail not sent to {to_addr!r} -- SMTP_PORT is not an integer")
+        return False
     username  = os.getenv("SMTP_USERNAME", "")
     password  = os.getenv("SMTP_PASSWORD", "")
     use_tls   = os.getenv("SMTP_USE_TLS", "true").strip().lower() == "true"
@@ -162,7 +166,11 @@ def send_report_email(to_addr: str, report: dict, pdf_bytes: bytes) -> bool:
         return False
 
     host      = os.getenv("SMTP_HOST")
-    port      = int(os.getenv("SMTP_PORT", "587"))
+    try:
+        port  = int(os.getenv("SMTP_PORT", "587"))
+    except ValueError:
+        logger.error(f"Report email not sent to {to_addr!r} -- SMTP_PORT is not an integer")
+        return False
     username  = os.getenv("SMTP_USERNAME", "")
     password  = os.getenv("SMTP_PASSWORD", "")
     use_tls   = os.getenv("SMTP_USE_TLS", "true").strip().lower() == "true"
@@ -170,6 +178,13 @@ def send_report_email(to_addr: str, report: dict, pdf_bytes: bytes) -> bool:
 
     subject = f"CloudOps {report['report_type'].title()} Report -- {report.get('scope_label') or report['scope_id']}"
     filename = report["s3_key"].rsplit("/", 1)[-1]
+    try:
+        # scope_label is user-supplied; refuse CR/LF in anything that lands in a header
+        _reject_header_injection(subject, "subject")
+        _reject_header_injection(filename, "filename")
+    except ValueError as e:
+        logger.error(f"Refusing to email report -- {e} (to_addr={to_addr!r})")
+        return False
 
     msg = MIMEMultipart()
     msg["Subject"] = subject
