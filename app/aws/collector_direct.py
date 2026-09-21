@@ -1856,7 +1856,8 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list, accou
     Evaluates thresholds against current data.
     ec2/ebs/rds thresholds are checked against VictoriaMetrics.
     lambda (and anything else not in YACE) still uses the boto3 GMD batch.
-    Writes breaches to alerts table. Returns list of breach dicts.
+    READ-ONLY PREVIEW: returns the list of current breach dicts and writes
+    nothing (see the note where breaches are collected).
 
     Bug fixed here (same class/family as get_ec2_metric_series() and
     _get_elb_metric_series() above): `account` was never accepted here at
@@ -2013,8 +2014,6 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list, accou
         all_vals[(t_idx, resource_id)] = val
 
     breaches = []
-    conn     = get_connection()
-    cur      = conn.cursor()
 
     def breached(v, threshold, comp):
         return (
@@ -2032,6 +2031,13 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list, accou
         metric    = t["metric_name"]
         svc       = (t.get("service") or t.get("resource_type") or "").lower()
 
+        # placeholder volume thresholds are anomaly-only in the real
+        # evaluator (see threshold_defaults.PLACEHOLDER_THRESHOLD); showing
+        # them as breaches here would preview alerts that will never fire
+        from app.threshold_defaults import is_placeholder_threshold
+        if is_placeholder_threshold(warn_val, crit_val, comp):
+            continue
+
         if breached(val, crit_val, comp):
             severity = "CRITICAL"
         elif breached(val, warn_val, comp):
@@ -2048,50 +2054,15 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list, accou
             "threshold": threshold_val,
             "severity":  severity,
         })
-        try:
-            # Match alert_evaluator.py's own definition of "already open"
-            # -- ANY existing active alert for this resource+metric, not
-            # just one from the last 10 minutes. The old 10-minute window
-            # meant every manual "Check Thresholds Now" click more than
-            # 10 minutes apart inserted a brand-new duplicate row on top
-            # of whatever was already active, rather than refreshing it
-            # -- confirmed live: the same 21 gp3 volumes got a second
-            # full batch of BurstBalance alerts a day after the first,
-            # doubling up instead of updating in place. Also now sets
-            # last_seen_at, which the old INSERT never did at all --
-            # leaving it NULL, which made `stale` (alerts.py) evaluate to
-            # false forever (its check requires last_seen_at IS NOT
-            # NULL), so these alerts could never even surface as stale
-            # for an operator to notice and clean up manually.
-            cur.execute("""
-                SELECT id FROM alerts
-                WHERE resource_id=%s AND metric_name=%s AND status='active'
-                LIMIT 1
-            """, (resource_id, metric))
-            existing = cur.fetchone()
-            if existing:
-                cur.execute("""
-                    UPDATE alerts
-                    SET current_value=%s, threshold=%s, value=%s,
-                        severity=%s, last_seen_at=NOW()
-                    WHERE id=%s
-                """, (round(val, 4), threshold_val, round(val, 4),
-                      severity, existing[0]))
-            else:
-                cur.execute("""
-                    INSERT INTO alerts
-                      (resource_id, metric_name, severity, status,
-                       current_value, threshold, value,
-                       triggered_at, last_seen_at, environment)
-                    VALUES (%s,%s,%s,'active',%s,%s,%s,NOW(),NOW(),'PROD')
-                """, (resource_id, metric, severity,
-                      round(val, 4), threshold_val, round(val, 4)))
-        except Exception as db_err:
-            logger.warning(f"Alert insert [{resource_id}/{metric}]: {db_err}")
-
-    conn.commit()
-    cur.close()
-    conn.close()
+        # NO DATABASE WRITE HERE (2026-09-20 audit). This function used to
+        # INSERT/UPDATE `alerts` itself -- a second, independent evaluator
+        # that (a) ignored dynamic thresholds, sustained-breach hysteresis,
+        # maintenance windows, cadence and severity rules, (b) matched "already
+        # open" by resource_id alone (no account), and (c) inserted rows with
+        # aws_account_id NULL, which every reader has ignored since migration
+        # 048 -- i.e. duplicate, invisible, or cross-account alerts. The
+        # scheduled evaluator (app/collector/alert_evaluator.py) is now the
+        # ONLY writer of threshold alerts; this is a read-only preview.
     return breaches
 
 

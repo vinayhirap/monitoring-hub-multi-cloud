@@ -61,7 +61,7 @@ def _compute_status(cursor, slo: dict) -> dict:
         actual_bad_minutes = bad_fraction * window_minutes
     else:
         metric_clause = "AND a.metric_name = %s" if slo["metric_name"] else ""
-        params = [window_start, slo["resource_id"]]
+        params = [window_start, slo["resource_id"], slo["aws_account_id"]]
         if slo["metric_name"]:
             params.append(slo["metric_name"])
         params.append(window_start)
@@ -75,7 +75,14 @@ def _compute_status(cursor, slo: dict) -> dict:
             ) AS bad_seconds
             FROM alerts a
             WHERE a.resource_id = %s
-              AND a.severity = 'CRITICAL'
+              AND a.aws_account_id = %s
+              AND UPPER(a.severity) = 'CRITICAL'
+              -- downtime that was NOT real must not burn error budget:
+              -- planned maintenance (silenced), and alerts the system closed
+              -- because they were never genuine (placeholder/duplicate/...)
+              AND a.silenced = 0
+              AND COALESCE(a.resolution_reason, '') NOT IN
+                  ('duplicate', 'placeholder_threshold', 'threshold_disabled', 'bulk_clear')
               {metric_clause}
               AND COALESCE(a.resolved_at, NOW()) >= %s
               AND a.triggered_at <= NOW()
@@ -124,7 +131,7 @@ def list_slos(current_user: dict = Depends(require_permission("slo.view"))):
             FROM slo_definitions s
             JOIN aws_accounts acc ON acc.id = s.aws_account_id
             LEFT JOIN synthetic_checks sc ON sc.id = s.synthetic_check_id
-            LEFT JOIN resources r ON r.resource_id = s.resource_id
+            LEFT JOIN resources r ON r.resource_id = s.resource_id AND r.aws_account_id = s.aws_account_id
             ORDER BY s.name
         """)
         rows = cursor.fetchall()

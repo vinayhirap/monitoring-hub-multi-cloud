@@ -55,6 +55,7 @@ from app.aws.collector_direct import (
     _get_ecs_metric_series,
 )
 from app.db import get_connection
+from app import alert_rules as _alert_rules
 from app.alert_visibility import hidden_metrics_sql
 from app.threshold_defaults import normalize_service_key
 import datetime
@@ -207,72 +208,33 @@ def _resolve_resource_account(resource_identifier: str) -> dict | None:
 
 def _get_active_alert_counts_by_account() -> dict:
     """
-    THE authoritative source for account-level health: {aws_account_id:
-    {"critical": N, "warning": N}}, counting DISTINCT alerting
-    resources of each severity, resolved to an account via `resources`
-    (which carries aws_account_id for every resource type this app
-    discovers — EC2, EBS, RDS, Lambda, ELB, ECS), not just EC2.
+    THE account-level alert numbers for the Overview banner/account cards:
+    {aws_account_id: {"critical": N, "warning": N, "critical_resources": N,
+    "warning_resources": N, "stale": N, "acknowledged": N, "suppressed": N}}.
 
-    This replaces the previous _get_active_alert_resources(), which
-    returned raw (critical_ids, warning_ids) sets that the caller then
-    intersected against ONLY that account's EC2 instance_ids — meaning
-    a critical alert on an EBS volume, S3 bucket, RDS instance, or
-    Lambda function never counted toward that account's status at all.
-    That's exactly how a dashboard can show "7 CRITICAL · 3 WARNING"
-    in the alerts banner (built straight from the alerts table) while
-    the account summary tiles above it say 0 critical, 0 healthy — the
-    two were computed from different data. Routing both through this
-    one function is what keeps them in agreement.
-
-    "Active" is defined EXACTLY once here, identically to the banner's
-    own query (app/api/alerts.py: open_alerts): status = 'active' AND
-    resolved_at IS NULL, resolved to an ACTIVE account via the same
-    `aws_accounts.status = 'active'` gate the banner uses. No extra
-    age window is applied — an alert open for 10 minutes and one open
-    for 10 days both count for as long as they remain unresolved.
-    (A previous version of this query additionally required
-    `triggered_at > NOW() - 24h`, a clause the banner never had; any
-    alert older than a day was silently excluded from account health
-    while still showing in the banner, reproducing the exact
-    banner/tiles disagreement this function exists to prevent. Alert
-    *age* is a display concern — see alerts.py's `stale` flag — never
-    a reason to stop counting an alert that is still open.)
-
-    Also excludes app.alert_visibility.HIDDEN_FROM_ALERTS_UI_METRICS
-    (2026-09-15 fix) -- every alerts.py query this function is meant to
-    agree with already excludes these (multivariate_anomaly rows: real
-    in the DB, deliberately invisible in the UI). Before this fix, this
-    was the one query that didn't, so an account with hidden anomaly-
-    detector warnings open could show a HIGHER warning count here than
-    on the Alerts page's own Active/Warning tabs for the same account at
-    the same moment -- the same disagreement this function's docstring
-    above already describes fixing for a different cause.
+    2026-09-20: rebuilt on app/alert_rules.py -- the same state machine every
+    other screen uses. "critical"/"warning" are ALERT ROWS in the FIRING state
+    (fresh, not acknowledged, not muted, not in a maintenance window), so the
+    banner equals the Alerts page's Critical tab and the sum of the Services
+    tiles by construction. It used to count DISTINCT RESOURCES over raw
+    status='active' (28/6 on screen vs 29 on the Alerts page), and counted
+    stale alerts as live. *_resources keep the distinct-resource view for
+    callers that genuinely need a resource count (HealthRing sizing).
     """
     try:
+        from app import alert_rules
         conn   = get_connection()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT a.aws_account_id, a.severity, COUNT(DISTINCT a.resource_id) AS cnt
-            FROM alerts a
-            JOIN aws_accounts acc ON acc.id = a.aws_account_id
-                                   AND acc.status = 'active'
-            WHERE a.status = 'active'
-              AND a.resolved_at IS NULL
-              AND a.metric_name NOT IN ({hidden})
-            GROUP BY a.aws_account_id, a.severity
-        """.format(hidden=hidden_metrics_sql()))
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-
+        try:
+            rows = alert_rules.fetch_open_alert_rows(cursor, None)
+        finally:
+            cursor.close()
+            conn.close()
         out = {}
-        for r in rows:
-            bucket = out.setdefault(r["aws_account_id"], {"critical": 0, "warning": 0})
-            sev = (r["severity"] or "").upper()
-            if sev == "CRITICAL":
-                bucket["critical"] += r["cnt"]
-            elif sev == "WARNING":
-                bucket["warning"] += r["cnt"]
+        for acct, v in alert_rules.rollup(rows)["accounts"].items():
+            out[acct] = {k: v[k] for k in (
+                "critical", "warning", "critical_resources", "warning_resources",
+                "stale", "acknowledged", "suppressed")}
         return out
     except Exception as e:
         logger.error(f"Active alert count fetch error: {e}")
@@ -431,8 +393,8 @@ def _get_ec2_instance_health_by_account() -> dict:
                                    AND r.aws_account_id = a.aws_account_id
             JOIN aws_accounts acc ON acc.id = r.aws_account_id
                                    AND acc.status = 'active'
-            WHERE a.status = 'active'
-              AND a.resolved_at IS NULL
+            WHERE """ + _alert_rules.firing_where() + """
+              AND """ + _alert_rules.base_where() + """
               AND r.resource_type IN ('ec2', 'ebs', 'eni')
         """)
         rows = cursor.fetchall()
@@ -514,7 +476,9 @@ def live_accounts(current_user: dict = Depends(require_permission("resources.vie
         total   = summary.get("ec2_total",   0)
         avg_cpu = summary.get("ec2_avg_cpu", 0)
 
-        counts        = alert_counts_by_account.get(acc["id"], {"critical": 0, "warning": 0})
+        counts        = alert_counts_by_account.get(acc["id"], {"critical": 0, "warning": 0,
+                                                             "critical_resources": 0, "warning_resources": 0,
+                                                             "stale": 0, "acknowledged": 0, "suppressed": 0})
         acct_critical = counts["critical"]
         acct_warning  = counts["warning"]
 
@@ -543,7 +507,9 @@ def live_accounts(current_user: dict = Depends(require_permission("resources.vie
         else:
             health = "healthy"
 
-        unhealthy_count = min(acct_critical + acct_warning, running) if running else (acct_critical + acct_warning)
+        # HealthRing sizing needs a RESOURCE count, not an alert-row count
+        unhealthy_resources = counts.get("critical_resources", 0) + counts.get("warning_resources", 0)
+        unhealthy_count = min(unhealthy_resources, running) if running else unhealthy_resources
         healthy_count   = max(running - unhealthy_count, 0)
 
         services = []
@@ -590,6 +556,9 @@ def live_accounts(current_user: dict = Depends(require_permission("resources.vie
             "alerts":           acct_critical + acct_warning,
             "critical_alerts":  acct_critical,
             "warning_alerts":   acct_warning,
+            "stale_alerts":        counts.get("stale", 0),
+            "acknowledged_alerts": counts.get("acknowledged", 0),
+            "suppressed_alerts":   counts.get("suppressed", 0),
             # EC2-scoped counts for the HealthRing wedge colouring --
             # see _get_ec2_instance_health_by_account(). Intentionally
             # separate from critical_alerts/warning_alerts above.

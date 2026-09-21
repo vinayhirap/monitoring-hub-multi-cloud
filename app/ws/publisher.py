@@ -49,6 +49,10 @@ def publish_alert(alert_id: int, severity: str, metric: str,
                   account_name: str = None, region: str = None):
     publish("alerts", {
         "type": "new_alert",
+        # `id` is what the Alerts page keys rows on; `alert_id` kept for any
+        # existing consumer. (The page read `id`, got undefined, and inserted
+        # a half-empty ghost row on every push.)
+        "id": alert_id,
         "alert_id": alert_id,
         "severity": severity,
         "metric": metric,

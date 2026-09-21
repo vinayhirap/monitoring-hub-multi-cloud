@@ -180,17 +180,18 @@ NOISE_K = 3.0
 MIN_FALSE_POSITIVE_MARKS = 2
 
 
-def _has_chronic_active_alert(cursor, resource_id, metric_name):
+def _has_chronic_active_alert(cursor, aws_account_id, resource_id, metric_name):
     """True if there's a currently-active alert on this exact
     resource+metric that has been breaching continuously for at least
     CHRONIC_ALERT_AGE_HOURS -- real evidence, not just a confident
     baseline in isolation."""
     cursor.execute("""
         SELECT id FROM alerts
-        WHERE resource_id = %s AND metric_name = %s AND status = 'active'
-          AND triggered_at <= DATE_SUB(NOW(), INTERVAL %s HOUR)
+        WHERE aws_account_id = %s AND resource_id = %s AND metric_name = %s
+          AND status IN ('active', 'acknowledged')
+          AND triggered_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s HOUR)
         LIMIT 1
-    """, (resource_id, metric_name, CHRONIC_ALERT_AGE_HOURS))
+    """, (aws_account_id, resource_id, metric_name, CHRONIC_ALERT_AGE_HOURS))
     return cursor.fetchone() is not None
 
 
@@ -212,7 +213,7 @@ def _noise_band_crosses_line(resource, th):
     return (resource["typical_value"] - k * stddev) < th["warning_value"]
 
 
-def _false_positive_mark_count(cursor, resource_id, metric_name):
+def _false_positive_mark_count(cursor, aws_account_id, resource_id, metric_name):
     """How many of this resource+metric's alerts, ever, have been
     manually marked false positive by a human (any status -- past
     resolved ones count too, not just the current active one, since
@@ -220,8 +221,9 @@ def _false_positive_mark_count(cursor, resource_id, metric_name):
     any one specific alert instance is still open)."""
     cursor.execute("""
         SELECT COUNT(*) AS cnt FROM alerts
-        WHERE resource_id = %s AND metric_name = %s AND marked_false_positive = 1
-    """, (resource_id, metric_name))
+        WHERE aws_account_id = %s AND resource_id = %s AND metric_name = %s
+          AND marked_false_positive = 1
+    """, (aws_account_id, resource_id, metric_name))
     row = cursor.fetchone()
     return row["cnt"] if row else 0
 
@@ -260,12 +262,15 @@ def count_likely_flapping_alerts(aws_account_ids=None) -> int:
             where_clause = f" AND a.aws_account_id IN ({placeholders})"
             params = list(aws_account_ids)
 
+        from app import alert_rules
         cursor.execute(f"""
             SELECT COUNT(*) AS flapping_count
             FROM alerts a
             JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
+            JOIN aws_accounts acc ON acc.id = a.aws_account_id AND acc.status = 'active'
             JOIN thresholds t ON t.aws_account_id = a.aws_account_id
                               AND t.resource_type = r.resource_type AND t.use_dynamic = 0
+                              AND NOT (t.warning_value = 1000000 AND t.critical_value = 5000000 AND t.comparison = '>')
             JOIN metric_catalog mc ON mc.id = t.metric_id AND mc.metric_name = a.metric_name
             JOIN (
                 SELECT aws_account_id, resource_id, metric_name,
@@ -275,15 +280,15 @@ def count_likely_flapping_alerts(aws_account_ids=None) -> int:
                 GROUP BY aws_account_id, resource_id, metric_name
             ) b ON b.aws_account_id = a.aws_account_id
                AND b.resource_id = a.resource_id AND b.metric_name = a.metric_name
-            WHERE a.status = 'active' AND b.total_samples >= %s{where_clause}
+            WHERE {alert_rules.firing_where()} AND b.total_samples >= %s{where_clause}
               AND (
                   (t.comparison IN ('>', '>=')
-                    AND b.typical_value <= t.critical_value
-                    AND (b.typical_value + COALESCE(t.dynamic_k, %s) * b.typical_stddev) > t.critical_value)
+                    AND b.typical_value <= t.warning_value
+                    AND (b.typical_value + COALESCE(t.dynamic_k, %s) * b.typical_stddev) > t.warning_value)
                   OR
                   (t.comparison NOT IN ('>', '>=')
-                    AND b.typical_value >= t.critical_value
-                    AND (b.typical_value - COALESCE(t.dynamic_k, %s) * b.typical_stddev) < t.critical_value)
+                    AND b.typical_value >= t.warning_value
+                    AND (b.typical_value - COALESCE(t.dynamic_k, %s) * b.typical_stddev) < t.warning_value)
               )
         """, [MIN_CONFIDENT_SAMPLES] + params + [NOISE_K, NOISE_K])
         row = cursor.fetchone()
@@ -313,6 +318,9 @@ def auto_tune_static_thresholds() -> int:
             JOIN metric_catalog mc ON mc.id = t.metric_id
             LEFT JOIN aws_accounts a ON a.id = t.aws_account_id
             WHERE t.enabled = 1 AND t.use_dynamic = 0
+              -- placeholder volume defaults are already anomaly-only in the
+              -- evaluator (threshold_defaults.PLACEHOLDER_THRESHOLD)
+              AND NOT (t.warning_value = 1000000 AND t.critical_value = 5000000 AND t.comparison = '>')
         """)
         static_thresholds = cursor.fetchall()
 
@@ -356,19 +364,19 @@ def auto_tune_static_thresholds() -> int:
             chronic_path = None
             if not majority_path:
                 for candidate in resource_baselines:
-                    if _false_positive_mark_count(cursor, candidate["resource_id"], th["metric_name"]) >= MIN_FALSE_POSITIVE_MARKS:
+                    if _false_positive_mark_count(cursor, th["aws_account_id"], candidate["resource_id"], th["metric_name"]) >= MIN_FALSE_POSITIVE_MARKS:
                         chronic_example, chronic_path = candidate, "manually_confirmed"
                         break
                 if chronic_example is None:
                     for candidate in mean_breaching:
-                        if _has_chronic_active_alert(cursor, candidate["resource_id"], th["metric_name"]):
+                        if _has_chronic_active_alert(cursor, th["aws_account_id"], candidate["resource_id"], th["metric_name"]):
                             chronic_example, chronic_path = candidate, "chronic_mean"
                             break
                 if chronic_example is None:
                     noisy_candidates = [r for r in resource_baselines
                                          if r not in mean_breaching and _noise_band_crosses_line(r, th)]
                     for candidate in noisy_candidates:
-                        if _has_chronic_active_alert(cursor, candidate["resource_id"], th["metric_name"]):
+                        if _has_chronic_active_alert(cursor, th["aws_account_id"], candidate["resource_id"], th["metric_name"]):
                             chronic_example, chronic_path = candidate, "chronic_noise"
                             break
 

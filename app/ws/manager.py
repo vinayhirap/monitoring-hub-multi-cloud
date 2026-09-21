@@ -14,15 +14,23 @@ class ConnectionManager:
             "alerts": [],
             "metrics": [],
         }
+        # websocket -> set of aws_accounts.id the user may see, or None for
+        # unrestricted. Captured at connect time (a grant change takes effect
+        # on the next reconnect). Payloads carrying an `account_id` are only
+        # delivered to sockets whose scope includes it -- before this every
+        # logged-in user received every account's alert/metric stream.
+        self._scopes: Dict[WebSocket, object] = {}
 
-    async def connect(self, websocket: WebSocket, channel: str = "overview"):
+    async def connect(self, websocket: WebSocket, channel: str = "overview", accessible=None):
         await websocket.accept()
+        self._scopes[websocket] = None if accessible is None else set(accessible)
         if channel not in self.active_connections:
             self.active_connections[channel] = []
         self.active_connections[channel].append(websocket)
         logger.info(f"WS connected: channel={channel}")
 
     def disconnect(self, websocket: WebSocket, channel: str = "overview"):
+        self._scopes.pop(websocket, None)
         if channel in self.active_connections:
             try:
                 self.active_connections[channel].remove(websocket)
@@ -35,7 +43,12 @@ class ConnectionManager:
             return
         dead = []
         message = json.dumps(data)
+        account_id = data.get("account_id") if isinstance(data, dict) else None
         for ws in self.active_connections[channel]:
+            if account_id is not None:
+                scope = self._scopes.get(ws)
+                if scope is not None and account_id not in scope:
+                    continue
             try:
                 await ws.send_text(message)
             except Exception:

@@ -150,15 +150,25 @@ def delete_component(component_id: int, current_user: dict = Depends(require_per
 
 # ── PUBLIC (no auth) ─────────────────────────────────────────────────
 
-def _component_status(cursor, resource_ids: list) -> str:
+def _component_status(cursor, resource_ids: list, account_id: int = None) -> str:
+    """Public status of one component. Uses the canonical FIRING state
+    (app/alert_rules.py): stale, acknowledged, muted and maintenance-window
+    alerts no longer turn a PUBLIC page red -- previously any status='active'
+    row did, including alerts for a resource under planned maintenance and
+    fake volume alerts, and matching was by resource_id alone (no account)."""
     if not resource_ids:
         return "operational"
+    from app import alert_rules
     placeholders = ", ".join(["%s"] * len(resource_ids))
+    acct_sql = " AND a.aws_account_id = %s" if account_id is not None else ""
+    params = list(resource_ids) + ([account_id] if account_id is not None else [])
     cursor.execute(f"""
-        SELECT severity FROM alerts
-        WHERE resource_id IN ({placeholders}) AND status = 'active'
-          AND metric_name != 'multivariate_anomaly'
-    """, tuple(resource_ids))
+        SELECT DISTINCT UPPER(a.severity) AS severity
+        {alert_rules.alert_base_from()}
+        WHERE a.resource_id IN ({placeholders}){acct_sql}
+          AND {alert_rules.firing_where()}
+          AND {alert_rules.base_where()}
+    """, tuple(params))
     severities = {row["severity"] for row in cursor.fetchall()}
     if "CRITICAL" in severities:
         return "outage"
@@ -179,7 +189,7 @@ def public_status_page():
     conn = get_connection(); cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT id, name, resource_ids FROM status_page_components
+            SELECT id, aws_account_id, name, resource_ids FROM status_page_components
             WHERE enabled = 1 ORDER BY display_order, name
         """)
         components_raw = cursor.fetchall()
@@ -191,7 +201,7 @@ def public_status_page():
 
         for c in components_raw:
             resource_ids = json.loads(c["resource_ids"])
-            status = _component_status(cursor, resource_ids)
+            status = _component_status(cursor, resource_ids, c["aws_account_id"])
             components.append({"name": c["name"], "status": status})
             if status == "outage":
                 overall = "outage"
@@ -201,15 +211,20 @@ def public_status_page():
             if resource_ids:
                 placeholders = ", ".join(["%s"] * len(resource_ids))
                 cursor.execute(f"""
-                    SELECT severity, triggered_at, resolved_at
-                    FROM alerts
-                    WHERE resource_id IN ({placeholders})
-                      AND metric_name != 'multivariate_anomaly'
-                      AND (status = 'active' OR resolved_at >= %s)
-                      AND triggered_at >= %s
-                    ORDER BY triggered_at DESC
+                    SELECT a.severity, a.triggered_at, a.resolved_at
+                    FROM alerts a
+                    WHERE a.aws_account_id = %s
+                      AND a.resource_id IN ({placeholders})
+                      AND a.metric_name != 'multivariate_anomaly'
+                      AND a.silenced = 0
+                      AND (a.status = 'active' OR a.resolved_at >= %s)
+                      AND a.triggered_at >= %s
+                      AND COALESCE(a.resolution_reason, '') NOT IN
+                          ('duplicate', 'placeholder_threshold', 'threshold_disabled',
+                           'resource_gone', 'account_inactive', 'bulk_clear')
+                    ORDER BY a.triggered_at DESC
                     LIMIT 5
-                """, (*resource_ids, lookback, lookback))
+                """, (c["aws_account_id"], *resource_ids, lookback, lookback))
                 for row in cursor.fetchall():
                     recent_events.append({
                         "component": c["name"],

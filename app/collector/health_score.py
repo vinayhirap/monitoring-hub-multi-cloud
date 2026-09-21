@@ -27,6 +27,7 @@ version could replace this once there's enough real incident history
 """
 import logging
 from app.db import get_connection
+from app import alert_rules
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +48,21 @@ def recompute_health_scores() -> int:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute("""
+        # Only genuinely FIRING alerts lower a score (alert_rules.py): stale,
+        # acknowledged, muted and maintenance-silenced alerts don't, and
+        # hidden internal metrics (multivariate_anomaly) don't either -- a
+        # score must be explainable by alerts the user can actually see.
+        cursor.execute(f"""
             SELECT r.resource_id, r.aws_account_id,
-                   COALESCE(SUM(CASE WHEN a.severity = 'CRITICAL' THEN 1 ELSE 0 END), 0) AS critical_count,
-                   COALESCE(SUM(CASE WHEN a.severity = 'WARNING'  THEN 1 ELSE 0 END), 0) AS warning_count
+                   COALESCE(SUM(CASE WHEN UPPER(a.severity) = 'CRITICAL' THEN 1 ELSE 0 END), 0) AS critical_count,
+                   COALESCE(SUM(CASE WHEN UPPER(a.severity) = 'WARNING'  THEN 1 ELSE 0 END), 0) AS warning_count
             FROM resources r
+            JOIN aws_accounts acc ON acc.id = r.aws_account_id AND acc.status = 'active'
             JOIN alerts a ON a.aws_account_id = r.aws_account_id
                          AND a.resource_id = r.resource_id
-                         AND a.status = 'active'
+            WHERE {alert_rules.firing_where()} AND {alert_rules.base_where()}
             GROUP BY r.resource_id, r.aws_account_id
+            HAVING critical_count + warning_count > 0
         """)
         breaching = cursor.fetchall()
 
@@ -98,12 +105,17 @@ def recompute_health_scores() -> int:
         # their row entirely -- "no row" is read by the API as fully
         # healthy (100), so deleting correctly reflects recovery rather
         # than leaving a stale low score behind.
-        cursor.execute("""
+        cursor.execute(f"""
             DELETE rh FROM resource_health rh
-            LEFT JOIN alerts a ON a.aws_account_id = rh.aws_account_id
-                              AND a.resource_id = rh.resource_id
-                              AND a.status = 'active'
-            WHERE a.id IS NULL
+            LEFT JOIN (
+                SELECT DISTINCT a.aws_account_id, a.resource_id
+                FROM alerts a
+                JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
+                JOIN aws_accounts acc ON acc.id = a.aws_account_id AND acc.status = 'active'
+                WHERE {alert_rules.firing_where()} AND {alert_rules.base_where()}
+                  AND UPPER(a.severity) IN ('CRITICAL', 'WARNING')
+            ) f ON f.aws_account_id = rh.aws_account_id AND f.resource_id = rh.resource_id
+            WHERE f.resource_id IS NULL
         """)
 
         conn.commit()

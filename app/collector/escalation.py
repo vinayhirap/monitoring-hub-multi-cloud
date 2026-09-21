@@ -29,6 +29,7 @@ if zero emails could be sent).
 """
 import logging
 from app.db import get_connection
+from app import alert_rules as _alert_rules
 
 logger = logging.getLogger(__name__)
 
@@ -124,22 +125,22 @@ def evaluate_escalations() -> int:
                 ep.id AS policy_id, ep.ack_sla_minutes, ep.escalate_to_group_id,
                 g.name AS group_name
             FROM alerts a
+            JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
+            JOIN aws_accounts acc ON acc.id = a.aws_account_id AND acc.status = 'active'
             JOIN escalation_policies ep
                  ON ep.severity = a.severity
                 AND ep.enabled = 1
                 AND (ep.aws_account_id = a.aws_account_id OR ep.aws_account_id IS NULL)
             JOIN org_groups g ON g.id = ep.escalate_to_group_id
-            WHERE a.status = 'active'
+            -- Page ONLY for an alert that is genuinely live (2026-09-20):
+            -- the canonical FIRING state = active + fresh + not silenced
+            -- (maintenance) + not muted, and not a hidden internal metric.
+            -- Previously stale, muted and hidden alerts were paged too.
+            WHERE """ + _alert_rules.firing_where() + """
+              AND """ + _alert_rules.base_where() + """
               AND a.acked = 0
               AND a.escalated_at IS NULL
-              -- AND a.silenced = 0: maintenance windows (2026-09-14,
-              -- see app/collector/maintenance.py) mark an alert
-              -- silenced=1 while it's covered by an active maintenance
-              -- window -- the alert row still exists and still feeds
-              -- correlate.py/health_score.py/rca.py, only the page/
-              -- email this function sends is skipped for it.
-              AND a.silenced = 0
-              AND a.triggered_at <= DATE_SUB(NOW(), INTERVAL ep.ack_sla_minutes MINUTE)
+              AND a.triggered_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ep.ack_sla_minutes MINUTE)
             ORDER BY a.id, (ep.aws_account_id IS NULL) ASC
         """)
         rows = cursor.fetchall()
