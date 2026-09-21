@@ -3,7 +3,7 @@ from typing import Optional
 import datetime
 import time
 import logging
-from fastapi import APIRouter, HTTPException, Depends, Body, Response
+from fastapi import APIRouter, HTTPException, Depends, Body, Response, Query
 from app.db import get_connection
 from app.auth.deps import get_current_user
 from app.auth.permissions import require_permission
@@ -12,6 +12,7 @@ from app.ws.publisher import publish_alert_resolved
 from app.api.live_data import invalidate_accounts_cache
 from app.auth.authorization import get_accessible_account_ids
 from app.audit import write_audit
+from app import alert_rules
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,9 @@ _CACHE_TTL = 15  # seconds — short enough for near-realtime, avoids hammering 
 # _invalidate_cache(), so a badge can never read a count from before the
 # write that changed it while the row list already reflects it.
 _counts_cache: dict = {"data": None, "ts": 0}
+# Canonical per-account/service/resource rollup (see app/alert_rules.py)
+_rollup_cache: dict = {"data": None, "ts": 0}
+_ROLLUP_TTL = 10
 
 # An active alert whose last_seen_at hasn't been touched in this long has
 # stopped getting fresh metric data -- surfaced to the UI as "stale / no
@@ -123,212 +127,211 @@ def _invalidate_cache():
     _alerts_cache["ts"]   = 0
     _counts_cache["data"] = None
     _counts_cache["ts"]   = 0
+    _rollup_cache["data"] = None
+    _rollup_cache["ts"]   = 0
 
-def _fetch_alerts_from_db():
-    conn   = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
-        SELECT
-            a.id,
-            a.resource_id                          AS resource,
-            COALESCE(a.region, acc.default_region) AS region,
-            a.metric_name,
-            a.severity,
-            a.status,
-            a.current_value,
-            a.threshold,
-            a.value,
-            CONVERT_TZ(a.triggered_at, @@session.time_zone, '+00:00') AS triggered_at,
-            CONVERT_TZ(a.resolved_at,  @@session.time_zone, '+00:00') AS resolved_at,
-            CONVERT_TZ(a.last_seen_at, @@session.time_zone, '+00:00') AS last_seen_at,
-            (a.status = 'active'
-             AND a.last_seen_at IS NOT NULL
-             AND a.last_seen_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {stale} MINUTE)
-            ) AS stale,
-            a.acked,
-            a.muted_until,
-            a.environment,
-            a.marked_false_positive,
-            r.resource_type                        AS service,
-            COALESCE(r.name, a.resource_id)        AS resource_name,
-            acc.account_name,
-            acc.id                                 AS account_id
-        FROM alerts a
-        JOIN resources r      ON r.resource_id = a.resource_id
-                               AND r.aws_account_id = a.aws_account_id
-        JOIN aws_accounts acc ON acc.id = r.aws_account_id
-                               AND acc.status = 'active'
-        WHERE a.metric_name NOT IN ({hidden})
-        ORDER BY
-            -- Unresolved rows always sort ahead of resolved ones. Without
-            -- this, a burst of alerts that trigger-then-quickly-resolve
-            -- (e.g. a flapping metric re-creating a row every cycle) can
-            -- fill the entire LIMIT window with fresh *resolved* noise by
-            -- triggered_at alone, silently pushing a genuinely still-open
-            -- alert (older triggered_at, never resolved) out of the page
-            -- entirely -- which is exactly how "Active" showed 0 while
-            -- Overview's separate, uncapped query correctly showed 26.
-            (a.resolved_at IS NULL) DESC,
-            a.triggered_at DESC
-        LIMIT 500
-    """.format(stale=_STALE_AFTER_MINUTES, hidden=_hidden_metrics_sql()))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
 
+# ── scope helper ───────────────────────────────────────────────
+def _scope_sql(current_user: dict, alias: str = "a"):
+    """(sql_fragment, params) restricting to the caller's accounts, applied IN
+    SQL (not after the fact) so LIMIT/OFFSET pages and totals are correct for
+    scoped users. Returns None when the caller may see NO accounts."""
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is None:
+        return "", []
+    if not accessible:
+        return None
+    ids = sorted(accessible)
+    return f" AND {alias}.aws_account_id IN ({', '.join(['%s'] * len(ids))})", ids
+
+
+def _fmt_ts_fields(rows):
     for r in rows:
-        for field in ("triggered_at", "resolved_at", "last_seen_at"):
-            if r.get(field) and isinstance(r[field], datetime.datetime):
-                r[field] = r[field].strftime("%Y-%m-%dT%H:%M:%SZ")
-            elif r.get(field) and isinstance(r[field], str) and not r[field].endswith("Z"):
-                r[field] = r[field].rstrip("+00:00").rstrip(" UTC") + "Z"
-        r["stale"] = bool(r.get("stale"))
-
+        for field in ("triggered_at", "resolved_at", "last_seen_at", "muted_until", "acked_at"):
+            v = r.get(field)
+            if v and isinstance(v, datetime.datetime):
+                r[field] = v.strftime("%Y-%m-%dT%H:%M:%SZ")
+        r["stale"] = (r.get("state") == "stale")
+        r["silenced"] = bool(r.get("silenced"))
+        try:
+            from app.threshold_defaults import normalize_service_key
+            r["service_key"] = normalize_service_key(r.get("service"), r.get("resource"))
+        except Exception:
+            r["service_key"] = r.get("service")
     return rows
 
 
-# ── GET all alerts (cached) ───────────────────────────────────
+# tab -> extra WHERE fragment. These are the ONLY definitions of the tabs
+# and match /counts, the Overview banner and every badge (app/alert_rules.py).
+def _tab_where(tab: str) -> str:
+    st = alert_rules.state_sql()
+    return {
+        "all":          "",
+        "active":       f" AND ({st}) = 'firing'",
+        "stale":        f" AND ({st}) = 'stale'",
+        "critical":     f" AND ({st}) = 'firing' AND UPPER(a.severity) = 'CRITICAL'",
+        "acknowledged": " AND a.status = 'acknowledged'",
+        "resolved":     " AND a.status = 'resolved'",
+        "suppressed":   f" AND ({st}) = 'suppressed'",
+    }[tab]
+
+
+_TABS = ("all", "active", "stale", "critical", "acknowledged", "resolved", "suppressed")
+_MAX_LIMIT = 1000
+
+
+def _fetch_alerts_from_db(current_user: dict, tab: str = "all", limit: int = 500,
+                          offset: int = 0, account_id: Optional[int] = None,
+                          q: Optional[str] = None, open_only: bool = False):
+    """Returns (rows, total). Filtering, scoping, paging and the total are all
+    done in SQL so the list can never disagree with the tab badge."""
+    scope = _scope_sql(current_user)
+    if scope is None:
+        return [], 0
+    scope_sql, scope_params = scope
+
+    where = f" WHERE {alert_rules.base_where()}{scope_sql}{_tab_where(tab)}"
+    params = list(scope_params)
+    if open_only:
+        where += " AND a.status IN ('active', 'acknowledged')"
+    if account_id is not None:
+        where += " AND a.aws_account_id = %s"
+        params.append(account_id)
+    if q:
+        like = f"%{q}%"
+        where += (" AND (a.metric_name LIKE %s OR a.resource_id LIKE %s"
+                  " OR r.name LIKE %s OR a.severity LIKE %s)")
+        params += [like, like, like, like]
+
+    if tab == "resolved":
+        order = "a.resolved_at DESC, a.id DESC"
+    else:
+        order = ("(a.status = 'resolved') ASC, FIELD(UPPER(a.severity), 'CRITICAL', 'WARNING', 'INFO'), "
+                 "a.triggered_at DESC, a.id DESC")
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT COUNT(*) AS n {alert_rules.alert_base_from()}{where}", params)
+        total = int(cursor.fetchone()["n"])
+        cursor.execute(f"""
+            SELECT
+                a.id,
+                a.resource_id                          AS resource,
+                COALESCE(a.region, acc.default_region) AS region,
+                a.metric_name,
+                UPPER(a.severity)                      AS severity,
+                a.status,
+                {alert_rules.state_sql()}              AS state,
+                a.current_value,
+                a.threshold,
+                a.value,
+                CONVERT_TZ(a.triggered_at, @@session.time_zone, '+00:00') AS triggered_at,
+                CONVERT_TZ(a.resolved_at,  @@session.time_zone, '+00:00') AS resolved_at,
+                CONVERT_TZ(a.last_seen_at, @@session.time_zone, '+00:00') AS last_seen_at,
+                a.acked,
+                a.acked_by,
+                CONVERT_TZ(a.acked_at,     @@session.time_zone, '+00:00') AS acked_at,
+                CONVERT_TZ(a.muted_until,  @@session.time_zone, '+00:00') AS muted_until,
+                a.silenced,
+                a.silenced_reason,
+                a.resolution_reason,
+                a.environment,
+                a.marked_false_positive,
+                r.resource_type                        AS service,
+                COALESCE(r.name, a.resource_id)        AS resource_name,
+                acc.account_name,
+                acc.id                                 AS account_id
+            {alert_rules.alert_base_from()}
+            {where}
+            ORDER BY {order}
+            LIMIT %s OFFSET %s
+        """, params + [limit, offset])
+        rows = cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+    return _fmt_ts_fields(rows), total
+
+
+# ── GET alerts (server-side tab/paging) ────────────────────────
 @router.get("")
-def get_alerts(current_user: dict = Depends(require_permission("alerts.view"))):
-    now = time.time()
-    if _alerts_cache["data"] is not None and now - _alerts_cache["ts"] < _CACHE_TTL:
-        return _filter_rows_by_scope(_alerts_cache["data"], current_user)
-    rows = _fetch_alerts_from_db()
-    _alerts_cache["data"] = rows
-    _alerts_cache["ts"]   = now
-    return _filter_rows_by_scope(rows, current_user)
+def get_alerts(
+    response: Response,
+    tab: str = Query("all"),
+    limit: int = Query(500, ge=1, le=_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    account_id: Optional[int] = Query(None),
+    q: Optional[str] = Query(None, max_length=100),
+    current_user: dict = Depends(require_permission("alerts.view")),
+):
+    """
+    `tab` is one of all|active|stale|critical|acknowledged|resolved|suppressed
+    and means EXACTLY what the same-named badge from /alerts/counts counts.
+    The full match count is returned in the X-Total-Count header so the UI
+    can page instead of silently truncating (the old fixed 500-row window
+    made 'Resolved 3615' show ~465 rows).
+    """
+    if tab not in _TABS:
+        raise HTTPException(status_code=400, detail=f"tab must be one of {', '.join(_TABS)}")
+    rows, total = _fetch_alerts_from_db(current_user, tab, limit, offset, account_id, q)
+    response.headers["X-Total-Count"] = str(total)
+    return rows
 
 
-# ── GET open/active only ──────────────────────────────────────
+# ── GET open (unresolved) ──────────────────────────────────────
 @router.get("/open")
 def open_alerts(current_user: dict = Depends(require_permission("alerts.view"))):
-    """
-    Returns only unresolved alerts — used by Overview alert strip + api.js getAlerts().
-    Also cached. Invalidated on ack/resolve.
-    """
-    now = time.time()
-    # Reuse full cache if available, filter client-side to avoid second DB call
-    if _alerts_cache["data"] is not None and now - _alerts_cache["ts"] < _CACHE_TTL:
-        rows = [a for a in _alerts_cache["data"] if a.get("status") != "resolved"]
-        return _filter_rows_by_scope(rows, current_user)
-
-    conn   = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
-        SELECT
-            a.id,
-            a.resource_id                          AS resource,
-            a.metric_name,
-            a.severity,
-            a.status,
-            a.current_value,
-            a.threshold,
-            a.value,
-            CONVERT_TZ(a.triggered_at, @@session.time_zone, '+00:00') AS triggered_at,
-            CONVERT_TZ(a.resolved_at,  @@session.time_zone, '+00:00') AS resolved_at,
-            CONVERT_TZ(a.last_seen_at, @@session.time_zone, '+00:00') AS last_seen_at,
-            (a.status = 'active'
-             AND a.last_seen_at IS NOT NULL
-             AND a.last_seen_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {stale} MINUTE)
-            ) AS stale,
-            a.acked,
-            a.environment,
-            a.marked_false_positive,
-            r.resource_type                        AS service,
-            COALESCE(r.name, a.resource_id)        AS resource_name,
-            acc.account_name,
-            acc.id                                 AS account_id,
-            COALESCE(a.region, acc.default_region) AS region
-        FROM alerts a
-        JOIN resources r      ON r.resource_id = a.resource_id
-                               AND r.aws_account_id = a.aws_account_id
-        JOIN aws_accounts acc ON acc.id = r.aws_account_id
-                               AND acc.status = 'active'
-        WHERE a.resolved_at IS NULL
-          AND a.metric_name NOT IN ({hidden})
-            ORDER BY
-            FIELD(a.severity, 'CRITICAL', 'WARNING', 'INFO'),
-            a.triggered_at DESC
-        LIMIT 2000
-    """.format(stale=_STALE_AFTER_MINUTES, hidden=_hidden_metrics_sql()))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    for r in rows:
-        for field in ("triggered_at", "resolved_at", "last_seen_at"):
-            if r.get(field) and isinstance(r[field], datetime.datetime):
-                r[field] = r[field].strftime("%Y-%m-%dT%H:%M:%SZ")
-            elif r.get(field) and isinstance(r[field], str) and not r[field].endswith("Z"):
-                r[field] = r[field].rstrip("+00:00").rstrip(" UTC") + "Z"
-        r["stale"] = bool(r.get("stale"))
-
-    return _filter_rows_by_scope(rows, current_user)
+    """Every unresolved alert (active + acknowledged) with its derived `state`.
+    Callers that want a count or a badge must NOT derive it from this list --
+    use /alerts/summary or /alerts/by-resource (same rules, one source)."""
+    rows, _ = _fetch_alerts_from_db(current_user, "all", limit=2000, open_only=True)
+    return rows
 
 
 def _fetch_counts_from_db() -> list:
-    """
-    Authoritative tab-badge counts, aggregated directly in SQL with no
-    LIMIT/windowing of any kind — so they can never disagree with
-    reality the way client-side counts derived from a capped, recency-
-    ordered row list can (see the ORDER BY comment in
-    _fetch_alerts_from_db above for how that happened in practice).
-
-    "critical" is defined identically to live_data.py's
-    _get_active_alert_counts_by_account() -- status = 'active' AND
-    severity = 'CRITICAL' -- so this number always matches the Overview
-    banner/tiles for the same moment in time. It deliberately does NOT
-    fold in acknowledged or resolved rows just because they were once
-    critical; a resolved alert isn't something that "requires attention"
-    any more, no matter what severity it broke at.
-
-    SECURITY: GROUPed BY account (rather than one grand-total row like
-    the pre-fix version) so the cache holds a per-account breakdown --
-    _aggregate_counts_for_user then sums only the accounts the calling
-    user is actually scoped to see. A single flat total across every
-    account would have leaked "how many alerts exist system-wide" (and,
-    combined with acking/resolving elsewhere, actual activity volume)
-    to a viewer scoped to a single account, regardless of role.
-    """
+    """Per-account tab counts, defined in terms of alert_rules.state_sql() so
+    every number matches the list a tab shows and the Overview banner.
+    Kept per-account (not one grand total) so a scoped viewer is only ever
+    summed over their own accounts."""
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
-        SELECT
-            acc.id AS account_id,
-            COUNT(*) AS all_count,
-            SUM(CASE WHEN a.status = 'active'
-                      AND NOT (a.last_seen_at IS NOT NULL
-                               AND a.last_seen_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {stale} MINUTE))
-                     THEN 1 ELSE 0 END) AS active_count,
-            SUM(CASE WHEN a.status = 'active'
-                      AND a.last_seen_at IS NOT NULL
-                      AND a.last_seen_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {stale} MINUTE)
-                     THEN 1 ELSE 0 END) AS stale_count,
-            SUM(CASE WHEN a.status = 'active' AND a.severity = 'CRITICAL'
-                     THEN 1 ELSE 0 END) AS critical_count,
-            SUM(CASE WHEN a.status = 'acknowledged' THEN 1 ELSE 0 END) AS acknowledged_count,
-            SUM(CASE WHEN a.status = 'resolved' THEN 1 ELSE 0 END) AS resolved_count
-        FROM alerts a
-        JOIN resources r      ON r.resource_id = a.resource_id
-                               AND r.aws_account_id = a.aws_account_id
-        JOIN aws_accounts acc ON acc.id = r.aws_account_id
-                               AND acc.status = 'active'
-        WHERE a.metric_name NOT IN ({hidden})
-        GROUP BY acc.id
-    """.format(stale=_STALE_AFTER_MINUTES, hidden=_hidden_metrics_sql()))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
+    try:
+        cursor.execute(f"""
+            SELECT account_id, account_name,
+                   COUNT(*)                                         AS all_count,
+                   SUM(state = 'firing')                            AS active_count,
+                   SUM(state = 'stale')                             AS stale_count,
+                   SUM(state = 'firing' AND sev = 'CRITICAL')       AS critical_count,
+                   SUM(state = 'acknowledged')                      AS acknowledged_count,
+                   SUM(state = 'resolved')                          AS resolved_count,
+                   SUM(state = 'suppressed')                        AS suppressed_count
+            FROM (
+                SELECT acc.id AS account_id, acc.account_name AS account_name, UPPER(a.severity) AS sev,
+                       {alert_rules.state_sql()} AS state
+                {alert_rules.alert_base_from()}
+                WHERE {alert_rules.base_where()}
+            ) t
+            GROUP BY account_id, account_name
+        """)
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
 
 
-def _aggregate_counts_for_user(per_account_rows: list, current_user: dict) -> dict:
+def _aggregate_counts_for_user(per_account_rows: list, current_user: dict,
+                               account_id: Optional[int] = None) -> dict:
     accessible = get_accessible_account_ids(current_user)
-    keys = ("all_count", "active_count", "stale_count",
-            "critical_count", "acknowledged_count", "resolved_count")
+    keys = ("all_count", "active_count", "stale_count", "critical_count",
+            "acknowledged_count", "resolved_count", "suppressed_count")
     totals = {k: 0 for k in keys}
+    accounts = []
     for row in per_account_rows:
         if accessible is not None and row["account_id"] not in accessible:
+            continue
+        accounts.append({"id": row["account_id"], "name": row.get("account_name") or f"Account {row['account_id']}"})
+        if account_id is not None and row["account_id"] != account_id:
             continue
         for k in keys:
             totals[k] += int(row.get(k) or 0)
@@ -339,28 +342,102 @@ def _aggregate_counts_for_user(per_account_rows: list, current_user: dict) -> di
         "critical":     totals["critical_count"],
         "acknowledged": totals["acknowledged_count"],
         "resolved":     totals["resolved_count"],
+        "suppressed":   totals["suppressed_count"],
+        # the account dropdown's options (RBAC-scoped) -- independent of the
+        # account filter so choosing one account doesn't empty the dropdown
+        "accounts":     sorted(accounts, key=lambda a: a["name"].lower()),
     }
 
 
-# ── GET tab-badge counts (uncapped, authoritative) ──────────────
 @router.get("/counts")
-def alert_counts(current_user: dict = Depends(require_permission("alerts.view"))):
-    """
-    Source of truth for every alert-count badge in the app (Alerts page
-    tabs, sidebar nav badge). Unlike /alerts and /alerts/open, this is
-    never paginated/limited, so a badge fed from here can't under- or
-    over-report just because the underlying row list got crowded out --
-    see _fetch_alerts_from_db's ORDER BY comment for the failure mode
-    this replaces. Same 15s TTL and invalidation path (_invalidate_cache)
-    as the row-list cache, so both stay in sync on every alert write.
-    """
+def alert_counts(account_id: Optional[int] = Query(None),
+                 current_user: dict = Depends(require_permission("alerts.view"))):
+    """Tab-badge counts. Exactly the tab definitions in _tab_where(); pass
+    account_id so the badges match a list filtered to that account."""
     now = time.time()
-    if _counts_cache["data"] is not None and now - _counts_cache["ts"] < _CACHE_TTL:
-        return _aggregate_counts_for_user(_counts_cache["data"], current_user)
-    per_account_rows = _fetch_counts_from_db()
-    _counts_cache["data"] = per_account_rows
-    _counts_cache["ts"]   = now
-    return _aggregate_counts_for_user(per_account_rows, current_user)
+    if _counts_cache["data"] is None or now - _counts_cache["ts"] >= _CACHE_TTL:
+        _counts_cache["data"] = _fetch_counts_from_db()
+        _counts_cache["ts"]   = now
+    return _aggregate_counts_for_user(_counts_cache["data"], current_user, account_id)
+
+
+# ── canonical rollup (Overview / Services / resource badges) ────
+def get_alert_rollup() -> dict:
+    """Unscoped rollup, cached ~10s and invalidated on every alert write.
+    Callers filter per request by the caller's accessible accounts."""
+    now = time.time()
+    if _rollup_cache["data"] is not None and now - _rollup_cache["ts"] < _ROLLUP_TTL:
+        return _rollup_cache["data"]
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        rows = alert_rules.fetch_open_alert_rows(cursor, None)
+    finally:
+        cursor.close()
+        conn.close()
+    data = alert_rules.rollup(rows)
+    _rollup_cache["data"] = data
+    _rollup_cache["ts"] = now
+    return data
+
+
+_EMPTY_BUCKET = {"critical": 0, "warning": 0, "info": 0, "stale": 0, "acknowledged": 0,
+                 "suppressed": 0, "resources_affected": 0, "critical_resources": 0,
+                 "warning_resources": 0, "firing": 0, "services": {}}
+
+
+@router.get("/summary")
+def alert_summary(
+    account_id: Optional[int] = Query(None),
+    current_user: dict = Depends(require_permission("alerts.view")),
+):
+    """
+    THE source for every 'N critical / N warning' shown outside the Alerts
+    list itself: Overview banner + account cards, and (with account_id) the
+    per-service tile badges on the Services page, core AND extended/directory.
+    Unit = alert rows in state 'firing'; stale/acknowledged/suppressed are
+    reported separately and never counted as critical/warning.
+    """
+    roll = get_alert_rollup()
+    accessible = get_accessible_account_ids(current_user)
+    accounts = {a: v for a, v in roll["accounts"].items()
+                if accessible is None or a in accessible}
+    if account_id is not None:
+        if accessible is not None and account_id not in accessible:
+            raise HTTPException(status_code=403, detail="You do not have access to this account")
+        accounts = {account_id: accounts.get(account_id, dict(_EMPTY_BUCKET))}
+    totals = {k: 0 for k in ("critical", "warning", "info", "stale", "acknowledged", "suppressed", "firing")}
+    for v in accounts.values():
+        for k in totals:
+            totals[k] += v.get(k, 0)
+    return {"totals": totals, "accounts": {str(a): v for a, v in accounts.items()}}
+
+
+@router.get("/by-resource")
+def alerts_by_resource(
+    account_id: int = Query(...),
+    service: Optional[str] = Query(None),
+    current_user: dict = Depends(require_permission("alerts.view")),
+):
+    """
+    {resource_id: {worst, critical, warning, info, stale, acknowledged, total}}
+    for ONE account (optionally one service key), powering the CRITICAL /
+    WARNING badge on every resource row of every resource page. `worst` is the
+    highest firing severity, not 'whichever alert was found first'.
+    """
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is not None and account_id not in accessible:
+        raise HTTPException(status_code=403, detail="You do not have access to this account")
+    roll = get_alert_rollup()
+    svc = (service or "").lower()
+    out = {}
+    for (acct, rid), v in roll["resources"].items():
+        if acct != account_id:
+            continue
+        if svc and v["service"] != svc and not (svc == "elb" and v["service"] in ("alb", "nlb", "elb")):
+            continue
+        out[rid] = v
+    return out
 
 
 # ── AWS CONSOLE DEEP-LINK (account-correct) ────────────────────
@@ -577,124 +654,186 @@ def mark_false_positive(alert_id: int, payload: dict = Body(default={}),
     return {"status": "updated", "marked_false_positive": marked}
 
 
-# ── ACK ───────────────────────────────────────────────────────
+# ── lifecycle actions ─────────────────────────────────────────
+# Every action: scope-checked, state-checked (a resolved alert can no longer
+# be "acknowledged" back into existence), idempotent, audited, and it records
+# who/why on the row (migration 051).
+def _audit(current_user, action, alert_id, extra=""):
+    write_audit(
+        current_user["username"], action,
+        f"alert_id={alert_id} {extra}".strip(),
+        role=current_user["role"].upper(),
+    )
+
+
+def _current_status(cursor, alert_id):
+    cursor.execute("SELECT status FROM alerts WHERE id = %s", (alert_id,))
+    row = cursor.fetchone()
+    return row["status"] if row else None
+
+
 @router.post("/{alert_id}/ack")
 @router.patch("/{alert_id}/ack")
 def ack_alert(alert_id: int, current_user: dict = Depends(require_permission("operations.execute"))):
-    # SECURITY: operations.execute is a role-level permission, not an
-    # account-scoped one -- without this check any editor could
-    # acknowledge an alert belonging to any account in the system by
-    # guessing/iterating alert_id, regardless of their assigned scope.
     _require_alert_access(alert_id, current_user)
 
     conn   = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE alerts SET acked = 1, status = 'acknowledged' WHERE id = %s",
-        (alert_id,)
-    )
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Alert not found")
-    conn.commit()
-    cursor.close()
-    conn.close()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            UPDATE alerts
+            SET acked = 1, status = 'acknowledged',
+                acked_by = %s, acked_at = UTC_TIMESTAMP()
+            WHERE id = %s AND status = 'active'
+        """, (current_user["username"], alert_id))
+        changed = cursor.rowcount
+        status = None if changed else _current_status(cursor, alert_id)
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+    if not changed:
+        if status is None:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        if status == "resolved":
+            raise HTTPException(status_code=409, detail="Alert is already resolved and cannot be acknowledged")
+        # already acknowledged: idempotent success
+        return {"status": "acknowledged", "changed": False}
+
+    _audit(current_user, "Alert acknowledged", alert_id)
     _invalidate_cache()
     invalidate_accounts_cache()
-    return {"status": "acknowledged"}
+    return {"status": "acknowledged", "changed": True}
 
 
-# ── RESOLVE ───────────────────────────────────────────────────
 @router.post("/{alert_id}/resolve")
 @router.patch("/{alert_id}/resolve")
 def resolve_alert(alert_id: int, current_user: dict = Depends(require_permission("operations.execute"))):
-    # SECURITY: same class of gap as ack_alert above -- resolving is
-    # also a destructive, account-scoped action that had no scope
-    # check at all.
     account_id = _require_alert_access(alert_id, current_user)
 
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        "UPDATE alerts SET resolved_at = UTC_TIMESTAMP(), last_seen_at = UTC_TIMESTAMP(), "
-        "status = 'resolved' WHERE id = %s",
-        (alert_id,)
-    )
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Alert not found")
-    conn.commit()
-    cursor.close()
-    conn.close()
-    _invalidate_cache()
-    invalidate_accounts_cache()
-
     try:
-        publish_alert_resolved(alert_id=alert_id, account_id=account_id)
-    except Exception as e:
-        logger.warning(f"Resolve publish failed: {e}")
+        cursor.execute("""
+            UPDATE alerts
+            SET resolved_at = UTC_TIMESTAMP(), last_seen_at = UTC_TIMESTAMP(),
+                status = 'resolved', resolution_reason = 'manual', resolved_by = %s
+            WHERE id = %s AND status <> 'resolved'
+        """, (current_user["username"], alert_id))
+        changed = cursor.rowcount
+        exists = True if changed else (_current_status(cursor, alert_id) is not None)
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
 
-    return {"status": "resolved", "alert_id": alert_id}
+    if not exists:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    if changed:
+        _audit(current_user, "Alert resolved", alert_id)
+        _invalidate_cache()
+        invalidate_accounts_cache()
+        try:
+            publish_alert_resolved(alert_id=alert_id, account_id=account_id)
+        except Exception as e:
+            logger.warning(f"Resolve publish failed: {e}")
+    return {"status": "resolved", "alert_id": alert_id, "changed": bool(changed)}
 
 
-# ── MUTE ──────────────────────────────────────────────────────
+_MAX_MUTE_MINUTES = 7 * 24 * 60
+
+
 @router.post("/{alert_id}/mute")
-def mute_alert(alert_id: int, minutes: int = 30, current_user: dict = Depends(require_permission("operations.execute"))):
-    # SECURITY: same class of gap as ack_alert/resolve_alert above.
+@router.patch("/{alert_id}/mute")
+def mute_alert(alert_id: int, minutes: int = Query(30, ge=1, le=_MAX_MUTE_MINUTES),
+               current_user: dict = Depends(require_permission("operations.execute"))):
+    """Suppresses an OPEN alert for `minutes` (1 min .. 7 days). While muted it
+    is state 'suppressed': not counted as critical/warning anywhere, not
+    escalated, not on the public status page. It is NOT resolved -- if it is
+    still breaching when the mute lapses it counts again automatically.
+    (Previously this only wrote muted_until, which nothing ever read.)"""
     _require_alert_access(alert_id, current_user)
 
     conn   = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE alerts SET muted_until = DATE_ADD(UTC_TIMESTAMP(), INTERVAL %s MINUTE) WHERE id = %s",
-        (minutes, alert_id)
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            UPDATE alerts SET muted_until = DATE_ADD(UTC_TIMESTAMP(), INTERVAL %s MINUTE)
+            WHERE id = %s AND status IN ('active', 'acknowledged')
+        """, (minutes, alert_id))
+        changed = cursor.rowcount
+        status = None if changed else _current_status(cursor, alert_id)
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+    if not changed:
+        if status is None:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        raise HTTPException(status_code=409, detail="Only open alerts can be muted")
+    _audit(current_user, "Alert muted", alert_id, f"minutes={minutes}")
     _invalidate_cache()
     invalidate_accounts_cache()
     return {"status": "muted", "minutes": minutes}
 
 
+@router.post("/{alert_id}/unmute")
+@router.patch("/{alert_id}/unmute")
+def unmute_alert(alert_id: int, current_user: dict = Depends(require_permission("operations.execute"))):
+    _require_alert_access(alert_id, current_user)
+    conn   = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE alerts SET muted_until = NULL WHERE id = %s", (alert_id,))
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+    _audit(current_user, "Alert unmuted", alert_id)
+    _invalidate_cache()
+    invalidate_accounts_cache()
+    return {"status": "unmuted"}
+
+
 # ── GROUPED VIEW (dedup/collapse, roadmap phase 10) ────────────
-# Does NOT merge alert rows (see db/migrations/019_alert_grouping.sql
-# docstring for why) -- this is a read-time GROUP BY over the same
-# `alerts` table the ungrouped /alerts endpoint reads, so ack/resolve/
-# mute below still act on individual alert IDs. Frontend shows one card
-# per group ("CPU high — 6 resources") that expands to the individual
-# alerts for per-resource actions, or uses /grouped/{group_key}/ack
-# below to ack everything in the group in one call.
+# Read-time GROUP BY over the same `alerts` table; ack/resolve/mute above
+# still act on individual alert ids.
 @router.get("/grouped")
 def get_grouped_alerts(current_user: dict = Depends(require_permission("alerts.view"))):
+    scope = _scope_sql(current_user)
+    if scope is None:
+        return []
+    scope_sql, scope_params = scope
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
-        SELECT
-            a.group_key,
-            COUNT(*)                                   AS resource_count,
-            MAX(a.severity = 'CRITICAL')               AS has_critical,
-            MIN(a.triggered_at)                        AS first_triggered_at,
-            MAX(a.last_seen_at)                        AS last_seen_at,
-            SUM(a.status = 'active')                   AS active_count,
-            SUM(a.status = 'acknowledged')              AS acknowledged_count,
-            r.resource_type                            AS service,
-            a.metric_name,
-            acc.id                                      AS account_id,
-            acc.account_name
-        FROM alerts a
-        JOIN resources r      ON r.resource_id = a.resource_id
-                               AND r.aws_account_id = a.aws_account_id
-        JOIN aws_accounts acc ON acc.id = r.aws_account_id
-                               AND acc.status = 'active'
-        WHERE a.group_key IS NOT NULL
-          AND a.status IN ('active', 'acknowledged')
-        GROUP BY a.group_key, r.resource_type, a.metric_name, acc.id, acc.account_name
-        ORDER BY has_critical DESC, resource_count DESC
-    """)
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(f"""
+            SELECT
+                a.group_key,
+                COUNT(*)                                   AS resource_count,
+                MAX(UPPER(a.severity) = 'CRITICAL')        AS has_critical,
+                MIN(a.triggered_at)                        AS first_triggered_at,
+                MAX(a.last_seen_at)                        AS last_seen_at,
+                SUM(a.status = 'active')                   AS active_count,
+                SUM(a.status = 'acknowledged')             AS acknowledged_count,
+                r.resource_type                            AS service,
+                a.metric_name,
+                acc.id                                     AS account_id,
+                acc.account_name
+            {alert_rules.alert_base_from()}
+            WHERE a.group_key IS NOT NULL
+              AND a.status IN ('active', 'acknowledged')
+              AND {alert_rules.base_where()}{scope_sql}
+            GROUP BY a.group_key, r.resource_type, a.metric_name, acc.id, acc.account_name
+            ORDER BY has_critical DESC, resource_count DESC
+        """, scope_params)
+        rows = cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
 
-    rows = _filter_rows_by_scope(rows, current_user)
     for r in rows:
         r["has_critical"] = bool(r["has_critical"])
         for field in ("first_triggered_at", "last_seen_at"):
@@ -705,39 +844,28 @@ def get_grouped_alerts(current_user: dict = Depends(require_permission("alerts.v
 
 @router.post("/grouped/{group_key}/ack")
 def ack_group(group_key: str, current_user: dict = Depends(require_permission("operations.execute"))):
-    """
-    Acks every currently-active alert sharing this group_key, scoped to
-    the caller's accessible accounts -- NOT a bare `WHERE group_key = %s`,
-    since group_key alone doesn't carry an account boundary a
-    non-admin's scope check can apply to without first knowing which
-    accounts they're allowed to touch.
-    """
-    accessible = get_accessible_account_ids(current_user)
+    """Acks every currently-active alert sharing this group_key, scoped to the
+    caller's accessible accounts."""
+    scope = _scope_sql(current_user)
+    if scope is None:
+        return {"status": "acknowledged", "count": 0}
+    scope_sql, scope_params = scope
     conn   = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    if accessible is None:
-        cursor.execute(
-            "UPDATE alerts SET acked = 1, status = 'acknowledged' "
-            "WHERE group_key = %s AND status = 'active'",
-            (group_key,)
-        )
-    else:
-        if not accessible:
-            cursor.close(); conn.close()
-            return {"status": "acknowledged", "count": 0}
-        fmt = ",".join(["%s"] * len(accessible))
+    cursor = conn.cursor()
+    try:
         cursor.execute(f"""
             UPDATE alerts a
-            JOIN resources r      ON r.resource_id = a.resource_id
-                               AND r.aws_account_id = a.aws_account_id
-            JOIN aws_accounts acc ON acc.id = r.aws_account_id AND acc.id IN ({fmt})
-            SET a.acked = 1, a.status = 'acknowledged'
-            WHERE a.group_key = %s AND a.status = 'active'
-        """, (*accessible, group_key))
-    affected = cursor.rowcount
-    conn.commit()
-    cursor.close()
-    conn.close()
+            SET a.acked = 1, a.status = 'acknowledged',
+                a.acked_by = %s, a.acked_at = UTC_TIMESTAMP()
+            WHERE a.group_key = %s AND a.status = 'active'{scope_sql}
+        """, (current_user["username"], group_key, *scope_params))
+        affected = cursor.rowcount
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+    write_audit(current_user["username"], "Alert group acknowledged",
+                f"group_key={group_key} count={affected}", role=current_user["role"].upper())
     _invalidate_cache()
     invalidate_accounts_cache()
     return {"status": "acknowledged", "count": affected}
@@ -746,17 +874,30 @@ def ack_group(group_key: str, current_user: dict = Depends(require_permission("o
 # ── CLEAR ─────────────────────────────────────────────────────
 @router.delete("/clear")
 def clear_alerts(current_user: dict = Depends(require_permission("alerts.clear"))):
-    # Admin-only: bulk-deletes every unresolved/unacked alert with no
-    # undo. No existing permission code covers a bulk-destructive action
-    # like this (operations.execute covers acting on ONE alert), so this
-    # is intentionally locked tighter than the single-alert actions above.
+    """Bulk close of every open, un-acknowledged alert (permission
+    alerts.clear -- intentionally tighter than the single-alert actions).
+
+    2026-09-20: this used to DELETE the rows, destroying incident history,
+    SLO inputs and audit evidence with no trace, and the very next
+    evaluation cycle simply re-created them. It now RESOLVES them with
+    resolution_reason='bulk_clear' + resolved_by, and writes an audit entry
+    with the count."""
     conn = get_connection()
     cur  = conn.cursor()
-    cur.execute("DELETE FROM alerts WHERE resolved_at IS NULL AND acked = 0")
-    conn.commit()
-    affected = cur.rowcount
-    cur.close()
-    conn.close()
+    try:
+        cur.execute("""
+            UPDATE alerts
+            SET status = 'resolved', resolved_at = UTC_TIMESTAMP(), last_seen_at = UTC_TIMESTAMP(),
+                resolution_reason = 'bulk_clear', resolved_by = %s
+            WHERE status = 'active' AND acked = 0
+        """, (current_user["username"],))
+        affected = cur.rowcount
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    write_audit(current_user["username"], "Alerts bulk cleared", f"count={affected}",
+                role=current_user["role"].upper())
     _invalidate_cache()
     invalidate_accounts_cache()
     return {"status": "cleared", "count": affected}

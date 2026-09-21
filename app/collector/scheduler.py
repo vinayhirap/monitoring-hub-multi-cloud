@@ -297,6 +297,15 @@ def run_once(tier="standard"):
         except Exception as e:
             log_event("alert_eval_failed", f"evaluate_alerts failed: {e}", severity="ERROR")
             raise
+        # Health scores are a pure function of FIRING alerts; recompute right
+        # after evaluation (not only on the 15-min low tier) so a score can
+        # never outlive the alert that caused it by up to 15 minutes.
+        try:
+            from app.collector.health_score import recompute_health_scores
+            recompute_health_scores()
+        except Exception as e:
+            log_event("health_score_failed",
+                      f"recompute_health_scores (post-evaluation) failed (non-fatal): {e}", severity="WARNING")
         try:
             from app.collector.escalation import evaluate_escalations
             evaluate_escalations()

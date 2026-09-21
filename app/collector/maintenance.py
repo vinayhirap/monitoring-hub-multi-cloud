@@ -51,63 +51,81 @@ def _affected_resource_ids(cursor, root_resource_id: str, silence_downstream: bo
     return {row["resource_id"] for row in cursor.fetchall()}
 
 
+def active_silenced_map(cursor) -> dict:
+    """
+    {(aws_account_id, resource_id): reason} for every resource covered by a
+    maintenance window that is active RIGHT NOW. Used by alert_evaluator.py
+    so an alert that BREACHES during a window is born silenced (no toast, no
+    page, not counted) instead of being created loud and only silenced up to
+    two minutes later by sync_maintenance_silencing().
+
+    Account-scoped: a window on account A must never silence a same-named
+    resource_id in account B (resource ids are only unique per account --
+    migrations 045-048).
+    """
+    cursor.execute("""
+        SELECT id, aws_account_id, resource_id, reason, silence_downstream
+        FROM maintenance_windows
+        WHERE starts_at <= NOW() AND ends_at >= NOW()
+    """)
+    out = {}
+    for window in cursor.fetchall():
+        affected = _affected_resource_ids(cursor, window["resource_id"], bool(window["silence_downstream"]))
+        for rid in affected:
+            out.setdefault((window["aws_account_id"], rid), f"Maintenance window: {window['reason']}")
+    return out
+
+
 def sync_maintenance_silencing() -> dict:
     """
-    Reconciles alerts.silenced against every CURRENTLY active
-    maintenance window. Returns {"silenced": n, "unsilenced": n}.
+    Reconciles alerts.silenced against every CURRENTLY active maintenance
+    window. Returns {"silenced": n, "unsilenced": n}.
 
-    Two passes:
-      1. For each active window, compute its affected resource set
-         (see _affected_resource_ids) and silence any active,
-         not-yet-silenced alert on those resources, tagging
-         silenced_reason with the window's own reason text.
-      2. Un-silence any currently-silenced alert whose resource is NOT
-         covered by ANY currently-active window -- this is what makes
-         silencing automatically lift the moment a window ends (or is
-         deleted), with no separate "end maintenance" action needed.
+    2026-09-20: now ACCOUNT-scoped. It used to match on resource_id alone,
+    so a window on one account could silence (and later un-silence) a
+    same-named resource's alerts in a DIFFERENT account.
     """
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     silenced_count = 0
+    unsilenced_count = 0
     try:
-        cursor.execute("""
-            SELECT id, resource_id, reason, silence_downstream
-            FROM maintenance_windows
-            WHERE starts_at <= NOW() AND ends_at >= NOW()
-        """)
-        active_windows = cursor.fetchall()
+        covered = active_silenced_map(cursor)
 
-        all_covered_resource_ids = set()
-        for window in active_windows:
-            affected = _affected_resource_ids(cursor, window["resource_id"], bool(window["silence_downstream"]))
-            all_covered_resource_ids |= affected
-            if not affected:
-                continue
-            placeholders = ", ".join(["%s"] * len(affected))
+        # 1. silence open, not-yet-silenced alerts on covered resources
+        by_reason = {}
+        for (acct, rid), reason in covered.items():
+            by_reason.setdefault((acct, reason), []).append(rid)
+        for (acct, reason), rids in by_reason.items():
+            placeholders = ", ".join(["%s"] * len(rids))
             cursor.execute(f"""
                 UPDATE alerts
                 SET silenced = 1, silenced_reason = %s
-                WHERE resource_id IN ({placeholders})
-                  AND status = 'active' AND silenced = 0
-            """, (f"Maintenance window: {window['reason']}", *affected))
+                WHERE aws_account_id = %s AND resource_id IN ({placeholders})
+                  AND status IN ('active', 'acknowledged') AND silenced = 0
+            """, (reason, acct, *rids))
             silenced_count += cursor.rowcount
 
-        if all_covered_resource_ids:
-            placeholders = ", ".join(["%s"] * len(all_covered_resource_ids))
-            cursor.execute(f"""
-                UPDATE alerts
-                SET silenced = 0, silenced_reason = NULL
-                WHERE silenced = 1 AND resource_id NOT IN ({placeholders})
-            """, tuple(all_covered_resource_ids))
-        else:
-            # No active windows at all right now -- un-silence everything.
-            cursor.execute("UPDATE alerts SET silenced = 0, silenced_reason = NULL WHERE silenced = 1")
-        unsilenced_count = cursor.rowcount
+        # 2. un-silence anything no longer covered by an active window
+        cursor.execute("""
+            SELECT id, aws_account_id, resource_id FROM alerts
+            WHERE silenced = 1 AND status IN ('active', 'acknowledged')
+        """)
+        stale_ids = [row["id"] for row in cursor.fetchall()
+                     if (row["aws_account_id"], row["resource_id"]) not in covered]
+        for i in range(0, len(stale_ids), 500):
+            chunk = stale_ids[i:i + 500]
+            placeholders = ", ".join(["%s"] * len(chunk))
+            cursor.execute(
+                f"UPDATE alerts SET silenced = 0, silenced_reason = NULL WHERE id IN ({placeholders})",
+                tuple(chunk),
+            )
+            unsilenced_count += cursor.rowcount
 
         conn.commit()
         if silenced_count or unsilenced_count:
             logger.info(f"[maintenance] silenced {silenced_count}, un-silenced {unsilenced_count} alert(s) "
-                        f"across {len(active_windows)} active window(s)")
+                        f"across {len(set(k[0] for k in covered))} account(s)")
         return {"silenced": silenced_count, "unsilenced": unsilenced_count}
     except Exception:
         conn.rollback()

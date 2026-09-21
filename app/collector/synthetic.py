@@ -136,28 +136,34 @@ def _ensure_resource_row(cursor, check: dict) -> str:
 
 
 def _write_or_update_alert(cursor, resource_id: str, check: dict, error_message: str):
-    group_key = f"{check['aws_account_id']}:synthetic_check:synthetic_uptime"
+    # aws_account_id is REQUIRED on every alert row (migration 048): all
+    # readers join on it, so the old INSERT (which omitted it) made a synthetic
+    # "site is DOWN" alert invisible on every screen.
+    account_id = check["aws_account_id"]
+    group_key = f"{account_id}:synthetic_check:synthetic_uptime"
     cursor.execute("""
         SELECT id FROM alerts
-        WHERE resource_id = %s AND metric_name = 'synthetic_uptime' AND status = 'active'
-    """, (resource_id,))
+        WHERE aws_account_id = %s AND resource_id = %s AND metric_name = 'synthetic_uptime'
+          AND status IN ('active', 'acknowledged')
+        LIMIT 1
+    """, (account_id, resource_id))
     existing = cursor.fetchone()
     if existing:
         cursor.execute("""
             UPDATE alerts
-            SET current_value = %s, last_seen_at = NOW()
+            SET current_value = %s, last_seen_at = UTC_TIMESTAMP()
             WHERE id = %s
         """, (check["consecutive_failures"], existing["id"]))
         return
 
     cursor.execute("""
         INSERT INTO alerts
-            (resource_id, metric_name, severity, environment, group_key, status,
+            (aws_account_id, resource_id, metric_name, severity, environment, group_key, status,
              triggered_at, last_seen_at, healthy_streak, current_value, threshold)
-        VALUES (%s, 'synthetic_uptime', 'CRITICAL', %s, %s, 'active',
-                NOW(), NOW(), 0, %s, %s)
+        VALUES (%s, %s, 'synthetic_uptime', 'CRITICAL', %s, %s, 'active',
+                UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0, %s, %s)
     """, (
-        resource_id, check["environment"], group_key,
+        account_id, resource_id, check["environment"], group_key,
         check["consecutive_failures"], check["consecutive_failure_threshold"],
     ))
     logger.warning(
@@ -166,11 +172,15 @@ def _write_or_update_alert(cursor, resource_id: str, check: dict, error_message:
     )
 
 
-def _resolve_alert(cursor, resource_id: str):
-    cursor.execute("""
-        UPDATE alerts SET status = 'resolved', resolved_at = NOW(), last_seen_at = NOW()
-        WHERE resource_id = %s AND metric_name = 'synthetic_uptime' AND status = 'active'
-    """, (resource_id,))
+def _resolve_alert(cursor, resource_id: str, account_id=None):
+    scope = "AND aws_account_id = %s" if account_id is not None else ""
+    params = (resource_id,) + ((account_id,) if account_id is not None else ())
+    cursor.execute(f"""
+        UPDATE alerts SET status = 'resolved', resolved_at = UTC_TIMESTAMP(), last_seen_at = UTC_TIMESTAMP(),
+                          resolution_reason = 'recovered', resolved_by = 'system'
+        WHERE resource_id = %s {scope} AND metric_name = 'synthetic_uptime'
+          AND status IN ('active', 'acknowledged')
+    """, params)
     if cursor.rowcount:
         logger.info(f"[synthetic] {resource_id} recovered -- resolved its active alert")
 
@@ -234,7 +244,7 @@ def run_due_checks() -> int:
                     # current_value/last_seen_at fresh.
                     _write_or_update_alert(cursor, resource_id, check, error)
                 elif new_status == "up" and check["current_status"] == "down":
-                    _resolve_alert(cursor, resource_id)
+                    _resolve_alert(cursor, resource_id, check["aws_account_id"])
 
                 probed += 1
 

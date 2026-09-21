@@ -409,7 +409,8 @@ def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(re
 
     try:
         breaches = check_and_write_alerts(account_id, region, [_ser(t) for t in thresholds], account=acc)
-        return {"breaches": breaches, "checked": len(thresholds), "region": region, "written_to_db": len(breaches)}
+        return {"breaches": breaches, "checked": len(thresholds), "region": region,
+                "written_to_db": 0, "preview": True}
     except Exception as e:
         logger.error(f"Check error: {e}")
         return {"breaches": [], "error": str(e)}

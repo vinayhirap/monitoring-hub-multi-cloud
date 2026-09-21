@@ -265,14 +265,12 @@ async def websocket_endpoint(websocket: WebSocket, channel: str):
     # get_current_user does for REST routes before accepting the
     # upgrade.
     #
-    # NOTE: this closes the "must be logged in at all" gap. It does
-    # NOT yet filter broadcast payloads per-connection by the caller's
-    # account/region scope (get_effective_scope) -- that would require
-    # per-message filtering keyed to each connection's user, a larger
-    # change to ws/manager.py + ws/publisher.py. Recorded as a
-    # follow-up finding below; every currently-connected client is at
-    # minimum an authenticated user of the system, which is the
-    # binary access-control gap this fixes.
+    # NOTE: authentication closes the "must be logged in at all" gap. As of
+    # 2026-09-20 the connection's account scope (get_accessible_account_ids)
+    # is also captured below and ws/manager.py only delivers payloads that
+    # carry an `account_id` to sockets whose scope includes it. Region-level
+    # scope (get_effective_scope's region grants) is still NOT applied to
+    # pushes; a scope change made mid-connection applies on reconnect.
     token = websocket.cookies.get(COOKIE_NAME)
     if not token:
         await websocket.close(code=4401)
@@ -283,7 +281,16 @@ async def websocket_endpoint(websocket: WebSocket, channel: str):
         await websocket.close(code=4401)
         return
 
-    await ws_manager.connect(websocket, channel)
+    # Per-connection account scope (see ws/manager.py). Fail CLOSED: if the
+    # scope cannot be resolved, deliver nothing account-specific.
+    try:
+        from starlette.concurrency import run_in_threadpool
+        from app.auth.authorization import get_accessible_account_ids
+        accessible = await run_in_threadpool(get_accessible_account_ids, decode_token(token))
+    except Exception:
+        accessible = set()
+
+    await ws_manager.connect(websocket, channel, accessible)
     try:
         while True:
             data = await websocket.receive_text()

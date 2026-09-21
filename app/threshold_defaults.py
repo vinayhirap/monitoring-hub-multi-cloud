@@ -237,6 +237,30 @@ DEFAULT_THRESHOLDS = {
     'cluster_node_count': (1000000, 5000000, '>'),
 }
 
+# PLACEHOLDER thresholds (2026-09-20 alerts audit)
+# ------------------------------------------------
+# (1,000,000 / 5,000,000 / '>') is not a health limit, it is a stand-in used
+# for ~90 volume/throughput/capacity metrics (BucketSizeBytes, NumberOfObjects,
+# NetworkIn/Out, Invocations, RequestCount, ...) AND for FALLBACK_THRESHOLD
+# below, i.e. every unknown "directory" metric. Read literally it means "a
+# bucket over 5 MB is CRITICAL" and "an instance moving > 5 MB per 5 minutes is
+# CRITICAL" -- which is how nearly every S3 bucket in production went red.
+# Volume is not failure. A row still carrying exactly this triple was never
+# deliberately configured by a human, so alert_evaluator.py treats it as
+# ANOMALY-ONLY: it may alert only when the resource has a confident baseline
+# and is sustainedly far outside its OWN normal range, never above WARNING,
+# and never on cold start. The moment someone edits either number in
+# Settings the row stops matching and becomes an ordinary static threshold.
+PLACEHOLDER_THRESHOLD = (1000000.0, 5000000.0, ">")
+
+
+def is_placeholder_threshold(warning, critical, comparison):
+    try:
+        return (float(warning), float(critical), comparison) == PLACEHOLDER_THRESHOLD
+    except (TypeError, ValueError):
+        return False
+
+
 # Used when a metric_name has no explicit entry above (e.g. a "directory"
 # metric discovered live via ListMetrics that isn't in the curated catalog).
 FALLBACK_THRESHOLD = (1000000, 5000000, ">")

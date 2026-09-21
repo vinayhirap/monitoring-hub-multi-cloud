@@ -190,9 +190,11 @@ def delete_check(check_id: int, current_user: dict = Depends(require_permission(
         # resource first -- deleting the check shouldn't leave a
         # permanently-open alert with no configuration behind it.
         cur.execute("""
-            UPDATE alerts SET status = 'resolved', resolved_at = NOW()
-            WHERE resource_id = %s AND metric_name = 'synthetic_uptime' AND status = 'active'
-        """, (f"synthetic-{check_id}",))
+            UPDATE alerts SET status = 'resolved', resolved_at = UTC_TIMESTAMP(), last_seen_at = UTC_TIMESTAMP(),
+                              resolution_reason = 'check_deleted', resolved_by = %s
+            WHERE aws_account_id = %s AND resource_id = %s AND metric_name = 'synthetic_uptime'
+              AND status IN ('active', 'acknowledged')
+        """, (current_user["username"], account_id, f"synthetic-{check_id}"))
         cur.execute("DELETE FROM synthetic_checks WHERE id = %s", (check_id,))
         conn.commit()
         return {"status": "deleted"}

@@ -112,14 +112,17 @@ def detect_multivariate_anomalies() -> int:
 
         for candidate in candidates:
             aws_resource_id = candidate["resource_id"]
+            # ACCOUNT-scoped: resource_id alone is only unique within one
+            # account (migrations 045-048); without this two accounts'
+            # same-named resources were pooled into one training set.
             cursor.execute("""
                 SELECT h.metric_name, h.metric_timestamp, h.metric_value
                 FROM metric_history h
                 JOIN resources r ON r.id = h.resource_id
-                WHERE r.resource_id = %s
+                WHERE r.resource_id = %s AND r.aws_account_id = %s
                   AND h.metric_timestamp >= DATE_SUB(NOW(), INTERVAL %s DAY)
                   AND h.metric_value IS NOT NULL
-            """, (aws_resource_id, LOOKBACK_DAYS))
+            """, (aws_resource_id, candidate["aws_account_id"], LOOKBACK_DAYS))
             rows = cursor.fetchall()
 
             matrix = _pivot_to_matrix(rows)
@@ -135,7 +138,7 @@ def detect_multivariate_anomalies() -> int:
             score = float(model.decision_function(latest)[0])  # more negative = more anomalous
 
             if is_anomaly:
-                anomalous_resource_ids.add(aws_resource_id)
+                anomalous_resource_ids.add((candidate["aws_account_id"], aws_resource_id))
                 _upsert_anomaly_alert(cursor, aws_resource_id, candidate["aws_account_id"],
                                        score, list(matrix.columns))
 
@@ -153,20 +156,29 @@ def detect_multivariate_anomalies() -> int:
 
 
 def _upsert_anomaly_alert(cursor, aws_resource_id, aws_account_id, score, metric_names):
+    # Every alert writer MUST set aws_account_id: since migration 048 all
+    # readers join on it, so a row without it is invisible (this file's INSERT
+    # used to omit it, so anomaly alerts were created, never shown, never
+    # counted in health scores, and never matched by the resolve pass).
     cursor.execute("""
         SELECT id FROM alerts
-        WHERE resource_id = %s AND metric_name = 'multivariate_anomaly' AND status = 'active'
-    """, (aws_resource_id,))
+        WHERE aws_account_id = %s AND resource_id = %s
+          AND metric_name = 'multivariate_anomaly' AND status IN ('active', 'acknowledged')
+        LIMIT 1
+    """, (aws_account_id, aws_resource_id))
     existing = cursor.fetchone()
 
     if existing:
         cursor.execute("""
-            UPDATE alerts SET current_value = %s, last_seen_at = NOW()
+            UPDATE alerts SET current_value = %s, last_seen_at = UTC_TIMESTAMP()
             WHERE id = %s
         """, (score, existing["id"]))
         return
 
-    cursor.execute("SELECT resource_type, tags FROM resources WHERE resource_id = %s", (aws_resource_id,))
+    cursor.execute("""
+        SELECT resource_type, tags FROM resources
+        WHERE resource_id = %s AND aws_account_id = %s
+    """, (aws_resource_id, aws_account_id))
     resource = cursor.fetchone() or {}
     resource_type = resource.get("resource_type", "unknown")
     try:
@@ -178,27 +190,31 @@ def _upsert_anomaly_alert(cursor, aws_resource_id, aws_account_id, score, metric
 
     cursor.execute("""
         INSERT INTO alerts
-            (resource_id, metric_name, severity,
+            (aws_account_id, resource_id, metric_name, severity,
              environment, group_key, status, triggered_at, last_seen_at,
              healthy_streak, current_value, threshold)
-        VALUES (%s, 'multivariate_anomaly', 'WARNING', %s, %s, 'active', NOW(), NOW(), 0, %s, 0)
-    """, (aws_resource_id, environment, group_key, score))
+        VALUES (%s, %s, 'multivariate_anomaly', 'WARNING', %s, %s, 'active',
+                UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0, %s, 0)
+    """, (aws_account_id, aws_resource_id, environment, group_key, score))
 
     logger.info(f"[multivariate_anomaly] new anomaly alert on {aws_resource_id} "
                 f"(metrics: {', '.join(metric_names)}, score={score:.4f})")
 
 
-def _resolve_cleared_anomalies(cursor, currently_anomalous_ids) -> int:
+def _resolve_cleared_anomalies(cursor, currently_anomalous) -> int:
+    """currently_anomalous: set of (aws_account_id, resource_id)."""
     cursor.execute("""
-        SELECT id, resource_id FROM alerts
-        WHERE metric_name = 'multivariate_anomaly' AND status = 'active'
+        SELECT id, aws_account_id, resource_id FROM alerts
+        WHERE metric_name = 'multivariate_anomaly' AND status IN ('active', 'acknowledged')
     """)
     active = cursor.fetchall()
     resolved = 0
     for row in active:
-        if row["resource_id"] not in currently_anomalous_ids:
+        if (row["aws_account_id"], row["resource_id"]) not in currently_anomalous:
             cursor.execute("""
-                UPDATE alerts SET status = 'resolved', resolved_at = NOW(), last_seen_at = NOW()
+                UPDATE alerts
+                SET status = 'resolved', resolved_at = UTC_TIMESTAMP(), last_seen_at = UTC_TIMESTAMP(),
+                    resolution_reason = 'anomaly_cleared', resolved_by = 'system'
                 WHERE id = %s
             """, (row["id"],))
             resolved += 1
