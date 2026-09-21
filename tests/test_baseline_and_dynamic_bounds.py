@@ -28,6 +28,11 @@ SQL -- see conftest.py's own docstring on why this repo tests this way).
 import sys
 
 sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
+# import the REAL `app` package first: alert_evaluator.py now imports
+# app.alert_rules / app.threshold_defaults, and conftest's install_stub("app.db")
+# would otherwise create a bare, non-package `app` stub that hides them.
+import app.alert_rules  # noqa: F401,E402
+import app.threshold_defaults  # noqa: F401,E402
 from tests.conftest import load_module, install_stub, FakeCursor, FakeConn, contains
 
 
@@ -36,13 +41,13 @@ from tests.conftest import load_module, install_stub, FakeCursor, FakeConn, cont
 def test_recompute_baselines_upserts_every_bucket_with_postclip_count():
     select_result = [
         # Bucket A: no clipping happened (sample_count == raw_sample_count)
-        {"resource_id": "i-aaa", "metric_name": "CPUUtilization",
+        {"aws_account_id": 1, "resource_id": "i-aaa", "metric_name": "CPUUtilization",
          "hour_of_day": 9, "day_of_week": 1,
          "mean_value": 42.0, "stddev_value": 5.0,
          "sample_count": 12, "raw_sample_count": 12},
         # Bucket B: one outlier reading was clipped out by the SQL's
         # pass-2 filter -- sample_count < raw_sample_count.
-        {"resource_id": "i-bbb", "metric_name": "CPUUtilization",
+        {"aws_account_id": 1, "resource_id": "i-bbb", "metric_name": "CPUUtilization",
          "hour_of_day": 9, "day_of_week": 1,
          "mean_value": 30.0, "stddev_value": 4.0,
          "sample_count": 11, "raw_sample_count": 12},
@@ -72,10 +77,10 @@ def test_recompute_baselines_upserts_every_bucket_with_postclip_count():
 
     assert written == 2
     assert len(inserts) == 2
-    # sample_count written must be the POST-clip value (index 6 in the
-    # positional INSERT params: resource_id, metric_name, hour_of_day,
-    # day_of_week, mean_value, stddev_value, sample_count).
-    written_sample_counts = {p[0]: p[6] for p in inserts}
+    # sample_count written must be the POST-clip value (index 7 in the
+    # positional INSERT params: aws_account_id, resource_id, metric_name,
+    # hour_of_day, day_of_week, mean_value, stddev_value, sample_count).
+    written_sample_counts = {p[1]: p[7] for p in inserts}
     assert written_sample_counts["i-aaa"] == 12
     assert written_sample_counts["i-bbb"] == 11  # NOT 12 (the raw count)
 
@@ -116,20 +121,20 @@ def _baseline_cursor(mean, stddev, sample_count):
 def test_dynamic_bounds_cold_start_returns_none():
     mod = _load_alert_evaluator()
     cursor = FakeCursor([(contains("FROM metric_baseline"), [])])  # no bucket row
-    assert mod._dynamic_bounds(cursor, "i-aaa", "CPUUtilization", ">", 3.0) is None
+    assert mod._dynamic_bounds(cursor, 1, "i-aaa", "CPUUtilization", ">", 3.0) is None
 
 
 def test_dynamic_bounds_flatline_returns_none():
     mod = _load_alert_evaluator()
     cursor = _baseline_cursor(mean=50.0, stddev=0, sample_count=100)
-    assert mod._dynamic_bounds(cursor, "i-aaa", "CPUUtilization", ">", 3.0) is None
+    assert mod._dynamic_bounds(cursor, 1, "i-aaa", "CPUUtilization", ">", 3.0) is None
 
 
 def test_dynamic_bounds_full_confidence_is_pure_dynamic():
     mod = _load_alert_evaluator()
     cursor = _baseline_cursor(mean=40.0, stddev=5.0, sample_count=mod.CONFIDENT_SAMPLES)
     warning, critical = mod._dynamic_bounds(
-        cursor, "i-aaa", "CPUUtilization", ">", 3.0,
+        cursor, 1, "i-aaa", "CPUUtilization", ">", 3.0,
         static_warning=70.0, static_critical=90.0,
     )
     assert critical == 40.0 + 3.0 * 5.0
@@ -146,7 +151,7 @@ def test_dynamic_bounds_low_confidence_blends_toward_static():
     weight = half_confidence / mod.CONFIDENT_SAMPLES  # 0.5
 
     warning, critical = mod._dynamic_bounds(
-        cursor, "i-aaa", "CPUUtilization", ">", 3.0,
+        cursor, 1, "i-aaa", "CPUUtilization", ">", 3.0,
         static_warning=70.0, static_critical=static_critical,
     )
     expected_critical = weight * dyn_critical + (1 - weight) * static_critical
@@ -162,7 +167,7 @@ def test_dynamic_bounds_without_static_args_falls_back_to_pure_dynamic():
     raw dynamic band, never a crash from missing kwargs."""
     mod = _load_alert_evaluator()
     cursor = _baseline_cursor(mean=40.0, stddev=5.0, sample_count=2)
-    warning, critical = mod._dynamic_bounds(cursor, "i-aaa", "CPUUtilization", ">", 3.0)
+    warning, critical = mod._dynamic_bounds(cursor, 1, "i-aaa", "CPUUtilization", ">", 3.0)
     assert critical == 40.0 + 3.0 * 5.0
 
 
@@ -171,7 +176,7 @@ def test_dynamic_bounds_low_direction_comparison():
     mod = _load_alert_evaluator()
     cursor = _baseline_cursor(mean=40.0, stddev=5.0, sample_count=mod.CONFIDENT_SAMPLES)
     warning, critical = mod._dynamic_bounds(
-        cursor, "i-aaa", "FreeDiskPercent", "<", 3.0,
+        cursor, 1, "i-aaa", "FreeDiskPercent", "<", 3.0,
         static_warning=15.0, static_critical=5.0,
     )
     assert critical == 40.0 - 3.0 * 5.0

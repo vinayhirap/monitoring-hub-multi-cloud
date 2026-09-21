@@ -25,6 +25,8 @@ paths, each added after a real production diagnosis:
 import sys
 
 sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
+import app.alert_rules  # noqa: F401,E402  (real `app` package before conftest's install_stub)
+import app.threshold_defaults  # noqa: F401,E402
 from tests.conftest import load_module, install_stub, FakeCursor, FakeConn
 
 
@@ -45,10 +47,10 @@ def _install_stub(threshold_rows, baseline_rows, chronic_alert_resource_ids=None
                 # _false_positive_mark_count()'s query -- defaults to 0
                 # marks (below MIN_FALSE_POSITIVE_MARKS) unless a test
                 # explicitly opts a resource in.
-                count = 2 if params[0] in false_positive_marked_resource_ids else 0
+                count = 2 if params[1] in false_positive_marked_resource_ids else 0
                 self._pending = [{"cnt": count}]
             elif normalized.startswith("SELECT id FROM alerts"):
-                self._pending = [{"id": 1}] if params[0] in chronic_alert_resource_ids else []
+                self._pending = [{"id": 1}] if params[1] in chronic_alert_resource_ids else []
             elif normalized.startswith("UPDATE thresholds SET use_dynamic"):
                 updates.append(params)
                 self._pending = []
@@ -70,6 +72,7 @@ def _threshold_row(**overrides):
         "id": 501, "aws_account_id": 7, "resource_type": "ec2", "metric_id": 9,
         "warning_value": 800000, "critical_value": 1000000,
         "comparison": ">", "dynamic_k": None, "metric_name": "NetworkIn",
+        "account_name": "U4RAD",
     }
     row.update(overrides)
     return row

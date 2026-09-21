@@ -64,7 +64,7 @@ def _install_db_stub(history_rows, resource_id="i-1", account_id=7,
                 self._pending = [{"resource_id": resource_id, "aws_account_id": account_id, "metric_count": 3}]
             elif normalized.startswith("SELECT h.metric_name, h.metric_timestamp"):
                 self._pending = history_rows
-            elif "metric_name = 'multivariate_anomaly' AND status = 'active'" in normalized and "SELECT id FROM alerts" in normalized:
+            elif "metric_name = 'multivariate_anomaly'" in normalized and normalized.startswith("SELECT id FROM alerts WHERE aws_account_id"):
                 self._pending = [existing_alert] if existing_alert else []
             elif normalized.startswith("SELECT resource_type, tags FROM resources"):
                 self._pending = [{"resource_type": "ec2_instance", "tags": '{"environment":"prod"}'}]
@@ -74,7 +74,7 @@ def _install_db_stub(history_rows, resource_id="i-1", account_id=7,
             elif normalized.startswith("UPDATE alerts SET current_value"):
                 updated.append(params)
                 self._pending = []
-            elif normalized.startswith("SELECT id, resource_id FROM alerts"):
+            elif normalized.startswith("SELECT id, aws_account_id, resource_id FROM alerts"):
                 self._pending = active_anomaly_alerts or []
             elif normalized.startswith("UPDATE alerts SET status = 'resolved'"):
                 resolved.append(params)
@@ -111,18 +111,21 @@ def test_joint_anomaly_creates_new_alert():
     assert anomalous_count == 1
     assert len(inserted) == 1
     params = inserted[0]
-    # (resource_id, environment, group_key, score)
-    assert params[0] == "i-anomalous-1"
-    assert params[1] == "prod"
-    assert params[2] == "7:ec2_instance:multivariate_anomaly"
-    assert isinstance(params[3], float)
+    # (aws_account_id, resource_id, environment, group_key, score)
+    # aws_account_id MUST be written: since migration 048 every reader joins
+    # on it, so an INSERT without it is an invisible alert.
+    assert params[0] == 7
+    assert params[1] == "i-anomalous-1"
+    assert params[2] == "prod"
+    assert params[3] == "7:ec2_instance:multivariate_anomaly"
+    assert isinstance(params[4], float)
 
 
 def test_joint_anomaly_updates_existing_alert_instead_of_duplicating():
     rows = _history_with_joint_anomaly_at_end(n=80)
     inserted, updated, resolved = _install_db_stub(
         rows, resource_id="i-anomalous-1", existing_alert={"id": 999},
-        active_anomaly_alerts=[{"id": 999, "resource_id": "i-anomalous-1"}],
+        active_anomaly_alerts=[{"id": 999, "aws_account_id": 7, "resource_id": "i-anomalous-1"}],
     )
     mod = load_module("app/collector/multivariate_anomaly.py")
 
@@ -140,7 +143,7 @@ def test_resource_no_longer_anomalous_gets_auto_resolved():
     rows = _stable_history_rows(n=80)  # nothing anomalous this cycle
     inserted, updated, resolved = _install_db_stub(
         rows, resource_id="i-recovered-1",
-        active_anomaly_alerts=[{"id": 555, "resource_id": "i-recovered-1"}],
+        active_anomaly_alerts=[{"id": 555, "aws_account_id": 7, "resource_id": "i-recovered-1"}],
     )
     mod = load_module("app/collector/multivariate_anomaly.py")
 
@@ -160,7 +163,7 @@ def test_insufficient_metrics_never_queried_for_history():
             normalized = " ".join(sql.split())
             if "COUNT(DISTINCT h.metric_name)" in normalized:
                 self._pending = []  # HAVING filtered everything out
-            elif normalized.startswith("SELECT id, resource_id FROM alerts"):
+            elif normalized.startswith("SELECT id, aws_account_id, resource_id FROM alerts"):
                 self._pending = []
             else:
                 raise AssertionError(f"unexpected query with no candidates: {normalized!r}")

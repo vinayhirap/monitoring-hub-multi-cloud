@@ -20,7 +20,7 @@ def _install_stub(alert_row, in_degree=0, cloud_events=None, config_changes=None
     class _Cursor(FakeCursor):
         def execute(self, sql, params=None):
             normalized = " ".join(sql.split())
-            if normalized.startswith("SELECT id, resource_id, metric_name, severity, triggered_at"):
+            if normalized.startswith("SELECT id, aws_account_id, resource_id, metric_name, severity, triggered_at"):
                 self._pending = [alert_row] if alert_row else []
             elif "COUNT(DISTINCT source_resource_id)" in normalized:
                 self._pending = [{"in_degree": in_degree}]
@@ -52,7 +52,7 @@ def _install_stub(alert_row, in_degree=0, cloud_events=None, config_changes=None
 
 def _base_alert(**overrides):
     row = {
-        "id": 42, "resource_id": "i-abc", "metric_name": "CPUUtilization",
+        "id": 42, "aws_account_id": 7, "resource_id": "i-abc", "metric_name": "CPUUtilization",
         "severity": "CRITICAL", "triggered_at": "2026-09-14 10:00:00",
         "current_value": 95.0, "threshold": 80.0,
     }
