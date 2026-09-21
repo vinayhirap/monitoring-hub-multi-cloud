@@ -334,7 +334,9 @@ class ReportPDF(FPDF):
         self.set_xy(card_x + 4, y0 + 1)
         self.set_font("Helvetica", "B", 10.5)
         self.set_text_color(*_INK)
-        self.cell(card_w * 0.6, 6, _safe(f"Incident #{inc['id']}: {inc.get('title') or 'Untitled incident'}"))
+        title_max_w = card_w * 0.6 - 2
+        title_text = _fit_text(self, f"Incident #{inc['id']}: {inc.get('title') or 'Untitled incident'}", title_max_w)
+        self.cell(card_w * 0.6, 6, _safe(title_text))
         sev_pill_x = card_x + card_w - 48
         status_pill_x = sev_pill_x + 20 + 2  # 20mm severity pill + 2mm gap
         self.pill(sev_pill_x, y0 + 1.2, inc.get("severity") or "-", _severity_color(inc.get("severity")), w=20)
@@ -392,6 +394,47 @@ class ReportPDF(FPDF):
                     f"being tracked live in CloudOps; last activity {inc['last_seen_at']:%Y-%m-%d %H:%M} UTC.")
         self.multi_cell(card_w - 8, 5.5, _safe(note))
         self.ln(3)
+
+
+def _fit_text(pdf: "ReportPDF", text: str, max_width: float) -> str:
+    """Truncates with an ellipsis to fit max_width at the pdf's
+    CURRENTLY SET font -- caller must set_font() before calling this.
+    fpdf2's cell() does not clip or wrap overflowing text by default;
+    it just prints past the cell boundary into whatever is positioned
+    next (in incident_card()'s case, straight into the severity/status
+    pills). Found on a real 267-incident account report where several
+    incident titles ran well past their allotted width."""
+    if pdf.get_string_width(text) <= max_width:
+        return text
+    ellipsis = "..."
+    while text and pdf.get_string_width(text + ellipsis) > max_width:
+        text = text[:-1]
+    return text.rstrip() + ellipsis
+
+
+# Reports with a genuinely large incident/alert history (a busy real
+# account can have hundreds of incidents and thousands of alerts in a
+# single week) must not try to render every one of them -- a report
+# that's hundreds of pages long is not "stakeholder-ready," it's
+# unusable, and generation time/S3 storage scale with page count too.
+# These caps keep the PDF to a size someone will actually read; the
+# full underlying data is always still queryable in CloudOps itself.
+_MAX_INCIDENT_CARDS = 20
+_MAX_TIMELINE_ROWS = 200
+_MAX_AFFECTED_RESOURCES_LISTED = 50
+
+
+def _incident_sort_key(inc: dict):
+    """Highest priority first: still-open beats resolved, CRITICAL
+    beats WARNING beats everything else, and within a tier, most
+    recent first. Used only to pick which incidents make the cut when
+    there are more than _MAX_INCIDENT_CARDS -- the full count is
+    always stated regardless."""
+    sev_rank = {"CRITICAL": 2, "WARNING": 1}.get((inc.get("severity") or "").upper(), 0)
+    is_open = 0 if (inc.get("status") or "").lower() in ("resolved", "closed") else 1
+    started = inc.get("started_at")
+    started_ts = started.timestamp() if started else 0
+    return (is_open, sev_rank, started_ts)
 
 
 def _draw_cover(pdf: ReportPDF, *, title: str, subtitle: str, meta_lines: list[str]):
@@ -523,8 +566,19 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
             "event (see Incident Timeline for every individual alert)."
         ))
         pdf.ln(1)
-        for inc in incidents:
+        shown = sorted(incidents, key=_incident_sort_key, reverse=True)[:_MAX_INCIDENT_CARDS]
+        for inc in shown:
             pdf.incident_card(inc)
+        if len(incidents) > len(shown):
+            pdf.set_font("Helvetica", "I", 9.5)
+            pdf.set_text_color(*_GRAY_TEXT)
+            pdf.multi_cell(0, 6, _safe(
+                f"+ {len(incidents) - len(shown)} more incident(s) occurred in this period and are not "
+                f"shown individually above (showing the {len(shown)} most significant -- still-open and/or "
+                "highest-severity first). The full incident history for this account is available in "
+                "CloudOps under Reports' Incident scope picker, or via the API."
+            ))
+            pdf.set_text_color(*_INK)
     else:
         pdf.set_font("Helvetica", "", 10)
         pdf.multi_cell(0, 6, _safe(
@@ -534,16 +588,24 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
 
     pdf.section_title("Affected Resources")
     pdf.set_font("Helvetica", "", 10)
-    if data["affected_resources"]:
-        for i, r in enumerate(data["affected_resources"]):
+    resources_list = data["affected_resources"]
+    if resources_list:
+        shown_resources = resources_list[:_MAX_AFFECTED_RESOURCES_LISTED]
+        for i, r in enumerate(shown_resources):
             fill = i % 2 == 0
             pdf.set_fill_color(*_TEAL_DIM) if fill else None
             pdf.cell(0, 6.5, _safe(f"  [{r['resource_type']}]  {r['name'] or r['resource_id']}  ({r['resource_id']})"),
                      fill=fill, new_x="LMARGIN", new_y="NEXT")
+        if len(resources_list) > len(shown_resources):
+            pdf.set_font("Helvetica", "I", 9)
+            pdf.set_text_color(*_GRAY_TEXT)
+            pdf.multi_cell(0, 6, _safe(f"+ {len(resources_list) - len(shown_resources)} more resource(s) affected in this period."))
+            pdf.set_text_color(*_INK)
     else:
         pdf.multi_cell(0, 6, _safe("No resources with events in this period."))
 
-    pdf.section_title("Incident Timeline / Alerts & Events")
+    alerts_list = data["alerts"]
+    pdf.section_title(f"Incident Timeline / Alerts & Events ({len(alerts_list)} total)")
     col_w = [30, 20, 20, 45, 32, 43]
     headers = ["Time (UTC)", "Severity", "Status", "Resource", "Metric", "Value"]
     pdf.set_fill_color(*_NAVY_CARD)
@@ -554,7 +616,18 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
     pdf.ln()
     pdf.set_text_color(*_INK)
     pdf.set_font("Helvetica", "", 8.5)
-    for i, a in enumerate(data["alerts"]):
+    # Most severe/most recent first when there's more than the cap --
+    # a stakeholder skimming a huge table should see what matters most
+    # before hitting the truncation note, not just whatever happened
+    # to be chronologically first.
+    shown_alerts = alerts_list if len(alerts_list) <= _MAX_TIMELINE_ROWS else \
+        sorted(alerts_list, key=lambda a: (
+            0 if (a.get("status") or "").lower() not in ("resolved", "closed") else 1,
+            {"CRITICAL": 0, "WARNING": 1}.get((a.get("severity") or "").upper(), 2),
+        ))[:_MAX_TIMELINE_ROWS]
+    if len(shown_alerts) < len(alerts_list):
+        shown_alerts = sorted(shown_alerts, key=lambda a: a["triggered_at"])
+    for i, a in enumerate(shown_alerts):
         row_y = pdf.get_y()
         if i % 2 == 0:
             pdf.set_fill_color(248, 249, 251)
@@ -568,8 +641,17 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
         pdf.cell(col_w[3], 6.5, _safe((a.get("resource_name") or a["resource_id"])[:30]))
         pdf.cell(col_w[4], 6.5, _safe(a.get("metric_name") or "-"))
         pdf.cell(col_w[5], 6.5, _safe(a.get("value")), new_x="LMARGIN", new_y="NEXT")
-    if not data["alerts"]:
+    if not alerts_list:
         pdf.multi_cell(0, 6, _safe("No alerts/events recorded in this period -- clean run."))
+    elif len(shown_alerts) < len(alerts_list):
+        pdf.set_font("Helvetica", "I", 9)
+        pdf.set_text_color(*_GRAY_TEXT)
+        pdf.multi_cell(0, 6, _safe(
+            f"+ {len(alerts_list) - len(shown_alerts)} more event(s) in this period, not shown here "
+            f"(showing the {len(shown_alerts)} most significant). Full event history is queryable in "
+            "CloudOps or via the API."
+        ))
+        pdf.set_text_color(*_INK)
 
     pdf.section_title("Resolution / Current Status")
     pdf.set_font("Helvetica", "", 10)
