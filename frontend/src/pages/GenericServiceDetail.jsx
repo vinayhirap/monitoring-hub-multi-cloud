@@ -48,6 +48,8 @@ import { getResourcesList, getGenericMetrics, getConsoleUrl } from "../api/api";
 import { CloudServiceIcon } from "../components/cloud-icons";
 import { ArrowLeftIcon, ExternalLinkIcon, ChevronDownIcon, AlertTriangleIcon } from "../components/icons";
 import { useTimezone } from "../contexts/TimezoneContext";
+import AlertBadge from "../components/AlertBadge";
+import { useResourceAlerts } from "../hooks/useResourceAlerts";
 
 const TIME_RANGES = [
   { label: "1H",  hours: 1 },
@@ -175,7 +177,7 @@ function MetricChart({ title, unit, description, data, color, warningThreshold, 
   );
 }
 
-function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel, thresholdMap, autoExpand }) {
+function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel, thresholdMap, autoExpand, alertInfo }) {
   const { ianaName } = useTimezone();
   const [expanded, setExpanded] = useState(false);
   const [metrics, setMetrics] = useState(null);
@@ -256,10 +258,15 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
           <ChevronDownIcon size={13} style={{ color: "var(--text-muted)", transform: expanded ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform .15s" }} />
         </td>
         <td style={{ padding: "10px 14px" }}>
-          <div className="inst-name">{r.name || r.resource_id}</div>
-          {r.name && r.name !== r.resource_id && (
-            <div className="inst-id mono">{r.resource_id}</div>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <AlertBadge info={alertInfo} />
+            <div>
+              <div className="inst-name">{r.name || r.resource_id}</div>
+              {r.name && r.name !== r.resource_id && (
+                <div className="inst-id mono">{r.resource_id}</div>
+              )}
+            </div>
+          </div>
         </td>
         <td style={{ padding: "10px 14px", color: "var(--text-muted)" }}>{r.region || "—"}</td>
         <td style={{ padding: "10px 14px" }}><StateBadge state={r.instance_state} /></td>
@@ -331,6 +338,10 @@ export default function GenericServiceDetail({ accountId, service, label }) {
   const [sortKey, setSortKey] = useState("name");
   const [timeRange, setTimeRange] = useState(6);
   const [thresholdMap, setThresholdMap] = useState({});
+  // CRITICAL/WARNING badge per row -- same server rollup as every other
+  // resource page, Overview and the Alerts tabs (extended + directory
+  // services previously had no alert indication at all).
+  const { lookup: alertLookup } = useResourceAlerts(accountId, service);
 
   const resourceParam = searchParams.get("resource");
 
@@ -549,6 +560,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
                   timeRange={timeRange}
                   timeRangeLabel={rangeLabel}
                   thresholdMap={thresholdMap}
+                  alertInfo={alertLookup(r.resource_id)}
                   autoExpand={!!resourceParam && (r.resource_id === resourceParam || r.name === resourceParam)}
                 />
               ))}

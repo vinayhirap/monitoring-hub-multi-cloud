@@ -128,7 +128,20 @@ async function apiFetch(path, method = "GET", body) {
   return res.json();
 }
 
-const SEV_ORDER = { CRITICAL: 0, WARNING: 1, INFO: 2 };
+// List fetch that also returns the server's full match count (X-Total-Count),
+// so the UI can page instead of silently truncating at a fixed row cap.
+async function apiFetchList(path) {
+  const res = await fetch(`${BASE}${path}`, { headers: { "Content-Type": "application/json" } });
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    throw new Error(d.detail || `${res.status}`);
+  }
+  const data = await res.json();
+  const total = parseInt(res.headers.get("X-Total-Count") ?? "", 10);
+  return { rows: Array.isArray(data) ? data : (data.alerts ?? []), total: Number.isNaN(total) ? null : total };
+}
+
+const PAGE_SIZE = 100;
 
 // ── Main component ─────────────────────────────────────────────
 export default function Alerts() {
@@ -139,22 +152,18 @@ export default function Alerts() {
   const canAct   = role === "admin" || role === "editor";
 
   const [alerts,  setAlerts]  = useState([]);
+  const [total,   setTotal]   = useState(0);
+  const [limit,   setLimit]   = useState(PAGE_SIZE);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
-  // Authoritative tab-badge counts, fetched separately from the (capped)
-  // row list -- see api.js's getAlertCounts / app/api/alerts.py's
-  // /counts endpoint. Falls back to counting the row list only until
-  // the first successful fetch, so badges aren't blank on first paint.
+  // Tab badges (/api/alerts/counts) and the row list (/api/alerts?tab=...)
+  // are now defined by the SAME server-side rules (app/alert_rules.py), and
+  // both honour the account filter, so a badge always equals the number of
+  // rows its tab lists.
   const [counts,  setCounts]  = useState(null);
   const [tab,     setTab]     = useState("active");
   const [search,  setSearch]  = useState("");
-  // Account filter -- options are derived from whatever accounts already
-  // appear in the full (uncapped) alerts list rather than a separate
-  // /api/alerts/accounts fetch: /api/alerts already returns every alert
-  // this user can see (RBAC-scoped server-side, see
-  // app/api/alerts.py's _filter_rows_by_scope), across every tab, so its
-  // account_id/account_name pairs are already the correct, permission-
-  // scoped dropdown contents with no extra request needed.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [accountId, setAccountId] = useState("");
   const [acting,  setActing]  = useState(null);
   const [soundOn, setSoundOn] = useState(true);
@@ -181,34 +190,36 @@ export default function Alerts() {
     return () => document.removeEventListener("click", unlock);
   }, []);
 
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // changing tab / account / search starts a fresh page
+  useEffect(() => { setLimit(PAGE_SIZE); }, [tab, accountId, debouncedSearch]);
+
   const loadAlerts = useCallback(async () => {
     setError(null);
     try {
-      const data = await apiFetch("/api/alerts");
-      const arr  = Array.isArray(data) ? data : (data.alerts ?? []);
-      const sorted = arr.sort((a, b) =>
-        (SEV_ORDER[a.severity?.toUpperCase()] ?? 9) -
-        (SEV_ORDER[b.severity?.toUpperCase()] ?? 9)
-      );
-      // Seed knownIds so existing alerts never trigger beep
-      sorted.forEach(a => knownIds.current.add(a.id));
-      setAlerts(sorted);
+      const qs = new URLSearchParams({ tab, limit: String(limit), offset: "0" });
+      if (accountId) qs.set("account_id", accountId);
+      if (debouncedSearch) qs.set("q", debouncedSearch);
+      const { rows, total: t } = await apiFetchList(`/api/alerts?${qs}`);
+      // Seed knownIds so existing alerts never trigger a beep
+      rows.forEach(a => knownIds.current.add(a.id));
+      setAlerts(rows);
+      setTotal(t ?? rows.length);
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
-    // Tab badges come from a separate, uncapped endpoint -- deliberately
-    // NOT derived from the row list above, which is paginated and can be
-    // crowded out by a burst of resolved noise (see api.js/alerts.py
-    // comments). Fetched alongside but independently, so a failure here
-    // doesn't block the row list from loading.
     try {
-      setCounts(await apiFetch("/api/alerts/counts"));
+      setCounts(await apiFetch(`/api/alerts/counts${accountId ? `?account_id=${accountId}` : ""}`));
     } catch {
       // keep showing the last-known counts rather than blanking badges
     }
-  }, []);
+  }, [tab, limit, accountId, debouncedSearch]);
 
   useEffect(() => {
     loadAlerts();
@@ -216,61 +227,69 @@ export default function Alerts() {
     return () => clearInterval(t);
   }, [loadAlerts]);
 
-  // WebSocket push — beep only for brand-new alerts
+  // WebSocket push. The list is server-defined per tab, so every event just
+  // triggers a reload instead of splicing a partial message into the rows
+  // (the old code inserted the raw push payload as a row -- a half-empty
+  // "ghost" alert until the next poll). Beep only for genuinely new ids.
   useEffect(() => {
     if (!lastMessage) return;
+    const pushedId = lastMessage.id ?? lastMessage.alert_id;
 
     if (lastMessage.type === "new_alert") {
-      setAlerts(prev => {
-        const exists = prev.find(a => a.id === lastMessage.id);
-        if (exists) return prev;
-
-        if (soundOn && !knownIds.current.has(lastMessage.id)) {
-          playBeep((lastMessage.severity || "").toUpperCase());
-        }
-        knownIds.current.add(lastMessage.id);
-
-        return [lastMessage, ...prev]
-          .slice(0, 200)
-          .sort((a, b) =>
-            (SEV_ORDER[a.severity?.toUpperCase()] ?? 9) -
-            (SEV_ORDER[b.severity?.toUpperCase()] ?? 9)
-          );
-      });
-    }
-
-    if (lastMessage.type === "alert_resolved" && lastMessage.id) {
-      setAlerts(prev =>
-        prev.map(a => a.id === lastMessage.id ? { ...a, status: "resolved" } : a)
-      );
-    }
-
-    if (lastMessage.type === "alert_acknowledged" && lastMessage.id) {
-      setAlerts(prev =>
-        prev.map(a => a.id === lastMessage.id ? { ...a, status: "acknowledged" } : a)
-      );
-    }
-
-    // Backend auto-resolved a batch (account removed / orphaned resource
-    // cleanup) — just reload rather than trying to patch rows we may not
-    // even have IDs for.
-    if (lastMessage.type === "bulk_alerts_changed") {
+      if (soundOn && pushedId != null && !knownIds.current.has(pushedId)) {
+        playBeep((lastMessage.severity || "").toUpperCase());
+      }
+      if (pushedId != null) knownIds.current.add(pushedId);
+      loadAlerts();
+    } else if (
+      lastMessage.type === "alert_resolved" ||
+      lastMessage.type === "alert_acknowledged" ||
+      lastMessage.type === "bulk_alerts_changed"
+    ) {
       loadAlerts();
     }
   }, [lastMessage, soundOn, loadAlerts]);
 
+  // Every action reloads from the server: with server-defined tabs, patching
+  // one row locally would leave it in a tab it no longer belongs to.
   async function handleAck(id) {
     if (!canAct) return;
     setActing(id);
     try {
-      await apiFetch(`/api/alerts/${id}/ack`, "PATCH").catch(() =>
-        apiFetch(`/api/alerts/${id}/ack`, "POST")
-      );
-      setAlerts(prev =>
-        prev.map(a => a.id === id ? { ...a, status: "acknowledged" } : a)
-      );
+      await apiFetch(`/api/alerts/${id}/ack`, "PATCH");
+      await loadAlerts();
     } catch (e) {
       alert("Ack failed: " + e.message);
+    } finally {
+      setActing(null);
+    }
+  }
+
+  async function handleResolve(id) {
+    if (!canAct) return;
+    setActing(id);
+    try {
+      await apiFetch(`/api/alerts/${id}/resolve`, "PATCH");
+      await loadAlerts();
+    } catch (e) {
+      alert("Resolve failed: " + e.message);
+    } finally {
+      setActing(null);
+    }
+  }
+
+  // Mute suppresses an OPEN alert for a while (server-enforced: it stops
+  // counting as critical/warning everywhere, is not escalated and is off the
+  // public status page). It is not a resolve -- if it is still breaching when
+  // the mute lapses it counts again by itself.
+  async function handleMute(id, minutes) {
+    if (!canAct) return;
+    setActing(id);
+    try {
+      await apiFetch(`/api/alerts/${id}/${minutes ? `mute?minutes=${minutes}` : "unmute"}`, "PATCH");
+      await loadAlerts();
+    } catch (e) {
+      alert("Mute failed: " + e.message);
     } finally {
       setActing(null);
     }
@@ -283,6 +302,9 @@ export default function Alerts() {
   // app/aws/federation.py's resource_console_destination) -- see that
   // file's build_federated_console_url docstring for why this is a
   // direct resource link rather than a wrapped sign-in URL.
+  // 2026-09-20: this called apiFetch(url, { method: "POST" }) but this file's
+  // apiFetch takes the method as a plain STRING, so fetch() received the method
+  // "[object Object]" and threw -- the Console button never worked.
   async function openConsole(id) {
     // Open the tab synchronously (on the click) so browsers don't block it
     // as a popup once the async fetch resolves.
@@ -305,7 +327,7 @@ export default function Alerts() {
     if (tab) tab.opener = null;
     setOpeningConsole(id);
     try {
-      const { url } = await apiFetch(`/api/alerts/${id}/console-url`, { method: "POST" });
+      const { url } = await apiFetch(`/api/alerts/${id}/console-url`, "POST");
       if (tab) tab.location.href = url;
       else window.open(url, "_blank", "noopener,noreferrer");
     } catch (e) {
@@ -313,23 +335,6 @@ export default function Alerts() {
       alert("Couldn't open console: " + e.message);
     } finally {
       setOpeningConsole(null);
-    }
-  }
-
-  async function handleResolve(id) {
-    if (!canAct) return;
-    setActing(id);
-    try {
-      await apiFetch(`/api/alerts/${id}/resolve`, "PATCH").catch(() =>
-        apiFetch(`/api/alerts/${id}/resolve`, "POST")
-      );
-      setAlerts(prev =>
-        prev.map(a => a.id === id ? { ...a, status: "resolved" } : a)
-      );
-    } catch (e) {
-      alert("Resolve failed: " + e.message);
-    } finally {
-      setActing(null);
     }
   }
 
@@ -356,9 +361,7 @@ export default function Alerts() {
   }
 
   // Not-genuine feedback (2026-09-14) -- optimistic UI update (flip the
-  // badge immediately), reverted if the request actually fails, same
-  // pattern as handleAck/handleResolve's optimistic status updates
-  // above.
+  // badge immediately), reverted if the request actually fails.
   async function handleMarkFalsePositive(id, marked) {
     if (!canAct) return;
     setAlerts(prev => prev.map(a => a.id === id ? { ...a, marked_false_positive: marked } : a));
@@ -370,63 +373,19 @@ export default function Alerts() {
     }
   }
 
-  const accountOptions = Array.from(
-    new Map(
-      alerts
-        .filter(a => a.account_id != null)
-        .map(a => [a.account_id, a.account_name || `Account ${a.account_id}`])
-    ).entries()
-  ).sort((a, b) => a[1].localeCompare(b[1]));
-
-  const filtered = alerts.filter(a => {
-    if (accountId && String(a.account_id) !== accountId) return false;
-    const s = (a.status || "").toLowerCase();
-    // "Active" means confirmed live — a resource still sending fresh data
-    // that's breaching right now. Stale ones (no fresh data in 20+ min)
-    // move to their own tab so they don't clutter the feed you actually
-    // watch, without silently resolving/hiding them.
-    if (tab === "active"       && (s !== "active" || a.stale)) return false;
-    if (tab === "stale"        && (s !== "active" || !a.stale)) return false;
-    // "Critical" means currently open and critical -- same definition as
-    // the Overview banner/tiles (status active + severity CRITICAL), not
-    // "ever was critical". Without the status check, a resolved alert
-    // that broke critical stays in this tab forever.
-    if (tab === "critical"     && (s !== "active" || (a.severity || "").toUpperCase() !== "CRITICAL")) return false;
-    if (tab === "acknowledged" && s !== "acknowledged") return false;
-    if (tab === "resolved"     && s !== "resolved")     return false;
-    if (search) {
-      const q = search.toLowerCase();
-      return (
-        (a.metric_name || "").toLowerCase().includes(q) ||
-        (a.resource    || "").toLowerCase().includes(q) ||
-        (a.severity    || "").toLowerCase().includes(q)
-      );
-    }
-    return true;
-  });
-
-  // Fall back to counting the (capped) row list only until the first
-  // /api/alerts/counts response lands, so badges show *something* on
-  // first paint instead of "0" -- this fallback is expected to briefly
-  // disagree with reality under the same crowding-out conditions the
-  // real counts object fixes, and is replaced within one loadAlerts()
-  // cycle (~10s, or immediately on mount).
-  const fallbackCounts = {
-    all:          alerts.length,
-    active:       alerts.filter(a => (a.status || "").toLowerCase() === "active" && !a.stale).length,
-    stale:        alerts.filter(a => (a.status || "").toLowerCase() === "active" && a.stale).length,
-    critical:     alerts.filter(a => (a.status || "").toLowerCase() === "active" && (a.severity || "").toUpperCase() === "CRITICAL").length,
-    acknowledged: alerts.filter(a => (a.status || "").toLowerCase() === "acknowledged").length,
-    resolved:     alerts.filter(a => (a.status || "").toLowerCase() === "resolved").length,
-  };
-  const displayCounts = counts ?? fallbackCounts;
+  // Dropdown options come from the counts endpoint (RBAC-scoped, independent
+  // of the current filter) instead of being derived from whichever rows
+  // happen to be loaded.
+  const accountOptions = (counts?.accounts ?? []).map(a => [a.id, a.name]);
+  const filtered = alerts;
+  const displayCounts = counts ?? { all: 0, active: 0, stale: 0, critical: 0, acknowledged: 0, resolved: 0, suppressed: 0 };
 
   return (
     <div className="alerts-page">
       <div className="alerts-header">
         <div>
           <h1>Active <span className="accent">Alerts</span></h1>
-          <p className="alerts-sub">Real-time CloudWatch alarm feed across all accounts</p>
+          <p className="alerts-sub">Live alerts across all accounts — counts here match the Overview banner and every resource badge</p>
         </div>
         <div className="alerts-header-right">
           <button
@@ -452,6 +411,7 @@ export default function Alerts() {
           ["stale",        "Stale"],
           ["critical",     "Critical"],
           ["acknowledged", "Acknowledged"],
+          ["suppressed",   "Muted / Maint."],
           ["resolved",     "Resolved"],
         ].map(([key, label]) => (
           <button
@@ -534,9 +494,9 @@ export default function Alerts() {
                       </td>
 
                       <td className="mono small">
-                        <span className="alert-val">{fmt(a.current_value)}</span>
+                        <span className="alert-val" title={String(a.current_value ?? "")}>{fmt(a.current_value)}</span>
                         <span className="alert-sep"> / </span>
-                        <span className="alert-thr">{fmt(a.threshold)}</span>
+                        <span className="alert-thr" title={String(a.threshold ?? "")}>{fmt(a.threshold)}</span>
                       </td>
 
                       <td className="alert-resource">
@@ -560,7 +520,7 @@ export default function Alerts() {
                         )}
                       </td>
 
-                      <td><StatusBadge status={status} /></td>
+                      <td><StatusBadge status={a.state || status} detail={a.silenced_reason || (a.muted_until ? `Muted until ${shortDateTime(a.muted_until, ianaName)}` : a.resolution_reason ? `Resolved: ${a.resolution_reason.replace(/_/g, " ")}` : "")} /></td>
 
                       <td className="mono small">
                         {a.triggered_at ? shortDateTime(a.triggered_at, ianaName) : "—"}
@@ -632,6 +592,25 @@ export default function Alerts() {
                                 {isActing ? "…" : "Resolve"}
                               </button>
                             )}
+                            {status !== "resolved" && a.state !== "suppressed" && (
+                              <button
+                                className="btn-ack"
+                                disabled={isActing}
+                                title="Mute for 1 hour: stops counting as critical/warning and stops escalating; not resolved"
+                                onClick={e => { e.stopPropagation(); handleMute(a.id, 60); }}
+                              >
+                                Mute 1h
+                              </button>
+                            )}
+                            {a.state === "suppressed" && a.muted_until && (
+                              <button
+                                className="btn-ack"
+                                disabled={isActing}
+                                onClick={e => { e.stopPropagation(); handleMute(a.id, 0); }}
+                              >
+                                Unmute
+                              </button>
+                            )}
                             {/* Not-genuine feedback (2026-09-14) -- closes
                                 the loop with app/collector/
                                 threshold_tuning.py's manually_confirmed
@@ -698,6 +677,14 @@ export default function Alerts() {
             </tbody>
           </table>
 
+          <div style={{ padding: "8px 16px", color: "var(--text-muted)", fontSize: 12, display: "flex", gap: 12, alignItems: "center" }}>
+            <span>Showing {filtered.length} of {total}</span>
+            {filtered.length < total && limit < 1000 && (
+              <button className="btn-refresh" onClick={() => setLimit(l => Math.min(l + PAGE_SIZE, 1000))}>Show more</button>
+            )}
+            {filtered.length < total && limit >= 1000 && <span>(narrow with search or the account filter to see the rest)</span>}
+          </div>
+
           {!canAct && (
             <div style={{ padding: "8px 16px", color: "#666", fontSize: "12px" }}>
               👁 View-only — contact an Admin or Editor to acknowledge/resolve alerts.
@@ -720,20 +707,34 @@ function SevBadge({ sev }) {
   return <span className={cls}>● {sev}</span>;
 }
 
-function StatusBadge({ status }) {
+function StatusBadge({ status, detail }) {
+  // `status` is the server's derived state (app/alert_rules.py):
+  // firing | stale | suppressed | acknowledged | resolved (legacy: active)
   const cls = {
+    firing:       "st-badge st-active",
     active:       "st-badge st-active",
+    stale:        "st-badge st-resolved",
+    suppressed:   "st-badge st-ack",
     acknowledged: "st-badge st-ack",
     resolved:     "st-badge st-resolved",
   }[status] || "st-badge st-active";
-  return <span className={cls}>{status.toUpperCase()}</span>;
+  const label = { firing: "ACTIVE", stale: "NO DATA", suppressed: "MUTED" }[status] || status.toUpperCase();
+  return <span className={cls} title={detail || undefined}>{label}</span>;
 }
 
+// Compact, unit-agnostic number formatting. Raw values like 712199220386 or
+// 0.03 were shown as "712199220386" / "0.0"; the exact value is in the tooltip.
 function fmt(v) {
   if (v == null) return "—";
   const n = parseFloat(v);
   if (isNaN(n)) return String(v);
-  return n % 1 === 0 ? String(n) : n.toFixed(1);
+  const abs = Math.abs(n);
+  if (abs >= 1e12) return (n / 1e12).toFixed(2) + "T";
+  if (abs >= 1e9)  return (n / 1e9).toFixed(2) + "G";
+  if (abs >= 1e6)  return (n / 1e6).toFixed(2) + "M";
+  if (abs >= 1e4)  return (n / 1e3).toFixed(1) + "K";
+  if (abs !== 0 && abs < 0.1) return n.toPrecision(2);
+  return n % 1 === 0 ? String(n) : n.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 const METRIC_LABELS = {

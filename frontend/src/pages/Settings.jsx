@@ -245,10 +245,16 @@ export default function Settings() {
   }
 
   async function clearAlerts() {
-    if (!window.confirm("Clear all active alerts from DB?")) return;
-    await fetch(`${BASE}/api/alerts/clear`, { method: "DELETE" }).catch(() => {});
-    setCheckResult(null);
-    alert("Alerts cleared.");
+    if (!window.confirm("Close all open, un-acknowledged alerts?\n\nThey are resolved (recorded as a bulk clear, with your name) rather than deleted. Anything still breaching will raise a new alert on the next evaluation cycle.")) return;
+    try {
+      const res = await fetch(`${BASE}/api/alerts/clear`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const d = await res.json().catch(() => ({}));
+      setCheckResult(null);
+      alert(`${d.count ?? 0} alert(s) closed.`);
+    } catch (e) {
+      alert("Clear failed: " + e.message);
+    }
   }
 
   const grouped = thresholds.reduce((acc, t) => {
@@ -375,7 +381,7 @@ export default function Settings() {
             ) : checkResult.breaches?.length > 0 ? (
               <>
                 <div style={{ fontWeight: 700, color: "var(--red)", marginBottom: 8, display:"flex", alignItems:"center", gap:6 }}>
-                  <RedDotIcon size={13}/> {checkResult.breaches.length} breach{checkResult.breaches.length !== 1 ? "es" : ""} detected
+                  <RedDotIcon size={13}/> {checkResult.breaches.length} breach{checkResult.breaches.length !== 1 ? "es" : ""} detected{checkResult.preview ? " — preview only, nothing saved (the scheduled evaluator raises real alerts)" : ""}
                 </div>
                 {checkResult.breaches.map((b, i) => (
                   <div key={i} style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--text-muted)", marginBottom: 3 }}>
