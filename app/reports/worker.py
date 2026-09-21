@@ -101,7 +101,7 @@ def run_job(job_id: int) -> None:
             job["scope_type"], job["scope_id"], job["account_id"],
             job["period_start"], job["period_end"],
         )
-        scope_label = (data.get("account") or {}).get("name") or job["scope_id"]
+        scope_label = (data.get("account") or {}).get("account_name") or job["scope_id"]
         pdf_bytes = render_report_pdf(
             report_type=job["report_type"], scope_type=job["scope_type"],
             scope_id=job["scope_id"], scope_label=scope_label,
