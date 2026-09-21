@@ -241,6 +241,22 @@ def test_dynamic_band_still_relaxes_static_threshold(db):
     assert db.one("SELECT COUNT(*) n FROM alerts")["n"] == 0
 
 
+def test_tight_dynamic_band_yields_warning_never_critical(db):
+    """Prod, day one: mem_used_percent 81.2% went CRITICAL against a dynamic
+    band of 81.03% (mean+3 sigma of a near-flat metric) although the static
+    critical is 90. Unusual-but-below-static-critical must be a WARNING."""
+    r = db.resource(1, "ec2", "i-mem")
+    db.threshold(1, "ec2", "mem_used_percent", 80, 90, dynamic=1, unit="Percent")
+    db.baseline(1, "i-mem", "mem_used_percent", mean=78.0, std=1.0, n=50)
+    db.metric(r, "mem_used_percent", 85.0)
+    run_eval()
+    a = db.one("SELECT * FROM alerts WHERE resource_id='i-mem'")
+    assert a and a["severity"] == "WARNING"
+    db.metric(r, "mem_used_percent", 93.0)                 # reaches the STATIC critical
+    run_eval()
+    assert db.one("SELECT severity FROM alerts WHERE resource_id='i-mem'")["severity"] == "CRITICAL"
+
+
 def test_clamp_percent_cap_and_low_direction():
     m = load_module("app/collector/alert_evaluator.py") if False else None  # noqa: F841
     install_stub("app.db", get_connection=lambda: None)
@@ -251,12 +267,13 @@ def test_clamp_percent_cap_and_low_direction():
     # > : cap at 99.9 for percent metrics so a noisy band can never become unreachable
     w, c = mod.clamp_dynamic_bounds(101, 130, 70, 90, ">", "Percent")
     assert (w, c) == (99.9, 99.9)
-    # > : relaxing is unlimited for non-percent, tightening is limited to 50%
-    assert mod.clamp_dynamic_bounds(1, 2, 100, 200, ">", "Count") == (50, 100)
+    # > : WARNING tightens to at most 50% of static; CRITICAL never tightens at all
+    assert mod.clamp_dynamic_bounds(1, 2, 100, 200, ">", "Count") == (50, 200)
+    # > : relaxing is unlimited for both
     assert mod.clamp_dynamic_bounds(500, 900, 100, 200, ">", "Count") == (500, 900)
-    # < (lower is worse): raw band far above the static line is clamped to 2x
+    # < (lower is worse): warning trip point capped at 2x static, critical never above static
     w, c = mod.clamp_dynamic_bounds(50_000, 40_000, 1000, 500, "<", "Count")
-    assert (w, c) == (2000, 1000)
+    assert (w, c) == (2000, 500)
 
 
 # ── lifecycle: acknowledged, escalation, recovery ───────────────────────

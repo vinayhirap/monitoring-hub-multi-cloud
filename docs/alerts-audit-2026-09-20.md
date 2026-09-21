@@ -18,7 +18,7 @@ Unit is **alert rows** everywhere. Sources of truth:
 
 ## Behaviour changes
 * Placeholder thresholds (1,000,000 / 5,000,000 / `>`) are **anomaly-only**: need a confident baseline, a sustained breach, well above the resource's own norm, never above WARNING. Editing either number in Settings makes it an ordinary static threshold.
-* Dynamic thresholds may relax a static threshold freely but tighten it by at most 50 %; percentage bands cap at 99.9.
+* Dynamic thresholds may relax a static threshold freely. Their WARNING band may tighten it by at most 50 %; their CRITICAL line never tightens (a statistically unusual reading below the static critical is a WARNING). Percentage bands cap at 99.9.
 * Acknowledged alerts are evaluated (resolve on recovery, no duplicates, re-open on escalation to CRITICAL).
 * Auto-resolve reasons: `recovered`, `manual`, `bulk_clear`, `threshold_disabled`, `resource_gone`, `account_inactive`, `instance_stopped`, `no_data_expired`, `placeholder_threshold`, `duplicate`, `anomaly_cleared`, `check_deleted`.
 * Mute is enforced (was write-only). Clear resolves instead of deleting. Ack cannot resurrect a resolved alert.
