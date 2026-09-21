@@ -45,7 +45,7 @@ def test_threshold_tuning_note_lands_in_payload_detail_not_dropped():
                 self._pending = [{
                     "id": 60, "aws_account_id": 7, "resource_type": "ec2", "metric_id": 9,
                     "warning_value": 1_000_000, "critical_value": 5_000_000,
-                    "comparison": ">", "dynamic_k": None, "metric_name": "NetworkIn",
+                    "comparison": ">", "dynamic_k": None, "metric_name": "NetworkIn", "account_name": "U4RAD",
                 }]
             elif normalized.startswith("SELECT b.resource_id, AVG"):
                 self._pending = [{"resource_id": "i-loud", "typical_value": 9_000_000,

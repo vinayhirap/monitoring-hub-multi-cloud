@@ -29,7 +29,7 @@ def _install_db_stub(account_id_row, alert_row, update_calls):
     class _Cursor(FakeCursor):
         def execute(self, sql, params=None):
             normalized = " ".join(sql.split())
-            if normalized.startswith("SELECT acc.id AS account_id"):
+            if normalized.startswith("SELECT aws_account_id AS account_id"):
                 self._pending = [account_id_row] if account_id_row else []
             elif normalized.startswith("SELECT resource_id, metric_name, severity FROM alerts"):
                 self._pending = [alert_row] if alert_row else []
