@@ -43,17 +43,19 @@ def my_permissions(current_user: dict = Depends(get_current_user)):
 @router.get("")
 def list_permissions(current_user: dict = Depends(require_permission("permissions.view"))):
     conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        "SELECT id, code, category, label, description FROM permissions "
-        "WHERE is_internal = 0 ORDER BY category, code"
-    )
-    perms = cursor.fetchall()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT id, code, category, label, description FROM permissions "
+            "WHERE is_internal = 0 ORDER BY category, code"
+        )
+        perms = cursor.fetchall()
 
-    cursor.execute("SELECT role, permission_id FROM role_permissions")
-    grants = cursor.fetchall()
-    cursor.close()
-    conn.close()
+        cursor.execute("SELECT role, permission_id FROM role_permissions")
+        grants = cursor.fetchall()
+        cursor.close()
+    finally:
+        conn.close()
 
     granted_by_role = {"viewer": set(), "editor": set(), "admin": set()}
     for g in grants:
