@@ -336,6 +336,65 @@ def run_discovery_once():
     run_discovery()
 
 
+def _load_last_run_times() -> dict:
+    """
+    Seeds run_loop's per-tier 'last ran' timers from persisted history
+    instead of always starting every tier at 0 -- see run_loop's own
+    2026-09-19 fix note for the incident this closes. Queried ONCE per
+    leadership generation (i.e. once per process start or restart, not
+    once per cycle) -- this doesn't add any steady-state cost to the
+    loop, it only changes what its very first iteration assumes.
+
+    Deliberately reuses op_events (db/migrations/022_op_events_table.sql)
+    rather than a new table: it's already indexed on (event_type,
+    created_at), already has a 30-day prune job that comfortably outlives
+    even the slowest (24h) tier's cadence, and this is exactly the kind
+    of "something happened, here's when" fact it already exists to hold.
+    Falls back to "run everything now" (the pre-fix behavior) on any
+    query failure -- a missed optimization, not a correctness problem,
+    so this is intentionally non-fatal.
+    """
+    tiers = ("standard", "low", "extended", "slow_extended")
+    now = time.time()
+    result = {t: 0 for t in tiers}
+    try:
+        conn = get_connection(); cur = conn.cursor(dictionary=True)
+        try:
+            placeholders = ", ".join(["%s"] * len(tiers))
+            cur.execute(f"""
+                SELECT event_type, MAX(created_at) AS last_at
+                FROM op_events
+                WHERE event_type IN ({placeholders})
+                GROUP BY event_type
+            """, tuple(f"scheduler_tier_{t}_completed" for t in tiers))
+            for row in cur.fetchall():
+                tier = row["event_type"][len("scheduler_tier_"):-len("_completed")]
+                if tier in result and row["last_at"]:
+                    # min(now, ...) guards against clock skew between
+                    # this process and whatever wrote the row making a
+                    # persisted timestamp look like it's in the future,
+                    # which would otherwise make the tier look "not due
+                    # for a very long time" instead of just "due now".
+                    result[tier] = min(now, row["last_at"].timestamp())
+        finally:
+            cur.close(); conn.close()
+    except Exception as e:
+        logger.warning(f"[scheduler] couldn't load persisted tier run-times, "
+                        f"defaulting to running every tier on this first cycle (non-fatal): {e}")
+    return result
+
+
+def _mark_tier_completed(tier: str) -> None:
+    """Companion to _load_last_run_times() -- records that this tier
+    just completed, so the NEXT process to call run_loop() (after a
+    restart or a leadership handover) knows not to immediately re-run
+    it. log_event() already swallows its own DB failures (see
+    op_log.py), so this is safe to call unconditionally after a
+    successful tier run without needing its own try/except here."""
+    from app.collector.op_log import log_event
+    log_event(f"scheduler_tier_{tier}_completed", f"{tier} tier completed", severity="INFO")
+
+
 def run_loop(leader_event=None):
     """
     Tiered loop:
@@ -352,11 +411,32 @@ def run_loop(leader_event=None):
     running forever as an orphaned second scheduler. Optional/None for
     any caller outside the normal leader-elected startup path (e.g.
     tests, the standalone `run()` entry point never reaches here).
+
+    2026-09-19 FIX -- confirmed cost on Dev during a burst of 12
+    deliberate `systemctl restart` cycles in under 4 hours (routine
+    during active development, not an incident): every restart is a
+    brand-new call to this function with last_standard/last_low/
+    last_extended/last_slow_extended all starting at 0 below, so every
+    tier -- extended included, which is where CSPM's broader-scoped
+    IAM/S3 checks run (see run_once's own comment on that) -- fired
+    immediately on the very next cycle regardless of how recently it
+    had already run under the previous (pre-restart) process. 12
+    restarts that day produced 58 extended-tier runs against an
+    expected ~24 for clean hourly cadence -- not a leak, not a bug in
+    the tier-dispatch logic itself, just this function having no way to
+    know "a few minutes ago, in a process that no longer exists,
+    extended already ran". _load_last_run_times() now answers exactly
+    that question from persisted history, once, right here -- critical
+    tier is deliberately NOT covered by this (see its own always-run
+    block below): it's the cheapest tier and the one where restart-time
+    freshness matters most, so re-running it immediately on every
+    restart is correct, not wasteful.
     """
-    last_standard   = 0
-    last_low        = 0
-    last_extended   = 0
-    last_slow_extended = 0
+    seed = _load_last_run_times()
+    last_standard   = seed["standard"]
+    last_low        = seed["low"]
+    last_extended   = seed["extended"]
+    last_slow_extended = seed["slow_extended"]
     last_discovery  = 0
     cycle           = 0
 
@@ -407,6 +487,7 @@ def run_loop(leader_event=None):
             try:
                 run_once("standard")
                 last_standard = now
+                _mark_tier_completed("standard")
             except Exception as e:
                 logger.error(f"Standard tier error: {e}")
 
@@ -416,6 +497,7 @@ def run_loop(leader_event=None):
             try:
                 run_once("low")
                 last_low = now
+                _mark_tier_completed("low")
             except Exception as e:
                 logger.error(f"Low tier error: {e}")
 
@@ -425,6 +507,7 @@ def run_loop(leader_event=None):
             try:
                 run_once("extended")
                 last_extended = now
+                _mark_tier_completed("extended")
             except Exception as e:
                 logger.error(f"Extended tier error: {e}")
 
@@ -434,6 +517,7 @@ def run_loop(leader_event=None):
             try:
                 run_once("slow_extended")
                 last_slow_extended = now
+                _mark_tier_completed("slow_extended")
             except Exception as e:
                 logger.error(f"Slow-extended tier error: {e}")
 
