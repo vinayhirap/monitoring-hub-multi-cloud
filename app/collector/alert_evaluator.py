@@ -632,11 +632,16 @@ def _evaluate_alerts_body(conn, cursor):
             update_fields = ["current_value = %s", "threshold = %s",
                               "last_seen_at = UTC_TIMESTAMP()", "healthy_streak = 0"]
             params = [metric_value, threshold_value]
-            if severity_cap == "WARNING" and existing["severity"] == "CRITICAL":
-                # volume anomalies are never CRITICAL (pre-existing rows from
-                # the placeholder-threshold era get corrected here)
-                update_fields.append("severity = 'WARNING'")
-            if existing["severity"] != severity and severity == "CRITICAL":
+            if existing["severity"] == "CRITICAL" and severity != "CRITICAL":
+                # DE-ESCALATION (2026-09-21). An open CRITICAL whose reading no
+                # longer reaches the critical line -- volume anomalies (never
+                # CRITICAL), or an alert raised by the old evaluator against a
+                # tight dynamic band -- is brought down to what it is now
+                # instead of staying CRITICAL until it fully recovers.
+                update_fields.append("severity = %s")
+                params.append(severity)
+                logger.debug(f"De-escalated alert {existing['id']} to {severity}")
+            elif existing["severity"] != severity and severity == "CRITICAL":
                 update_fields.append("severity = %s")
                 params.append(severity)
                 if existing["status"] == "acknowledged":
