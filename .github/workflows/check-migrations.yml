@@ -1,0 +1,27 @@
+name: Check migration numbering
+
+# Runs on every push to main and every PR targeting main. Several
+# audit/patch sessions work off their own clone in parallel and each
+# picks "the next free migration number" from whatever main looked
+# like when they started -- two clones a few minutes apart can both
+# land on the same number. migrate.py already refuses to run
+# --all-pending when that happens, but by then it's already merged
+# (or worse, already applied on one environment and not another).
+# This catches it at push time instead.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "db/migrations/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "db/migrations/**"
+
+jobs:
+  check-migration-numbers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for duplicate migration numbers
+        run: python3 scripts/check_migration_numbers.py
