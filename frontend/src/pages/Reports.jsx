@@ -79,22 +79,49 @@ export default function Reports() {
   }, [accountId, scopeType]);
 
   // Poll a queued job until it completes/fails, then refresh history.
+  // Self-scheduling poll (setTimeout, not setInterval) keyed only on
+  // the job id -- NOT on the whole `pending` object, so a status
+  // update mid-poll doesn't tear down and rebuild the loop every
+  // 2.5s. Tolerates a handful of transient failures (one flaky
+  // request no longer kills polling silently, which is exactly what
+  // was happening before: a single network hiccup hit the catch
+  // block, called clearInterval, and never resumed -- from then on
+  // the status just sat on PROCESSING until someone manually
+  // reloaded the page).
   useEffect(() => {
     if (!pending || pending.status === "COMPLETE" || pending.status === "FAILED") return;
-    const t = setInterval(async () => {
+    let cancelled = false;
+    let consecutiveErrors = 0;
+    const jobId = pending.job_id;
+
+    async function poll() {
+      if (cancelled) return;
       try {
-        const job = await getReportJobStatus(pending.job_id);
+        const job = await getReportJobStatus(jobId);
+        consecutiveErrors = 0;
+        if (cancelled) return;
         setPending(job);
         if (job.status === "COMPLETE" || job.status === "FAILED") {
-          clearInterval(t);
           refreshHistory();
+          return; // terminal state -- stop polling
         }
       } catch {
-        clearInterval(t);
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= 6) { // ~15s of consecutive failures
+          if (!cancelled) {
+            setPending((p) => p && ({
+              ...p, status: "UNKNOWN",
+              error_message: "Lost connection while checking status -- reload the page to see the latest state.",
+            }));
+          }
+          return;
+        }
       }
-    }, 2500);
-    return () => clearInterval(t);
-  }, [pending, refreshHistory]);
+      if (!cancelled) setTimeout(poll, 2500);
+    }
+    const t = setTimeout(poll, 2500);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [pending?.job_id, pending?.status, refreshHistory]);
 
   async function handleGenerate(e) {
     e.preventDefault();
@@ -189,45 +216,57 @@ export default function Reports() {
             {scopeType === "RESOURCE" && (
               <div className="reports-field">
                 <label>Resource</label>
-                {manualScopeId ? (
-                  <input value={scopeId} onChange={(e) => setScopeId(e.target.value)} placeholder="resource id" />
-                ) : (
-                  <select value={scopeId} onChange={(e) => setScopeId(e.target.value)} disabled={!accountId}>
-                    <option value="">{accountId ? "-- select --" : "select an account first"}</option>
-                    {scopeResources.map((r) => (
-                      <option key={r.resource_id} value={r.resource_id}>
-                        [{r.resource_type}] {r.name || r.resource_id}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                {accountId && (
-                  <button type="button" className="reports-link-btn" onClick={() => { setManualScopeId(!manualScopeId); setScopeId(""); }}>
-                    {manualScopeId ? "pick from list instead" : "enter id manually"}
-                  </button>
-                )}
+                <div className="reports-field-inline">
+                  {manualScopeId ? (
+                    <input value={scopeId} onChange={(e) => setScopeId(e.target.value)} placeholder="resource id" />
+                  ) : (
+                    <select value={scopeId} onChange={(e) => setScopeId(e.target.value)} disabled={!accountId}>
+                      <option value="">{accountId ? "-- select --" : "select an account first"}</option>
+                      {scopeResources.map((r) => (
+                        <option key={r.resource_id} value={r.resource_id}>
+                          [{r.resource_type}] {r.name || r.resource_id}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {accountId && (
+                    <button
+                      type="button" className="reports-toggle-btn"
+                      title={manualScopeId ? "Pick from list instead" : "Enter ID manually"}
+                      onClick={(e) => { e.currentTarget.blur(); setManualScopeId(!manualScopeId); setScopeId(""); }}
+                    >
+                      {manualScopeId ? "☰" : "✎"}
+                    </button>
+                  )}
+                </div>
               </div>
             )}
             {scopeType === "INCIDENT" && (
               <div className="reports-field">
                 <label>Incident</label>
-                {manualScopeId ? (
-                  <input value={scopeId} onChange={(e) => setScopeId(e.target.value)} placeholder="incident id" />
-                ) : (
-                  <select value={scopeId} onChange={(e) => setScopeId(e.target.value)} disabled={!accountId}>
-                    <option value="">{accountId ? "-- select (most recent 50) --" : "select an account first"}</option>
-                    {scopeIncidents.map((i) => (
-                      <option key={i.id} value={i.id}>
-                        #{i.id} [{i.severity}/{i.status}] {i.title}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                {accountId && (
-                  <button type="button" className="reports-link-btn" onClick={() => { setManualScopeId(!manualScopeId); setScopeId(""); }}>
-                    {manualScopeId ? "pick from list instead" : "not in list? see the Incidents page"}
-                  </button>
-                )}
+                <div className="reports-field-inline">
+                  {manualScopeId ? (
+                    <input value={scopeId} onChange={(e) => setScopeId(e.target.value)} placeholder="incident id" />
+                  ) : (
+                    <select value={scopeId} onChange={(e) => setScopeId(e.target.value)} disabled={!accountId}>
+                      <option value="">{accountId ? "-- select (most recent 50) --" : "select an account first"}</option>
+                      {scopeIncidents.map((i) => (
+                        <option key={i.id} value={i.id}>
+                          #{i.id} [{i.severity}/{i.status}] {i.title}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {accountId && (
+                    <button
+                      type="button" className="reports-toggle-btn"
+                      title={manualScopeId ? "Pick from list instead" : "Not in the list? Enter the ID manually"}
+                      onClick={(e) => { e.currentTarget.blur(); setManualScopeId(!manualScopeId); setScopeId(""); }}
+                    >
+                      {manualScopeId ? "☰" : "✎"}
+                    </button>
+                  )}
+                </div>
               </div>
             )}
             {reportType === "CUSTOM" && (
@@ -244,16 +283,19 @@ export default function Reports() {
             )}
             <div className="reports-field reports-field-submit">
               <label>&nbsp;</label>
-              <button type="submit" className="c-btn-primary" disabled={pending && pending.status !== "COMPLETE" && pending.status !== "FAILED"}>
+              <button type="submit" className="c-btn-primary" disabled={pending && !["COMPLETE", "FAILED", "UNKNOWN"].includes(pending.status)}>
                 Generate Report
               </button>
             </div>
           </div>
           {error && <div className="reports-error">{error}</div>}
           {pending && (
-            <div className="reports-status">
-              Job #{pending.job_id}: <strong>{pending.status}</strong>
-              {pending.status === "FAILED" && pending.error_message ? ` -- ${pending.error_message}` : ""}
+            <div className={`reports-status reports-status-${pending.status.toLowerCase()}`}>
+              {pending.status === "QUEUED" && <><span className="reports-spinner" /> Queued -- waiting to start...</>}
+              {pending.status === "PROCESSING" && <><span className="reports-spinner" /> Generating your report...</>}
+              {pending.status === "COMPLETE" && <>Report ready -- see it in the history below.</>}
+              {pending.status === "FAILED" && <>Report generation failed{pending.error_message ? `: ${pending.error_message}` : "."}</>}
+              {pending.status === "UNKNOWN" && <>{pending.error_message}</>}
             </div>
           )}
         </form>
