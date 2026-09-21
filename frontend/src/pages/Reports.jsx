@@ -1,15 +1,28 @@
 // src/pages/Reports.jsx
 // CloudOps client/stakeholder report engine UI. Generation runs async
 // on the backend (app/reports/worker.py) -- this page enqueues, polls
-// job status, then lists/downloads/emails completed reports. Follows
-// the same card/table language as Incidents.jsx / Compliance.jsx.
+// job status, then lists/downloads/emails completed reports.
+//
+// 2026-09-20: rebuilt to match the rest of the app's actual design
+// system instead of ad-hoc styling -- .c-header/.hl/.sub and
+// .c-btn/.c-btn-primary (from Compliance.css, reused app-wide since
+// Vite bundles all page CSS into one file) for the page header and
+// buttons, and the same filters/card/bar/table/badge shape
+// SecurityFindings.jsx and Compliance.jsx already use, just with a
+// reports-specific class prefix. Also fixed: the Account dropdown was
+// reading a.name, which doesn't exist on GET /api/live/accounts's
+// response (the real field is account_name, confirmed against that
+// endpoint's own query) -- it silently fell back to the bare AWS
+// account number every time.
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../auth/AuthContext";
+import { useTimezone } from "../contexts/TimezoneContext";
 import {
   getLiveAccounts, generateReport, getReportJobStatus,
   listReports, reportDownloadUrl, emailReport,
   listReportScopeResources, listReportScopeIncidents,
 } from "../api/api";
+import { ReportIcon, DownloadIcon } from "../components/icons";
 import "./Reports.css";
 
 const REPORT_TYPES = ["WEEKLY", "MONTHLY", "QUARTERLY", "CUSTOM"];
@@ -24,6 +37,7 @@ const SCOPE_TYPES = ["ACCOUNT", "RESOURCE", "INCIDENT"];
 
 export default function Reports() {
   const { hasPermission, hasFeature } = useAuth();
+  const { ianaName } = useTimezone();
   const [accounts, setAccounts] = useState([]);
   const [reportType, setReportType] = useState("WEEKLY");
   const [scopeType, setScopeType] = useState("ACCOUNT");
@@ -114,42 +128,67 @@ export default function Reports() {
   }
 
   if (!hasFeature("reports")) {
-    return <div className="reports-page"><p>Reports is not enabled on this environment.</p></div>;
+    return (
+      <div className="reports-page">
+        <div className="c-header"><div><h1>Reports</h1></div></div>
+        <div className="reports-empty-state">Reports is not enabled on this environment.</div>
+      </div>
+    );
   }
   if (!hasPermission("reports.view")) {
-    return <div className="reports-page"><p>You do not have access to Reports.</p></div>;
+    return (
+      <div className="reports-page">
+        <div className="c-header"><div><h1>Reports</h1></div></div>
+        <div className="reports-empty-state">You do not have access to Reports.</div>
+      </div>
+    );
   }
+
+  const fmt = (d) => new Date(d).toLocaleString("en-US", { timeZone: ianaName });
+  const fmtDate = (d) => new Date(d).toLocaleDateString("en-US", { timeZone: ianaName });
 
   return (
     <div className="reports-page">
-      <h1>Reports</h1>
-      <p className="reports-sub">Generate professional, stakeholder-ready monitoring/incident reports, stored in S3 for 1 year.</p>
+      <div className="c-header">
+        <div>
+          <h1>CloudOps <span className="hl">Reports</span></h1>
+          <p className="sub">Generate professional, stakeholder-ready monitoring/incident reports, stored in S3 for 1 year.</p>
+        </div>
+      </div>
 
       {hasPermission("reports.generate") && (
-        <form className="reports-form" onSubmit={handleGenerate}>
-          <div className="reports-form-row">
-            <label>Report type
+        <form className="reports-card" onSubmit={handleGenerate}>
+          <div className="reports-bar">
+            <ReportIcon size={13} />
+            <span className="bar-title">GENERATE REPORT</span>
+          </div>
+          <div className="reports-filters">
+            <div className="reports-field">
+              <label>Report type</label>
               <select value={reportType} onChange={(e) => setReportType(e.target.value)}>
                 {REPORT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
-            </label>
-            <label>Scope
+            </div>
+            <div className="reports-field">
+              <label>Scope</label>
               <select value={scopeType} onChange={(e) => setScopeType(e.target.value)}>
                 {SCOPE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
-            </label>
-            <label>Account
+            </div>
+            <div className="reports-field">
+              <label>Account</label>
               <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
                 <option value="">-- select --</option>
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.name ? `${a.name} (${a.account_id})` : a.account_id}
+                    {a.account_name ? `${a.account_name} (${a.account_id})` : a.account_id}
                   </option>
                 ))}
               </select>
-            </label>
+            </div>
             {scopeType === "RESOURCE" && (
-              <label>Resource
+              <div className="reports-field">
+                <label>Resource</label>
                 {manualScopeId ? (
                   <input value={scopeId} onChange={(e) => setScopeId(e.target.value)} placeholder="resource id" />
                 ) : (
@@ -167,10 +206,11 @@ export default function Reports() {
                     {manualScopeId ? "pick from list instead" : "enter id manually"}
                   </button>
                 )}
-              </label>
+              </div>
             )}
             {scopeType === "INCIDENT" && (
-              <label>Incident
+              <div className="reports-field">
+                <label>Incident</label>
                 {manualScopeId ? (
                   <input value={scopeId} onChange={(e) => setScopeId(e.target.value)} placeholder="incident id" />
                 ) : (
@@ -185,65 +225,86 @@ export default function Reports() {
                 )}
                 {accountId && (
                   <button type="button" className="reports-link-btn" onClick={() => { setManualScopeId(!manualScopeId); setScopeId(""); }}>
-                    {manualScopeId ? "pick from list instead" : "not in list? enter id manually"}
+                    {manualScopeId ? "pick from list instead" : "not in list? see the Incidents page"}
                   </button>
                 )}
-              </label>
+              </div>
             )}
             {reportType === "CUSTOM" && (
               <>
-                <label>From <input type="datetime-local" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} /></label>
-                <label>To <input type="datetime-local" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} /></label>
+                <div className="reports-field">
+                  <label>From</label>
+                  <input type="datetime-local" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} />
+                </div>
+                <div className="reports-field">
+                  <label>To</label>
+                  <input type="datetime-local" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} />
+                </div>
               </>
             )}
-            <button type="submit" disabled={pending && pending.status !== "COMPLETE" && pending.status !== "FAILED"}>
-              Generate Report
-            </button>
+            <div className="reports-field reports-field-submit">
+              <label>&nbsp;</label>
+              <button type="submit" className="c-btn-primary" disabled={pending && pending.status !== "COMPLETE" && pending.status !== "FAILED"}>
+                Generate Report
+              </button>
+            </div>
           </div>
-          {error && <p className="reports-error">{error}</p>}
+          {error && <div className="reports-error">{error}</div>}
           {pending && (
-            <p className="reports-status">
+            <div className="reports-status">
               Job #{pending.job_id}: <strong>{pending.status}</strong>
               {pending.status === "FAILED" && pending.error_message ? ` -- ${pending.error_message}` : ""}
-            </p>
+            </div>
           )}
         </form>
       )}
 
-      <h2>Report History</h2>
-      <table className="reports-table">
-        <thead>
-          <tr><th>Type</th><th>Scope</th><th>Period</th><th>Generated</th><th>Size</th><th>Expires</th><th></th></tr>
-        </thead>
-        <tbody>
-          {reports.map((r) => (
-            <tr key={r.id}>
-              <td>{r.report_type}</td>
-              <td>{r.scope_type}: {r.scope_label || r.scope_id}</td>
-              <td>{new Date(r.period_start).toLocaleDateString()} - {new Date(r.period_end).toLocaleDateString()}</td>
-              <td>{new Date(r.generated_at).toLocaleString()}</td>
-              <td>{Math.round(r.size_bytes / 1024)} KB</td>
-              <td>{new Date(r.expires_at).toLocaleDateString()}</td>
-              <td className="reports-actions">
-                {hasPermission("reports.download") && (
-                  <a href={reportDownloadUrl(r.id)} target="_blank" rel="noreferrer">Download</a>
-                )}
-                {hasPermission("reports.email") && (
-                  <span>
-                    <input
-                      type="email" placeholder="email@client.com" className="reports-email-input"
-                      value={emailTargets[r.id] || ""}
-                      onChange={(e) => setEmailTargets({ ...emailTargets, [r.id]: e.target.value })}
-                    />
-                    <button type="button" onClick={() => handleEmail(r.id)}>Send</button>
-                  </span>
-                )}
-              </td>
-            </tr>
-          ))}
-          {reports.length === 0 && <tr><td colSpan={7}>No reports generated yet.</td></tr>}
-        </tbody>
-      </table>
+      <div className="reports-card">
+        <div className="reports-bar">
+          <span className="bar-title">REPORT HISTORY</span>
+          <span className="bar-count">{reports.length}</span>
+        </div>
+        {reports.length === 0 ? (
+          <div className="reports-empty">No reports generated yet.</div>
+        ) : (
+          <table className="reports-table">
+            <thead>
+              <tr>
+                <th>Type</th><th>Scope</th><th>Period</th><th>Generated</th><th>Size</th><th>Expires</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {reports.map((r) => (
+                <tr key={r.id}>
+                  <td>{r.report_type}</td>
+                  <td>{r.scope_type}: {r.scope_label || r.scope_id}</td>
+                  <td className="mono">{fmtDate(r.period_start)} - {fmtDate(r.period_end)}</td>
+                  <td className="mono">{fmt(r.generated_at)}</td>
+                  <td className="mono">{Math.round(r.size_bytes / 1024)} KB</td>
+                  <td className="mono">{fmtDate(r.expires_at)}</td>
+                  <td className="reports-actions">
+                    {hasPermission("reports.download") && (
+                      <a className="c-btn" href={reportDownloadUrl(r.id)} target="_blank" rel="noreferrer">
+                        <DownloadIcon size={12} /> Download
+                      </a>
+                    )}
+                    {hasPermission("reports.email") && (
+                      <span className="reports-email-row">
+                        <input
+                          type="email" placeholder="email@client.com" className="reports-email-input"
+                          value={emailTargets[r.id] || ""}
+                          onChange={(e) => setEmailTargets({ ...emailTargets, [r.id]: e.target.value })}
+                        />
+                        <button type="button" className="c-btn" onClick={() => handleEmail(r.id)}>Send</button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 }

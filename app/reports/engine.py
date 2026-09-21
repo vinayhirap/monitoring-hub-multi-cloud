@@ -116,7 +116,7 @@ def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
         account = None
         if account_id:
             cur.execute(
-                "SELECT id, account_id, name, region_default, provider FROM aws_accounts WHERE id=%s",
+                "SELECT id, account_id, account_name, default_region, provider FROM aws_accounts WHERE id=%s",
                 (account_id,),
             )
             account = cur.fetchone()
@@ -346,11 +346,20 @@ class ReportPDF(FPDF):
         self.set_font("Helvetica", "", 9)
         hours = duration.total_seconds() / 3600
         dur_txt = f"{hours:.1f} hours" if hours < 48 else f"{hours/24:.1f} days"
+        # status (single source of truth for is_resolved, matches the
+        # pill above) can disagree with resolved_at's presence if the
+        # two were ever set non-atomically upstream -- e.g.
+        # status='resolved' with resolved_at still NULL. Rather than
+        # let that produce a pill saying RESOLVED right next to text
+        # saying "still open", resolved_txt always agrees with status.
+        if is_resolved:
+            resolved_txt = ("Resolved: " + resolved.strftime("%Y-%m-%d %H:%M") + " UTC") if resolved \
+                else "Resolved (exact time not recorded)"
+        else:
+            resolved_txt = "Status: still open"
         self.set_x(card_x + 4)
         self.cell(0, 5.5, _safe(
-            f"Started: {started:%Y-%m-%d %H:%M} UTC   "
-            f"{'Resolved: ' + resolved.strftime('%Y-%m-%d %H:%M') + ' UTC' if resolved else 'Status: still open'}   "
-            f"Duration: {dur_txt}"
+            f"Started: {started:%Y-%m-%d %H:%M} UTC   {resolved_txt}   Duration: {dur_txt}"
         ), new_x="LMARGIN", new_y="NEXT")
 
         members = inc.get("member_alerts") or []
@@ -486,8 +495,8 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
     pdf.set_font("Helvetica", "", 10)
     if account:
         pdf.multi_cell(0, 6, _safe(
-            f"Account: {account['name']} ({account['account_id']})   "
-            f"Default region: {account.get('region_default') or 'n/a'}"
+            f"Account: {account['account_name']} ({account['account_id']})   "
+            f"Default region: {account.get('default_region') or 'n/a'}"
         ))
     else:
         pdf.multi_cell(0, 6, _safe(f"Scope: {scope_type} = {scope_id}"))

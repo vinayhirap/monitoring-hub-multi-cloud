@@ -40,7 +40,7 @@
 }
 .onboard-hero h1 { font-size: 22px; font-weight: 700; color: #e2e8f0; }
 .onboard-hero p  { font-size: 12px; color: var(--text-muted, rgba(99,130,190,0.65)); margin-top: 4px; }
-.hl { color: #f59e0b; font-weight: 700; }
+.hl { color: var(--accent); font-weight: 700; }
 
 /* banners */
 .ob-success, .ob-api-err {
