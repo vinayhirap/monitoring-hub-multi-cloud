@@ -227,3 +227,13 @@ export const listReports = (filters = {}) => {
 export const reportDownloadUrl = (reportId) => `/api/reports/${reportId}/download`;
 export const emailReport = (reportId, toAddr) =>
   apiFetch(`/api/reports/${reportId}/email?to_addr=${encodeURIComponent(toAddr)}`, { method: "POST" });
+
+// ── Canonical alert rollups (2026-09-20 alerts audit) ───────────────
+// ONE source for every "N critical / N warning" and every CRITICAL/WARNING
+// badge outside the Alerts list itself. Same definition as the Alerts tabs
+// (app/alert_rules.py): only FIRING alerts count; stale / acknowledged /
+// muted / maintenance-silenced alerts are reported separately.
+export const getAlertSummary = (accountId) =>
+  apiFetch(`/api/alerts/summary${accountId != null ? `?account_id=${accountId}` : ""}`);
+export const getAlertsByResource = (accountId, service) =>
+  apiFetch(`/api/alerts/by-resource?account_id=${accountId}${service ? `&service=${encodeURIComponent(String(service).toLowerCase())}` : ""}`);

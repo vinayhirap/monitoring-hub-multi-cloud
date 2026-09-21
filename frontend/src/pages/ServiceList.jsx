@@ -1,7 +1,7 @@
 // monitoring-hub/frontend/src/pages/ServiceList.jsx
 import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getAlerts, getAccountMetrics, getResourceCounts } from "../api/api";
+import { getAlertSummary, getAccountMetrics, getResourceCounts } from "../api/api";
 import { CloudServiceIcon, AzureBrandLogo, officialPerService } from "../components/cloud-icons";
 import { LinkIcon } from "../components/icons";
 import { sectionMeta } from "../components/MetricSelector";
@@ -38,46 +38,21 @@ const PALETTE = ["#2bb3ac", "#38bdf8", "#7c6ee0", "#fbbf24", "#34d399", "#f472b6
 // only needs to know whether to show a tile at all — never which kind
 // of page it opens into — so no service allowlist lives here anymore.
 
-// Real-shape resource-id/ARN patterns per provider, used to attribute
-// active alerts to the right service tile — NOT hardcoded to AWS only.
-function alertMatcher(provider, service) {
-  if (provider === "aws") {
-    return {
-      ec2: r => r?.startsWith("i-"), ebs: r => r?.startsWith("vol-"),
-      rds: r => r?.includes("rds") || r?.includes("db-") || r?.startsWith("db"),
-      lambda: r => r?.includes("lambda") || r?.startsWith("arn:aws:lambda"),
-      elb: r => r?.includes("alb") || r?.includes("elb") || r?.includes("loadbalancer"),
-      alb: r => r?.includes("alb") || r?.includes("elb") || r?.includes("loadbalancer"),
-      nlb: r => r?.includes("nlb") || r?.includes("elb") || r?.includes("loadbalancer"),
-      s3: r => r?.includes("s3"), ecs: r => r?.includes("ecs"),
-    }[service];
-  }
-  if (provider === "gcp") {
-    return {
-      compute_instance: r => r?.includes("/zones/") && r?.includes("/instances/"),
-      gcs_bucket: r => r?.includes("/buckets/"),
-      cloudsql_instance: r => r?.includes("/instances/") && !r?.includes("/zones/"),
-      cloud_run_service: r => r?.includes("/services/"),
-    }[service];
-  }
-  if (provider === "azure") {
-    return {
-      vm: r => r?.includes("Microsoft.Compute/virtualMachines"),
-      storage_account: r => r?.includes("Microsoft.Storage/storageAccounts"),
-      sql_database: r => r?.includes("Microsoft.Sql/servers"),
-      app_service: r => r?.includes("Microsoft.Web/sites"),
-      aks_cluster: r => r?.includes("Microsoft.ContainerService"),
-    }[service];
-  }
-  return null;
-}
+// NOTE (2026-09-20): tile alert badges used to be attributed IN THE BROWSER by
+// guessing a service from resource-id substrings (`startsWith("i-")`,
+// `includes("s3")`...) over EVERY account's alerts. That mis-attributed alerts
+// across accounts, missed any bucket whose name lacked "s3", and had no rule
+// at all for extended/directory services. The counts now come from the
+// server's canonical rollup (GET /api/alerts/summary?account_id=), keyed by
+// the alert's real resource_type -- identical to the Overview banner and the
+// Alerts tabs.
 
 export default function ServiceList() {
   const { id }    = useParams();
   const navigate  = useNavigate();
   const [account, setAccount] = useState(null);
   const [groups,  setGroups]  = useState([]);
-  const [alerts,  setAlerts]  = useState([]);
+  const [alertSummary, setAlertSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   // Real per-service resource counts, from the shared `resources` table
   // (see GET /api/live/resource-counts/{id} and the backend comment on
@@ -113,12 +88,16 @@ export default function ServiceList() {
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d && !cancelled) setAccount(d); })
       .catch(console.error);
-    getAlerts().then(a => { if (!cancelled) setAlerts(Array.isArray(a) ? a : []); }).catch(() => {});
+    const loadAlertSummary = () => getAlertSummary(id)
+      .then(d => { if (!cancelled) setAlertSummary(d?.accounts?.[String(id)] ?? null); })
+      .catch(() => {});
+    loadAlertSummary();
+    const alertTimer = setInterval(loadAlertSummary, 30000);
     getAccountMetrics(id)
       .then(g => { if (!cancelled) setGroups(Array.isArray(g) ? g : []); })
       .catch(console.error)
       .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearInterval(alertTimer); };
   }, [id]);
 
   const provider = account?.provider || "aws";
@@ -180,12 +159,14 @@ export default function ServiceList() {
       });
   }, [groups, resourceCounts]);
 
-  const activeAlerts = alerts.filter(a => (a.status || "").toLowerCase() === "active");
-
+  // Per-service counts of FIRING alerts (server rollup). Falls back to zero
+  // until the first response so tiles never flash a wrong number.
   function alertsForService(svcId) {
-    const match = alertMatcher(provider, svcId);
-    if (!match) return [];
-    return activeAlerts.filter(a => match(a.resource));
+    const v = alertSummary?.services?.[svcId];
+    return {
+      critical: v?.critical ?? 0, warning: v?.warning ?? 0, info: v?.info ?? 0,
+      stale: v?.stale ?? 0,
+    };
   }
 
   // Group into the same core/extended/directory sections MetricSelector
@@ -296,8 +277,8 @@ export default function ServiceList() {
                       const svcAlerts = alertsForService(svc.id);
                       return (
                         <ServiceCard key={svc.id} svc={svc} provider={provider}
-                          criticalCount={svcAlerts.filter(a => a.severity?.toUpperCase() === "CRITICAL").length}
-                          warningCount={svcAlerts.filter(a => a.severity?.toUpperCase() !== "CRITICAL").length}
+                          criticalCount={svcAlerts.critical}
+                          warningCount={svcAlerts.warning}
                           onClick={() => navigate(`/accounts/${id}/${svc.id}`)} />
                       );
                     })}

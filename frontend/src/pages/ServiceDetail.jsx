@@ -10,6 +10,8 @@ import {
 } from "../components/icons";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached } from "../utils/dataCache";
+import AlertBadge from "../components/AlertBadge";
+import { useResourceAlerts } from "../hooks/useResourceAlerts";
 
 const BASE = "";
 
@@ -164,7 +166,11 @@ export default function ServiceDetail() {
   const [filter,     setFilter]     = useState("all");
   const [sortKey,    setSortKey]    = useState("name");
   const [timeRange,  setTimeRange]  = useState(6);
-  const [activeAlerts, setActiveAlerts] = useState([]);
+  // Per-resource alert state for EVERY table on this page (was EC2 only, and
+  // matched the first alert by resource id across all accounts). Same rollup
+  // as the Overview banner / Services tiles / Alerts tabs -- see
+  // hooks/useResourceAlerts.js.
+  const { lookup: alertLookup } = useResourceAlerts(id);
   const notImplRef  = useRef(false);
   const selectedRef = useRef(null);
   const autoSelectedRef = useRef(null);
@@ -174,10 +180,6 @@ fetchAccount(id).then(setAccount).catch(err => {
       console.error(err);
       navigate("/overview");
     });
-        fetch("/api/alerts")
-      .then(r => r.ok ? r.json() : [])
-      .then(a => setActiveAlerts((Array.isArray(a) ? a : []).filter(x => (x.status||"").toLowerCase() === "active")))
-      .catch(() => {});
   }, [id]);
 
   const loadRows = useCallback(async () => {
@@ -249,6 +251,10 @@ fetchAccount(id).then(setAccount).catch(err => {
   }, [timeRange, service, account, id]);
 
   async function selectRow(row) {
+    // S3 storage metrics (BucketSizeBytes / NumberOfObjects) are published by
+    // CloudWatch once a DAY, up to ~2 days late, so the default 6H window is
+    // always empty ("No data in last 6H") -- widen it to a week for buckets.
+    if (service === "S3" && timeRange < 168) setTimeRange(168);
     selectedRef.current = row;
     setSelected(row);
     setMetrics(null);
@@ -431,7 +437,7 @@ fetchAccount(id).then(setAccount).catch(err => {
                   </button>
                 </div>
               ) : (
-                <ServiceTable service={service} rows={visible} loading={loading} selected={selected} onSelect={selectRow} allRows={rows} activeAlerts={activeAlerts} />
+                <ServiceTable service={service} rows={visible} loading={loading} selected={selected} onSelect={selectRow} allRows={rows} alertLookup={alertLookup} />
               )}
             </div>
           </div>
@@ -472,26 +478,22 @@ function NotImplState({ service, rawService, meta, region, accountId }) {
   );
 }
 
-function ServiceTable({ service, rows, loading, selected, onSelect, allRows, activeAlerts = [] }) {
+function ServiceTable({ service, rows, loading, selected, onSelect, allRows, alertLookup = () => null }) {
   if (loading) return <table className="inst-table"><tbody><tr><td colSpan={9} className="tbl-empty">Loading…</td></tr></tbody></table>;
   if (rows.length === 0) return <table className="inst-table"><tbody><tr><td colSpan={9} className="tbl-empty">No resources found.</td></tr></tbody></table>;
   switch (service) {
-    case "EC2":    return <EC2Table    rows={rows} selected={selected} onSelect={onSelect} allRows={allRows} activeAlerts={activeAlerts} />;
-    case "EBS":    return <EBSTable    rows={rows} selected={selected} onSelect={onSelect} allRows={allRows} />;
-    case "RDS":    return <RDSTable    rows={rows} selected={selected} onSelect={onSelect} />;
-    case "Lambda": return <LambdaTable rows={rows} selected={selected} onSelect={onSelect} />;
-    case "S3":     return <S3Table     rows={rows} selected={selected} onSelect={onSelect} />;
-    case "ELB":    return <ELBTable    rows={rows} selected={selected} onSelect={onSelect} />;
-    case "ECS":    return <ECSTable    rows={rows} selected={selected} onSelect={onSelect} />;
+    case "EC2":    return <EC2Table    rows={rows} selected={selected} onSelect={onSelect} allRows={allRows} alertLookup={alertLookup} />;
+    case "EBS":    return <EBSTable    rows={rows} selected={selected} onSelect={onSelect} allRows={allRows} alertLookup={alertLookup} />;
+    case "RDS":    return <RDSTable    rows={rows} selected={selected} onSelect={onSelect} alertLookup={alertLookup} />;
+    case "Lambda": return <LambdaTable rows={rows} selected={selected} onSelect={onSelect} alertLookup={alertLookup} />;
+    case "S3":     return <S3Table     rows={rows} selected={selected} onSelect={onSelect} alertLookup={alertLookup} />;
+    case "ELB":    return <ELBTable    rows={rows} selected={selected} onSelect={onSelect} alertLookup={alertLookup} />;
+    case "ECS":    return <ECSTable    rows={rows} selected={selected} onSelect={onSelect} alertLookup={alertLookup} />;
     default:       return null;
   }
 }
 
-function EC2Table({ rows, selected, onSelect, activeAlerts = [] }) {
-  function getRowAlert(instanceId) {
-    const a = activeAlerts.find(x => x.resource === instanceId);
-    return a ? (a.severity||"").toUpperCase() : null;
-  }
+function EC2Table({ rows, selected, onSelect, alertLookup = () => null }) {
   return (
     <table className="inst-table">
       <thead>
@@ -501,23 +503,11 @@ function EC2Table({ rows, selected, onSelect, activeAlerts = [] }) {
         </tr>
       </thead>
       <tbody>{rows.map(r => {
-        const alertSev = getRowAlert(r.instance_id);
         return (
           <tr key={r.instance_id} className={`inst-row ${selected?.instance_id === r.instance_id ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
             <td>
               <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                {alertSev && (
-                  <span style={{
-                    fontSize:9, fontWeight:700, padding:"1px 5px", borderRadius:4,
-                    background: alertSev==="CRITICAL" ? "rgba(239,68,68,0.15)" : "rgba(245,158,11,0.15)",
-                    color: alertSev==="CRITICAL" ? "#ef4444" : "#f59e0b",
-                    border: `1px solid ${alertSev==="CRITICAL" ? "rgba(239,68,68,0.3)" : "rgba(245,158,11,0.3)"}`,
-                    fontFamily:"var(--font-mono)",
-                    display:"inline-flex", alignItems:"center", gap:3,
-                  }}>
-                    {alertSev==="CRITICAL" ? <RedDotIcon size={9} /> : <AlertTriangleIcon size={9} />} {alertSev}
-                  </span>
-                )}
+                <AlertBadge info={alertLookup(r.instance_id)} />
                 <div>
                   <div className="inst-name">{r.name || r.instance_id}</div>
                   <div className="inst-id mono">{r.instance_id}</div>
@@ -541,7 +531,7 @@ function EC2Table({ rows, selected, onSelect, activeAlerts = [] }) {
   );
 }
 
-function EBSTable({ rows, selected, onSelect }) {
+function EBSTable({ rows, selected, onSelect, alertLookup = () => null }) {
   return (
     <table className="inst-table">
       <thead>
@@ -553,8 +543,13 @@ function EBSTable({ rows, selected, onSelect }) {
       <tbody>{rows.map(r => (
         <tr key={r.volume_id} className={`inst-row ${selected?.volume_id === r.volume_id ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
           <td>
-            <div className="inst-name">{r.name || r.volume_id}</div>
-            <div className="inst-id mono">{r.volume_id}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <AlertBadge info={alertLookup(r.volume_id)} />
+              <div>
+                <div className="inst-name">{r.name || r.volume_id}</div>
+                <div className="inst-id mono">{r.volume_id}</div>
+              </div>
+            </div>
           </td>
           <td className="mono small">{r.volume_type}</td>
           <td className="mono small">{r.size_gb} GB</td>
@@ -580,13 +575,13 @@ function EBSTable({ rows, selected, onSelect }) {
   );
 }
 
-function RDSTable({ rows, selected, onSelect }) {
+function RDSTable({ rows, selected, onSelect, alertLookup = () => null }) {
   return (
     <table className="inst-table">
       <thead><tr><th>IDENTIFIER</th><th>ENGINE</th><th>CLASS</th><th>STATUS</th><th>MULTI-AZ</th><th>STORAGE</th><th>ENDPOINT</th></tr></thead>
       <tbody>{rows.map(r => (
         <tr key={r.db_instance_id || r.identifier} className={`inst-row ${selected?.db_instance_id === r.db_instance_id ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
-          <td><div className="inst-name">{r.identifier || r.db_instance_id}</div><div className="inst-id mono">{r.db_instance_id}</div></td>
+          <td><div style={{ display: "flex", alignItems: "center", gap: 6 }}><AlertBadge info={alertLookup(r.db_instance_id, r.identifier)} /><div><div className="inst-name">{r.identifier || r.db_instance_id}</div><div className="inst-id mono">{r.db_instance_id}</div></div></div></td>
           <td className="mono small">{r.engine} {r.engine_version}</td>
           <td className="mono small">{r.instance_class}</td>
           <td><StatusChip status={r.status} /></td>
@@ -599,13 +594,13 @@ function RDSTable({ rows, selected, onSelect }) {
   );
 }
 
-function LambdaTable({ rows, selected, onSelect }) {
+function LambdaTable({ rows, selected, onSelect, alertLookup = () => null }) {
   return (
     <table className="inst-table">
       <thead><tr><th>FUNCTION NAME</th><th>RUNTIME</th><th>MEMORY</th><th>TIMEOUT</th><th>LAST MODIFIED</th><th>SIZE</th></tr></thead>
       <tbody>{rows.map((r, idx) => (
         <tr key={r.function_name || `lambda-${idx}`} className={`inst-row ${selected?.function_name === r.function_name ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
-          <td><div className="inst-name">{r.function_name}</div><div className="inst-id mono">{r.function_arn?.split(":").slice(-1)[0] ?? ""}</div></td>
+          <td><div style={{ display: "flex", alignItems: "center", gap: 6 }}><AlertBadge info={alertLookup(r.function_arn, r.function_name)} /><div><div className="inst-name">{r.function_name}</div><div className="inst-id mono">{r.function_arn?.split(":").slice(-1)[0] ?? ""}</div></div></div></td>
           <td className="mono small">{r.runtime}</td>
           <td className="mono small">{r.memory_size ?? "—"} MB</td>
           <td className="mono small">{r.timeout ?? "—"}s</td>
@@ -617,13 +612,13 @@ function LambdaTable({ rows, selected, onSelect }) {
   );
 }
 
-function S3Table({ rows, selected, onSelect }) {
+function S3Table({ rows, selected, onSelect, alertLookup = () => null }) {
   return (
     <table className="inst-table">
       <thead><tr><th>BUCKET NAME</th><th>REGION</th><th>CREATED</th><th>VERSIONING</th><th>ACCESS</th></tr></thead>
       <tbody>{rows.map(r => (
         <tr key={r.bucket_name || r.name} className={`inst-row ${selected?.bucket_name === r.bucket_name ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
-          <td><div className="inst-name">{r.bucket_name || r.name}</div></td>
+          <td><div style={{ display: "flex", alignItems: "center", gap: 6 }}><AlertBadge info={alertLookup(r.bucket_name, r.name)} /><div className="inst-name">{r.bucket_name || r.name}</div></div></td>
           <td className="mono small">{r.region || "—"}</td>
           <td className="mono small">{r.creation_date ? shortDate(r.creation_date) : "—"}</td>
           <td className="mono small">{r.versioning ?? "—"}</td>
@@ -634,13 +629,13 @@ function S3Table({ rows, selected, onSelect }) {
   );
 }
 
-function ELBTable({ rows, selected, onSelect }) {
+function ELBTable({ rows, selected, onSelect, alertLookup = () => null }) {
   return (
     <table className="inst-table">
       <thead><tr><th>NAME</th><th>TYPE</th><th>SCHEME</th><th>STATE</th><th>DNS NAME</th><th>AZs</th><th>CREATED</th></tr></thead>
       <tbody>{rows.map(r => (
         <tr key={r.load_balancer_arn || r.name} className={`inst-row ${selected?.load_balancer_arn === r.load_balancer_arn ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
-          <td><div className="inst-name">{r.name}</div><div className="inst-id mono small truncate">{r.load_balancer_arn?.split("/").slice(-1)[0] ?? ""}</div></td>
+          <td><div style={{ display: "flex", alignItems: "center", gap: 6 }}><AlertBadge info={alertLookup(r.load_balancer_arn, r.name)} /><div><div className="inst-name">{r.name}</div><div className="inst-id mono small truncate">{r.load_balancer_arn?.split("/").slice(-1)[0] ?? ""}</div></div></div></td>
           <td className="mono small">{r.type || "—"}</td>
           <td className="mono small">{r.scheme || "—"}</td>
           <td><StatusChip status={r.state || r.status} /></td>
@@ -653,7 +648,7 @@ function ELBTable({ rows, selected, onSelect }) {
   );
 }
 
-function ECSTable({ rows, selected, onSelect }) {
+function ECSTable({ rows, selected, onSelect, alertLookup = () => null }) {
   // rows = array of cluster objects; flatten to service rows for table
   const allServices = rows.flatMap(cluster =>
     (cluster.services || []).map(s => ({
@@ -687,8 +682,13 @@ function ECSTable({ rows, selected, onSelect }) {
             onClick={() => onSelect(s)}
           >
             <td>
-              <div className="inst-name">{s.service_name}</div>
-              <div className="inst-id mono">{s.task_definition}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <AlertBadge info={alertLookup(s.service_arn, s.service_name)} />
+                <div>
+                  <div className="inst-name">{s.service_name}</div>
+                  <div className="inst-id mono">{s.task_definition}</div>
+                </div>
+              </div>
             </td>
             <td className="mono small">{s.cluster_name}</td>
             <td><StatusChip status={s.status} /></td>
@@ -1068,6 +1068,13 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
             </div>
           )}
         </div>
+
+        {service === "S3" && !noMetricsMsg && (
+          <div style={{ fontSize: 11, color: "var(--text-muted)", margin: "4px 0 10px", fontStyle: "italic" }}>
+            ℹ S3 storage metrics are published once a day (up to ~2 days late), so short windows are empty by design.
+            Bucket size and object count are informational: they only raise an alert when unusually far outside this bucket's own history.
+          </div>
+        )}
 
         {noMetricsMsg ? (
           <div style={{

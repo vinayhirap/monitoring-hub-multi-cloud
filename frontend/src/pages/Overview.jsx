@@ -51,6 +51,10 @@ function aggregateStats(regions) {
       // this account's regions the same way every other stat here is.
       critical_alerts: acc.critical_alerts + (r.critical_alerts || 0),
       warning_alerts:  acc.warning_alerts  + (r.warning_alerts  || 0),
+      // not counted as critical/warning anywhere (app/alert_rules.py)
+      stale_alerts:        acc.stale_alerts        + (r.stale_alerts        || 0),
+      acknowledged_alerts: acc.acknowledged_alerts + (r.acknowledged_alerts || 0),
+      suppressed_alerts:   acc.suppressed_alerts   + (r.suppressed_alerts   || 0),
       // EC2-scoped rollup from app/api/live_data.py's
       // _get_ec2_instance_health_by_account() -- counts DISTINCT
       // running EC2 instances whose OWN alert, or an alert on an EBS
@@ -65,6 +69,7 @@ function aggregateStats(regions) {
     {
       ec2_total: 0, ec2_running: 0, ebs_total: 0, s3_total: 0, lambda_total: 0, rds_total: 0,
       critical_alerts: 0, warning_alerts: 0,
+      stale_alerts: 0, acknowledged_alerts: 0, suppressed_alerts: 0,
       ec2_critical_instances: 0, ec2_warning_instances: 0,
     }
   );
@@ -208,10 +213,14 @@ export default function Overview() {
     const s = aggregateStats(g.regions);
     acc.critical += s.critical_alerts;
     acc.warning  += s.warning_alerts;
+    acc.stale        += s.stale_alerts;
+    acc.acknowledged += s.acknowledged_alerts;
+    acc.suppressed   += s.suppressed_alerts;
     return acc;
-  }, { critical: 0, warning: 0 });
+  }, { critical: 0, warning: 0, stale: 0, acknowledged: 0, suppressed: 0 });
   const criticalAlerts = alertTotals.critical;
   const warningAlerts  = alertTotals.warning;
+  const otherAlerts    = alertTotals.stale + alertTotals.acknowledged + alertTotals.suppressed;
 
   const filteredGroups = grouped.filter(g => {
     const s = aggregateStatus(g.regions);
@@ -311,7 +320,12 @@ export default function Overview() {
             </>
           )}
           <span style={{ color: "var(--text-muted)", fontSize: 13 }}>
-            — Active alerts require attention
+            — firing alerts (same numbers as the Alerts page)
+            {otherAlerts > 0 && (
+              <span title="Not counted above: stale (no fresh data), acknowledged, or muted/in maintenance">
+                {" "}· {otherAlerts} not counted ({alertTotals.stale} stale, {alertTotals.acknowledged} ack, {alertTotals.suppressed} muted)
+              </span>
+            )}
           </span>
           <button onClick={() => navigate("/alerts")} className="as-btn">View Alerts →</button>
         </div>
@@ -443,12 +457,12 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick, onDelete }
           <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
             {acctCritical > 0 && (
               <span style={{ fontSize: 10, color: "#ef4444", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 4, padding: "1px 6px" }}>
-                ● {acctCritical} critical
+                ● {acctCritical} critical alert{acctCritical === 1 ? "" : "s"}
               </span>
             )}
             {acctWarning > 0 && (
               <span style={{ fontSize: 10, color: "#f59e0b", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 4, padding: "1px 6px" }}>
-                ⚠ {acctWarning} warning
+                ⚠ {acctWarning} warning alert{acctWarning === 1 ? "" : "s"}
               </span>
             )}
           </div>
