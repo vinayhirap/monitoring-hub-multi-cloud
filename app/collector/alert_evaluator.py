@@ -168,19 +168,33 @@ PERCENT_CAP = 99.9
 
 def clamp_dynamic_bounds(dyn_warning, dyn_critical, static_warning, static_critical,
                           comparison, unit=None):
+    """Guard-railed dynamic band -> (warning, critical).
+
+    * WARNING may tighten to at most MAX_TIGHTEN_FACTOR of the static value
+      (an "unusual for this resource" early signal) and relax without limit.
+    * CRITICAL may only RELAX, never tighten: it is never lower than the static
+      critical (never higher, for "<"). A statistically unusual reading that
+      has not reached the configured critical line is a WARNING, not an
+      outage. (Observed in prod on the first day: an EC2 memory alert went
+      CRITICAL at 81.2% against a dynamic band of 81.03%, while the static
+      critical was well above that.)
+    * Percentage bands are capped at 99.9 so they can never become unreachable.
+    """
     sw, sc = float(static_warning), float(static_critical)
     if comparison in (">", ">="):
-        floor_w, floor_c = sw * MAX_TIGHTEN_FACTOR, sc * MAX_TIGHTEN_FACTOR
-        w, c = max(dyn_warning, floor_w), max(dyn_critical, floor_c)
+        floor_w = sw * MAX_TIGHTEN_FACTOR
+        w = max(dyn_warning, floor_w)
+        c = max(dyn_critical, sc)
         if (unit or "").lower() == "percent" and sc <= 100:
-            w, c = min(w, PERCENT_CAP), min(c, PERCENT_CAP)
-        if c < w:
-            c = w
+            cap = PERCENT_CAP if sc <= PERCENT_CAP else sc
+            w, c = min(w, cap), min(c, cap)
+        if w > c:
+            w = c
     else:
         # lower-is-worse: "tightening" means a HIGHER trip point
         ceil_w = sw / MAX_TIGHTEN_FACTOR if sw > 0 else sw
-        ceil_c = sc / MAX_TIGHTEN_FACTOR if sc > 0 else sc
-        w, c = min(dyn_warning, ceil_w), min(dyn_critical, ceil_c)
+        w = min(dyn_warning, ceil_w)
+        c = min(dyn_critical, sc)
         if c > w:
             c = w
     return w, c
