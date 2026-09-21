@@ -257,6 +257,21 @@ def test_tight_dynamic_band_yields_warning_never_critical(db):
     assert db.one("SELECT severity FROM alerts WHERE resource_id='i-mem'")["severity"] == "CRITICAL"
 
 
+def test_open_critical_is_deescalated_when_it_no_longer_reaches_the_critical_line(db):
+    """Prod: alert 5453 was raised CRITICAL against a tight dynamic band and,
+    with escalation-only logic, stayed CRITICAL while sitting at 83% vs a
+    static critical of 90."""
+    r = db.resource(1, "ec2", "i-mem")
+    db.threshold(1, "ec2", "mem_used_percent", 80, 90, dynamic=1, unit="Percent")
+    db.baseline(1, "i-mem", "mem_used_percent", mean=78.0, std=1.0, n=50)
+    db.metric(r, "mem_used_percent", 83.0)
+    aid = db.alert(1, "i-mem", "mem_used_percent", "CRITICAL")
+    run_eval()
+    a = db.get(aid)
+    assert a["severity"] == "WARNING" and a["status"] == "active"
+    assert db.one("SELECT COUNT(*) n FROM alerts")["n"] == 1        # updated in place, not duplicated
+
+
 def test_clamp_percent_cap_and_low_direction():
     m = load_module("app/collector/alert_evaluator.py") if False else None  # noqa: F841
     install_stub("app.db", get_connection=lambda: None)
