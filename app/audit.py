@@ -41,13 +41,31 @@ logger = logging.getLogger(__name__)
 
 
 def _client_ip(request) -> str | None:
-    """Best-effort caller IP from a FastAPI Request. Never raises."""
+    """
+    Best-effort caller IP from a FastAPI Request. Never raises.
+
+    SECURITY FIX: this previously re-parsed the raw X-Forwarded-For
+    header itself and took its FIRST value. deploy/nginx.conf sets
+    `X-Forwarded-For: $proxy_add_x_forwarded_for`, which APPENDS
+    nginx's own view of the connecting IP onto whatever the client
+    already sent -- it does not replace it. So a client that sends its
+    own "X-Forwarded-For: 1.2.3.4" ends up with a header shaped like
+    "1.2.3.4, <real client ip>", and reading the FIRST entry returned
+    the attacker-supplied value, not the real one. Any caller could
+    make their action in the audit_logs.ip_address column say
+    whatever they wanted.
+
+    uvicorn is started with --proxy-headers --forwarded-allow-ips=
+    '127.0.0.1' (the app only ever accepts connections from nginx on
+    localhost -- see deploy/deploy.sh), which already correctly
+    resolves request.client.host from the trusted (rightmost/nginx-
+    appended) end of that same header before this code ever sees the
+    request. Using request.client.host here instead of re-parsing the
+    header ourselves gets the real client IP and removes the spoof.
+    """
     if request is None:
         return None
     try:
-        fwd = request.headers.get("x-forwarded-for")
-        if fwd:
-            return fwd.split(",")[0].strip()
         return request.client.host if request.client else None
     except Exception:
         return None
