@@ -73,9 +73,37 @@ SET @sql := IF(@col_exists = 0,
 );
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- Backfill from the base schema's original columns where a fresh
--- environment has them but hasn't populated the new ones yet (a no-op
--- everywhere account_name/default_region already had real values, since
--- this only fills rows where the new column is still NULL).
-UPDATE aws_accounts SET account_name = name WHERE account_name IS NULL;
-UPDATE aws_accounts SET default_region = region_default WHERE default_region IS NULL AND region_default IS NOT NULL;
+-- Backfill from the base schema's original columns, ONLY where those
+-- source columns actually exist. HOTFIX (2026-09-22, caught live on
+-- dev): the unconditional version of this backfill assumed name/
+-- region_default -- db/schema.sql's original column names -- were
+-- still present to copy FROM. They are not: dev's real aws_accounts
+-- has neither column at all (confirmed live: "Unknown column 'name'
+-- in 'field list'"), meaning account_name/default_region have been
+-- the only names in use there for a long time, not a schema.sql-style
+-- rename-in-place. schema.sql itself is evidently stale here in yet
+-- another way beyond the 4 columns this migration already adds --
+-- consistent with this repo's established pattern (see this
+-- migration's own header comment on migration 002's precedent).
+-- Guarding each UPDATE the same way the ADD COLUMN blocks above are
+-- guarded makes this safe regardless of which of the two shapes an
+-- environment happens to be in, without having to assume either one.
+SET @col_exists := (
+  SELECT COUNT(*) FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'aws_accounts' AND column_name = 'name'
+);
+SET @sql := IF(@col_exists > 0,
+  'UPDATE aws_accounts SET account_name = name WHERE account_name IS NULL',
+  'SELECT "aws_accounts.name column does not exist here, nothing to backfill account_name from"'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @col_exists := (
+  SELECT COUNT(*) FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'aws_accounts' AND column_name = 'region_default'
+);
+SET @sql := IF(@col_exists > 0,
+  'UPDATE aws_accounts SET default_region = region_default WHERE default_region IS NULL AND region_default IS NOT NULL',
+  'SELECT "aws_accounts.region_default column does not exist here, nothing to backfill default_region from"'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
