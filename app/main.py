@@ -40,7 +40,7 @@ from app.api.status_page    import admin_router as status_page_admin_router, pub
 from app.auth.deps          import get_current_user, COOKIE_NAME, validate_session_claims
 from app.auth.security      import decode_token
 
-from app.ws.manager import ws_manager
+from app.ws.manager import ws_manager, KNOWN_CHANNELS
 from app.ws.pusher  import redis_listener, stop_listener
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
@@ -281,6 +281,17 @@ async def websocket_endpoint(websocket: WebSocket, channel: str):
     # still open (or keep) a live feed. validate_session_claims() does the
     # same active/token_version/revoked-jti check used everywhere else, and
     # fails closed with an HTTPException (503) if the check itself can't run.
+    # Audit b05: {channel} is also validated against the fixed set of
+    # channels this app actually serves, rather than accepted as an
+    # arbitrary client-supplied string -- see ws/manager.py's
+    # KNOWN_CHANNELS for why an unvalidated value was a (small)
+    # unbounded-memory-growth footgun. Checked first, before any
+    # cookie/DB work, same "reject cheaply before doing anything
+    # expensive" shape as the auth checks below.
+    if channel not in KNOWN_CHANNELS:
+        await websocket.close(code=4404)
+        return
+
     token = websocket.cookies.get(COOKIE_NAME)
     if not token:
         await websocket.close(code=4401)

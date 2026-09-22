@@ -84,7 +84,8 @@ def _load_main(decode_token, validate_session_claims, get_accessible_account_ids
             return len(connects) - len(disconnects)
 
     ws_manager = _WSManager()
-    install_stub("app.ws.manager", ws_manager=ws_manager)
+    install_stub("app.ws.manager", ws_manager=ws_manager,
+                 KNOWN_CHANNELS=("overview", "alerts", "metrics"))
 
     async def _noop():
         return None

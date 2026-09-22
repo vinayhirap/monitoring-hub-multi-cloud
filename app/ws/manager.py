@@ -6,6 +6,18 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Fixed set of channels this app actually serves. app/main.py's
+# websocket_endpoint validates {channel} against this before ever
+# calling connect() (audit b05) -- previously an arbitrary
+# client-supplied channel string was accepted and silently created a
+# new, permanent entry in active_connections that nothing ever cleaned
+# up, even after every connection on it disconnected (see connect()'s
+# "if channel not in self.active_connections" auto-vivification
+# below, unchanged here since main.py's upstream check now makes that
+# branch unreachable in practice -- kept only as a defensive no-op for
+# any future direct caller).
+KNOWN_CHANNELS = ("overview", "alerts", "metrics")
+
 
 class ConnectionManager:
     def __init__(self):
