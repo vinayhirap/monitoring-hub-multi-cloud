@@ -29,6 +29,7 @@ import Search              from "./pages/Search";
 import Reports              from "./pages/Reports";
 import StatusPageAdmin     from "./pages/StatusPageAdmin";
 import StatusPagePublic    from "./pages/StatusPagePublic";
+import RbacAdmin           from "./pages/RbacAdmin";
 
 function SessionCheckingScreen() {
   // Shown only for the brief moment while AuthContext asks the backend
@@ -81,6 +82,7 @@ function AppRoutes() {
         <Route path="status-page-admin"         element={<StatusPageAdmin />} />
         <Route path="reports"                   element={<Reports />} />
         <Route path="settings"                  element={<Settings />} />
+        <Route path="rbac-admin"                element={<RbacAdmin />} />
         <Route path="accounts/:id/services"     element={<ServiceList />} />
         <Route path="accounts/:id/topology"     element={<Topology />} />
         <Route path="accounts/:id/incidents"    element={<Incidents />} />
