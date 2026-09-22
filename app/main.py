@@ -37,7 +37,7 @@ from app.api.slo            import router as slo_router
 from app.api.security       import router as security_router
 from app.api.maintenance    import router as maintenance_router
 from app.api.status_page    import admin_router as status_page_admin_router, public_router as status_page_public_router
-from app.auth.deps          import get_current_user, COOKIE_NAME
+from app.auth.deps          import get_current_user, COOKIE_NAME, validate_session_claims
 from app.auth.security      import decode_token
 
 from app.ws.manager import ws_manager
@@ -271,12 +271,23 @@ async def websocket_endpoint(websocket: WebSocket, channel: str):
     # carry an `account_id` to sockets whose scope includes it. Region-level
     # scope (get_effective_scope's region grants) is still NOT applied to
     # pushes; a scope change made mid-connection applies on reconnect.
+    # Audit B01 follow-up: decode_token() only checks the JWT signature/expiry
+    # -- it says nothing about whether the session behind it is still valid.
+    # A cookie from a user who has since logged out (POST /api/auth/logout,
+    # which revokes the token's jti), been deactivated, or had their role
+    # changed would decode fine forever, up to 12h. REST routes already
+    # catch this via get_current_user() -> validate_session_claims(); the
+    # WebSocket endpoint didn't, so a revoked/deactivated session could
+    # still open (or keep) a live feed. validate_session_claims() does the
+    # same active/token_version/revoked-jti check used everywhere else, and
+    # fails closed with an HTTPException (503) if the check itself can't run.
     token = websocket.cookies.get(COOKIE_NAME)
     if not token:
         await websocket.close(code=4401)
         return
     try:
-        decode_token(token)
+        claims = decode_token(token)
+        validate_session_claims(claims)
     except Exception:
         await websocket.close(code=4401)
         return
@@ -286,7 +297,7 @@ async def websocket_endpoint(websocket: WebSocket, channel: str):
     try:
         from starlette.concurrency import run_in_threadpool
         from app.auth.authorization import get_accessible_account_ids
-        accessible = await run_in_threadpool(get_accessible_account_ids, decode_token(token))
+        accessible = await run_in_threadpool(get_accessible_account_ids, claims)
     except Exception:
         accessible = set()
 
@@ -295,6 +306,16 @@ async def websocket_endpoint(websocket: WebSocket, channel: str):
         while True:
             data = await websocket.receive_text()
             if data == "ping":
+                # Re-check the session on every client ping (frontend pings
+                # every 10s -- see useWebSocket.js) so a logout/deactivation/
+                # role change that happens mid-connection closes the socket
+                # within ~10s instead of only at the JWT's 12h expiry.
+                try:
+                    validate_session_claims(claims)
+                except Exception:
+                    await websocket.close(code=4401)
+                    ws_manager.disconnect(websocket, channel)
+                    return
                 await websocket.send_text('{"type":"pong"}')
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket, channel)
