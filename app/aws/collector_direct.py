@@ -351,8 +351,13 @@ def _gmd_series(cw, queries, hours=6):
     adjusted = []
     for q in queries:
         q2 = dict(q)
-        q2["MetricStat"] = dict(q["MetricStat"])
-        q2["MetricStat"]["Period"] = period
+        if "MetricStat" in q2:
+            q2["MetricStat"] = dict(q["MetricStat"])
+            q2["MetricStat"]["Period"] = period
+        # Expression-shaped queries (e.g. the Windows disk-inversion
+        # "100 - raw" math queries) have no MetricStat to adjust --
+        # their underlying raw feeder query is what carries Period,
+        # and it goes through the branch above on its own turn.
         adjusted.append(q2)
 
     try:
@@ -1402,19 +1407,49 @@ def get_ec2_metric_series(instance_id, region=None, hours=6, account=None) -> di
                 cw        = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
                 cw_period = max(period, 60)  # CWAgent's own default reporting interval
 
-                mem_dims = _ec2_cwagent_dimensions(cw, "mem_used_percent", instance_id)
-                mounts   = all_cwagent_disk_dims(cw, instance_id)  # [(dims, path, metric_name), ...] -- every mount
+                mem_cw_metric_name = "mem_used_percent"
+                mem_dims = _ec2_cwagent_dimensions(cw, mem_cw_metric_name, instance_id)
+                if mem_dims is None:
+                    # Linux name found nothing -- try Windows' equivalent
+                    # before giving up (CWAgent's memory metric name is
+                    # OS-dependent; an instance only ever reports one).
+                    # See WINDOWS_DISK_METRIC_NAME in
+                    # app/collector/disk_mounts.py for the full incident
+                    # writeup this and the disk fix below address (same
+                    # root cause, confirmed live against
+                    # i-0424cb66e22e05a21 / U4RAD-JUMP).
+                    mem_cw_metric_name = "Memory % Committed Bytes In Use"
+                    mem_dims = _ec2_cwagent_dimensions(cw, mem_cw_metric_name, instance_id)
+                mounts = all_cwagent_disk_dims(cw, instance_id)  # [(dims, path, metric_name, cw_metric_name, invert), ...] -- every mount
 
                 queries = []
                 if mem_dims:
-                    queries.append(_make_query("mem", "CWAgent", "mem_used_percent", mem_dims, "Average", cw_period))
-                for dims, path, metric_name in mounts:
-                    queries.append(_make_query(f"disk_{metric_name}", "CWAgent", "disk_used_percent", dims, "Average", cw_period))
+                    queries.append(_make_query("mem", "CWAgent", mem_cw_metric_name, mem_dims, "Average", cw_period))
+                for dims, path, metric_name, disk_cw_metric_name, invert in mounts:
+                    qid = f"disk_{metric_name}"
+                    if invert:
+                        # Windows' LogicalDisk % Free Space is the
+                        # INVERSE of disk_used_percent -- compute
+                        # (100 - free%) via a CloudWatch metric-math
+                        # expression so the returned series keeps the
+                        # same "higher = more full" meaning as Linux's.
+                        raw_id = f"{qid}raw"
+                        queries.append({
+                            "Id": raw_id,
+                            "MetricStat": {
+                                "Metric": {"Namespace": "CWAgent", "MetricName": disk_cw_metric_name, "Dimensions": dims},
+                                "Period": cw_period, "Stat": "Average",
+                            },
+                            "ReturnData": False,
+                        })
+                        queries.append({"Id": qid, "Expression": f"100 - {raw_id}", "Label": metric_name, "ReturnData": True})
+                    else:
+                        queries.append(_make_query(qid, "CWAgent", disk_cw_metric_name, dims, "Average", cw_period))
 
                 if queries:
                     fb = _gmd_series(cw, queries, hours)
                     mem_utilization = fb.get("mem", [])
-                    for dims, path, metric_name in mounts:
+                    for dims, path, metric_name, disk_cw_metric_name, invert in mounts:
                         series = fb.get(f"disk_{metric_name}", [])
                         disk_used_percent_by_mount[path] = series
                         if path in ("/", "C:"):
