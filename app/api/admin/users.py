@@ -161,20 +161,20 @@ def _validate_and_insert_scopes(conn, user_id: int, scopes: list, actor: dict, a
 @router.get("")
 def list_users(current_user: dict = Depends(require_permission("users.view"))):
     conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT id, username, role, created_at FROM users ORDER BY created_at ASC")
-    rows = cursor.fetchall()
-
-    if current_user["role"] == "admin":
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id, username, role, created_at FROM users ORDER BY created_at ASC")
+        rows = cursor.fetchall()
         cursor.close()
-        conn.close()
-        return [_serialize(r) for r in rows]
 
-    # Editor: only viewers they can actually manage.
-    visible = [r for r in rows if _user_manageable_by(current_user, r)]
-    cursor.close()
-    conn.close()
-    return [_serialize(r) for r in visible]
+        if current_user["role"] == "admin":
+            return [_serialize(r) for r in rows]
+
+        # Editor: only viewers they can actually manage.
+        visible = [r for r in rows if _user_manageable_by(current_user, r)]
+        return [_serialize(r) for r in visible]
+    finally:
+        conn.close()
 
 
 @router.post("")
@@ -224,7 +224,7 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
 
     try:
         cursor.execute(
-            "INSERT INTO users (username, password, role, email) VALUES (%s, %s, %s, %s)",
+            "INSERT INTO users (username, password_hash, role, email) VALUES (%s, %s, %s, %s)",
             (username, pw_hash, role, email)
         )
         conn.commit()
@@ -344,19 +344,36 @@ def update_role(user_id: int, payload: dict = Body(...), current_user: dict = De
     if current_user["id"] == user_id:
         raise HTTPException(status_code=403, detail="Cannot change your own role")
 
-    conn   = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT username FROM users WHERE id = %s", (user_id,))
-    user = cursor.fetchone()
-    if not user:
-        cursor.close()
-        conn.close()
-        raise HTTPException(status_code=404, detail="User not found")
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT username, role FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            cursor.close()
+            raise HTTPException(status_code=404, detail="User not found")
 
-    cursor.execute("UPDATE users SET role = %s WHERE id = %s", (new_role, user_id))
-    conn.commit()
-    cursor.close()
-    conn.close()
+        # SECURITY: last-admin protection. Nothing previously stopped an
+        # admin from demoting the only other admin (or themselves being
+        # the only one left, if role were ever self-editable), leaving
+        # zero accounts able to reach any admin-only route -- including
+        # the very users/roles endpoints needed to fix it, with no
+        # recovery path short of a direct DB write.
+        if user["role"] == "admin" and new_role != "admin":
+            cursor.execute("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'")
+            admin_count = cursor.fetchone()["n"]
+            if admin_count <= 1:
+                cursor.close()
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cannot change the role of the last remaining admin",
+                )
+
+        cursor.execute("UPDATE users SET role = %s WHERE id = %s", (new_role, user_id))
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
 
     _write_audit(actor=current_user["username"], action="Role changed",
                  detail=f"{user['username']} \u2192 {new_role.upper()}",
@@ -367,14 +384,14 @@ def update_role(user_id: int, payload: dict = Body(...), current_user: dict = De
 @router.get("/{user_id}/access")
 def get_user_access(user_id: int, current_user: dict = Depends(require_permission("users.view"))):
     conn = get_connection()
-    target = _fetch_user(conn, user_id)
-    if not target:
+    try:
+        target = _fetch_user(conn, user_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not _user_manageable_by(current_user, target):
+            raise HTTPException(status_code=403, detail="You do not have access to this user's scope")
+    finally:
         conn.close()
-        raise HTTPException(status_code=404, detail="User not found")
-    if not _user_manageable_by(current_user, target):
-        conn.close()
-        raise HTTPException(status_code=403, detail="You do not have access to this user's scope")
-    conn.close()
     return authz.serialize_scope(target)
 
 
@@ -385,17 +402,17 @@ def add_user_access(user_id: int, payload: dict = Body(...), current_user: dict 
         raise HTTPException(status_code=400, detail="scopes required")
 
     conn = get_connection()
-    target = _fetch_user(conn, user_id)
-    if not target:
-        conn.close()
-        raise HTTPException(status_code=404, detail="User not found")
-    if not _user_manageable_by(current_user, target):
-        conn.close()
-        raise HTTPException(status_code=403, detail="You do not have access to manage this user's scope")
+    try:
+        target = _fetch_user(conn, user_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not _user_manageable_by(current_user, target):
+            raise HTTPException(status_code=403, detail="You do not have access to manage this user's scope")
 
-    actor_scope = authz.get_effective_scope(current_user)
-    inserted_ids = _validate_and_insert_scopes(conn, user_id, scopes, current_user, actor_scope)
-    conn.close()
+        actor_scope = authz.get_effective_scope(current_user)
+        inserted_ids = _validate_and_insert_scopes(conn, user_id, scopes, current_user, actor_scope)
+    finally:
+        conn.close()
 
     _write_audit(
         actor=current_user["username"], action="Access granted",
@@ -408,28 +425,28 @@ def add_user_access(user_id: int, payload: dict = Body(...), current_user: dict 
 @router.delete("/access/{scope_id}")
 def revoke_access_scope(scope_id: int, current_user: dict = Depends(require_permission("users.update"))):
     conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        "SELECT s.id, s.user_id, u.username, u.role FROM access_scopes s "
-        "JOIN users u ON u.id = s.user_id WHERE s.id = %s",
-        (scope_id,),
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    if not row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Scope grant not found")
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT s.id, s.user_id, u.username, u.role FROM access_scopes s "
+            "JOIN users u ON u.id = s.user_id WHERE s.id = %s",
+            (scope_id,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="Scope grant not found")
 
-    target = {"id": row["user_id"], "username": row["username"], "role": row["role"]}
-    if not _user_manageable_by(current_user, target):
-        conn.close()
-        raise HTTPException(status_code=403, detail="You do not have access to manage this user's scope")
+        target = {"id": row["user_id"], "username": row["username"], "role": row["role"]}
+        if not _user_manageable_by(current_user, target):
+            raise HTTPException(status_code=403, detail="You do not have access to manage this user's scope")
 
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM access_scopes WHERE id = %s", (scope_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM access_scopes WHERE id = %s", (scope_id,))
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
 
     _write_audit(actor=current_user["username"], action="Access revoked",
                  detail=f"{target['username']}: scope #{scope_id} removed",
@@ -443,19 +460,28 @@ def delete_user(user_id: int, current_user: dict = Depends(require_permission("u
         raise HTTPException(status_code=403, detail="Cannot delete your own account")
 
     conn = get_connection()
-    target = _fetch_user(conn, user_id)
-    if not target:
-        conn.close()
-        raise HTTPException(status_code=404, detail="User not found")
-    if not _user_manageable_by(current_user, target):
-        conn.close()
-        raise HTTPException(status_code=403, detail="You do not have access to delete this user")
+    try:
+        target = _fetch_user(conn, user_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not _user_manageable_by(current_user, target):
+            raise HTTPException(status_code=403, detail="You do not have access to delete this user")
 
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))  # access_scopes rows cascade via FK
-    conn.commit()
-    cursor.close()
-    conn.close()
+        # SECURITY: last-admin protection -- see update_role for why.
+        if target["role"] == "admin":
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'")
+            admin_count = cursor.fetchone()["n"]
+            cursor.close()
+            if admin_count <= 1:
+                raise HTTPException(status_code=409, detail="Cannot delete the last remaining admin")
+
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))  # access_scopes rows cascade via FK
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
 
     _write_audit(actor=current_user["username"], action="User deleted",
                  detail=f"{target['username']} removed",

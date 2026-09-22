@@ -44,8 +44,11 @@ from app.auth import authorization as authz
 from app.api.admin.users import _user_manageable_by
 import datetime
 import json
+import logging
 
 router = APIRouter(prefix="/api/groups", tags=["Organization Groups"])
+
+logger = logging.getLogger(__name__)
 
 
 def _serialize(obj):
@@ -131,14 +134,17 @@ def _serialize_group(conn, g: dict, include_details: bool = False) -> dict:
 @router.get("")
 def list_groups(current_user: dict = Depends(require_permission("groups.view"))):
     conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        "SELECT id, name, level, parent_group_id, description, created_by, created_at "
-        "FROM org_groups ORDER BY level ASC, name ASC"
-    )
-    rows = cursor.fetchall()
-    result = [_serialize_group(conn, r) for r in rows]
-    conn.close()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT id, name, level, parent_group_id, description, created_by, created_at "
+            "FROM org_groups ORDER BY level ASC, name ASC"
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        result = [_serialize_group(conn, r) for r in rows]
+    finally:
+        conn.close()
     return _serialize(result)
 
 
@@ -153,36 +159,36 @@ def get_user_groups(user_id: int, current_user: dict = Depends(require_permissio
     for a group id.
     """
     conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT id, username, role FROM users WHERE id = %s", (user_id,))
-    user = cursor.fetchone()
-    cursor.close()
-    if not user:
-        conn.close()
-        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id, username, role FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+        cursor.close()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
 
-    # SECURITY: this endpoint returns another user's FULLY-RESOLVED
-    # access scope (every account/region they can reach, via direct
-    # grants AND group inheritance) -- the same category of
-    # information app/api/admin/users.py's GET /{user_id}/access
-    # already guards with _user_manageable_by before returning
-    # anything. This endpoint had no such check: any editor could look
-    # up ANY user_id (another editor, a viewer well outside their own
-    # scope, even attempt an admin's id) and see their exact resolved
-    # access, not just users the editor actually manages.
-    if not _user_manageable_by(current_user, user):
-        conn.close()
-        raise HTTPException(status_code=403, detail="You do not have access to this user's scope")
+        # SECURITY: this endpoint returns another user's FULLY-RESOLVED
+        # access scope (every account/region they can reach, via direct
+        # grants AND group inheritance) -- the same category of
+        # information app/api/admin/users.py's GET /{user_id}/access
+        # already guards with _user_manageable_by before returning
+        # anything. This endpoint had no such check: any editor could look
+        # up ANY user_id (another editor, a viewer well outside their own
+        # scope, even attempt an admin's id) and see their exact resolved
+        # access, not just users the editor actually manages.
+        if not _user_manageable_by(current_user, user):
+            raise HTTPException(status_code=403, detail="You do not have access to this user's scope")
 
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        "SELECT ugm.group_id, og.name, og.level FROM user_group_memberships ugm "
-        "JOIN org_groups og ON og.id = ugm.group_id WHERE ugm.user_id = %s",
-        (user_id,),
-    )
-    direct = cursor.fetchall()
-    cursor.close()
-    conn.close()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT ugm.group_id, og.name, og.level FROM user_group_memberships ugm "
+            "JOIN org_groups og ON og.id = ugm.group_id WHERE ugm.user_id = %s",
+            (user_id,),
+        )
+        direct = cursor.fetchall()
+        cursor.close()
+    finally:
+        conn.close()
 
     effective_groups = authz.get_user_effective_groups(user_id)
     return _serialize({
@@ -243,41 +249,42 @@ def create_group(payload: dict = Body(...), current_user: dict = Depends(require
 @router.get("/{group_id}")
 def get_group_detail(group_id: int, current_user: dict = Depends(require_permission("groups.view"))):
     conn = get_connection()
-    g = authz.get_group(conn, group_id)
-    if not g:
+    try:
+        g = authz.get_group(conn, group_id)
+        if not g:
+            raise HTTPException(status_code=404, detail="Group not found")
+        result = _serialize_group(conn, g, include_details=True)
+    finally:
         conn.close()
-        raise HTTPException(status_code=404, detail="Group not found")
-    result = _serialize_group(conn, g, include_details=True)
-    conn.close()
     return _serialize(result)
 
 
 @router.delete("/{group_id}")
 def delete_group(group_id: int, current_user: dict = Depends(require_permission("groups.delete"))):
     conn = get_connection()
-    g = authz.get_group(conn, group_id)
-    if not g:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Group not found")
+    try:
+        g = authz.get_group(conn, group_id)
+        if not g:
+            raise HTTPException(status_code=404, detail="Group not found")
 
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM org_groups WHERE parent_group_id = %s", (group_id,))
-    child_count = cursor.fetchone()[0]
-    if child_count:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM org_groups WHERE parent_group_id = %s", (group_id,))
+        child_count = cursor.fetchone()[0]
+        if child_count:
+            cursor.close()
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot delete '{g['name']}' \u2014 it has {child_count} child group(s). "
+                    "Delete or reparent them first."
+                ),
+            )
+
+        cursor.execute("DELETE FROM org_groups WHERE id = %s", (group_id,))  # policies + memberships cascade via FK
+        conn.commit()
         cursor.close()
+    finally:
         conn.close()
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Cannot delete '{g['name']}' \u2014 it has {child_count} child group(s). "
-                "Delete or reparent them first."
-            ),
-        )
-
-    cursor.execute("DELETE FROM org_groups WHERE id = %s", (group_id,))  # policies + memberships cascade via FK
-    conn.commit()
-    cursor.close()
-    conn.close()
 
     _write_audit(current_user["username"], "Group deleted", f"{g['name']} ({g['level']}) removed",
                  role=current_user["role"].upper())
@@ -297,60 +304,59 @@ def add_group_policy(group_id: int, payload: dict = Body(...), current_user: dic
         raise HTTPException(status_code=400, detail="scopes required")
 
     conn = get_connection()
-    g = authz.get_group(conn, group_id)
-    if not g:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Group not found")
+    try:
+        g = authz.get_group(conn, group_id)
+        if not g:
+            raise HTTPException(status_code=404, detail="Group not found")
 
-    valid_accounts = _account_ids_by_cloud(conn)
-    for s in scopes:
-        err = authz.validate_scope_shape(s, valid_accounts)
-        if err:
-            conn.close()
-            raise HTTPException(status_code=400, detail=f"Invalid scope: {err}")
+        valid_accounts = _account_ids_by_cloud(conn)
+        for s in scopes:
+            err = authz.validate_scope_shape(s, valid_accounts)
+            if err:
+                raise HTTPException(status_code=400, detail=f"Invalid scope: {err}")
 
-    # Defense-in-depth, not a fix for a live bug: today this endpoint is
-    # reachable only by admin (groups.update is admin-only in
-    # role_permissions -- see db/migrations/015_permissions_rbac.sql),
-    # and admin's effective scope is FULL_ACCESS, so scope_within always
-    # passes for the only caller who can reach this today. Added anyway,
-    # matching the SAME redundant check app/api/admin/users.py already
-    # has for individual access_scopes grants (_validate_and_insert_scopes),
-    # so this endpoint isn't a single point of failure if groups.update
-    # is ever granted to a non-admin role in the future, or if
-    # has_permission() ever had its own bug -- the permission gate and
-    # this scope check are independent layers, same principle as
-    # users.py's own docstring ("never trust anything the client sent
-    # about its own permissions").
-    if current_user["role"] != "admin":
-        actor_scope = authz.get_effective_scope(current_user)
-        if not authz.scope_within(scopes, actor_scope):
-            conn.close()
-            raise HTTPException(
-                status_code=403,
-                detail="Cannot grant a group access outside your own assigned scope",
+        # Defense-in-depth, not a fix for a live bug: today this endpoint is
+        # reachable only by admin (groups.update is admin-only in
+        # role_permissions -- see db/migrations/015_permissions_rbac.sql),
+        # and admin's effective scope is FULL_ACCESS, so scope_within always
+        # passes for the only caller who can reach this today. Added anyway,
+        # matching the SAME redundant check app/api/admin/users.py already
+        # has for individual access_scopes grants (_validate_and_insert_scopes),
+        # so this endpoint isn't a single point of failure if groups.update
+        # is ever granted to a non-admin role in the future, or if
+        # has_permission() ever had its own bug -- the permission gate and
+        # this scope check are independent layers, same principle as
+        # users.py's own docstring ("never trust anything the client sent
+        # about its own permissions").
+        if current_user["role"] != "admin":
+            actor_scope = authz.get_effective_scope(current_user)
+            if not authz.scope_within(scopes, actor_scope):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Cannot grant a group access outside your own assigned scope",
+                )
+
+        cursor = conn.cursor()
+        inserted_ids = []
+        for s in scopes:
+            cursor.execute(
+                "INSERT INTO group_policies "
+                "(group_id, cloud, account_ref_id, regions, resource_groups, resource_types, resource_ids, granted_by) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    group_id, s["cloud"], s.get("account_ref_id"),
+                    json.dumps(s["regions"]) if s.get("regions") else None,
+                    json.dumps(s["resource_groups"]) if s.get("resource_groups") else None,
+                    json.dumps(s["resource_types"]) if s.get("resource_types") else None,
+                    json.dumps(s["resource_ids"]) if s.get("resource_ids") else None,
+                    current_user["id"],
+                ),
             )
-
-    cursor = conn.cursor()
-    inserted_ids = []
-    for s in scopes:
-        cursor.execute(
-            "INSERT INTO group_policies "
-            "(group_id, cloud, account_ref_id, regions, resource_groups, resource_types, resource_ids, granted_by) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (
-                group_id, s["cloud"], s.get("account_ref_id"),
-                json.dumps(s["regions"]) if s.get("regions") else None,
-                json.dumps(s["resource_groups"]) if s.get("resource_groups") else None,
-                json.dumps(s["resource_types"]) if s.get("resource_types") else None,
-                json.dumps(s["resource_ids"]) if s.get("resource_ids") else None,
-                current_user["id"],
-            ),
-        )
-        inserted_ids.append(cursor.lastrowid)
-    conn.commit()
-    cursor.close()
-    conn.close()
+            inserted_ids.append(cursor.lastrowid)
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
 
     _write_audit(
         current_user["username"], "Group policy granted",
@@ -363,23 +369,24 @@ def add_group_policy(group_id: int, payload: dict = Body(...), current_user: dic
 @router.delete("/policies/{policy_id}")
 def delete_group_policy(policy_id: int, current_user: dict = Depends(require_permission("groups.update"))):
     conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        "SELECT gp.id, gp.group_id, og.name AS group_name FROM group_policies gp "
-        "JOIN org_groups og ON og.id = gp.group_id WHERE gp.id = %s",
-        (policy_id,),
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    if not row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Group policy not found")
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT gp.id, gp.group_id, og.name AS group_name FROM group_policies gp "
+            "JOIN org_groups og ON og.id = gp.group_id WHERE gp.id = %s",
+            (policy_id,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="Group policy not found")
 
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM group_policies WHERE id = %s", (policy_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM group_policies WHERE id = %s", (policy_id,))
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
 
     _write_audit(current_user["username"], "Group policy revoked", f"{row['group_name']}: policy #{policy_id} removed",
                  role=current_user["role"].upper())
@@ -393,55 +400,55 @@ def add_group_members(group_id: int, payload: dict = Body(...), current_user: di
         raise HTTPException(status_code=400, detail="user_ids required")
 
     conn = get_connection()
-    g = authz.get_group(conn, group_id)
-    if not g:
+    try:
+        g = authz.get_group(conn, group_id)
+        if not g:
+            raise HTTPException(status_code=404, detail="Group not found")
+
+        cursor = conn.cursor(dictionary=True)
+        placeholders = ",".join(["%s"] * len(user_ids))
+        cursor.execute(f"SELECT id FROM users WHERE id IN ({placeholders})", tuple(user_ids))
+        existing_ids = {r["id"] for r in cursor.fetchall()}
+        cursor.close()
+        missing = set(user_ids) - existing_ids
+        if missing:
+            raise HTTPException(status_code=404, detail=f"User id(s) not found: {sorted(missing)}")
+
+        cursor = conn.cursor()
+        added, already = [], []
+        for uid in user_ids:
+            try:
+                cursor.execute(
+                    "INSERT INTO user_group_memberships (user_id, group_id, assigned_by) VALUES (%s, %s, %s)",
+                    (uid, group_id, current_user["id"]),
+                )
+                added.append(uid)
+            except Exception as e:
+                if "Duplicate" in str(e) or "1062" in str(e):
+                    already.append(uid)
+                else:
+                    conn.rollback()
+                    cursor.close()
+                    logger.error(f"add_group_members: insert failed for user {uid} in group {group_id}: {e}")
+                    raise HTTPException(status_code=500, detail="Failed to add group member")
+
+        # Groups are a PURE scope container -- membership grants
+        # account/region access (via group_policies + get_effective_scope)
+        # and nothing else. It deliberately does NOT touch users.role.
+        #
+        # Previously this ran `UPDATE users SET role = ...` based on the
+        # group's L1/L2/L3 level (GROUP_LEVEL_ROLE), which meant adding
+        # someone to an L3 group silently made them a full system Admin --
+        # and removing them from that group never reversed it, since this
+        # was the only place that ever wrote users.role from group
+        # membership. That was a real privilege-escalation bug (permanent,
+        # silent admin promotion with no corresponding revoke path), fixed
+        # by removing the auto-sync entirely. Role is now only ever changed
+        # deliberately (see app/api/admin/users.py's role-update endpoint).
+        conn.commit()
+        cursor.close()
+    finally:
         conn.close()
-        raise HTTPException(status_code=404, detail="Group not found")
-
-    cursor = conn.cursor(dictionary=True)
-    placeholders = ",".join(["%s"] * len(user_ids))
-    cursor.execute(f"SELECT id FROM users WHERE id IN ({placeholders})", tuple(user_ids))
-    existing_ids = {r["id"] for r in cursor.fetchall()}
-    cursor.close()
-    missing = set(user_ids) - existing_ids
-    if missing:
-        conn.close()
-        raise HTTPException(status_code=404, detail=f"User id(s) not found: {sorted(missing)}")
-
-    cursor = conn.cursor()
-    added, already = [], []
-    for uid in user_ids:
-        try:
-            cursor.execute(
-                "INSERT INTO user_group_memberships (user_id, group_id, assigned_by) VALUES (%s, %s, %s)",
-                (uid, group_id, current_user["id"]),
-            )
-            added.append(uid)
-        except Exception as e:
-            if "Duplicate" in str(e) or "1062" in str(e):
-                already.append(uid)
-            else:
-                conn.rollback()
-                cursor.close()
-                conn.close()
-                raise HTTPException(status_code=500, detail=str(e))
-
-    # Groups are a PURE scope container -- membership grants
-    # account/region access (via group_policies + get_effective_scope)
-    # and nothing else. It deliberately does NOT touch users.role.
-    #
-    # Previously this ran `UPDATE users SET role = ...` based on the
-    # group's L1/L2/L3 level (GROUP_LEVEL_ROLE), which meant adding
-    # someone to an L3 group silently made them a full system Admin --
-    # and removing them from that group never reversed it, since this
-    # was the only place that ever wrote users.role from group
-    # membership. That was a real privilege-escalation bug (permanent,
-    # silent admin promotion with no corresponding revoke path), fixed
-    # by removing the auto-sync entirely. Role is now only ever changed
-    # deliberately (see app/api/admin/users.py's role-update endpoint).
-    conn.commit()
-    cursor.close()
-    conn.close()
 
     _write_audit(
         current_user["username"], "Group membership added",
@@ -454,20 +461,21 @@ def add_group_members(group_id: int, payload: dict = Body(...), current_user: di
 @router.delete("/{group_id}/members/{user_id}")
 def remove_group_member(group_id: int, user_id: int, current_user: dict = Depends(require_permission("groups.update"))):
     conn = get_connection()
-    g = authz.get_group(conn, group_id)
-    if not g:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Group not found")
+    try:
+        g = authz.get_group(conn, group_id)
+        if not g:
+            raise HTTPException(status_code=404, detail="Group not found")
 
-    cursor = conn.cursor()
-    cursor.execute(
-        "DELETE FROM user_group_memberships WHERE group_id = %s AND user_id = %s",
-        (group_id, user_id),
-    )
-    removed = cursor.rowcount
-    conn.commit()
-    cursor.close()
-    conn.close()
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM user_group_memberships WHERE group_id = %s AND user_id = %s",
+            (group_id, user_id),
+        )
+        removed = cursor.rowcount
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
 
     if not removed:
         raise HTTPException(status_code=404, detail="User is not a member of this group")
