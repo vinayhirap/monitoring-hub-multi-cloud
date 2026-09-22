@@ -104,28 +104,32 @@ def _serialize(obj):
 
 def _get_db_accounts():
     conn   = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
-            SELECT id, account_name, account_id,
-                default_region, status, role_arn, auth_mode, external_id,
-                created_at, last_synced_at
-            FROM aws_accounts
-            WHERE status = 'active'
-            ORDER BY created_at DESC
-        """)
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+                SELECT id, account_name, account_id,
+                    default_region, status, role_arn, auth_mode, external_id,
+                    created_at, last_synced_at
+                FROM aws_accounts
+                WHERE status = 'active'
+                ORDER BY created_at DESC
+            """)
+        rows = cursor.fetchall()
+        cursor.close()
+        return rows
+    finally:
+        conn.close()
 
 
 def _get_db_account(account_db_id: int) -> dict:
     conn   = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM aws_accounts WHERE id = %s", (account_db_id,))
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM aws_accounts WHERE id = %s", (account_db_id,))
+        row = cursor.fetchone()
+        cursor.close()
+    finally:
+        conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Account not found")
     return row
@@ -166,14 +170,16 @@ def _check_resource_scope(user: dict, resource_identifier: str):
     if accessible is None:
         return
     conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        "SELECT aws_account_id FROM resources WHERE resource_id = %s LIMIT 1",
-        (resource_identifier,),
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT aws_account_id FROM resources WHERE resource_id = %s LIMIT 1",
+            (resource_identifier,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+    finally:
+        conn.close()
     if row and row["aws_account_id"] not in accessible:
         raise HTTPException(status_code=403, detail="You do not have access to this resource")
 
@@ -190,14 +196,16 @@ def _resolve_resource_account(resource_identifier: str) -> dict | None:
     the same ambient-credential behavior this had before.
     """
     conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        "SELECT aws_account_id FROM resources WHERE resource_id = %s LIMIT 1",
-        (resource_identifier,),
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT aws_account_id FROM resources WHERE resource_id = %s LIMIT 1",
+            (resource_identifier,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+    finally:
+        conn.close()
     if not row:
         return None
     try:
@@ -314,15 +322,17 @@ def _get_running_ec2_ids_by_account() -> dict:
     """
     try:
         conn   = get_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT aws_account_id, resource_id
-            FROM resources
-            WHERE resource_type = 'ec2' AND instance_state = 'running'
-        """)
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("""
+                SELECT aws_account_id, resource_id
+                FROM resources
+                WHERE resource_type = 'ec2' AND instance_state = 'running'
+            """)
+            rows = cursor.fetchall()
+            cursor.close()
+        finally:
+            conn.close()
         out = {}
         for r in rows:
             out.setdefault(r["aws_account_id"], set()).add(r["resource_id"])
@@ -384,22 +394,24 @@ def _get_ec2_instance_health_by_account() -> dict:
     """
     try:
         conn   = get_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT r.aws_account_id, r.resource_type, r.resource_id, r.tags,
-                   a.severity, a.metric_name
-            FROM alerts a
-            JOIN resources r      ON r.resource_id = a.resource_id
-                                   AND r.aws_account_id = a.aws_account_id
-            JOIN aws_accounts acc ON acc.id = r.aws_account_id
-                                   AND acc.status = 'active'
-            WHERE """ + _alert_rules.firing_where() + """
-              AND """ + _alert_rules.base_where() + """
-              AND r.resource_type IN ('ec2', 'ebs', 'eni')
-        """)
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("""
+                SELECT r.aws_account_id, r.resource_type, r.resource_id, r.tags,
+                       a.severity, a.metric_name
+                FROM alerts a
+                JOIN resources r      ON r.resource_id = a.resource_id
+                                       AND r.aws_account_id = a.aws_account_id
+                JOIN aws_accounts acc ON acc.id = r.aws_account_id
+                                       AND acc.status = 'active'
+                WHERE """ + _alert_rules.firing_where() + """
+                  AND """ + _alert_rules.base_where() + """
+                  AND r.resource_type IN ('ec2', 'ebs', 'eni')
+            """)
+            rows = cursor.fetchall()
+            cursor.close()
+        finally:
+            conn.close()
 
         running_by_account = _get_running_ec2_ids_by_account()
 
@@ -453,139 +465,156 @@ def _get_ec2_instance_health_by_account() -> dict:
 def live_accounts(current_user: dict = Depends(require_permission("resources.view"))):
     global _accounts_cache
 
+    # SECURITY/CORRECTNESS (audit b16): _accounts_cache is a single
+    # module-level dict shared by every request this worker process
+    # serves, regardless of which user made them -- it holds no
+    # per-user or per-scope key. Previously the account list was
+    # scope-filtered to the CURRENT caller BEFORE being processed and
+    # cached, so whichever user's request happened to populate the
+    # cache determined what every OTHER user saw for the next
+    # CACHE_TTL seconds: a narrowly-scoped viewer populating it first
+    # would silently hide accounts an admin (or a differently-scoped
+    # user) requesting moments later is fully entitled to see -- the
+    # cached data itself never grew back to the full set until the
+    # next miss. The cache-hit path already re-filtered by the current
+    # caller's OWN scope, so this was never a cross-account leak (no
+    # one could ever see an account outside their own access), but it
+    # could and did wrongly HIDE accounts a real, differently-scoped
+    # caller should have seen. Fixed by always caching every active
+    # account's fully-processed data, unfiltered, and applying the
+    # caller's scope filter fresh on every request -- cache hit or
+    # miss -- rather than baking one caller's scope into the cached
+    # payload itself.
     now = time.time()
     if _accounts_cache["data"] is not None and now - _accounts_cache["ts"] < CACHE_TTL:
-        accessible = get_accessible_account_ids(current_user)
-        cached = _accounts_cache["data"]
-        if accessible is not None:
-            cached = [a for a in cached if a["id"] in accessible]
-        return cached
+        full_result = _accounts_cache["data"]
+    else:
+        accounts = _get_db_accounts()
 
-    accounts = _get_db_accounts()
+        alert_counts_by_account = _get_active_alert_counts_by_account()
+        ec2_health_by_account   = _get_ec2_instance_health_by_account()
+
+        def process_account(acc):
+            region  = acc.get("default_region")
+            summary = get_account_summary(region, role_arn=acc.get("role_arn"), external_id=acc.get("external_id"), account=acc)
+            running = summary.get("ec2_running", 0)
+            total   = summary.get("ec2_total",   0)
+            avg_cpu = summary.get("ec2_avg_cpu", 0)
+
+            counts        = alert_counts_by_account.get(acc["id"], {"critical": 0, "warning": 0,
+                                                                 "critical_resources": 0, "warning_resources": 0,
+                                                                 "stale": 0, "acknowledged": 0, "suppressed": 0})
+            acct_critical = counts["critical"]
+            acct_warning  = counts["warning"]
+
+            # EC2-scoped rollup for the HealthRing only -- see
+            # _get_ec2_instance_health_by_account()'s docstring. Deliberately
+            # separate from acct_critical/acct_warning above, which stay
+            # account-wide (all resource types) and keep driving `health`,
+            # the status pill, and the CRITICAL/WARNING tiles exactly as
+            # before -- only the ring's own numbers change here.
+            ec2_health          = ec2_health_by_account.get(acc["id"], {"critical": 0, "warning": 0})
+            ec2_critical_ring   = ec2_health["critical"]
+            ec2_warning_ring    = ec2_health["warning"]
+
+            # Real active alerts (any resource type) are authoritative.
+            # avg_cpu is only a fallback heuristic for the rare case where
+            # nothing has alerted yet at all — it must never override an
+            # actual open alert, critical or warning.
+            if acct_critical > 0:
+                health = "critical"
+            elif acct_warning > 0:
+                health = "warning"
+            elif avg_cpu > 80:
+                health = "critical"
+            elif avg_cpu > 60:
+                health = "warning"
+            else:
+                health = "healthy"
+
+            # HealthRing sizing needs a RESOURCE count, not an alert-row count
+            unhealthy_resources = counts.get("critical_resources", 0) + counts.get("warning_resources", 0)
+            unhealthy_count = min(unhealthy_resources, running) if running else unhealthy_resources
+            healthy_count   = max(running - unhealthy_count, 0)
+
+            services = []
+            if summary.get("ec2_total", 0) > 0:
+                services.append({
+                    "name":           "EC2",
+                    "status":         "ok",
+                    "instance_count": running,
+                    "cpu":            avg_cpu,
+                    "memory":         0,
+                })
+            if summary.get("rds_total", 0) > 0:
+                services.append({
+                    "name":           "RDS",
+                    "status":         "ok",
+                    "instance_count": summary["rds_total"],
+                })
+            if summary.get("lambda_total", 0) > 0:
+                services.append({
+                    "name":           "Lambda",
+                    "status":         "ok",
+                    "instance_count": summary["lambda_total"],
+                })
+
+            return _serialize({
+                "id":               acc["id"],
+                "account_name":     acc["account_name"],
+                "account_id":       acc["account_id"],
+                "region":           region,
+                "status":           health,
+                "environment":      acc.get("environment", "PROD"),
+                "owner_team":       acc.get("owner_team", acc.get("team", "")),
+                "ec2_total":        total,
+                "ec2_running":      running,
+                "ec2_stopped":      summary.get("ec2_stopped", 0),
+                "ebs_total":        summary.get("ebs_total",    0),
+                "rds_total":        summary.get("rds_total",    0),
+                "lambda_total":     summary.get("lambda_total", 0),
+                "s3_total":         summary.get("s3_total",     0),
+                "elb_total":        summary.get("elb_total",    0),
+                "ecs_total":        summary.get("ecs_total",    0),
+                "avg_cpu":          avg_cpu,
+                # Was hardcoded to 0 before this fix, regardless of reality.
+                "alerts":           acct_critical + acct_warning,
+                "critical_alerts":  acct_critical,
+                "warning_alerts":   acct_warning,
+                "stale_alerts":        counts.get("stale", 0),
+                "acknowledged_alerts": counts.get("acknowledged", 0),
+                "suppressed_alerts":   counts.get("suppressed", 0),
+                # EC2-scoped counts for the HealthRing wedge colouring --
+                # see _get_ec2_instance_health_by_account(). Intentionally
+                # separate from critical_alerts/warning_alerts above.
+                "ec2_critical_instances": ec2_critical_ring,
+                "ec2_warning_instances":  ec2_warning_ring,
+                "instance_count":   total,
+                "healthy_resources":   healthy_count,
+                "unhealthy_resources": unhealthy_count,
+                "services":         services,
+                "created_at":       acc.get("created_at"),
+                "last_synced_at":   acc.get("last_synced_at"),
+            })
+
+        full_result = []
+        with ThreadPoolExecutor(max_workers=min(len(accounts), 8) or 1) as ex:
+            futures = {ex.submit(process_account, acc): acc for acc in accounts}
+            for f in as_completed(futures):
+                try:
+                    full_result.append(f.result())
+                except Exception as e:
+                    logger.error(f"Account processing error: {e}")
+
+        status_order = {"critical": 0, "warning": 1, "healthy": 2}
+        full_result.sort(key=lambda a: status_order.get(a.get("status", "healthy"), 9))
+
+        _accounts_cache = {"data": full_result, "ts": now}
+
     accessible = get_accessible_account_ids(current_user)
     if accessible is not None:
-        accounts = [a for a in accounts if a["id"] in accessible]
-
-    alert_counts_by_account = _get_active_alert_counts_by_account()
-    ec2_health_by_account   = _get_ec2_instance_health_by_account()
-
-    def process_account(acc):
-        region  = acc.get("default_region")
-        summary = get_account_summary(region, role_arn=acc.get("role_arn"), external_id=acc.get("external_id"), account=acc)
-        running = summary.get("ec2_running", 0)
-        total   = summary.get("ec2_total",   0)
-        avg_cpu = summary.get("ec2_avg_cpu", 0)
-
-        counts        = alert_counts_by_account.get(acc["id"], {"critical": 0, "warning": 0,
-                                                             "critical_resources": 0, "warning_resources": 0,
-                                                             "stale": 0, "acknowledged": 0, "suppressed": 0})
-        acct_critical = counts["critical"]
-        acct_warning  = counts["warning"]
-
-        # EC2-scoped rollup for the HealthRing only -- see
-        # _get_ec2_instance_health_by_account()'s docstring. Deliberately
-        # separate from acct_critical/acct_warning above, which stay
-        # account-wide (all resource types) and keep driving `health`,
-        # the status pill, and the CRITICAL/WARNING tiles exactly as
-        # before -- only the ring's own numbers change here.
-        ec2_health          = ec2_health_by_account.get(acc["id"], {"critical": 0, "warning": 0})
-        ec2_critical_ring   = ec2_health["critical"]
-        ec2_warning_ring    = ec2_health["warning"]
-
-        # Real active alerts (any resource type) are authoritative.
-        # avg_cpu is only a fallback heuristic for the rare case where
-        # nothing has alerted yet at all — it must never override an
-        # actual open alert, critical or warning.
-        if acct_critical > 0:
-            health = "critical"
-        elif acct_warning > 0:
-            health = "warning"
-        elif avg_cpu > 80:
-            health = "critical"
-        elif avg_cpu > 60:
-            health = "warning"
-        else:
-            health = "healthy"
-
-        # HealthRing sizing needs a RESOURCE count, not an alert-row count
-        unhealthy_resources = counts.get("critical_resources", 0) + counts.get("warning_resources", 0)
-        unhealthy_count = min(unhealthy_resources, running) if running else unhealthy_resources
-        healthy_count   = max(running - unhealthy_count, 0)
-
-        services = []
-        if summary.get("ec2_total", 0) > 0:
-            services.append({
-                "name":           "EC2",
-                "status":         "ok",
-                "instance_count": running,
-                "cpu":            avg_cpu,
-                "memory":         0,
-            })
-        if summary.get("rds_total", 0) > 0:
-            services.append({
-                "name":           "RDS",
-                "status":         "ok",
-                "instance_count": summary["rds_total"],
-            })
-        if summary.get("lambda_total", 0) > 0:
-            services.append({
-                "name":           "Lambda",
-                "status":         "ok",
-                "instance_count": summary["lambda_total"],
-            })
-
-        return _serialize({
-            "id":               acc["id"],
-            "account_name":     acc["account_name"],
-            "account_id":       acc["account_id"],
-            "region":           region,
-            "status":           health,
-            "environment":      acc.get("environment", "PROD"),
-            "owner_team":       acc.get("owner_team", acc.get("team", "")),
-            "ec2_total":        total,
-            "ec2_running":      running,
-            "ec2_stopped":      summary.get("ec2_stopped", 0),
-            "ebs_total":        summary.get("ebs_total",    0),
-            "rds_total":        summary.get("rds_total",    0),
-            "lambda_total":     summary.get("lambda_total", 0),
-            "s3_total":         summary.get("s3_total",     0),
-            "elb_total":        summary.get("elb_total",    0),
-            "ecs_total":        summary.get("ecs_total",    0),
-            "avg_cpu":          avg_cpu,
-            # Was hardcoded to 0 before this fix, regardless of reality.
-            "alerts":           acct_critical + acct_warning,
-            "critical_alerts":  acct_critical,
-            "warning_alerts":   acct_warning,
-            "stale_alerts":        counts.get("stale", 0),
-            "acknowledged_alerts": counts.get("acknowledged", 0),
-            "suppressed_alerts":   counts.get("suppressed", 0),
-            # EC2-scoped counts for the HealthRing wedge colouring --
-            # see _get_ec2_instance_health_by_account(). Intentionally
-            # separate from critical_alerts/warning_alerts above.
-            "ec2_critical_instances": ec2_critical_ring,
-            "ec2_warning_instances":  ec2_warning_ring,
-            "instance_count":   total,
-            "healthy_resources":   healthy_count,
-            "unhealthy_resources": unhealthy_count,
-            "services":         services,
-            "created_at":       acc.get("created_at"),
-            "last_synced_at":   acc.get("last_synced_at"),
-        })
-
-    result = []
-    with ThreadPoolExecutor(max_workers=min(len(accounts), 8) or 1) as ex:
-        futures = {ex.submit(process_account, acc): acc for acc in accounts}
-        for f in as_completed(futures):
-            try:
-                result.append(f.result())
-            except Exception as e:
-                logger.error(f"Account processing error: {e}")
-
-    status_order = {"critical": 0, "warning": 1, "healthy": 2}
-    result.sort(key=lambda a: status_order.get(a.get("status", "healthy"), 9))
-
-    _accounts_cache = {"data": result, "ts": now}
-    return result
+        return [a for a in full_result if a["id"] in accessible]
+    return full_result
 
 
 @router.get("/ec2/{account_db_id}")
