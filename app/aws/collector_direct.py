@@ -1207,7 +1207,7 @@ def _ecs_raw(region, role_arn=None, external_id=None, account=None) -> list:
     try:
         session = get_session(region, role_arn, external_id, account)
         ecs = session.client("ecs")
-        cw  = session.client("cloudwatch")
+        cw  = session.client("cloudwatch", config=STANDARD_RETRY)
         cluster_arns = ecs.list_clusters().get("clusterArns", [])
         if not cluster_arns:
             return []

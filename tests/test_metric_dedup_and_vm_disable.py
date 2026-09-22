@@ -80,6 +80,15 @@ def _load_runner_and_record_tasks(tier):
     account, and returns the set of task-function names that fired."""
     install_stub("app.db", get_connection=lambda: _FakeConn())
     install_stub("app.aws.sts", get_boto3_session=lambda account: MagicMock())
+    # Same class of gap as test_collector_direct.py's boto_config stub:
+    # runner.py's STANDARD_RETRY fix (S3-pool-fix follow-up) added
+    # `from app.aws.boto_config import STANDARD_RETRY` at module level
+    # without this file's isolated loader having a stub for it -- every
+    # test here started raising "No module named 'app.aws.boto_config';
+    # 'app.aws' is not a package". None of these tests touch actual
+    # boto3 client construction, so the value itself doesn't matter, it
+    # only needs to exist so the import resolves.
+    install_stub("app.aws.boto_config", STANDARD_RETRY=None)
     install_stub("app.collector.metrics_writer",
                  write_metric=lambda *a, **k: None,
                  write_metric_history_batch=lambda *a, **k: None)

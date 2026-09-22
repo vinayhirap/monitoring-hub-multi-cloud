@@ -19,6 +19,7 @@ import logging
 
 from app.db import get_connection
 from app.aws.metric_catalog_data import CURATED
+from app.aws.boto_config import STANDARD_RETRY
 from app.threshold_defaults import resolve_db_metric_name
 from app.collector.metrics.runner import _execute_gmd
 
@@ -420,7 +421,7 @@ def collect_extended_for_account(session, account, tier="extended"):
             continue
         cw_region = _region_for_service(resource_type, region)
         try:
-            cw = session.client("cloudwatch", region_name=cw_region)
+            cw = session.client("cloudwatch", region_name=cw_region, config=STANDARD_RETRY)
             minutes = _LOOKBACK_MINUTES.get(tier, 16)
             _collect_extended_service(cw, resources, resource_type, enabled_keys, minutes=minutes)
         except Exception as e:

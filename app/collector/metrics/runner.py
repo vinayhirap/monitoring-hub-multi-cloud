@@ -55,6 +55,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from app.db import get_connection
 from app.aws.sts import get_boto3_session
+from app.aws.boto_config import STANDARD_RETRY
 from app.collector.metrics_writer import write_metric, write_metric_history_batch
 from app.collector.disk_mounts import all_cwagent_disk_dims, ensure_disk_mount_metric_registered
 import boto3
@@ -582,7 +583,7 @@ def _collect_account(account, tier="standard"):
     tasks   = []  # list of (cw_client, resources, task_type)
 
     for (resource_type, res_region), resources in grouped.items():
-        cw = session.client("cloudwatch", region_name=res_region)
+        cw = session.client("cloudwatch", region_name=res_region, config=STANDARD_RETRY)
 
         if resource_type == "ec2":
             # CPU/Network (ec2_critical -- name kept for minimal diff, see
