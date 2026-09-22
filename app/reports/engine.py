@@ -325,25 +325,35 @@ class ReportPDF(FPDF):
         y0 = self.get_y()
         self.set_draw_color(*_GRAY_LINE)
         self.set_fill_color(252, 252, 253)
-        # Left accent bar colored by severity, card body below the title row.
         card_x, card_w = self.l_margin, self.epw
-        self.rect(card_x, y0, card_w, 8, style="DF")
+
+        self.set_font("Helvetica", "B", 10.5)
+        id_prefix = f"Incident #{inc['id']}: "
+        full_title = id_prefix + (inc.get("title") or "Untitled incident")
+        line1_w = card_w * 0.6 - 2   # line 1 shares the row with the pills
+        line2_w = card_w - 8          # line 2, if needed, has the full width
+        title_line1, title_line2 = _wrap_title(self, full_title, line1_w, line2_w)
+        band_h = 8 if title_line2 is None else 13
+
+        # Left accent bar colored by severity, card body below the title row(s).
+        self.rect(card_x, y0, card_w, band_h, style="DF")
         self.set_fill_color(*_severity_color(inc.get("severity")))
-        self.rect(card_x, y0, 2.2, 8, style="F")
+        self.rect(card_x, y0, 2.2, band_h, style="F")
 
         self.set_xy(card_x + 4, y0 + 1)
-        self.set_font("Helvetica", "B", 10.5)
         self.set_text_color(*_INK)
-        title_max_w = card_w * 0.6 - 2
-        title_text = _fit_text(self, f"Incident #{inc['id']}: {inc.get('title') or 'Untitled incident'}", title_max_w)
-        self.cell(card_w * 0.6, 6, _safe(title_text))
+        self.cell(card_w * 0.6, 6, _safe(title_line1))
+        if title_line2:
+            self.set_xy(card_x + 4, y0 + 6.5)
+            self.set_font("Helvetica", "B", 9.5)
+            self.cell(card_w - 8, 5, _safe(title_line2))
         sev_pill_x = card_x + card_w - 48
         status_pill_x = sev_pill_x + 20 + 2  # 20mm severity pill + 2mm gap
         self.pill(sev_pill_x, y0 + 1.2, inc.get("severity") or "-", _severity_color(inc.get("severity")), w=20)
         self.pill(status_pill_x, y0 + 1.2, "RESOLVED" if is_resolved else "ACTIVE",
                   _GREEN if is_resolved else _RED, w=24)
         self.set_text_color(*_INK)
-        self.set_y(y0 + 9)
+        self.set_y(y0 + band_h + 1)
 
         self.set_font("Helvetica", "", 9)
         hours = duration.total_seconds() / 3600
@@ -435,6 +445,31 @@ def _incident_sort_key(inc: dict):
     started = inc.get("started_at")
     started_ts = started.timestamp() if started else 0
     return (is_open, sev_rank, started_ts)
+
+
+def _wrap_title(pdf: "ReportPDF", text: str, line1_w: float, line2_w: float) -> tuple:
+    """Wraps onto at most 2 lines instead of truncating to one --
+    stakeholders flagged single-line ellipsis truncation ("Incident
+    #104: ...a...") as looking incomplete/unprofessional. Returns
+    (line1, line2_or_None). line2, if needed, still gets an ellipsis
+    if it alone doesn't fit line2_w -- two lines is the practical cap
+    for a summary card; the full title is never lost, though, since
+    the raw incident data is always available via CloudOps."""
+    if pdf.get_string_width(text) <= line1_w:
+        return text, None
+    words = text.split(" ")
+    line1_words = []
+    i = 0
+    while i < len(words) and pdf.get_string_width(" ".join(line1_words + [words[i]])) <= line1_w:
+        line1_words.append(words[i])
+        i += 1
+    if not line1_words:  # a single word longer than line1_w -- fall back to char truncation
+        return _fit_text(pdf, text, line1_w), None
+    line1 = " ".join(line1_words)
+    remainder = " ".join(words[i:])
+    if not remainder:
+        return line1, None
+    return line1, _fit_text(pdf, remainder, line2_w)
 
 
 def _draw_cover(pdf: ReportPDF, *, title: str, subtitle: str, meta_lines: list[str]):
@@ -605,17 +640,21 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
         pdf.multi_cell(0, 6, _safe("No resources with events in this period."))
 
     alerts_list = data["alerts"]
+    def _draw_timeline_header():
+        pdf.set_fill_color(*_NAVY_CARD)
+        pdf.set_text_color(*_WHITE)
+        pdf.set_font("Helvetica", "B", 8.5)
+        for w_, h_txt in zip(col_w, headers):
+            pdf.cell(w_, 7, _safe(h_txt), fill=True)
+        pdf.ln()
+        pdf.set_text_color(*_INK)
+        pdf.set_font("Helvetica", "", 8.5)
+
     pdf.section_title(f"Incident Timeline / Alerts & Events ({len(alerts_list)} total)")
     col_w = [30, 20, 20, 45, 32, 43]
     headers = ["Time (UTC)", "Severity", "Status", "Resource", "Metric", "Value"]
-    pdf.set_fill_color(*_NAVY_CARD)
-    pdf.set_text_color(*_WHITE)
-    pdf.set_font("Helvetica", "B", 8.5)
-    for w_, h_txt in zip(col_w, headers):
-        pdf.cell(w_, 7, _safe(h_txt), fill=True)
-    pdf.ln()
-    pdf.set_text_color(*_INK)
-    pdf.set_font("Helvetica", "", 8.5)
+    ROW_H = 6.5
+    _draw_timeline_header()
     # Most severe/most recent first when there's more than the cap --
     # a stakeholder skimming a huge table should see what matters most
     # before hitting the truncation note, not just whatever happened
@@ -628,19 +667,33 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
     if len(shown_alerts) < len(alerts_list):
         shown_alerts = sorted(shown_alerts, key=lambda a: a["triggered_at"])
     for i, a in enumerate(shown_alerts):
+        # CRITICAL: check space and break BEFORE the row, not mid-row.
+        # fpdf2's auto_page_break fires independently on each cell()
+        # call -- with several cells per logical row positioned via
+        # absolute set_xy(..., row_y), a page break landing between
+        # two cells of the SAME row left the later cells stranded at
+        # the old row_y coordinate on the new page (right under the
+        # header band), producing pages with a single orphaned date
+        # or pill and nothing else. Found in the first real
+        # multi-hundred-row report ever generated -- and missed in my
+        # own stress test too, because I only checked 2 of 28 pages
+        # before calling it verified. Checking every page now.
+        if pdf.get_y() + ROW_H > pdf.page_break_trigger:
+            pdf.add_page()
+            _draw_timeline_header()
         row_y = pdf.get_y()
         if i % 2 == 0:
             pdf.set_fill_color(248, 249, 251)
-            pdf.rect(pdf.l_margin, row_y, sum(col_w), 6.5, style="F")
+            pdf.rect(pdf.l_margin, row_y, sum(col_w), ROW_H, style="F")
         pdf.set_xy(pdf.l_margin, row_y)
-        pdf.cell(col_w[0], 6.5, _safe(a["triggered_at"].strftime("%Y-%m-%d %H:%M")))
+        pdf.cell(col_w[0], ROW_H, _safe(a["triggered_at"].strftime("%Y-%m-%d %H:%M")))
         pdf.pill(pdf.get_x(), row_y + 0.4, a.get("severity") or "-", _severity_color(a.get("severity")), w=col_w[1] - 2)
         pdf.set_xy(pdf.get_x() + col_w[1], row_y)
         pdf.pill(pdf.get_x(), row_y + 0.4, a.get("status") or "-", _status_color(a.get("status")), w=col_w[2] - 2)
         pdf.set_xy(pdf.get_x() + col_w[2], row_y)
-        pdf.cell(col_w[3], 6.5, _safe((a.get("resource_name") or a["resource_id"])[:30]))
-        pdf.cell(col_w[4], 6.5, _safe(a.get("metric_name") or "-"))
-        pdf.cell(col_w[5], 6.5, _safe(a.get("value")), new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(col_w[3], ROW_H, _safe((a.get("resource_name") or a["resource_id"])[:30]))
+        pdf.cell(col_w[4], ROW_H, _safe(a.get("metric_name") or "-"))
+        pdf.cell(col_w[5], ROW_H, _safe(a.get("value")), new_x="LMARGIN", new_y="NEXT")
     if not alerts_list:
         pdf.multi_cell(0, 6, _safe("No alerts/events recorded in this period -- clean run."))
     elif len(shown_alerts) < len(alerts_list):
