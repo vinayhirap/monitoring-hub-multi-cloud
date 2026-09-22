@@ -3,9 +3,10 @@ from fastapi import APIRouter, HTTPException, Body, Depends
 from app.db import get_connection
 from app.auth.permissions import require_permission
 from app.auth import authorization as authz
+from app.auth.security import hash_password
 from app.email import mailer
-import bcrypt
 import datetime
+import hashlib
 import json
 import re
 import secrets
@@ -13,12 +14,20 @@ import secrets
 router = APIRouter(prefix="/api/users", tags=["Users"])
 
 
+# Audit B01 follow-up: this used to call bcrypt directly with its own
+# gensalt() and password[:72].encode() truncation -- a second, independent
+# implementation of exactly what app/auth/security.py already does (and
+# tests), so it silently diverged: it truncated by slicing the STRING to 72
+# rather than encoding then truncating BYTES (wrong on any password with a
+# multi-byte character near that boundary), and its cost was hardcoded
+# instead of following BCRYPT_ROUNDS. Reusing security.hash_password() here
+# means every password in this codebase is hashed exactly one way.
 def _hash_password(password: str) -> str:
-    # Raw bcrypt, not passlib \u2014 passlib's bcrypt backend detection is
-    # broken with the installed bcrypt version here (confirmed: raises
-    # ValueError, NOT the ImportError the old code only caught for \u2014
-    # meaning create_user() was silently 500ing before this fix).
-    return bcrypt.hashpw(password[:72].encode(), bcrypt.gensalt()).decode()
+    return hash_password(password)
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _serialize(obj):
@@ -178,8 +187,8 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
 
     if not username:
         raise HTTPException(status_code=400, detail="username required")
-    if not password or len(password) < 6:
-        raise HTTPException(status_code=400, detail="password min 6 characters")
+    if not password or len(password) < 8:
+        raise HTTPException(status_code=400, detail="password min 8 characters")
     if role not in ["admin", "editor", "viewer"]:
         raise HTTPException(status_code=400, detail="role must be admin, editor, or viewer")
     # SECURITY: only .strip()'d before this fix -- no format check, no
@@ -277,17 +286,31 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
     # succeeded above and must not be undone by a mail failure.
     email_sent = False
     if email and mailer.is_configured():
+        # Audit B01 follow-up: this token used to be INSERTed raw, unlike
+        # every other reset token in the system (app/api/auth.py's
+        # /forgot-password hashes with SHA-256 before storing -- see that
+        # module's docstring). Anyone with DB/backup read access could use
+        # a raw row here to log in as the new user without ever seeing the
+        # email. Stored hashed now; app/api/auth.py's /reset-password
+        # already accepts either form (it matches on SHA-256(token) OR, for
+        # anything that doesn't look like a 64-hex-char hash, the raw
+        # value), so the emailed link and the reset flow are unaffected.
         token      = secrets.token_urlsafe(32)
         expires_at = datetime.datetime.utcnow() + datetime.timedelta(minutes=60 * 24)
         mail_conn  = get_connection()
         mail_cur   = mail_conn.cursor()
-        mail_cur.execute(
-            "INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES (%s, %s, %s)",
-            (new_id, token, expires_at),
-        )
-        mail_conn.commit()
-        mail_cur.close()
-        mail_conn.close()
+        try:
+            mail_cur.execute(
+                "INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES (%s, %s, %s)",
+                (new_id, _token_hash(token), expires_at),
+            )
+            mail_conn.commit()
+        except Exception:
+            mail_conn.rollback()
+            raise
+        finally:
+            mail_cur.close()
+            mail_conn.close()
 
         reset_link = f"{mailer.get_public_app_url()}/reset-password?token={token}"
         email_sent = mailer.send_email(
