@@ -4,9 +4,18 @@ tests/test_users_admin_rbac.py
 Regression tests for audit chat 3 (RBAC administration APIs, files
 app/api/admin/users.py + groups.py), covering the fixes in this patch:
 
-  1. create_user() must INSERT into users.password_hash (the real
-     column -- see db/schema.sql) rather than a non-existent `password`
-     column, which previously 500'd on every call.
+  1. create_user() must INSERT into users.password -- CONFIRMED against
+     the live dev database via `SHOW COLUMNS FROM users` on 2026-09-22
+     (column is `password varchar(255)`, not `password_hash`). The
+     checked-in db/schema.sql in this repo is stale/drifted from the
+     real schema (the exact failure mode migration 011's own comment
+     warns about) and must not be trusted as the source of truth for a
+     column name -- an earlier version of this patch got this backwards
+     by trusting db/schema.sql instead of the live DB, which broke a
+     previously-working create_user on dev. This test now asserts
+     against the column confirmed live, and its name/docstring say so
+     explicitly, specifically so nobody "fixes" it back the wrong way
+     from schema.sql without re-checking the real database first.
   2. update_role() / delete_user() must refuse to demote or delete the
      last remaining admin.
 
@@ -74,19 +83,19 @@ def _load_users_module(script, conn_factory=FakeConn):
 ADMIN = {"id": 1, "username": "root-admin", "role": "admin"}
 
 
-# ── create_user: password column fix ────────────────────────────────
+# ── create_user: password column (confirmed live, see module docstring) ──
 
-def test_create_user_inserts_password_hash_not_password():
+def test_create_user_inserts_into_confirmed_live_password_column():
     """
-    db/schema.sql defines users.password_hash, not users.password.
-    Before this fix, create_user's INSERT named a column that does not
-    exist and every call 500'd. This asserts the INSERT is issued
-    against the real column and that the script only answers to that
-    -- a regression back to `password` makes FakeCursor raise
+    SHOW COLUMNS FROM users on the real dev database (2026-09-22)
+    confirmed the column is `password`, not `password_hash` --
+    db/schema.sql as checked into this repo is stale. This asserts the
+    INSERT targets the real column and that the script only answers to
+    that -- a regression to `password_hash` makes FakeCursor raise
     AssertionError("no script entry matched"), failing the test.
     """
     script = [
-        (contains("INSERT INTO users", "password_hash", "role", "email"),
+        (contains("INSERT INTO users (username, password, role, email)"),
          None),
     ]
     users_mod = _load_users_module(script, conn_factory=_FakeConnWithLastrowid)

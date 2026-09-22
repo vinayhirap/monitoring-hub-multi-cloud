@@ -224,7 +224,7 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
 
     try:
         cursor.execute(
-            "INSERT INTO users (username, password_hash, role, email) VALUES (%s, %s, %s, %s)",
+            "INSERT INTO users (username, password, role, email) VALUES (%s, %s, %s, %s)",
             (username, pw_hash, role, email)
         )
         conn.commit()
