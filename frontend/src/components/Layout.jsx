@@ -27,7 +27,7 @@ const NAV_ITEMS = [
   // route/page/backend all still fully intact at /op-events, just not
   // linked from the sidebar for now. Uncomment to re-enable.
   // { to: "/op-events",          label: "Operational Events", icon: OpEventsIcon,   roles: ["admin","editor","viewer"], perm: "operations.view" },
-  { to: "/escalation-policies", label: "Escalation Policies", icon: EscalationIcon, roles: ["admin","editor","viewer"], perm: "alerts.configure" },
+  { to: "/escalation-policies", label: "Escalation Policies", icon: EscalationIcon, roles: ["admin","editor","viewer"], perm: "escalation.view" },
   { to: "/synthetic-checks",    label: "Synthetic Checks",    icon: SyntheticIcon,  roles: ["admin","editor","viewer"], perm: "synthetic.view" },
   { to: "/slos",                label: "SLOs",                icon: SloIcon,        roles: ["admin","editor","viewer"], perm: "slo.view" },
   { to: "/security-findings",   label: "Security Findings",   icon: SecurityIcon,   roles: ["admin","editor","viewer"], perm: "security.view" },
@@ -42,6 +42,7 @@ const NAV_ITEMS = [
   { to: "/status-page-admin",   label: "Status Page",         icon: StatusPageIcon, roles: ["admin","editor"],          perm: "status_page.manage" },
   { to: "/reports",             label: "Reports",             icon: ReportsIcon,    roles: ["admin","editor","viewer"], perm: "reports.view", feature: "reports" },
   { to: "/settings",   label: "Settings",           icon: SettingsIcon,   roles: ["admin","editor"] },
+  { to: "/rbac-admin", label: "RBAC Administration", icon: RbacIcon,      roles: ["admin"],           perm: "roles.view" },
 ];
 
 export default function Layout() {
@@ -260,3 +261,4 @@ function DeployRiskIcon()  { return <svg width="16" height="16" viewBox="0 0 24 
 function SearchNavIcon()   { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>; }
 function StatusPageIcon()  { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z"/></svg>; }
 function ReportsIcon()     { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>; }
+function RbacIcon()        { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>; }

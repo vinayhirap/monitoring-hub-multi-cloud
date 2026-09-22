@@ -48,21 +48,30 @@ def _bust_accounts_cache():
 
 @router.get("")
 def list_accounts(current_user: dict = Depends(require_permission("accounts.view"))):
-    conn   = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
-        SELECT id, account_name, account_id, role_arn, provider,
-               external_id, default_region, status, created_at,
-               last_synced_at, last_discovered_at, description,
-               tenant_id, subscription_id, client_id,
-               project_id, service_account_email
-        FROM aws_accounts
-        WHERE status = 'active'
-        ORDER BY created_at DESC
-    """)
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT id, account_name, account_id, role_arn, provider,
+                   external_id, default_region, status, created_at,
+                   last_synced_at, last_discovered_at, description,
+                   tenant_id, subscription_id, client_id,
+                   project_id, service_account_email
+            FROM aws_accounts
+            WHERE status = 'active'
+            ORDER BY created_at DESC
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+    finally:
+        # Caught live while verifying the new RBAC admin frontend page
+        # against a real schema -- an unrelated SQL error here leaked
+        # the connection because conn.close() had no try/finally, same
+        # bug class fixed elsewhere this audit pass (app/audit.py,
+        # app/api/auth.py). This is the account-listing endpoint every
+        # other page in the app calls to populate an account picker,
+        # so it's one of the more frequently-hit call sites in the app.
+        conn.close()
 
     accessible = get_accessible_account_ids(current_user)
     if accessible is not None:

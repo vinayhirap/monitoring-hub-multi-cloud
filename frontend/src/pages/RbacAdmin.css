@@ -1,0 +1,33 @@
+/* src/pages/RbacAdmin.css
+   Reuses UserManagement.css's shared classes (page-header, tabs,
+   modal dialogs, form fields, permission chips, buttons, user-row
+   layout, role badges, users-list states, groups-panel-header,
+   field-hint) imported alongside this file in RbacAdmin.jsx -- only
+   what's genuinely new to this page lives here. */
+
+.rbac-row { cursor: default; }
+
+.perm-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.perm-chip.toggle {
+  border: 1px solid transparent; cursor: pointer; font-family: var(--font-mono);
+  transition: all .12s;
+}
+.perm-chip.toggle:hover { opacity: .85; }
+.perm-chip.toggle.granted { background: rgba(34,197,94,.1); color: #86efac; border-color: rgba(34,197,94,.25); }
+.perm-chip.toggle.denied  { background: var(--bg-input); color: var(--text-muted); border-color: var(--border); }
+
+.rbac-perm-editor {
+  display: flex; flex-direction: column; gap: 14px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px;
+}
+.rbac-perm-category { display: flex; flex-direction: column; gap: 6px; }
+.rbac-perm-cat-label {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text-muted); font-family: var(--font-mono);
+}
+
+@media (max-width: 700px) {
+  .rbac-perm-editor { max-height: 260px; overflow-y: auto; }
+}
