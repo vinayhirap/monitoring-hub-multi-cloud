@@ -81,8 +81,9 @@ def _stub_and_load(conn):
     # `app` module in sys.modules has no __path__ for a real submodule
     # to resolve against. None of these tests touch actual boto3 client
     # construction, so the value itself doesn't matter -- it only needs
-    # to exist so the import resolves.
-    install_stub("app.aws.boto_config", STANDARD_RETRY=None)
+    # to exist so the import resolves. CONCURRENT_CLIENT_RETRY was added
+    # alongside it (S3 connection-pool fix) for the same reason.
+    install_stub("app.aws.boto_config", STANDARD_RETRY=None, CONCURRENT_CLIENT_RETRY=None)
     return load_module("app/aws/collector_direct.py")
 
 
@@ -207,3 +208,51 @@ def test_vm_query_is_not_imported_anymore():
     conn = _RoutingConn()
     mod = _stub_and_load(conn)
     assert not hasattr(mod, "vm_query")
+
+
+# ── _s3_raw connection-pool fix ──────────────────────────────────────
+# Regression test for the "Connection pool is full, discarding
+# connection: s3.*.amazonaws.com. Connection pool size: 10" warnings
+# seen in production. Root cause: _s3_raw() shares ONE boto3 S3 client
+# across up to 20 ThreadPoolExecutor workers, but the client was built
+# with no Config at all -- botocore's default max_pool_connections is
+# 10, so more than 10 concurrent workers silently drop the excess
+# connections instead of reusing them. Source-inspected (like the
+# LOCAL_METRIC_STUB tests above) rather than exercised end-to-end,
+# since actually driving 20 concurrent workers through a real/mocked
+# boto3 S3 client is a lot of test weight for what is fundamentally a
+# "this one Config kwarg is present" check.
+
+def test_s3_raw_client_uses_the_concurrent_pool_config():
+    conn = _RoutingConn()
+    mod = _stub_and_load(conn)
+    import inspect
+    src = inspect.getsource(mod._s3_raw)
+    assert 'client(\n                      "s3", config=CONCURRENT_CLIENT_RETRY)' in src \
+        or 'config=CONCURRENT_CLIENT_RETRY' in src, (
+        "_s3_raw's shared S3 client must pass config=CONCURRENT_CLIENT_RETRY "
+        "-- without it, botocore's default max_pool_connections=10 is too "
+        "small for this function's 20-worker ThreadPoolExecutor and "
+        "connections get silently dropped under load"
+    )
+
+
+def test_concurrent_client_retry_config_has_adequate_pool_and_adaptive_retry():
+    """
+    Pins the actual values in app/aws/boto_config.py directly, loaded
+    in isolation via load_module() rather than a plain `from
+    app.aws.boto_config import ...` -- this file's other tests stub
+    "app.aws.boto_config" in sys.modules (see _stub_and_load above),
+    and a plain import here would be vulnerable to picking up that
+    stub's STANDARD_RETRY=None/CONCURRENT_CLIENT_RETRY=None under
+    full-suite test ordering instead of the real values. A future edit
+    could weaken the pool size or drop the retry mode without any test
+    here noticing otherwise.
+    """
+    from tests.conftest import load_module
+    mod = load_module("app/aws/boto_config.py")
+    assert mod.CONCURRENT_CLIENT_RETRY.max_pool_connections > 10
+    assert mod.CONCURRENT_CLIENT_RETRY.retries["mode"] == "adaptive"
+    # Must still be a superset of the app-wide retry policy, not a
+    # separate one-off that could drift from it.
+    assert mod.CONCURRENT_CLIENT_RETRY.retries == mod.STANDARD_RETRY.retries

@@ -32,7 +32,7 @@ from app.collector.disk_mounts import all_cwagent_disk_dims
 from datetime import datetime, timedelta, timezone
 # vm_client fully retired from THIS file (apply_final_cleanup.py): vm_query_all went in Phase 4b, vm_query's only use (StatusCheckFailed) is fixed by describe_polling.py now also writing locally. vm_client.py itself is NOT retired overall -- see that script's docstring for its one remaining legitimate use (ALB target-group health, external-Grafana-compatible, in app/aws/describe_polling.py).
 from app.db import get_connection
-from app.aws.boto_config import STANDARD_RETRY
+from app.aws.boto_config import STANDARD_RETRY, CONCURRENT_CLIENT_RETRY
 
 logger = logging.getLogger(__name__)
 
@@ -583,10 +583,20 @@ def _s3_raw(role_arn=None, external_id=None, account=None) -> list:
     now roughly "as long as the single slowest bucket's 3 calls take"
     -- for 45 buckets, ~35s down to ~1-2s in practice. Result content
     and per-call failure handling are unchanged from before.
+
+    The single `s3` client below is shared across all 20 worker
+    threads, so it needs CONCURRENT_CLIENT_RETRY (max_pool_connections
+    raised past botocore's default of 10) -- without it, urllib3 logs
+    "Connection pool is full, discarding connection" once more than
+    10 of the up-to-20 workers have a request in flight, and each
+    discarded connection means a fresh TCP+TLS handshake on the next
+    call instead of a reused one, quietly eating into the speedup this
+    function exists to provide.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     try:
-        s3      = get_session(None, role_arn, external_id, account).client("s3")
+        s3      = get_session(None, role_arn, external_id, account).client(
+                      "s3", config=CONCURRENT_CLIENT_RETRY)
         buckets = s3.list_buckets().get("Buckets", [])
         out     = []
         with ThreadPoolExecutor(max_workers=min(len(buckets), 20) or 1) as ex:

@@ -27,6 +27,19 @@ config=STANDARD_RETRY. This does not change connection pooling or
 timeouts -- only retry/backoff behavior. Kept as a single shared object
 (not a factory function) because botocore Config objects are immutable
 and safe to reuse across every client construction.
+
+CONCURRENT_CLIENT_RETRY is for the smaller set of call sites that hand
+ONE client to a ThreadPoolExecutor and fan requests out across several
+worker threads (e.g. collector_direct.py's _s3_raw(), which runs up to
+20 workers against one S3 client). botocore's default
+max_pool_connections is 10 regardless of retry mode, so a client with
+more than 10 concurrent callers silently drops the excess connections
+instead of reusing them (logged by urllib3 as "Connection pool is
+full, discarding connection") -- each dropped connection means a fresh
+TCP+TLS handshake next call instead of reuse, which is real overhead
+and defeats the point of adding the concurrency in the first place.
+Only use this where a client is genuinely shared across a thread pool;
+a client used by one thread at a time has no need for a larger pool.
 """
 from botocore.config import Config
 
@@ -36,3 +49,5 @@ STANDARD_RETRY = Config(
         "mode": "adaptive",  # client-side rate limiting + retry, not bare retry
     },
 )
+
+CONCURRENT_CLIENT_RETRY = STANDARD_RETRY.merge(Config(max_pool_connections=25))
