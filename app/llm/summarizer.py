@@ -298,6 +298,24 @@ def refresh_ollama_model() -> bool:
     except Exception as e:
         logger.warning(f"[llm_summarizer] Ollama model refresh failed (non-fatal): {e}")
         return False
+
+
+# 2026-09-22 FIX: this function's `def` line was missing entirely --
+# everything below (docstring + body) was sitting as unreachable dead
+# code after refresh_ollama_model()'s own `return False` above, at the
+# same indentation, so it silently executed as part of THAT function
+# and never as its own. Since `polish_summary` therefore never existed
+# as a name in this module's namespace, every import of it
+# (app/collector/llm_summarizer.py's `from app.llm.summarizer import
+# is_enabled, polish_summary, source_hash`) failed with ImportError,
+# which is non-fatal there (see that module's own try/except) but meant
+# every alert's LLM-polished summary silently fell back to the plain
+# rca.py template, indefinitely, with only a WARNING-level log line
+# (`[llm_summary_refresh_failed] ... cannot import name 'polish_summary'
+# from 'app.llm.summarizer'`) as the only trace. No logic here has
+# changed from what was already written -- this only makes it a real,
+# callable, importable function again.
+def polish_summary(facts: dict, deterministic_summary: str) -> str:
     """
     Returns a polished paragraph, or the ORIGINAL deterministic_summary
     unchanged if the feature is disabled, misconfigured, or the call
