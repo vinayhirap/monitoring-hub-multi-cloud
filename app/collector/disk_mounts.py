@@ -77,6 +77,28 @@ logger = logging.getLogger(__name__)
 ROOT_PATHS = ("/", "C:")
 BASE_METRIC_NAME = "disk_used_percent"
 
+# CWAgent's disk metric is OS-dependent, not just the dimension shape:
+# Linux publishes `disk_used_percent` (this codebase's only assumption
+# until now); Windows publishes Windows-perfmon-style `LogicalDisk %
+# Free Space` instead -- a DIFFERENT metric name under a DIFFERENT
+# dimension (`instance`, e.g. "C:", not `path`), and semantically the
+# INVERSE of disk_used_percent (free space, not used space).
+#
+# Confirmed live against i-0424cb66e22e05a21 (U4RAD-JUMP,
+# ami-049f0f6f51145ff40 -- a Windows AMI): CWAgent was installed and
+# actively publishing real data every cycle (verified via
+# cw.list_metrics with the correct per-account credentials), but every
+# disk_used_percent/mem_used_percent lookup in this codebase came back
+# empty because they only ever searched for the Linux metric name.
+# cwagent_installed still came back True (list_metrics matched SOME
+# CWAgent metric for the instance), so the chart panel rendered but
+# stayed permanently "No data" -- on every Windows EC2 instance across
+# every account on this platform, not just this one. Root of the
+# original support ticket this was traced from was actually unrelated
+# (alert self-resolve timing, see chat history) -- this is a separate,
+# real bug found along the way while checking screenshots for it.
+WINDOWS_DISK_METRIC_NAME = "LogicalDisk % Free Space"
+
 # Pseudo/ephemeral filesystems that CWAgent will happily report
 # disk_used_percent for alongside real mounts, but which are never a
 # genuine "is this disk filling up" concern -- worst offender: snap's
@@ -130,39 +152,61 @@ def metric_name_for_mount(path: str) -> str:
 
 def all_cwagent_disk_dims(cw, instance_id):
     """
-    Returns [(dimensions, path, metric_name), ...] for EVERY mount point
-    CWAgent has published disk_used_percent under for this instance
-    that's a genuine, actionable mount -- pseudo/ephemeral filesystems
-    (snap loopbacks, tmpfs, /proc, /sys, etc. -- see _is_real_mount())
-    are filtered out before registration, since those would otherwise
-    get treated as real disk-space metrics and could fire permanently-
-    stuck thresholds. Root is always included regardless of fstype.
-    Empty list if CWAgent isn't reporting disk_used_percent at all for
-    this instance.
+    Returns [(dimensions, path, metric_name, cw_metric_name, invert), ...]
+    for EVERY mount point CWAgent has published disk data under for this
+    instance that's a genuine, actionable mount -- pseudo/ephemeral
+    filesystems (snap loopbacks, tmpfs, /proc, /sys, etc. -- see
+    _is_real_mount()) are filtered out before registration, since those
+    would otherwise get treated as real disk-space metrics and could
+    fire permanently-stuck thresholds. Root is always included
+    regardless of fstype. Empty list if CWAgent isn't reporting disk
+    data at all for this instance.
+
+    cw_metric_name / invert (new): which actual CloudWatch metric this
+    mount's data lives under, and whether the caller needs to compute
+    (100 - value) before treating it as disk_used_percent -- Windows'
+    LogicalDisk % Free Space is a different metric with inverted
+    semantics, not a same-shape rename of the Linux one. See
+    WINDOWS_DISK_METRIC_NAME above for the full incident this fixes.
+    An instance only ever reports one OS's metric set, so the Windows
+    lookup only runs when the Linux one found nothing.
     """
     try:
         resp = cw.list_metrics(
             Namespace="CWAgent", MetricName=BASE_METRIC_NAME,
             Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
         )
-        metrics = resp.get("Metrics", [])
+        found = [(m, BASE_METRIC_NAME, False) for m in resp.get("Metrics", [])]
     except Exception as e:
         logger.warning(f"CWAgent disk mount lookup [{instance_id}]: {e}")
-        return []
+        found = []
+
+    if not found:
+        try:
+            resp = cw.list_metrics(
+                Namespace="CWAgent", MetricName=WINDOWS_DISK_METRIC_NAME,
+                Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
+            )
+            found = [(m, WINDOWS_DISK_METRIC_NAME, True) for m in resp.get("Metrics", [])]
+        except Exception as e:
+            logger.warning(f"CWAgent disk mount lookup (Windows) [{instance_id}]: {e}")
+            found = []
 
     out = []
     seen_paths = set()
     skipped = []
-    for m in metrics:
+    for m, cw_metric_name, invert in found:
         dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
-        path = dims.get("path") or "/"
+        # Linux dimensions the mount under `path`; Windows CWAgent uses
+        # `instance` instead (e.g. "C:") and has no `path` key at all.
+        path = dims.get("path") or dims.get("instance") or "/"
         if path in seen_paths:
             continue  # CWAgent can report the same path under >1 device/fstype combo
         seen_paths.add(path)
         if path not in ROOT_PATHS and not _is_real_mount(path, dims):
             skipped.append(path)
             continue
-        out.append((m["Dimensions"], path, metric_name_for_mount(path)))
+        out.append((m["Dimensions"], path, metric_name_for_mount(path), cw_metric_name, invert))
     if skipped:
         logger.info(f"disk_mounts: skipped {len(skipped)} pseudo/ephemeral mount(s) for {instance_id}: {sorted(skipped)}")
     return out

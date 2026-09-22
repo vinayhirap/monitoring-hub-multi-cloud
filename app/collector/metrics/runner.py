@@ -357,9 +357,39 @@ def _ec2_instances_with_cwagent_mem_dims(cw, resources):
             )
             metrics = resp.get("Metrics", [])
             if metrics:
-                result[r["resource_id"]] = (r, metrics[0]["Dimensions"])
+                result[r["resource_id"]] = (r, metrics[0]["Dimensions"], "mem_used_percent")
+                continue
         except Exception as e:
             logger.warning(f"CWAgent presence check [{r['resource_id']}]: {e}")
+            continue
+
+        # Linux metric name found nothing -- try Windows' equivalent
+        # before giving up. CWAgent's memory metric is OS-dependent:
+        # Windows publishes "Memory % Committed Bytes In Use" instead
+        # of "mem_used_percent". Confirmed live against
+        # i-0424cb66e22e05a21 (U4RAD-JUMP, a Windows instance) that
+        # CWAgent was installed and actively reporting -- just under
+        # this different name, which nothing in this codebase searched
+        # for until now. See WINDOWS_DISK_METRIC_NAME in
+        # app/collector/disk_mounts.py for the full incident writeup
+        # (same root cause, found via the disk metric first).
+        #
+        # ASSUMPTION, not yet independently verified against a known
+        # real Windows box's Task-Manager-reported memory usage: this
+        # metric is treated as equivalent in meaning to mem_used_percent
+        # (higher = more memory pressure, no inversion needed, unlike
+        # the disk metric).
+        try:
+            resp = cw.list_metrics(
+                Namespace="CWAgent",
+                MetricName="Memory % Committed Bytes In Use",
+                Dimensions=[{"Name": "InstanceId", "Value": r["resource_id"]}],
+            )
+            metrics = resp.get("Metrics", [])
+            if metrics:
+                result[r["resource_id"]] = (r, metrics[0]["Dimensions"], "Memory % Committed Bytes In Use")
+        except Exception as e:
+            logger.warning(f"CWAgent presence check (Windows) [{r['resource_id']}]: {e}")
     return result
 
 
@@ -371,14 +401,14 @@ def _collect_ec2_cwagent_mem(cw, resources):
 
     queries = []
     id_map = {}
-    for i, (resource, dims) in enumerate(cwagent_map.values()):
+    for i, (resource, dims, cw_metric_name) in enumerate(cwagent_map.values()):
         qid = f"cwmem{i}"
         queries.append({
             "Id": qid,
             "MetricStat": {
                 "Metric": {
                     "Namespace": "CWAgent",
-                    "MetricName": "mem_used_percent",
+                    "MetricName": cw_metric_name,
                     "Dimensions": dims,  # full, DISCOVERED set -- not assumed
                 },
                 "Period": 60,
@@ -386,6 +416,9 @@ def _collect_ec2_cwagent_mem(cw, resources):
             },
             "ReturnData": True,
         })
+        # DB metric_name stays "mem_used_percent" regardless of which
+        # OS/CW metric fed it -- every threshold/alert/chart downstream
+        # keys on this name, unchanged either way.
         id_map[qid] = (resource["id"], "mem_used_percent")
 
     n = _execute_gmd(cw, queries, id_map, minutes=16)
@@ -413,22 +446,51 @@ def _collect_ec2_cwagent_disk(cw, resources, account_id):
         if not mounts:
             continue
         instances_reporting += 1
-        for dims, path, metric_name in mounts:
+        for dims, path, metric_name, cw_metric_name, invert in mounts:
             ensure_disk_mount_metric_registered(account_id, "ec2", metric_name, path)
             qid = f"cwdisk{len(queries)}"
-            queries.append({
-                "Id": qid,
-                "MetricStat": {
-                    "Metric": {
-                        "Namespace": "CWAgent",
-                        "MetricName": "disk_used_percent",  # CW metric name never changes -- only our db metric_name is suffixed
-                        "Dimensions": dims,
+            if invert:
+                # Windows' LogicalDisk % Free Space is the INVERSE of
+                # disk_used_percent -- compute (100 - free%) via a
+                # CloudWatch metric-math expression so the stored value
+                # keeps the same "higher = more full" meaning as every
+                # existing Linux threshold/alert built on
+                # disk_used_percent. See WINDOWS_DISK_METRIC_NAME in
+                # app/collector/disk_mounts.py for the full writeup.
+                raw_id = f"{qid}raw"
+                queries.append({
+                    "Id": raw_id,
+                    "MetricStat": {
+                        "Metric": {
+                            "Namespace": "CWAgent",
+                            "MetricName": cw_metric_name,
+                            "Dimensions": dims,
+                        },
+                        "Period": 60,
+                        "Stat": "Average",
                     },
-                    "Period": 60,
-                    "Stat": "Average",
-                },
-                "ReturnData": True,
-            })
+                    "ReturnData": False,
+                })
+                queries.append({
+                    "Id": qid,
+                    "Expression": f"100 - {raw_id}",
+                    "Label": metric_name,
+                    "ReturnData": True,
+                })
+            else:
+                queries.append({
+                    "Id": qid,
+                    "MetricStat": {
+                        "Metric": {
+                            "Namespace": "CWAgent",
+                            "MetricName": cw_metric_name,  # CW metric name never changes -- only our db metric_name is suffixed
+                            "Dimensions": dims,
+                        },
+                        "Period": 60,
+                        "Stat": "Average",
+                    },
+                    "ReturnData": True,
+                })
             id_map[qid] = (r["id"], metric_name)
 
     n = _execute_gmd(cw, queries, id_map, minutes=16)
