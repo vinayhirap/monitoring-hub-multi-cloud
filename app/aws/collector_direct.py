@@ -27,7 +27,7 @@ Two GMD helpers (unchanged, still used for the boto3 fallback paths):
   _gmd_snapshot(cw, queries)  — latest single value per metric (for list views)
   _gmd_series(cw, queries)    — time-series arrays (for chart/detail views)
 """
-import boto3, logging, time, math
+import boto3, logging, time, math, threading
 from app.collector.disk_mounts import all_cwagent_disk_dims
 from datetime import datetime, timedelta, timezone
 # vm_client fully retired from THIS file (apply_final_cleanup.py): vm_query_all went in Phase 4b, vm_query's only use (StatusCheckFailed) is fixed by describe_polling.py now also writing locally. vm_client.py itself is NOT retired overall -- see that script's docstring for its one remaining legitimate use (ALB target-group health, external-Grafana-compatible, in app/aws/describe_polling.py).
@@ -63,25 +63,25 @@ def _metric_snapshot_query_all(resource_type, db_metric_name, account_id=None):
     _metric_history_query_range below.
     """
     out = {}
+    if account_id is None:
+        # audit(b11): fail CLOSED. The old unscoped fallback read every
+        # account's `metrics` rows for this resource_type and keyed them
+        # by bare resource_id -- the exact cross-account bleed described
+        # above. Every live caller passes an account now, so a missing
+        # one is a caller bug to surface, not a reason to pool accounts.
+        logger.warning(f"metric snapshot query_all called without account_id [{resource_type}/{db_metric_name}] -- returning empty")
+        return out
     try:
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
         try:
-            if account_id is not None:
-                cur.execute(
-                    """SELECT r.resource_id, m.metric_value
-                       FROM metrics m JOIN resources r ON r.id = m.resource_id
-                       WHERE r.resource_type = %s AND m.metric_name = %s
-                             AND r.aws_account_id = %s""",
-                    (resource_type, db_metric_name, account_id),
-                )
-            else:
-                cur.execute(
-                    """SELECT r.resource_id, m.metric_value
-                       FROM metrics m JOIN resources r ON r.id = m.resource_id
-                       WHERE r.resource_type = %s AND m.metric_name = %s""",
-                    (resource_type, db_metric_name),
-                )
+            cur.execute(
+                """SELECT r.resource_id, m.metric_value
+                   FROM metrics m JOIN resources r ON r.id = m.resource_id
+                   WHERE r.resource_type = %s AND m.metric_name = %s
+                         AND r.aws_account_id = %s""",
+                (resource_type, db_metric_name, account_id),
+            )
             for row in cur.fetchall():
                 if row["metric_value"] is not None:
                     out[row["resource_id"]] = float(row["metric_value"])
@@ -91,6 +91,9 @@ def _metric_snapshot_query_all(resource_type, db_metric_name, account_id=None):
     except Exception as e:
         logger.warning(f"metric snapshot query_all failed [{resource_type}/{db_metric_name}]: {e}")
     return out
+
+
+_HISTORY_MATCH_FIELDS = ("resource_id", "name")
 
 
 def _metric_history_query_range(resource_type, identifier, db_metric_name,
@@ -125,22 +128,25 @@ def _metric_history_query_range(resource_type, identifier, db_metric_name,
     to be a single all-or-nothing change across every caller in this
     file at once.
     """
+    if match_field not in _HISTORY_MATCH_FIELDS:
+        # audit(b11): match_field is interpolated into SQL below -- enforce
+        # the "always one of two literals" contract instead of trusting it.
+        logger.error(f"metric_history query_range: invalid match_field {match_field!r}")
+        return []
+    if account_id is None:
+        # audit(b11): fail CLOSED -- see _metric_snapshot_query_all.
+        logger.warning(f"metric_history query_range called without account_id [{resource_type}/{identifier}] -- returning empty")
+        return []
     try:
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
         try:
-            if account_id is not None:
-                cur.execute(
-                    f"""SELECT id FROM resources
-                        WHERE resource_type = %s AND {match_field} = %s
-                              AND aws_account_id = %s LIMIT 1""",
-                    (resource_type, identifier, account_id),
-                )
-            else:
-                cur.execute(
-                    f"SELECT id FROM resources WHERE resource_type = %s AND {match_field} = %s LIMIT 1",
-                    (resource_type, identifier),
-                )
+            cur.execute(
+                f"""SELECT id FROM resources
+                    WHERE resource_type = %s AND {match_field} = %s
+                          AND aws_account_id = %s LIMIT 1""",
+                (resource_type, identifier, account_id),
+            )
             row = cur.fetchone()
             if not row:
                 return []
@@ -174,14 +180,52 @@ _CACHE_TTL   = 60
 _LAMBDA_SERIES_CACHE_TTL = 300
 
 
+# audit(b11): _cached is hit concurrently by uvicorn request threads and
+# the per-account ThreadPoolExecutor in get_account_summary. Without a
+# lock, N simultaneous misses on one key ran fn() N times (duplicate AWS
+# calls, incl. billed GetMetricData for ECS), and expired entries were
+# never removed. Single-flight per key + periodic pruning fixes both.
+_cache_lock      = threading.Lock()
+_cache_key_locks: dict = {}
+_CACHE_PRUNE_EVERY = 200
+_cache_writes    = 0
+
+
+def _cache_fresh(key, ttl, now):
+    entry = _cache.get(key)
+    if entry is not None and now - entry["ts"] < ttl:
+        return entry
+    return None
+
+
+def _cache_prune_locked(now):
+    for k in [k for k, e in _cache.items() if now - e["ts"] >= e.get("ttl", _CACHE_TTL)]:
+        _cache.pop(k, None)
+        lk = _cache_key_locks.get(k)
+        if lk is not None and not lk.locked():
+            _cache_key_locks.pop(k, None)
+
+
 def _cached(key: str, fn, ttl: int = None):
+    global _cache_writes
     ttl = _CACHE_TTL if ttl is None else ttl
-    now = time.time()
-    if key in _cache and now - _cache[key]["ts"] < ttl:
-        return _cache[key]["data"]
-    result = fn()
-    _cache[key] = {"data": result, "ts": now}
-    return result
+    entry = _cache_fresh(key, ttl, time.time())
+    if entry is not None:
+        return entry["data"]
+    with _cache_lock:
+        key_lock = _cache_key_locks.setdefault(key, threading.Lock())
+    with key_lock:
+        entry = _cache_fresh(key, ttl, time.time())
+        if entry is not None:
+            return entry["data"]
+        result = fn()
+        now = time.time()
+        with _cache_lock:
+            _cache[key] = {"data": result, "ts": now, "ttl": ttl}
+            _cache_writes += 1
+            if _cache_writes % _CACHE_PRUNE_EVERY == 0:
+                _cache_prune_locked(now)
+        return result
 
 
 def get_session(region=None, role_arn=None, external_id=None, account=None):
@@ -253,10 +297,21 @@ def get_session(region=None, role_arn=None, external_id=None, account=None):
 
 
 def _smart_period(hours: int) -> int:
-    """CloudWatch max 1440 datapoints/request. Period must be multiple of 60."""
+    """
+    CloudWatch max 1440 datapoints/request. Period must be a multiple of
+    60 -- and, per CloudWatch retention, a multiple of 300 when the start
+    time is 15-63 days ago and of 3600 when it is >63 days ago, otherwise
+    CloudWatch silently returns NO datapoints (audit b11).
+    """
     period = math.ceil(hours * 3600 / 1440)
     period = max(60, period)
-    return math.ceil(period / 60) * 60
+    if hours > 63 * 24:
+        step = 3600
+    elif hours > 15 * 24:
+        step = 300
+    else:
+        step = 60
+    return math.ceil(period / step) * step
 
 
 # ── GMD core helpers (still used for ECS / Lambda / uncovered-ALB) ──────
@@ -291,6 +346,31 @@ def _safe_qid(s: str) -> str:
     return s
 
 
+_GMD_MAX_PAGES = 50
+
+
+def _gmd_pages(cw, chunk, start, end, scan_by):
+    """
+    Yields every MetricDataResult for one <=500-query chunk, following
+    NextToken (audit b11: GetMetricData caps each response at 100,800
+    datapoints and returns the rest behind NextToken -- the old callers
+    read page 1 only, and a result Id that spans pages had its first
+    page overwritten by the second).
+    """
+    token = None
+    for _ in range(_GMD_MAX_PAGES):
+        kwargs = dict(MetricDataQueries=chunk, StartTime=start, EndTime=end, ScanBy=scan_by)
+        if token:
+            kwargs["NextToken"] = token
+        resp = cw.get_metric_data(**kwargs)
+        for r in resp.get("MetricDataResults", []):
+            yield r
+        token = resp.get("NextToken")
+        if not token:
+            return
+    logger.warning(f"GMD: stopped after {_GMD_MAX_PAGES} pages, result may be partial")
+
+
 def _gmd_snapshot(cw, queries, minutes=3):
     """
     Fetch latest single value for each query. Returns {query_id: float} --
@@ -321,21 +401,17 @@ def _gmd_snapshot(cw, queries, minutes=3):
     end   = datetime.now(timezone.utc)
     start = end - timedelta(minutes=minutes)
     out   = {}
-    try:
-        for i in range(0, len(queries), 500):
-            chunk = queries[i:i + 500]
-            resp  = cw.get_metric_data(
-                MetricDataQueries=chunk,
-                StartTime=start,
-                EndTime=end,
-                ScanBy="TimestampDescending",
-            )
-            for r in resp.get("MetricDataResults", []):
+    for i in range(0, len(queries), 500):
+        chunk = queries[i:i + 500]
+        try:
+            for r in _gmd_pages(cw, chunk, start, end, "TimestampDescending"):
                 vals = r.get("Values", [])
-                if vals:
+                # First page holds the newest point (TimestampDescending);
+                # a later page for the same Id must not overwrite it.
+                if vals and r["Id"] not in out:
                     out[r["Id"]] = vals[0]
-    except Exception as e:
-        logger.error(f"GMD snapshot failed: {e}")
+        except Exception as e:
+            logger.error(f"GMD snapshot failed (chunk {i // 500}): {e}")
     return out
 
 
@@ -360,24 +436,18 @@ def _gmd_series(cw, queries, hours=6):
         # and it goes through the branch above on its own turn.
         adjusted.append(q2)
 
-    try:
-        for i in range(0, len(adjusted), 500):
-            chunk = adjusted[i:i + 500]
-            resp  = cw.get_metric_data(
-                MetricDataQueries=chunk,
-                StartTime=start,
-                EndTime=end,
-                ScanBy="TimestampAscending",
-            )
-            for r in resp.get("MetricDataResults", []):
+    for i in range(0, len(adjusted), 500):
+        chunk = adjusted[i:i + 500]
+        try:
+            for r in _gmd_pages(cw, chunk, start, end, "TimestampAscending"):
                 timestamps = r.get("Timestamps", [])
                 values     = r.get("Values", [])
-                out[r["Id"]] = [
+                out.setdefault(r["Id"], []).extend(
                     {"t": t.isoformat(), "v": round(v, 4)}
                     for t, v in zip(timestamps, values)
-                ]
-    except Exception as e:
-        logger.error(f"GMD series failed: {e}")
+                )
+        except Exception as e:
+            logger.error(f"GMD series failed (chunk {i // 500}): {e}")
     return out
 
 
@@ -389,11 +459,11 @@ def collect_ec2_instances(region=None, role_arn=None, external_id=None, account=
 
 def _ec2_raw(region, role_arn=None, external_id=None, account=None) -> list:
     try:
-        ec2 = get_session(region, role_arn, external_id, account).client("ec2")
+        ec2 = get_session(region, role_arn, external_id, account).client("ec2", config=STANDARD_RETRY)
         instances = []
-        for r in ec2.describe_instances()["Reservations"]:
-            for inst in r["Instances"]:
-                instances.append(inst)
+        for page in ec2.get_paginator("describe_instances").paginate():
+            for r in page.get("Reservations", []):
+                instances.extend(r.get("Instances", []))
 
         # One DB query per metric gets EVERY instance's current value at
         # once -- same "one call, not one per instance" shape the VM call
@@ -447,8 +517,9 @@ def collect_ebs_volumes(region=None, role_arn=None, external_id=None, account=No
 
 def _ebs_raw(region, role_arn=None, external_id=None, account=None) -> list:
     try:
-        ec2  = get_session(region, role_arn, external_id, account).client("ec2")
-        vols = ec2.describe_volumes().get("Volumes", [])
+        ec2  = get_session(region, role_arn, external_id, account).client("ec2", config=STANDARD_RETRY)
+        vols = [v for page in ec2.get_paginator("describe_volumes").paginate()
+                for v in page.get("Volumes", [])]
 
         acc_id        = (account or {}).get("id")
         read_ops_map  = _metric_snapshot_query_all("ebs", "volumereadops", account_id=acc_id)
@@ -512,9 +583,11 @@ def collect_rds_instances(region=None, role_arn=None, external_id=None, account=
 
 def _rds_raw(region, role_arn=None, external_id=None, account=None) -> list:
     try:
-        rds = get_session(region, role_arn, external_id, account).client("rds")
+        rds = get_session(region, role_arn, external_id, account).client("rds", config=STANDARD_RETRY)
         out = []
-        for db in rds.describe_db_instances()["DBInstances"]:
+        dbs = [d for page in rds.get_paginator("describe_db_instances").paginate()
+               for d in page.get("DBInstances", [])]
+        for db in dbs:
             out.append({
                 "db_instance_id":    db["DBInstanceIdentifier"],
                 "identifier":        db["DBInstanceIdentifier"],
@@ -538,6 +611,16 @@ def collect_s3_buckets(region=None, role_arn=None, external_id=None, account=Non
     cache_key = (account or {}).get("id") or role_arn or "self"
     return _cached(f"s3_global_{cache_key}", lambda: _s3_raw(role_arn, external_id, account))
 
+def _normalize_bucket_region(loc_constraint) -> str:
+    """GetBucketLocation returns None/"" for us-east-1 and the legacy
+    alias "EU" for eu-west-1 -- neither is a usable region name."""
+    if not loc_constraint:
+        return "us-east-1"
+    if loc_constraint == "EU":
+        return "eu-west-1"
+    return loc_constraint
+
+
 def _s3_bucket_detail(s3, b) -> dict:
     """
     The 3 per-bucket detail calls (location/versioning/public-access
@@ -549,23 +632,37 @@ def _s3_bucket_detail(s3, b) -> dict:
     name          = b["Name"]
     bucket_region = "us-east-1"
     versioning    = "Disabled"
-    public_access = False
+    # audit(b11): None = "could not determine" (UI renders "—"), instead of
+    # the old default False, which rendered a bucket we could not inspect
+    # (AccessDenied) -- or one with NO public-access block at all -- as a
+    # green "private".
+    public_access = None
     try:
         loc = s3.get_bucket_location(Bucket=name)
-        bucket_region = loc.get("LocationConstraint") or "us-east-1"
-    except Exception: pass
+        bucket_region = _normalize_bucket_region(loc.get("LocationConstraint"))
+    except Exception as e:
+        logger.debug(f"S3 get_bucket_location [{name}]: {e}")
     try:
         v = s3.get_bucket_versioning(Bucket=name)
         versioning = v.get("Status", "Disabled") or "Disabled"
-    except Exception: pass
+    except Exception as e:
+        logger.debug(f"S3 get_bucket_versioning [{name}]: {e}")
     try:
         cfg = s3.get_public_access_block(Bucket=name).get("PublicAccessBlockConfiguration", {})
         public_access = not all([
-            cfg.get("BlockPublicAcls",      True),
+            cfg.get("BlockPublicAcls",       True),
+            cfg.get("IgnorePublicAcls",      True),
             cfg.get("BlockPublicPolicy",     True),
             cfg.get("RestrictPublicBuckets", True),
         ])
-    except Exception: pass
+    except Exception as e:
+        code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
+        if code == "NoSuchPublicAccessBlockConfiguration":
+            # No bucket-level block configured at all -> not blocked at
+            # bucket level (same bucket-level semantics as above).
+            public_access = True
+        else:
+            logger.debug(f"S3 get_public_access_block [{name}]: {e}")
     cd = b.get("CreationDate", "")
     return {
         "bucket_name":   name,
@@ -619,82 +716,107 @@ def _s3_raw(role_arn=None, external_id=None, account=None) -> list:
 
 # ── S3 metric series (unchanged — not in YACE config) ────────────────────
 
+_S3_SERIES_CACHE_TTL = 900   # polling audit 2026-09-23: storage metrics are daily
+_S3_REGION_CACHE_TTL = 3600
+
+
+def _s3_bucket_region(session, bucket_name, account=None) -> str:
+    """S3 CloudWatch metrics are published in the BUCKET's region, not
+    us-east-1 (audit b11). Cached: a bucket's region never changes."""
+    acc_key = (account or {}).get("id", "none")
+
+    def _lookup():
+        try:
+            loc = session.client("s3", config=STANDARD_RETRY).get_bucket_location(Bucket=bucket_name)
+            return _normalize_bucket_region(loc.get("LocationConstraint"))
+        except Exception as e:
+            logger.warning(f"S3 bucket region lookup [{bucket_name}]: {e} -- falling back to us-east-1")
+            return "us-east-1"
+    return _cached(f"s3_region_{acc_key}_{bucket_name}", _lookup, ttl=_S3_REGION_CACHE_TTL)
+
+
 def get_s3_metric_series(bucket_name: str, hours: int = 24, account=None) -> dict:
-    """Cached 15 min per (bucket, hours, account): S3 storage metrics are
-    daily and request metrics are only charted, so re-running billed
-    GetMetricStatistics on every page view bought nothing (polling audit
-    2026-09-23)."""
-    return _cached(f"s3series_{(account or {}).get('id')}_{bucket_name}_{hours}",
-                   lambda: _get_s3_metric_series_raw(bucket_name, hours, account), ttl=900)
-
-
-def _get_s3_metric_series_raw(bucket_name: str, hours: int = 24, account=None) -> dict:
+    # audit(b11): 9 billed GetMetricStatistics calls per chart open were
+    # uncached; cache per account+bucket+hours. Failures are not cached
+    # (_cached never stores a raised exception).
+    acc_key = (account or {}).get("id", "none")
     try:
-        cw            = get_session(None, account=account).client(
-                            "cloudwatch", region_name="us-east-1", config=STANDARD_RETRY)
-        end           = datetime.now(timezone.utc)
-        effective_hrs = max(hours, 24 * 14)
-        start         = end - timedelta(hours=effective_hrs)
-        period        = max(_smart_period(effective_hrs), 86400)
-
-        def storage_series(metric, storage_type="StandardStorage"):
-            dims = [
-                {"Name": "BucketName",  "Value": bucket_name},
-                {"Name": "StorageType", "Value": storage_type},
-            ]
-            from botocore.exceptions import ClientError
-            try:
-                r = cw.get_metric_statistics(
-                    Namespace="AWS/S3", MetricName=metric, Dimensions=dims,
-                    StartTime=start, EndTime=end, Period=period,
-                    Statistics=["Average"],
-                )
-                return sorted(
-                    [{"t": p["Timestamp"].isoformat(), "v": round(p["Average"], 2)} for p in r["Datapoints"]],
-                    key=lambda x: x["t"]
-                )
-            except ClientError:
-                return []
-
-        def request_series(metric):
-            dims = [
-                {"Name": "BucketName", "Value": bucket_name},
-                {"Name": "FilterId",   "Value": "EntireBucket"},
-            ]
-            try:
-                r = cw.get_metric_statistics(
-                    Namespace="AWS/S3", MetricName=metric, Dimensions=dims,
-                    StartTime=end - timedelta(hours=min(hours, 168)),
-                    EndTime=end, Period=max(_smart_period(hours), 300),
-                    Statistics=["Sum"],
-                )
-                return sorted(
-                    [{"t": p["Timestamp"].isoformat(), "v": round(p["Sum"], 2)} for p in r["Datapoints"]],
-                    key=lambda x: x["t"]
-                )
-            except Exception:
-                return []
-
-        return {
-            "bucket_name":    bucket_name,
-            "bucket_size":    storage_series("BucketSizeBytes", "StandardStorage"),
-            "object_count":   storage_series("NumberOfObjects", "AllStorageTypes"),
-            "all_requests":   request_series("AllRequests"),
-            "get_requests":   request_series("GetRequests"),
-            "put_requests":   request_series("PutRequests"),
-            "errors_4xx":     request_series("4xxErrors"),
-            "errors_5xx":     request_series("5xxErrors"),
-            "bytes_download": request_series("BytesDownloaded"),
-            "bytes_upload":   request_series("BytesUploaded"),
-            "period_hours":   hours,
-            "note": "Storage metrics: daily. Request metrics require per-bucket CW config.",
-        }
+        return _cached(
+            f"s3_series_{acc_key}_{bucket_name}_{hours}",
+            lambda: _get_s3_metric_series_raw(bucket_name, hours, account),
+            ttl=_S3_SERIES_CACHE_TTL,
+        )
     except Exception as e:
         logger.error(f"S3 metrics [{bucket_name}]: {e}")
         return {"bucket_name": bucket_name, "bucket_size": [], "object_count": [],
                 "all_requests": [], "get_requests": [], "put_requests": [],
                 "errors_4xx": [], "errors_5xx": [], "bytes_download": [],
-                "bytes_upload": [], "period_hours": hours, "note": str(e)}
+                "bytes_upload": [], "period_hours": hours,
+                "note": "S3 metrics unavailable (see server log)."}
+
+
+def _get_s3_metric_series_raw(bucket_name: str, hours: int = 24, account=None) -> dict:
+    session       = get_session(None, account=account)
+    bucket_region = _s3_bucket_region(session, bucket_name, account)
+    cw            = session.client(
+                        "cloudwatch", region_name=bucket_region, config=STANDARD_RETRY)
+    end           = datetime.now(timezone.utc)
+    effective_hrs = max(hours, 24 * 14)
+    start         = end - timedelta(hours=effective_hrs)
+    period        = max(_smart_period(effective_hrs), 86400)
+
+    def storage_series(metric, storage_type="StandardStorage"):
+        dims = [
+            {"Name": "BucketName",  "Value": bucket_name},
+            {"Name": "StorageType", "Value": storage_type},
+        ]
+        from botocore.exceptions import ClientError
+        try:
+            r = cw.get_metric_statistics(
+                Namespace="AWS/S3", MetricName=metric, Dimensions=dims,
+                StartTime=start, EndTime=end, Period=period,
+                Statistics=["Average"],
+            )
+            return sorted(
+                [{"t": p["Timestamp"].isoformat(), "v": round(p["Average"], 2)} for p in r["Datapoints"]],
+                key=lambda x: x["t"]
+            )
+        except ClientError:
+            return []
+
+    def request_series(metric):
+        dims = [
+            {"Name": "BucketName", "Value": bucket_name},
+            {"Name": "FilterId",   "Value": "EntireBucket"},
+        ]
+        try:
+            r = cw.get_metric_statistics(
+                Namespace="AWS/S3", MetricName=metric, Dimensions=dims,
+                StartTime=end - timedelta(hours=min(hours, 168)),
+                EndTime=end, Period=max(_smart_period(hours), 300),
+                Statistics=["Sum"],
+            )
+            return sorted(
+                [{"t": p["Timestamp"].isoformat(), "v": round(p["Sum"], 2)} for p in r["Datapoints"]],
+                key=lambda x: x["t"]
+            )
+        except Exception:
+            return []
+
+    return {
+        "bucket_name":    bucket_name,
+        "bucket_size":    storage_series("BucketSizeBytes", "StandardStorage"),
+        "object_count":   storage_series("NumberOfObjects", "AllStorageTypes"),
+        "all_requests":   request_series("AllRequests"),
+        "get_requests":   request_series("GetRequests"),
+        "put_requests":   request_series("PutRequests"),
+        "errors_4xx":     request_series("4xxErrors"),
+        "errors_5xx":     request_series("5xxErrors"),
+        "bytes_download": request_series("BytesDownloaded"),
+        "bytes_upload":   request_series("BytesUploaded"),
+        "period_hours":   hours,
+        "note": "Storage metrics: daily. Request metrics require per-bucket CW config.",
+    }
 
 
 # ── ELB (discovery only — no CW metrics fetched here) ────────────────────
@@ -705,9 +827,11 @@ def collect_elb(region=None, role_arn=None, external_id=None, account=None) -> l
 
 def _elb_raw(region, role_arn=None, external_id=None, account=None) -> list:
     try:
-        elb = get_session(region, role_arn, external_id, account).client("elbv2")
+        elb = get_session(region, role_arn, external_id, account).client("elbv2", config=STANDARD_RETRY)
         out = []
-        for lb in elb.describe_load_balancers().get("LoadBalancers", []):
+        lbs = [lb for page in elb.get_paginator("describe_load_balancers").paginate()
+               for lb in page.get("LoadBalancers", [])]
+        for lb in lbs:
             ct = lb.get("CreatedTime", "")
             out.append({
                 "name":               lb.get("LoadBalancerName", ""),
@@ -1217,12 +1341,20 @@ def collect_ecs_clusters(region=None, role_arn=None, external_id=None, account=N
 def _ecs_raw(region, role_arn=None, external_id=None, account=None) -> list:
     try:
         session = get_session(region, role_arn, external_id, account)
-        ecs = session.client("ecs")
+        ecs = session.client("ecs", config=STANDARD_RETRY)
         cw  = session.client("cloudwatch", config=STANDARD_RETRY)
-        cluster_arns = ecs.list_clusters().get("clusterArns", [])
+        # audit(b11): paginate + chunk. list_clusters pages at 100,
+        # describe_clusters accepts max 100 ARNs (more -> error -> whole
+        # ECS view empty), list_services pages at 10, describe_services
+        # accepts max 10 -- the old [:10] silently dropped services 11+.
+        cluster_arns = [a for page in ecs.get_paginator("list_clusters").paginate()
+                        for a in page.get("clusterArns", [])]
         if not cluster_arns:
             return []
-        clusters = ecs.describe_clusters(clusters=cluster_arns, include=["STATISTICS"]).get("clusters", [])
+        clusters = []
+        for i in range(0, len(cluster_arns), 100):
+            clusters.extend(ecs.describe_clusters(
+                clusters=cluster_arns[i:i + 100], include=["STATISTICS"]).get("clusters", []))
 
         queries  = []
         qid_map  = {}
@@ -1230,10 +1362,12 @@ def _ecs_raw(region, role_arn=None, external_id=None, account=None) -> list:
 
         for c in clusters:
             cname    = c["clusterName"]
-            svc_arns = ecs.list_services(cluster=cname).get("serviceArns", [])
+            svc_arns = [a for page in ecs.get_paginator("list_services").paginate(cluster=cname)
+                        for a in page.get("serviceArns", [])]
             svcs     = []
-            if svc_arns:
-                svcs = ecs.describe_services(cluster=cname, services=svc_arns[:10]).get("services", [])
+            for i in range(0, len(svc_arns), 10):
+                svcs.extend(ecs.describe_services(
+                    cluster=cname, services=svc_arns[i:i + 10]).get("services", []))
             svc_data[cname] = svcs
 
             for s in svcs:
@@ -1243,7 +1377,11 @@ def _ecs_raw(region, role_arn=None, external_id=None, account=None) -> list:
                     {"Name": "ServiceName", "Value": sname},
                 ]
                 for metric, key in [("CPUUtilization", "cpu"), ("MemoryUtilization", "mem")]:
-                    qid = _safe_qid(f"{cname}__{sname}__{key}")
+                    # audit(b11): positional qid. _safe_qid(name-derived)
+                    # collided ("a-b" vs "a_b" -> same Id -> GetMetricData
+                    # ValidationError -> every ECS metric 0) and could
+                    # exceed the 255-char Id limit.
+                    qid = f"q{len(queries)}"
                     queries.append(_make_query(qid, "AWS/ECS", metric, dims, "Average"))
                     qid_map[qid] = (cname, sname, key)
 

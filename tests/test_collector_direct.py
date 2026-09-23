@@ -27,10 +27,11 @@ class _RoutingCursor:
 
     def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
-        if "FROM resources WHERE" in normalized and "resource_type = %s AND" in normalized and len(params) == 2:
-            resource_type, identifier = params
+        if "FROM resources WHERE" in normalized and "resource_type = %s AND" in normalized and len(params) == 3:
+            # audit(b11): the lookup is always account-scoped now.
+            resource_type, identifier, account_id = params
             match_field = "resource_id" if "resource_id = %s" in normalized else "name"
-            row_id = self.resources.get((resource_type, match_field, identifier))
+            row_id = self.resources.get((resource_type, match_field, identifier, account_id))
             self._next = [{"id": row_id}] if row_id else []
         elif "FROM metric_history" in normalized:
             resource_db_id, metric_name = params[0], params[1]
@@ -91,7 +92,7 @@ def _stub_and_load(conn):
 
 def test_chart_range_resolves_ec2_by_resource_id():
     conn = _RoutingConn(
-        resources={("ec2", "resource_id", "i-abc"): 501},
+        resources={("ec2", "resource_id", "i-abc", 7): 501},
         history={(501, "cpuutilization"): [
             {"metric_value": 42.5, "metric_timestamp": datetime(2026, 9, 8, 10, 0)},
             {"metric_value": 55.0, "metric_timestamp": datetime(2026, 9, 8, 10, 5)},
@@ -99,7 +100,8 @@ def test_chart_range_resolves_ec2_by_resource_id():
     )
     mod = _stub_and_load(conn)
     result = mod._metric_history_query_range("ec2", "i-abc", "cpuutilization",
-                                              datetime(2026, 9, 8, 9), datetime(2026, 9, 8, 11))
+                                              datetime(2026, 9, 8, 9), datetime(2026, 9, 8, 11),
+                                              account_id=7)
     assert result == [
         {"t": "2026-09-08T10:00:00", "v": 42.5},
         {"t": "2026-09-08T10:05:00", "v": 55.0},
@@ -108,7 +110,7 @@ def test_chart_range_resolves_ec2_by_resource_id():
 
 def test_chart_range_resolves_elb_by_name_not_resource_id():
     conn = _RoutingConn(
-        resources={("elb", "name", "my-app-lb"): 502},
+        resources={("elb", "name", "my-app-lb", 7): 502},
         history={(502, "requestcount"): [
             {"metric_value": 1200.0, "metric_timestamp": datetime(2026, 9, 8, 10, 0)},
         ]},
@@ -116,7 +118,7 @@ def test_chart_range_resolves_elb_by_name_not_resource_id():
     mod = _stub_and_load(conn)
     result = mod._metric_history_query_range("elb", "my-app-lb", "requestcount",
                                               datetime(2026, 9, 8, 9), datetime(2026, 9, 8, 11),
-                                              match_field="name")
+                                              match_field="name", account_id=7)
     assert result == [{"t": "2026-09-08T10:00:00", "v": 1200.0}]
 
 
@@ -124,16 +126,18 @@ def test_chart_range_no_match_returns_empty_not_error():
     conn = _RoutingConn(resources={}, history={})
     mod = _stub_and_load(conn)
     result = mod._metric_history_query_range("ec2", "i-does-not-exist", "cpuutilization",
-                                              datetime(2026, 9, 8, 9), datetime(2026, 9, 8, 11))
+                                              datetime(2026, 9, 8, 9), datetime(2026, 9, 8, 11),
+                                              account_id=7)
     assert result == []
 
 
 def test_chart_range_matching_resource_but_uncollected_metric_returns_empty():
     """EBS burst_balance case: resource exists, metric was never collected."""
-    conn = _RoutingConn(resources={("ebs", "resource_id", "vol-1"): 601}, history={})
+    conn = _RoutingConn(resources={("ebs", "resource_id", "vol-1", 7): 601}, history={})
     mod = _stub_and_load(conn)
     result = mod._metric_history_query_range("ebs", "vol-1", "volumeburstbalance",
-                                              datetime(2026, 9, 8, 9), datetime(2026, 9, 8, 11))
+                                              datetime(2026, 9, 8, 9), datetime(2026, 9, 8, 11),
+                                              account_id=7)
     assert result == []
 
 
@@ -141,19 +145,19 @@ def test_chart_range_matching_resource_but_uncollected_metric_returns_empty():
 
 def test_list_view_snapshot_keys_by_resource_id():
     conn = _RoutingConn()
-    conn.cursor_obj.metrics_snapshot[("ec2", "cpuutilization")] = [
+    conn.cursor_obj.metrics_snapshot[("ec2", "cpuutilization", 7)] = [
         {"resource_id": "i-aaa", "metric_value": 33.3},
         {"resource_id": "i-bbb", "metric_value": 71.0},
     ]
     mod = _stub_and_load(conn)
-    result = mod._metric_snapshot_query_all("ec2", "cpuutilization")
+    result = mod._metric_snapshot_query_all("ec2", "cpuutilization", account_id=7)
     assert result == {"i-aaa": 33.3, "i-bbb": 71.0}
 
 
 def test_list_view_snapshot_empty_on_no_data():
     conn = _RoutingConn()
     mod = _stub_and_load(conn)
-    assert mod._metric_snapshot_query_all("ebs", "volumeburstbalance") == {}
+    assert mod._metric_snapshot_query_all("ebs", "volumeburstbalance", account_id=7) == {}
 
 
 # ── _account_metric_snapshot (Phase 5: Check Thresholds Now) ────────────
