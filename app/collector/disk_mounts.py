@@ -197,9 +197,25 @@ def all_cwagent_disk_dims(cw, instance_id):
     skipped = []
     for m, cw_metric_name, invert in found:
         dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
-        # Linux dimensions the mount under `path`; Windows CWAgent uses
-        # `instance` instead (e.g. "C:") and has no `path` key at all.
-        path = dims.get("path") or dims.get("instance") or "/"
+        if invert:
+            # Windows only: CloudWatch auto-publishes a bare-InstanceId
+            # rollup metric alongside the fully-dimensioned per-drive
+            # one (confirmed live -- list_metrics returned both for
+            # i-0424cb66e22e05a21). That rollup has no `instance`
+            # dimension at all, so it is NOT a distinct mount; treating
+            # it as one (falling back to path="/") collided with the
+            # real "C:" mount, since ROOT_PATHS collapses both "/" and
+            # "C:" to the same unslugified metric_name -- CloudWatch
+            # then rejected the whole batched GetMetricData call with
+            # "values for parameter id ... are not unique", silently
+            # zeroing out BOTH mem and disk data together (they share
+            # one batched call). Skip it outright instead.
+            if "instance" not in dims:
+                continue
+            path = dims["instance"]
+        else:
+            # Linux dimensions the mount under `path`.
+            path = dims.get("path") or "/"
         if path in seen_paths:
             continue  # CWAgent can report the same path under >1 device/fstype combo
         seen_paths.add(path)
