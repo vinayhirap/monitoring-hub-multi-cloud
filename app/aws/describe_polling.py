@@ -142,7 +142,11 @@ def poll_ec2_status() -> int:
                     iid = s["InstanceId"]
                     sys_ok = s.get("SystemStatus", {}).get("Status") == "ok"
                     inst_ok = s.get("InstanceStatus", {}).get("Status") == "ok"
-                    failed = 0 if (sys_ok and inst_ok) else 1
+                    # Attached-EBS status check (Nitro): only an explicit
+                    # "impaired" counts -- "not-applicable"/missing on older
+                    # instance types must not fail the combined check.
+                    ebs_bad = s.get("AttachedEbsStatus", {}).get("Status") == "impaired"
+                    failed = 0 if (sys_ok and inst_ok and not ebs_bad) else 1
                     lines.append(
                         f'aws_ec2_status_check_failed_describe{{dimension_InstanceId="{iid}",dimension_AccountId="{account_db_id}"}} {failed} {ts}'
                     )

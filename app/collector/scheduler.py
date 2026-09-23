@@ -479,6 +479,18 @@ def run_loop(leader_event=None):
             except Exception as e:
                 logger.error(f"Critical tier error: {e}")
 
+            # P1 alert evaluation on every critical tick (polling audit
+            # 2026-09-23): the 2-min critical tier only shortens detection
+            # if its metrics are evaluated at that cadence too. Restricted
+            # to polling_model.p1_metric_keys(); breach/healthy counters are
+            # time-gated in alert_evaluator so an extra evaluation never
+            # counts as an extra cycle.
+            try:
+                from app.collector.alert_evaluator import evaluate_alerts
+                evaluate_alerts(p1_only=True)
+            except Exception as e:
+                logger.error(f"P1 alert evaluation error: {e}")
+
             _require_leader(leader_event)
             # Synthetic/uptime checks -- deliberately its own call, not
             # inside run_once("critical"), since it has nothing to do with
@@ -601,6 +613,12 @@ def run_loop(leader_event=None):
             logger.warning("[scheduler] leadership lost mid-cycle -- stopping this loop "
                             "(another worker is now the leader)")
             return
+
+        try:
+            from app.collector import api_usage
+            api_usage.flush_if_due()
+        except Exception as e:
+            logger.error(f"api_usage flush error: {e}")
 
         # Sleep until next critical cycle
         elapsed = time.time() - now

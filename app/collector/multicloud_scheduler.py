@@ -85,7 +85,7 @@ logger = logging.getLogger(__name__)
 _stop_event = threading.Event()
 
 # ── Azure intervals (seconds) -- freshness-driven, free at this app's scale ──
-AZURE_CRITICAL_INTERVAL_SECONDS = 60          #  1 min
+AZURE_CRITICAL_INTERVAL_SECONDS = 120         #  2 min (polling audit 2026-09-23: 1 min only re-read a still-null newest minute)
 AZURE_STANDARD_INTERVAL_SECONDS = 300         #  5 min (unchanged core cadence)
 AZURE_LOW_INTERVAL_SECONDS = 900              # 15 min
 AZURE_EXTENDED_INTERVAL_SECONDS = 900         # 15 min (unchanged for non-slow extended)
@@ -105,18 +105,18 @@ INTERVAL_SECONDS = CORE_INTERVAL_SECONDS
 # Built once at import time from the curated catalogs -- see each
 # severity_tiers.py module for what these actually contain.
 _AZURE_CRITICAL = azure_tiers.CRITICAL_METRICS
-_AZURE_STANDARD = azure_tiers.build_standard_metrics(AZURE_CURATED)
-_AZURE_LOW = azure_tiers.LOW_METRICS
+_AZURE_STANDARD = azure_tiers.build_standard_pass_metrics(AZURE_CURATED)
+_AZURE_LOW = azure_tiers.build_low_pass_metrics()
 _AZURE_EXTENDED_FAST = azure_tiers.build_extended_fast_metrics(AZURE_CURATED)
 _AZURE_EXTENDED_SLOW = azure_tiers.build_extended_slow_metrics(AZURE_CURATED)
 
 _GCP_CRITICAL = gcp_tiers.CRITICAL_METRICS
-_GCP_STANDARD = gcp_tiers.build_standard_metrics(GCP_CURATED)
-_GCP_LOW = gcp_tiers.LOW_METRICS
+_GCP_STANDARD = gcp_tiers.build_standard_pass_metrics(GCP_CURATED)
+_GCP_LOW = gcp_tiers.build_low_pass_metrics()
 _GCP_EXTENDED = gcp_tiers.build_extended_metrics(GCP_CURATED)
 
 
-def _window_for(interval_seconds, buffer_seconds=60):
+def _window_for(interval_seconds, buffer_seconds=300):
     """GetMetricData / Azure query_resources lookback window, sized to a
     tier's own poll interval plus a buffer -- NOT a fixed constant.
 
@@ -137,7 +137,7 @@ def _run_azure_pass(tier_label, only_metric_names, categories, window_seconds=60
     from app.providers.azure.metrics_collector import collect_all_azure_accounts
     try:
         result = collect_all_azure_accounts(categories=categories, only_metric_names=only_metric_names,
-                                             window_seconds=window_seconds)
+                                             window_seconds=window_seconds, tier_label=tier_label)
         logger.info(
             f"[multicloud:azure:{tier_label}] {result['accounts']} account(s), "
             f"{result['pushed']} datapoints written directly"
@@ -151,7 +151,7 @@ def _run_gcp_pass(tier_label, only_metric_names, categories, window_seconds=600)
     from app.providers.gcp.metrics_collector import collect_all_gcp_accounts
     try:
         result = collect_all_gcp_accounts(categories=categories, only_metric_names=only_metric_names,
-                                           window_seconds=window_seconds)
+                                           window_seconds=window_seconds, tier_label=tier_label)
         logger.info(
             f"[multicloud:gcp:{tier_label}] {result['accounts']} account(s), "
             f"{result['pushed']} datapoints written directly"
@@ -237,11 +237,11 @@ def run_loop(
             last["gcp_critical"] = now
 
         if now - last["azure_standard"] >= azure_standard_interval:
-            _run_azure_pass("standard", _AZURE_STANDARD, ("core",), window_seconds=_window_for(azure_standard_interval))
+            _run_azure_pass("standard", _AZURE_STANDARD, ("core", "extended"), window_seconds=_window_for(azure_standard_interval))
             last["azure_standard"] = now
 
         if now - last["azure_low"] >= azure_low_interval:
-            _run_azure_pass("low", _AZURE_LOW, ("core",), window_seconds=_window_for(azure_low_interval))
+            _run_azure_pass("low", _AZURE_LOW, ("core", "extended"), window_seconds=_window_for(azure_low_interval))
             last["azure_low"] = now
 
         if now - last["azure_extended"] >= azure_extended_interval:
@@ -255,11 +255,11 @@ def run_loop(
             last["azure_slow_extended"] = now
 
         if now - last["gcp_standard"] >= gcp_standard_interval:
-            _run_gcp_pass("standard", _GCP_STANDARD, ("core",), window_seconds=_window_for(gcp_standard_interval))
+            _run_gcp_pass("standard", _GCP_STANDARD, ("core", "extended"), window_seconds=_window_for(gcp_standard_interval))
             last["gcp_standard"] = now
 
         if now - last["gcp_low"] >= gcp_low_interval:
-            _run_gcp_pass("low", _GCP_LOW, ("core",), window_seconds=_window_for(gcp_low_interval))
+            _run_gcp_pass("low", _GCP_LOW, ("core", "extended"), window_seconds=_window_for(gcp_low_interval))
             last["gcp_low"] = now
 
         if now - last["gcp_extended"] >= gcp_extended_interval:
@@ -268,6 +268,11 @@ def run_loop(
             last["gcp_extended"] = now
 
         elapsed = time.time() - now
+        try:
+            from app.collector import api_usage
+            api_usage.flush_if_due()
+        except Exception as e:
+            logger.error(f"[multicloud-scheduler] api_usage flush error: {e}")
         sleep = max(0, azure_critical_interval - elapsed)
         _stop_event.wait(timeout=sleep)
 

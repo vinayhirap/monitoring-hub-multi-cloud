@@ -90,6 +90,9 @@ def _discover_ec2(session, account, region, cursor):
                     # migration) as this app already does for similar
                     # per-resource metadata (parent_ec2, _gcp_numeric_id, etc).
                     tags["_cw_monitoring_state"] = inst.get("Monitoring", {}).get("State", "unknown")
+                    # Instance type gates burstable-only metrics (CPUCreditBalance
+                    # is published for T-class only) -- polling audit 2026-09-23.
+                    tags["_instance_type"] = inst.get("InstanceType", "")
 
                     _upsert_resource(cursor, account["id"], "ec2", iid, name, tags, region)
 
@@ -133,6 +136,8 @@ def _discover_rds(session, account, region, cursor):
                     tags = {t["Key"]: t["Value"] for t in tag_resp.get("TagList", [])}
                 except Exception:
                     pass
+                # ReplicaLag is only published for read replicas; gate on it.
+                tags["_replica_source"] = db.get("ReadReplicaSourceDBInstanceIdentifier") or ""
                 _upsert_resource(cursor, account["id"], "rds", rid, rid, tags, region)
                 count += 1
         logger.info(f"  RDS: {count} instances in {account['account_name']} / {region}")

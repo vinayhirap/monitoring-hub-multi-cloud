@@ -1,5 +1,11 @@
 # app/collector/metrics/runner.py
 """
+POLLING MODEL (2026-09-23 metric-polling audit): which metric is polled on
+which tier, with which look-back, is defined ONLY in
+app/collector/polling_model.py (AWS_CORE_METRICS). The per-service notes
+below are history; where they disagree with polling_model.py, the model
+wins.
+
 Collects metrics using GetMetricData (GMD) — batches up to 500 metrics per
 API call vs 1 per call for GetMetricStatistics.
 
@@ -50,6 +56,8 @@ Metrics:  Trimmed per triage:
 Called by scheduler with tier argument — determines collection frequency.
 """
 import json
+import time
+import threading
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -65,70 +73,38 @@ logger = logging.getLogger(__name__)
 # ── Metric definitions ────────────────────────────────────────
 # Format: (CW_MetricName, db_metric_name, Statistic, Namespace)
 
-EC2_METRICS_CRITICAL = [
-    ("CPUUtilization", "cpuutilization", "Average", "AWS/EC2"),
-    ("NetworkIn",      "networkin",      "Average", "AWS/EC2"),
-    ("NetworkOut",     "networkout",     "Average", "AWS/EC2"),
-]
+# Metric definitions live in app/collector/polling_model.py (single
+# source of truth shared with the alert evaluator's freshness windows).
+from app.collector import polling_model
+from app.collector import api_usage
 
-EC2_METRICS_LOW = [
-    # Trend OK at 15-min — not alertable
-    ("DiskReadBytes",  "diskreadbytes",  "Average", "AWS/EC2"),
-    ("DiskWriteBytes", "diskwritebytes", "Average", "AWS/EC2"),
-]
-
-EBS_METRICS = [
-    ("VolumeReadOps",     "volumereadops",     "Average", "AWS/EBS"),
-    ("VolumeWriteOps",    "volumewriteops",    "Average", "AWS/EBS"),
-    ("VolumeReadBytes",   "volumereadbytes",   "Average", "AWS/EBS"),
-    ("VolumeWriteBytes",  "volumewritebytes",  "Average", "AWS/EBS"),
-    ("VolumeQueueLength", "volumequeuelength", "Average", "AWS/EBS"),
-    # BurstBalance DROPPED — gp3 volumes: irrelevant
-]
-
-RDS_METRICS = [
-    ("CPUUtilization",      "cpuutilization", "Average", "AWS/RDS"),
-    ("DatabaseConnections", "dbconnections",  "Average", "AWS/RDS"),
-    ("FreeStorageSpace",    "freestorage",    "Average", "AWS/RDS"),
-    ("ReadIOPS",            "readiops",       "Average", "AWS/RDS"),
-    ("WriteIOPS",           "writeiops",      "Average", "AWS/RDS"),
-    ("ReadLatency",         "readlatency",    "Average", "AWS/RDS"),
-    ("WriteLatency",        "writelatency",   "Average", "AWS/RDS"),
-    ("FreeableMemory",      "freeablememory", "Average", "AWS/RDS"),
-]
-
-ELB_METRICS = [
-    # 4XX DROPPED — mostly client noise
-    # HealthyHostCount / UnHealthyHostCount REMOVED (apply_fix_alb_healthy_hosts.py) --
-    # confirmed against AWS's own docs that these require BOTH
-    # LoadBalancer AND TargetGroup dimensions; this collector only ever
-    # supplied LoadBalancer, so this GetMetricData call has NEVER once
-    # returned data for either metric -- pure wasted CloudWatch cost.
-    # Both are now correctly sourced from describe_polling.py's free
-    # DescribeTargetHealth-based aggregation instead (see
-    # app/aws/describe_polling.py's poll_alb_target_health()).
-    ("RequestCount",              "requestcount",    "Sum",     "AWS/ApplicationELB"),
-    ("HTTPCode_Target_5XX_Count", "errors5xx",       "Sum",     "AWS/ApplicationELB"),
-    ("TargetResponseTime",        "responselatency", "Average", "AWS/ApplicationELB"),
-]
-
-LAMBDA_METRICS_STANDARD = [
-    ("Errors",   "errors",   "Sum",     "AWS/Lambda"),
-    ("Duration", "duration", "Average", "AWS/Lambda"),
-]
-
-LAMBDA_METRICS_LOW = [
-    ("Invocations", "invocations", "Sum", "AWS/Lambda"),
-    ("Throttles",   "throttles",   "Sum", "AWS/Lambda"),
-]
-
-# ECS intentionally excluded — AWS/ECS namespace = free basic monitoring
+CORE_METRICS = polling_model.AWS_CORE_METRICS
 
 
-# ── GMD helpers ───────────────────────────────────────────────
+def _legacy(resource_type, tier):
+    return [(m.cw_name, m.db_name, m.stat, m.namespace) for m in CORE_METRICS
+            if m.resource_type == resource_type and m.tier == tier]
 
-# GetMetricData accepts at most 500 MetricDataQueries per call; a bigger
-# request fails with a ValidationError and returns NOTHING for any of them.
+
+# Legacy names kept for importers; derived, not a second source of truth.
+EC2_METRICS_CRITICAL = _legacy("ec2", "standard")
+EC2_METRICS_LOW = []          # DiskRead/WriteBytes removed: instance-store only
+EBS_METRICS = _legacy("ebs", "standard") + _legacy("ebs", "low")
+RDS_METRICS = _legacy("rds", "critical") + _legacy("rds", "standard") + _legacy("rds", "low")
+ELB_METRICS = _legacy("elb", "critical")
+LAMBDA_METRICS_STANDARD = _legacy("lambda", "standard")
+LAMBDA_METRICS_LOW = _legacy("lambda", "low")
+
+# Tier currently being collected (set per run_metrics_collection call; the
+# scheduler runs tiers sequentially) -- used only for api_usage labelling.
+_CURRENT_TIER = "unknown"
+
+# SEARCH expressions per GetMetricData request (CloudWatch's documented
+# per-request cap is 5 SEARCH expressions).
+GMD_MAX_SEARCH_PER_REQUEST = 5
+_GMD_MAX_PAGES = 50
+
+
 GMD_MAX_QUERIES = 500
 
 # Resources discovery has not re-confirmed for this long are skipped (the
@@ -212,9 +188,55 @@ def _build_queries(resources, metric_defs):
     return queries, id_map
 
 
+def _is_search(q):
+    return "SEARCH(" in (q.get("Expression") or "")
+
+
+def _request_chunks(queries):
+    """<=500 queries per request, and SEARCH-expression queries in their own
+    requests of <= GMD_MAX_SEARCH_PER_REQUEST (a request over the SEARCH cap
+    fails as a whole)."""
+    plain = [q for q in queries if not _is_search(q)]
+    search = [q for q in queries if _is_search(q)]
+    chunks = _chunk_gmd_queries(plain) if plain else []
+    for i in range(0, len(search), GMD_MAX_SEARCH_PER_REQUEST):
+        chunks.append(search[i:i + GMD_MAX_SEARCH_PER_REQUEST])
+    return chunks
+
+
+def _billed_units(chunk):
+    """Metrics requested in a chunk: MetricStat queries count 1 each;
+    SEARCH expressions are billed per metric they match (unknown up front,
+    counted as 1 here -- a floor, flagged in api_usage's docstring)."""
+    return sum(1 for q in chunk if "MetricStat" in q or _is_search(q))
+
+
+def _get_metric_data_all_pages(cw, chunk, start, end):
+    """One GetMetricData request, following NextToken (a single response
+    carries at most 100,800 datapoints). Returns {Id: (timestamps, values)}
+    newest first."""
+    merged, token, pages = {}, None, 0
+    while True:
+        kwargs = dict(MetricDataQueries=chunk, StartTime=start, EndTime=end,
+                      ScanBy="TimestampDescending")
+        if token:
+            kwargs["NextToken"] = token
+        resp = cw.get_metric_data(**kwargs)
+        pages += 1
+        for result in resp.get("MetricDataResults", []):
+            ts_list, val_list = merged.setdefault(result["Id"], ([], []))
+            ts_list.extend(result.get("Timestamps", []))
+            val_list.extend(result.get("Values", []))
+        token = resp.get("NextToken")
+        # hard page cap: a misbehaving endpoint/mocked client must never
+        # loop forever (50 pages = 5M datapoints, far above any real batch)
+        if not isinstance(token, str) or not token or pages >= _GMD_MAX_PAGES:
+            return merged, pages
+
+
 def _execute_gmd(cw, queries, id_map, minutes=5):
-    """Execute one GMD call, write results (latest value + full history).
-    Returns datapoint count."""
+    """Execute GetMetricData for `queries` (chunked, all pages), write
+    results (latest value + full history). Returns series-with-data count."""
     if not queries:
         return 0
 
@@ -224,39 +246,26 @@ def _execute_gmd(cw, queries, id_map, minutes=5):
     latest_rows = []
     history_rows = []
 
-    # Audit B14: chunked here (not only in _run_gmd) because
-    # _collect_extended_service and the CWAgent collectors call this
-    # directly -- e.g. 102 CloudWatch Logs groups x 5 metrics is > 500
-    # queries, which used to fail the whole call and collect nothing.
-    for chunk in _chunk_gmd_queries(queries):
+    for chunk in _request_chunks(queries):
         try:
-            resp = cw.get_metric_data(
-                MetricDataQueries=chunk,
-                StartTime=start,
-                EndTime=end,
-                ScanBy="TimestampDescending",
-            )
+            results, pages = _get_metric_data_all_pages(cw, chunk, start, end)
         except Exception as e:
             logger.error(f"GMD call failed ({len(chunk)} queries): {e}")
+            api_usage.record("aws", _CURRENT_TIER, calls=1, units=_billed_units(chunk))
             continue
+        api_usage.record("aws", _CURRENT_TIER, calls=pages, units=_billed_units(chunk))
 
-        for result in resp.get("MetricDataResults", []):
-            values = result.get("Values", [])
-            timestamps = result.get("Timestamps", [])
+        for qid, (timestamps, values) in results.items():
             if not values:
                 continue
-            resource_db_id, db_name = id_map.get(result["Id"], (None, None))
+            resource_db_id, db_name = id_map.get(qid, (None, None))
             if resource_db_id is None:
                 continue
-            latest_rows.append((resource_db_id, db_name, values[0]))  # values[0] = most recent
+            latest_rows.append((resource_db_id, db_name, values[0]))  # newest first
             count += 1
-            # Full history -- every returned datapoint, not just the latest.
-            # Timestamps/Values are parallel lists per boto3's own contract.
             for ts, val in zip(timestamps, values):
                 history_rows.append((resource_db_id, db_name, val, ts))
 
-    # One pooled connection per call instead of one per datapoint (was
-    # write_metric() in the loop above) -- same upsert, same timestamp.
     if latest_rows:
         write_metrics_batch(latest_rows)
     if history_rows:
@@ -339,33 +348,105 @@ def _log_monitoring_mode_mismatch(resources):
         )
 
 
-def _collect_ec2_critical(cw, resources):
-    _log_monitoring_mode_mismatch(resources)
-    # minutes=6: was 3 (matched to the old 2-min "critical" cadence with a
-    # ~1-min buffer). Now on the 5-min "standard" tier, widened to match
-    # the same minutes=6 lookback every other standard-tier collector in
-    # this file (_collect_ebs, _collect_rds, _collect_elb) already uses --
-    # a ~1-min buffer against a 5-min cycle, consistent rather than a
-    # one-off value.
-    n = _run_gmd(cw, resources, EC2_METRICS_CRITICAL, minutes=6)
-    logger.info(f"    EC2 (standard tier): {n} datapoints / {len(resources)} instances")
+def _tags(r):
+    t = r.get("tags")
+    if isinstance(t, str):
+        try:
+            t = json.loads(t)
+        except (TypeError, ValueError):
+            t = {}
+    return t if isinstance(t, dict) else {}
 
-def _collect_ec2_low(cw, resources):
-    n = _run_gmd(cw, resources, EC2_METRICS_LOW, minutes=16)
-    logger.info(f"    EC2 low: {n} datapoints / {len(resources)} instances")
 
-# CWAgent's mem_used_percent CAN be dimensioned by InstanceId alone, but
-# is NOT guaranteed to be -- append_dimensions in the agent's own config
-# can add more (ImageId, InstanceType, etc.), varying per instance. The
-# collector below discovers each instance's REAL, complete dimension set
-# via ListMetrics rather than assuming a fixed shape -- see
-# apply_fix_cwagent_mem_dimensions.py for why an earlier, simpler
-# version of this (reusing _run_gmd's uniform single-dimension path)
-# returned zero data despite correctly identifying which instances have
-# the agent installed.
+def _passes_gate(r, gate):
+    if gate is None:
+        return True
+    if gate in ("alb", "nlb"):
+        prefix = "app/" if gate == "alb" else "net/"
+        return (_resource_dim_value(r) or "").startswith(prefix)
+    if gate == "tclass":
+        return (_tags(r).get("_instance_type") or "").lower().startswith("t")
+    if gate == "replica":
+        return bool(_tags(r).get("_replica_source"))
+    return False
+
+
+def _collect_core(cw, resources, resource_type, tier):
+    """Every CORE_METRICS definition for (resource_type, tier), grouped by
+    look-back and gate so each GetMetricData batch only carries resources
+    the definition applies to."""
+    defs = [m for m in CORE_METRICS if m.resource_type == resource_type and m.tier == tier]
+    if not defs:
+        return 0
+    if resource_type == "ec2" and tier == "standard":
+        _log_monitoring_mode_mismatch(resources)
+    groups = {}
+    for m in defs:
+        groups.setdefault((m.lookback_min, m.gate), []).append(
+            (m.cw_name, m.db_name, m.stat, m.namespace))
+    total = 0
+    for (lookback, gate), metric_defs in groups.items():
+        gated = [r for r in resources if _passes_gate(r, gate)]
+        if gated:
+            total += _run_gmd(cw, gated, metric_defs, minutes=lookback)
+    logger.info(f"    {resource_type} [{tier}]: {total} series / {len(resources)} resources")
+    return total
+
+
+# ── CWAgent dimension cache ─────────────────────────────────────────────
+# ListMetrics per instance per poll was the dominant non-GMD call volume
+# (and a billed "standard" API above the 1M free tier). Dimension sets
+# only change when the agent config changes -- re-discover hourly.
+_CWAGENT_DIM_TTL = 3600
+_cwagent_cache = {}          # (kind, region, instance_id) -> (expires, value)
+_cwagent_cache_lock = threading.Lock()
+
+
+def _cache_get(key):
+    with _cwagent_cache_lock:
+        hit = _cwagent_cache.get(key)
+        if hit and hit[0] > time.time():
+            return True, hit[1]
+    return False, None
+
+
+def _cache_put(key, value):
+    with _cwagent_cache_lock:
+        _cwagent_cache[key] = (time.time() + _CWAGENT_DIM_TTL, value)
+
+
+def _cached_disk_dims(cw, r):
+    key = ("disk", r.get("region"), r["resource_id"])
+    ok, val = _cache_get(key)
+    if ok:
+        return val
+    val = all_cwagent_disk_dims(cw, r["resource_id"])
+    _cache_put(key, val)
+    return val
 
 
 def _ec2_instances_with_cwagent_mem_dims(cw, resources):
+    """Cached wrapper: {instance_id: (resource, dims, cw_metric_name)}."""
+    result, misses = {}, []
+    for r in resources:
+        ok, val = _cache_get(("mem", r.get("region"), r["resource_id"]))
+        if ok:
+            if val:
+                result[r["resource_id"]] = (r, val[0], val[1])
+        else:
+            misses.append(r)
+    if misses:
+        found = _ec2_instances_with_cwagent_mem_dims_uncached(cw, misses)
+        for r in misses:
+            hit = found.get(r["resource_id"])
+            _cache_put(("mem", r.get("region"), r["resource_id"]),
+                       (hit[1], hit[2]) if hit else None)
+            if hit:
+                result[r["resource_id"]] = hit
+    return result
+
+
+def _ec2_instances_with_cwagent_mem_dims_uncached(cw, resources):
     """
     {resource: full_dimension_list} for every EC2 instance that has
     actually published mem_used_percent to CWAgent.
@@ -438,9 +519,7 @@ def _ec2_instances_with_cwagent_mem_dims(cw, resources):
 def _collect_ec2_cwagent_mem(cw, resources):
     cwagent_map = _ec2_instances_with_cwagent_mem_dims(cw, resources)
     if not cwagent_map:
-        logger.info(f"    EC2 CWAgent mem: 0/{len(resources)} instances have CWAgent reporting")
         return
-
     queries = []
     id_map = {}
     for i, (resource, dims, cw_metric_name) in enumerate(cwagent_map.values()):
@@ -448,23 +527,16 @@ def _collect_ec2_cwagent_mem(cw, resources):
         queries.append({
             "Id": qid,
             "MetricStat": {
-                "Metric": {
-                    "Namespace": "CWAgent",
-                    "MetricName": cw_metric_name,
-                    "Dimensions": dims,  # full, DISCOVERED set -- not assumed
-                },
+                "Metric": {"Namespace": "CWAgent", "MetricName": cw_metric_name, "Dimensions": dims},
                 "Period": 60,
                 "Stat": "Average",
             },
             "ReturnData": True,
         })
-        # DB metric_name stays "mem_used_percent" regardless of which
-        # OS/CW metric fed it -- every threshold/alert/chart downstream
-        # keys on this name, unchanged either way.
+        # DB metric_name stays "mem_used_percent" for Linux and Windows.
         id_map[qid] = (resource["id"], "mem_used_percent")
-
-    n = _execute_gmd(cw, queries, id_map, minutes=16)
-    logger.info(f"    EC2 CWAgent mem: {n} datapoints / {len(cwagent_map)} of {len(resources)} instances")
+    n = _execute_gmd(cw, queries, id_map, minutes=polling_model.CWAGENT_MEM_LOOKBACK)
+    logger.info(f"    EC2 CWAgent mem: {n} series / {len(cwagent_map)} of {len(resources)} instances")
 
 
 def _collect_ec2_cwagent_disk(cw, resources, account_id):
@@ -484,7 +556,7 @@ def _collect_ec2_cwagent_disk(cw, resources, account_id):
     instances_reporting = 0
 
     for r in resources:
-        mounts = all_cwagent_disk_dims(cw, r["resource_id"])
+        mounts = _cached_disk_dims(cw, r)
         if not mounts:
             continue
         instances_reporting += 1
@@ -535,62 +607,28 @@ def _collect_ec2_cwagent_disk(cw, resources, account_id):
                 })
             id_map[qid] = (r["id"], metric_name)
 
-    n = _execute_gmd(cw, queries, id_map, minutes=16)
+    n = _execute_gmd(cw, queries, id_map, minutes=polling_model.CWAGENT_DISK_LOOKBACK)
     logger.info(f"    EC2 CWAgent disk: {n} datapoints / {instances_reporting} of {len(resources)} instances (all mounts)")
-
-def _collect_ebs(cw, resources):
-    n = _run_gmd(cw, resources, EBS_METRICS, minutes=6)
-    logger.info(f"    EBS: {n} datapoints / {len(resources)} volumes")
-
-def _collect_rds(cw, resources):
-    n = _run_gmd(cw, resources, RDS_METRICS, minutes=6)
-    logger.info(f"    RDS: {n} datapoints / {len(resources)} instances")
-
-def _collect_elb(cw, resources):
-    n = _run_gmd(cw, resources, ELB_METRICS, minutes=6)
-    logger.info(f"    ELB: {n} datapoints / {len(resources)} LBs")
-
-def _collect_lambda_standard(cw, resources):
-    n = _run_gmd(cw, resources, LAMBDA_METRICS_STANDARD, minutes=6)
-    logger.info(f"    Lambda standard: {n} datapoints")
-
-def _collect_lambda_low(cw, resources):
-    n = _run_gmd(cw, resources, LAMBDA_METRICS_LOW, minutes=16)
-    logger.info(f"    Lambda low: {n} datapoints")
-
 
 # ── Resource fetcher ──────────────────────────────────────────
 
 def _get_resources_for_account(account_id, tier):
     """
-    critical/standard: running EC2 only — skips stopped (Phase 1 cost cut)
-    low:               all non-terminated (for disk trend metrics)
-    ECS always excluded — free basic monitoring, no paid CW calls needed.
+    Every tier: running EC2 only (stopped instances publish nothing -- the
+    low tier used to include them), non-terminated everything else, and
+    not-recently-seen (deleted) resources skipped. ECS is collected by the
+    extended collector; ENI has no useful metrics.
     """
-    # tags included (previously omitted) so the "critical" tier's EC2
-    # basic-vs-detailed monitoring visibility check (see
-    # _log_monitoring_mode_mismatch above) can read tags._cw_monitoring_state
-    # without a second query. No other caller of this function used tags
-    # before, so this is additive, not a behavior change for them.
-    #
-    # Audit B14: `instance_state != 'terminated'` alone is NULL -- i.e.
-    # FALSE -- for every non-EC2 row (discovery only ever sets
-    # instance_state for EC2), so EBS/RDS/ELB/Lambda were silently never
-    # collected by this runner. NULL now counts as "not terminated".
-    # Rows discovery hasn't re-confirmed for STALE_RESOURCE_HOURS are
-    # skipped (deleted resources; each was a billed, always-empty query).
-    running_only = "AND NOT (resource_type = 'ec2' AND COALESCE(instance_state, '') != 'running')" \
-        if tier in ("critical", "standard") else ""
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT id, resource_id, resource_type, name, region, tags
             FROM resources
             WHERE aws_account_id = %s
               AND (instance_state IS NULL OR instance_state != 'terminated')
               AND (last_seen_at IS NULL OR last_seen_at >= DATE_SUB(NOW(), INTERVAL %s HOUR))
-              {running_only}
+              AND NOT (resource_type = 'ec2' AND COALESCE(instance_state, '') != 'running')
         """, (account_id, STALE_RESOURCE_HOURS))
         rows = cursor.fetchall()
     finally:
@@ -600,14 +638,16 @@ def _get_resources_for_account(account_id, tier):
     grouped = {}
     for r in rows:
         if r["resource_type"] in ("ecs", "ecs_service", "eni"):
-            continue  # ECS free; ENI has no useful CW metrics
+            continue
         key = (r["resource_type"], r["region"])
         grouped.setdefault(key, []).append(r)
-
     return grouped
 
 
 # ── Per-account collection ────────────────────────────────────
+
+_CORE_TYPES = ("ec2", "ebs", "rds", "elb", "lambda")
+
 
 def _collect_account(account, tier="standard"):
     region = account.get("default_region")
@@ -622,129 +662,32 @@ def _collect_account(account, tier="standard"):
         logger.error(f"Session failed [{account['account_name']}]: {e}")
         return
 
-    grouped = _get_resources_for_account(account["id"], tier)
-    tasks   = []  # list of (cw_client, resources, task_type)
-
-    for (resource_type, res_region), resources in grouped.items():
-        cw = session.client("cloudwatch", region_name=res_region, config=STANDARD_RETRY)
-
-        if resource_type == "ec2":
-            # CPU/Network (ec2_critical -- name kept for minimal diff, see
-            # note below) run on the "standard" tier (5 min), not
-            # "critical" (2 min). Moved 2026-09-10 after live DEV data
-            # (the _log_monitoring_mode_mismatch check below) confirmed
-            # this account's EC2 fleet is 100% on AWS basic monitoring
-            # (5-min publish, free) -- polling it every 2 min could only
-            # ever re-return an already-seen datapoint on ~60% of calls,
-            # pure wasted GetMetricData spend with zero freshness benefit,
-            # since AWS genuinely does not have new data more often than
-            # every 5 min for these instances. Deliberate human decision,
-            # not an automatic cost-driven default (a fleet running
-            # detailed/1-min monitoring should NOT make this same move --
-            # see _log_monitoring_mode_mismatch's updated log text below,
-            # which now flags the opposite case too).
-            #
-            # Earlier fix (still true, unaffected by this change): this
-            # task previously ALSO fired on "standard" in addition to
-            # "critical" (tier in ("critical","standard")), a genuine
-            # duplicate-call bug now moot since there's only one tier
-            # gate left here.
-            if tier == "standard":
-                tasks.append((cw, resources, "ec2_critical"))
-            if tier == "low":
-                tasks.append((cw, resources, "ec2_low"))
-                tasks.append((cw, resources, "ec2_cwagent_mem"))
-                tasks.append((cw, resources, "ec2_cwagent_disk"))
-
-        elif resource_type == "ebs":
-            # EBS metrics publish at 5-min resolution (AWS-confirmed) --
-            # polling them again at the 15-min "low" tier on top of the
-            # 5-6 min "standard" tier could only ever re-return a
-            # datapoint standard tier already fetched. Kept on "standard"
-            # only, which already matches EBS's real publication cadence.
-            # See monitoring-hub-metric-audit.md §8 flaw #2.
-            if tier == "standard":
-                tasks.append((cw, resources, "ebs"))
-
-        elif resource_type == "rds":
-            # RDS publishes at 1-min resolution (AWS-confirmed, free,
-            # automatic -- no basic/detailed distinction like EC2). This
-            # had NO tier gate at all until now ("always — revenue-
-            # critical") -- since "critical" already runs every ~2 min
-            # unconditionally (scheduler.py's run_loop calls it every
-            # iteration, no interval check), that alone already gives RDS
-            # continuous, well-matched coverage against its real 1-min
-            # publish rate. The missing gate meant RDS was re-polled AGAIN,
-            # redundantly, in any cycle where "standard" (5 min) or "low"
-            # (15 min) happened to also fire in that same loop iteration --
-            # the identical duplicate-call pattern already fixed for ALB/
-            # EBS/EC2 above, just never gated to begin with. Gated to
-            # "critical" only now; revenue-critical priority is preserved
-            # (still the fastest tier, still every cycle that tier runs),
-            # the redundant extra calls on coincident standard/low cycles
-            # are not. See monitoring-hub-metric-audit.md §8, scheduler.py's
-            # module docstring (previously flagged this as a known,
-            # unfixed issue -- now fixed).
-            if tier == "critical":
-                tasks.append((cw, resources, "rds"))
-
-        elif resource_type == "elb":
-            # ALB metrics (1-min resolution) — "critical" tier's 2-min
-            # cadence already exceeds that resolution; dropped from
-            # "standard" for the same duplicate-call reason as ec2_critical
-            # above. See monitoring-hub-metric-audit.md §8 flaw #1.
-            if tier == "critical":
-                tasks.append((cw, resources, "elb"))
-
-        elif resource_type == "lambda":
-            if tier == "standard":
-                tasks.append((cw, resources, "lambda_standard"))
-            elif tier == "low":
-                tasks.append((cw, resources, "lambda_low"))
-
-    _DISPATCH = {
-        "ec2_critical":     _collect_ec2_critical,
-        "ec2_low":          _collect_ec2_low,
-        "ec2_cwagent_mem":  _collect_ec2_cwagent_mem,
-        "ec2_cwagent_disk": _collect_ec2_cwagent_disk,
-        "ebs":              _collect_ebs,
-        "rds":              _collect_rds,
-        "elb":              _collect_elb,
-        "lambda_standard":  _collect_lambda_standard,
-        "lambda_low":       _collect_lambda_low,
-    }
-
-    def _run(task_cw, task_res, task_type):
-        fn = _DISPATCH.get(task_type)
-        if not fn:
-            return
-        if task_type == "ec2_cwagent_disk":
-            fn(task_cw, task_res, account["id"])  # needs account_id to register new mounts
-        else:
-            fn(task_cw, task_res)
+    tasks = []  # (callable, args)
+    if tier in ("critical", "standard", "low"):
+        grouped = _get_resources_for_account(account["id"], tier)
+        for (resource_type, res_region), resources in grouped.items():
+            if resource_type not in _CORE_TYPES:
+                continue
+            cw = session.client("cloudwatch", region_name=res_region, config=STANDARD_RETRY)
+            tasks.append((_collect_core, (cw, resources, resource_type, tier)))
+            if resource_type == "ec2":
+                if tier == polling_model.CWAGENT_MEM_TIER:
+                    tasks.append((_collect_ec2_cwagent_mem, (cw, resources)))
+                if tier == polling_model.CWAGENT_DISK_TIER:
+                    tasks.append((_collect_ec2_cwagent_disk, (cw, resources, account["id"])))
 
     with ThreadPoolExecutor(max_workers=6) as ex:
-        futures = [ex.submit(_run, c, r, t) for c, r, t in tasks]
+        futures = [ex.submit(fn, *args) for fn, args in tasks]
         for f in as_completed(futures):
             try:
                 f.result()
             except Exception as e:
                 logger.error(f"Task error [{account['account_name']}]: {e}")
 
-    # Extended-tier services -- own "extended" (60-min) cadence, split
-    # out 2026-09-12 from the "low" (15-min) tier they used to share
-    # with EC2 CWAgent mem/disk purely by coincidence of both being
-    # "not critical/standard", not because any of them need 15-min
-    # freshness. See scheduler.py's module docstring for the reasoning.
-    #
-    # A further split, same day: SLOW_EXTENDED_SERVICES (S3, CloudWatch
-    # Logs, Backup, CloudFront, WAFv2) confirmed via live metric_history
-    # audit to return zero datapoints regardless of poll frequency --
-    # they publish daily or only on rare events, not on any short fixed
-    # interval. Those run on "slow_extended" (24h) instead; everything
-    # else extended-tier stays on the hourly "extended" tier. See
-    # extended.py's SLOW_EXTENDED_SERVICES docstring for the audit data.
-    if tier in ("extended", "slow_extended"):
+    # Extended-service metrics now have per-metric tiers (polling_model.
+    # AWS_EXTENDED_TIER_OVERRIDES): 5-min incident signals ride "standard",
+    # failure/state counters "low", the rest "extended"/"slow_extended".
+    if tier in ("standard", "low", "extended", "slow_extended"):
         try:
             from app.collector.metrics.extended import collect_extended_for_account
             collect_extended_for_account(session, account, tier=tier)
@@ -764,20 +707,18 @@ def _collect_account(account, tier="standard"):
         conn.close()
 
 
-# ── Main entry point ──────────────────────────────────────────
-
 def run_metrics_collection(accounts, tier="standard"):
     """
-    tier = 'critical'      — RDS + ELB                       (2-min cycle)
-    tier = 'standard'      — EC2 CPU/Network + EBS + Lambda Errors (5-min cycle)
-    tier = 'low'           — EC2 Disk + CWAgent + Lambda Invocations (15-min cycle)
-    tier = 'extended'      — most extended-tier services     (60-min cycle)
-    tier = 'slow_extended' — S3/Logs/Backup/CloudFront/WAFv2  (24h cycle)
+    tier = 'critical' | 'standard' | 'low' | 'extended' | 'slow_extended'.
+    What each tier collects is defined in app/collector/polling_model.py
+    (AWS_CORE_METRICS for core services, aws_extended_tier() for the rest).
     """
     # Audit B14: scheduler.py hands over every ACTIVE account, including
     # Azure/GCP ones (no provider filter) -- those must never reach
     # get_boto3_session(), which falls back to the host's ambient AWS
     # credentials, nor have last_synced_at stamped by the AWS collector.
+    global _CURRENT_TIER
+    _CURRENT_TIER = tier
     accounts = [a for a in accounts if (a.get("provider") or "aws") == "aws"]
     if not accounts:
         return

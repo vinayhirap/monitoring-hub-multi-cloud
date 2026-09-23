@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
 import app  # noqa: F401
 
-from tests.conftest import load_module, install_stub
+from tests.conftest import load_module, install_stub, install_polling_modules
 
 
 # ── runner helpers ──────────────────────────────────────────────────
@@ -66,6 +66,7 @@ def _load_runner(conn_factory=None, writes=None):
     install_stub("app.collector.disk_mounts",
                  all_cwagent_disk_dims=lambda cw, iid: [],
                  ensure_disk_mount_metric_registered=lambda *a, **k: None)
+    install_polling_modules()
     return load_module("app/collector/metrics/runner.py"), writes
 
 

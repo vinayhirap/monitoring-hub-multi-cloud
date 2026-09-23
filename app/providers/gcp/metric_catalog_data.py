@@ -30,7 +30,6 @@ CURATED = {
     # ── Core (already collected today) ───────────────────────────
     "compute_instance": ("Compute Engine", "compute.googleapis.com/instance", "core", [
         ("cpu/utilization",              "Percent",      "Average", True,  "% CPU used"),
-        ("cpu/usage_time",                "Seconds",      "Total",   False, "CPU seconds consumed"),
         ("network/received_bytes_count",  "Bytes",        "Total",   True,  "Inbound network traffic"),
         ("network/sent_bytes_count",      "Bytes",        "Total",   True,  "Outbound network traffic"),
         ("disk/read_bytes_count",         "Bytes",        "Total",   False, "Disk read throughput"),
@@ -38,7 +37,6 @@ CURATED = {
         ("disk/read_ops_count",           "Count",        "Total",   False, "Disk read IOPS"),
         ("disk/write_ops_count",          "Count",        "Total",   False, "Disk write IOPS"),
         ("uptime",                        "Seconds",      "Total",   True,  "Instance uptime"),
-        ("uptime_total",                  "Seconds",      "Total",   False, "Cumulative uptime since creation"),
     ]),
     "gcs_bucket": ("Cloud Storage", "storage.googleapis.com/storage", "core", [
         ("total_bytes",             "Bytes", "Average", True,  "Total bytes stored"),

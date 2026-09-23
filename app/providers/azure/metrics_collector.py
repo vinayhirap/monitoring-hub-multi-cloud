@@ -76,7 +76,7 @@ def _enabled_azure_metrics(cur, account_id: int, categories=None, only_metric_na
     tier's allowlist for that service.
     """
     query = """
-        SELECT mc.namespace, mc.service, mc.metric_name
+        SELECT mc.namespace, mc.service, mc.metric_name, mc.category
         FROM metric_catalog mc
         JOIN account_metric_selections ams ON ams.metric_id = mc.id
         WHERE ams.aws_account_id = %s AND ams.enabled = 1
@@ -89,16 +89,22 @@ def _enabled_azure_metrics(cur, account_id: int, categories=None, only_metric_na
         params.extend(categories)
     cur.execute(query, params)
     grouped = {}
+    directory = {}
     for row in cur.fetchall():
         key = (row["namespace"], row["service"])
         grouped.setdefault(key, set()).add(row["metric_name"])
+        if row.get("category") == "directory":
+            directory.setdefault(key, set()).add(row["metric_name"])
 
     if only_metric_names is not None:
         filtered = {}
         for (namespace, service), names in grouped.items():
-            allowed = only_metric_names.get(service)
-            if not allowed:
-                continue
+            allowed = set(only_metric_names.get(service) or ())
+            # Directory-category metrics are user-chosen, not tiered by
+            # name -- a pass that asked for 'directory' collects them all
+            # (previously the name allowlist silently dropped every one).
+            if categories and "directory" in categories:
+                allowed |= directory.get((namespace, service), set())
             kept = names & allowed
             if kept:
                 filtered[(namespace, service)] = kept
@@ -175,33 +181,29 @@ def collect_account_metrics(account: dict, categories=None, only_metric_names=No
 
     try:
         cred = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=secret)
-        # SECURITY: `region` comes from aws_accounts.default_region,
-        # which app/api/admin/accounts.py's onboarding endpoints only
-        # ever required to be non-empty -- no format check. Placed
-        # unvalidated into an f-string HOST position like this, an
-        # account onboarded with default_region="attacker.example.com"
-        # would make this server issue a real, authenticated HTTPS
-        # request (carrying this account's live Azure OAuth bearer
-        # token in the Authorization header, since MetricsClient
-        # attaches `cred` to every call it makes) to an attacker-
-        # controlled host on every collection cycle -- SSRF PLUS live
-        # credential/token exfiltration, not just a theoretical
-        # request-forgery. Validated here as the last line of defense
-        # regardless of whether onboarding's own input validation ever
-        # regresses or is bypassed by a future direct-DB edit.
-        if not _VALID_AZURE_REGION_RE.match(region):
-            result["errors"].append(
-                f"default_region {region!r} is not a valid Azure region short-name -- refusing to build a metrics endpoint from it"
-            )
-            return result
-        # Azure Monitor's Metrics data-plane endpoint is regional, matching
-        # the account's own default_region (Azure region short-name, e.g.
-        # "centralindia" -- NOT an AWS-style region code).
-        endpoint = f"https://{region}.metrics.monitor.azure.com"
-        client = MetricsClient(endpoint, cred)
     except Exception as e:
         result["errors"].append(f"auth/client setup failed: {e}")
         return result
+
+    # SSRF guard: every region ends up in an endpoint host name, so the
+    # account default is validated before anything else happens.
+    if not _VALID_AZURE_REGION_RE.match(region):
+        result["errors"].append(
+            f"default_region {region!r} is not a valid Azure region short-name -- refusing to build a metrics endpoint from it"
+        )
+        return result
+
+    # The metrics:getBatch data-plane API only accepts resources in ONE
+    # subscription + region + resource type per call, against that
+    # region's own endpoint (polling audit 2026-09-23: resources outside
+    # default_region used to be sent to the default region's endpoint and
+    # returned nothing). One client per region, built lazily.
+    clients = {}
+
+    def _client_for(res_region):
+        if res_region not in clients:
+            clients[res_region] = MetricsClient(f"https://{res_region}.metrics.monitor.azure.com", cred)
+        return clients[res_region]
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
@@ -213,78 +215,175 @@ def collect_account_metrics(account: dict, categories=None, only_metric_names=No
 
         for (namespace, service), metric_names in by_service.items():
             cur.execute("""
-                SELECT id, resource_id, name FROM resources
+                SELECT id, resource_id, name, region FROM resources
                 WHERE aws_account_id = %s AND resource_type = %s
             """, (account["id"], service))
             resources = cur.fetchall()
             if not resources:
                 continue
             result["resources_queried"] += len(resources)
+            query_namespace = _NAMESPACE_OVERRIDES.get(service, namespace)
 
-            for start in range(0, len(resources), _BATCH_SIZE):
-                chunk = resources[start:start + _BATCH_SIZE]
-                chunk_uris = [r["resource_id"] for r in chunk]
-                try:
-                    query_results = client.query_resources(
-                        resource_ids=chunk_uris,
-                        metric_namespace=namespace,
-                        metric_names=list(metric_names),
-                        timespan=timedelta(seconds=window_seconds),
-                        granularity=timedelta(minutes=1),
-                        aggregations=[MetricAggregationType.AVERAGE],
-                    )
-                except Exception as e:
-                    result["errors"].append(f"{service} ({namespace}): {e}")
+            by_region = {}
+            for r in resources:
+                res_region = _normalize_region(r.get("region")) or region
+                if not _VALID_AZURE_REGION_RE.match(res_region):
+                    result["errors"].append(f"{service}: resource {r['resource_id']} has invalid region {res_region!r} -- skipped")
                     continue
+                by_region.setdefault(res_region, []).append(r)
 
-                # MetricsClient.query_resources returns results in the same
-                # order as resource_ids -- there's no resource_id field on
-                # the result object itself (verified against the SDK's
-                # MetricsQueryResult dataclass), so map back positionally.
-                #
-                # metrics_rows: (resource_db_id, metric_name, value) -> latest
-                #   value only, upserted into `metrics` for alert_evaluator.py.
-                # history_rows: (resource_db_id, metric_name, value, timestamp)
-                #   -> every returned datapoint, appended into `metric_history`.
-                # metric_name here is metric.name, the SDK's echo of the exact
-                # string this account's metric_catalog row requested -- matches
-                # what metrics_vm_sync.py's _sync_azure_gcp_metrics() used to
-                # write into `metrics` from VM, and what alert_evaluator.py's
-                # join against metric_catalog expects.
-                metrics_rows = []
-                history_rows = []
-                for resource_row, query_result in zip(chunk, query_results):
-                    for metric in query_result.metrics:
-                        for ts_elem in metric.timeseries:
-                            if not ts_elem.data:
-                                continue
-                            for point in ts_elem.data:
-                                value = point.average
-                                if value is None:
-                                    continue
-                                history_rows.append((
-                                    resource_row["id"], metric.name,
-                                    float(value), point.timestamp,
-                                ))
-                            latest = ts_elem.data[-1]  # most recent datapoint in the window
-                            value = latest.average
-                            if value is None:
-                                continue
-                            metrics_rows.append((resource_row["id"], metric.name, float(value)))
-                if metrics_rows:
-                    write_metrics_batch(metrics_rows)
-                    result["pushed"] += len(metrics_rows)
-                if history_rows:
-                    write_metric_history_batch(history_rows)
+            for call in _plan_calls(service, metric_names, window_seconds):
+                for res_region, region_resources in by_region.items():
+                    for start in range(0, len(region_resources), _BATCH_SIZE):
+                        chunk = region_resources[start:start + _BATCH_SIZE]
+                        _run_call(_client_for(res_region), MetricAggregationType, query_namespace,
+                                  service, chunk, call, result)
     finally:
         cur.close(); conn.close()
 
     return result
 
 
-def collect_all_azure_accounts(categories=None, only_metric_names=None, window_seconds: int = 600) -> dict:
+# Function App metrics are published on the site resource (Microsoft.Web/
+# sites); the catalog's "Microsoft.Web/sites/functions" namespace never
+# matches a discovered site id, so every call failed.
+_NAMESPACE_OVERRIDES = {"function_app": "Microsoft.Web/sites"}
+
+# Metrics Azure only publishes at a 1-hour time grain.
+_HOURLY_GRAIN_METRICS = {("storage_account", "UsedCapacity")}
+
+# kube_pod_status_phase is only meaningful split by its `phase` dimension:
+# stored as the number of pods in a non-healthy phase.
+_POD_PHASE_METRIC = ("aks_cluster", "kube_pod_status_phase")
+_UNHEALTHY_POD_PHASES = {"failed", "pending", "unknown"}
+
+_AGG_ATTR = {"Average": "average", "Total": "total", "Maximum": "maximum",
+             "Minimum": "minimum", "Count": "count"}
+
+
+def _normalize_region(value):
+    return (value or "").strip().lower().replace(" ", "")
+
+
+def _statistic_for(service, metric_name):
+    """Catalog statistic for a curated metric; Average for anything else
+    (directory-category metrics)."""
+    try:
+        from app.providers.azure.metric_catalog_data import CURATED
+        entry = CURATED.get(service)
+        if entry:
+            for m in entry[3]:
+                if m[0] == metric_name and m[2] in _AGG_ATTR:
+                    return m[2]
+    except Exception:
+        pass
+    return "Average"
+
+
+def _plan_calls(service, metric_names, window_seconds):
+    """Group a service's metrics into API calls that share aggregation,
+    time grain and dimension filter:
+    [{"names", "statistic", "grain_minutes", "window_seconds", "filter"}]."""
+    groups = {}
+    for name in sorted(metric_names):
+        stat = _statistic_for(service, name)
+        hourly = (service, name) in _HOURLY_GRAIN_METRICS
+        phase = (service, name) == _POD_PHASE_METRIC
+        key = (stat, 60 if hourly else 1, "phase eq '*'" if phase else None)
+        groups.setdefault(key, []).append(name)
+    calls = []
+    for (stat, grain, flt), names in groups.items():
+        calls.append({
+            "names": names, "statistic": stat, "grain_minutes": grain, "filter": flt,
+            # an hourly-grain metric needs a window spanning >= 2 buckets
+            "window_seconds": max(window_seconds, 3 * 3600) if grain == 60 else window_seconds,
+        })
+    return calls
+
+
+def _run_call(client, agg_type, namespace, service, chunk, call, result):
+    attr = _AGG_ATTR[call["statistic"]]
+    aggregation = getattr(agg_type, call["statistic"].upper(), None) or agg_type.AVERAGE
+    kwargs = dict(
+        resource_ids=[r["resource_id"] for r in chunk],
+        metric_namespace=namespace,
+        metric_names=list(call["names"]),
+        timespan=timedelta(seconds=call["window_seconds"]),
+        granularity=timedelta(minutes=call["grain_minutes"]),
+        aggregations=[aggregation],
+    )
+    if call["filter"]:
+        kwargs["filter"] = call["filter"]
+    try:
+        query_results = client.query_resources(**kwargs)
+    except Exception as e:
+        result["errors"].append(f"{service} ({namespace}, {call['statistic']}): {e}")
+        _record_usage(1)
+        return
+    _record_usage(1)
+
+    # Results come back in resource_ids order (no resource id on the
+    # result object) -- mapped positionally.
+    metrics_rows, history_rows = [], []
+    for resource_row, query_result in zip(chunk, query_results):
+        for metric in query_result.metrics:
+            if (service, metric.name) == _POD_PHASE_METRIC:
+                _pod_phase_rows(resource_row, metric, attr, metrics_rows, history_rows)
+                continue
+            for ts_elem in metric.timeseries:
+                latest = None
+                for point in ts_elem.data or []:
+                    value = getattr(point, attr, None)
+                    if value is None:
+                        continue
+                    history_rows.append((resource_row["id"], metric.name, float(value), point.timestamp))
+                    latest = value
+                # newest NON-null point: Azure's newest minute is usually
+                # still null when polled, which used to skip the update
+                if latest is not None:
+                    metrics_rows.append((resource_row["id"], metric.name, float(latest)))
+    if metrics_rows:
+        write_metrics_batch(metrics_rows)
+        result["pushed"] += len(metrics_rows)
+    if history_rows:
+        write_metric_history_batch(history_rows)
+
+
+def _pod_phase_rows(resource_row, metric, attr, metrics_rows, history_rows):
+    by_ts = {}
+    for ts_elem in metric.timeseries:
+        md = {str(k).lower(): str(v).lower() for k, v in (getattr(ts_elem, "metadata_values", None) or {}).items()}
+        if md.get("phase") not in _UNHEALTHY_POD_PHASES:
+            continue
+        for point in ts_elem.data or []:
+            value = getattr(point, attr, None)
+            if value is not None:
+                by_ts[point.timestamp] = by_ts.get(point.timestamp, 0.0) + float(value)
+    for ts in sorted(by_ts):
+        history_rows.append((resource_row["id"], metric.name, by_ts[ts], ts))
+    if by_ts:
+        metrics_rows.append((resource_row["id"], metric.name, by_ts[max(by_ts)]))
+
+
+def _record_usage(calls):
+    try:
+        from app.collector import api_usage
+        api_usage.record("azure", _CURRENT_TIER, calls=calls, units=calls)
+    except Exception:
+        pass
+
+
+# Tier label for api_usage (set by collect_all_azure_accounts' caller via
+# the tier_label argument; the multicloud loop runs passes sequentially).
+_CURRENT_TIER = "unknown"
+
+
+def collect_all_azure_accounts(categories=None, only_metric_names=None, window_seconds: int = 600,
+                               tier_label: str = "unknown") -> dict:
     """Runs collect_account_metrics() for every active Azure account. Used by the scheduler.
     categories, only_metric_names, window_seconds: see collect_account_metrics()'s docstring."""
+    global _CURRENT_TIER
+    _CURRENT_TIER = tier_label
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
