@@ -272,6 +272,37 @@ def test_open_critical_is_deescalated_when_it_no_longer_reaches_the_critical_lin
     assert db.one("SELECT COUNT(*) n FROM alerts")["n"] == 1        # updated in place, not duplicated
 
 
+def test_rds_and_elb_abbreviated_metric_names_are_matched_to_their_catalog_threshold(db):
+    """threshold_defaults.py stores metric_catalog.metric_name as the OFFICIAL
+    CloudWatch name (e.g. 'DatabaseConnections') but the collector writes
+    readings under a hand-picked abbreviation ('dbconnections'). The
+    evaluator's join used to be a plain 'mc.metric_name = m.metric_name' and
+    so NEVER matched for these -- these metrics could never alert on any
+    account. Found while answering a question about ELB coverage, not
+    introduced by the rest of this audit."""
+    r1 = db.resource(1, "rds", "db-1")
+    db.threshold(1, "rds", "DatabaseConnections", 50, 100)
+    db.metric(r1, "dbconnections", 150)          # what the collector actually writes
+    r2 = db.resource(1, "elb", "arn:aws:elasticloadbalancing:ap-south-1:1:loadbalancer/app/x/1")
+    db.threshold(1, "elb", "HTTPCode_Target_5XX_Count", 10, 50)
+    db.metric(r2, "errors5xx", 75)
+    run_eval()
+    reasons = {r["resource_id"]: r["severity"] for r in
+               db.q("SELECT resource_id, severity FROM alerts WHERE status='active'")}
+    assert reasons.get("db-1") == "CRITICAL"
+    assert reasons.get("arn:aws:elasticloadbalancing:ap-south-1:1:loadbalancer/app/x/1") == "CRITICAL"
+
+
+def test_ordinary_metrics_still_match_by_plain_lowercase(db):
+    """The override table only applies to the 6 documented exceptions --
+    everything else must keep matching via a plain case-fold, unaffected."""
+    r = db.resource(1, "ec2", "i-1")
+    db.threshold(1, "ec2", "CPUUtilization", 70, 90, unit="Percent")
+    db.metric(r, "cpuutilization", 95)
+    run_eval()
+    assert db.one("SELECT severity FROM alerts WHERE resource_id='i-1'")["severity"] == "CRITICAL"
+
+
 def test_clamp_percent_cap_and_low_direction():
     m = load_module("app/collector/alert_evaluator.py") if False else None  # noqa: F841
     install_stub("app.db", get_connection=lambda: None)
