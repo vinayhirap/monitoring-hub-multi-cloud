@@ -5,6 +5,8 @@ import {
   getAccountMetrics, saveAccountMetrics,
   applyDefaultTemplate, discoverNamespaceMetrics, downloadYaceConfig,
 } from "../api/api";
+import { useAuth } from "../auth/AuthContext";
+import { clearAllCached } from "../utils/dataCache";
 import "./Settings.css";
 import {
   ServerIcon, SaveIcon, ScaleIcon, DatabaseIcon, BucketIcon, SettingsIcon,
@@ -37,7 +39,28 @@ const ONE_BOUNDARY  = new Set(["HealthyHostCount", "StatusCheckFailed"]);
 const SVC_ICON  = { ec2:ServerIcon, ebs:SaveIcon, alb:ScaleIcon, rds:DatabaseIcon, lambda:"λ", s3:BucketIcon };
 const SVC_COLOR = { ec2:"#2bb3ac", ebs:"#38bdf8", alb:"#f472b6", rds:"#7c6ee0", lambda:"#22c55e", s3:"#fbbf24" };
 
+// This file talks to the backend with plain fetch() (not the shared
+// apiFetch in src/api/api.js) at ~9 call sites, so none of them got
+// api.js's 401 handling -- a session expiring mid-page silently fell
+// through to `.then(r => r.json())` parsing a 401 JSON error body as
+// if it were real data (e.g. thresholds silently became [], rendering
+// "No thresholds found" instead of bouncing to /login). This wraps
+// fetch() the same way api.js's apiFetch does, so callers below can
+// swap `fetch(...)` for `guardedFetch(...)` with no other changes to
+// their existing .then()/res.ok handling.
+async function guardedFetch(path, options = {}) {
+  const res = await fetch(`${BASE}${path}`, options);
+  if (res.status === 401) {
+    clearAllCached();
+    if (window.location.pathname !== "/login") {
+      window.location.href = "/login";
+    }
+  }
+  return res;
+}
+
 export default function Settings() {
+  const { hasPermission } = useAuth();
   const [accounts,    setAccounts]    = useState([]);
   const [accountId,   setAccountId]   = useState(null);
   const [thresholds,  setThresholds]  = useState([]);
@@ -124,7 +147,7 @@ export default function Settings() {
     try {
       // No manual auth header needed — the global fetch patch
       // (src/api/httpDefaults.js) already attaches the session cookie.
-      const res = await fetch(downloadYaceConfig(accountId, tier));
+      const res = await guardedFetch(downloadYaceConfig(accountId, tier));
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `HTTP ${res.status}`);
@@ -147,7 +170,7 @@ export default function Settings() {
 
   // Load all accounts for the selector
   useEffect(() => {
-    fetch(`${BASE}/api/admin/accounts`)
+    guardedFetch(`/api/admin/accounts`)
       .then(r => r.json())
       .then(data => {
         const list = Array.isArray(data) ? data : [];
@@ -161,8 +184,8 @@ export default function Settings() {
     if (!accountId) return;
     setLoading(true);
     try {
-      const t = await fetch(
-        `${BASE}/api/settings/thresholds?account_id=${accountId}&include_no_data=${showNoData}`
+      const t = await guardedFetch(
+        `/api/settings/thresholds?account_id=${accountId}&include_no_data=${showNoData}`
       ).then(r => r.json());
       setThresholds(Array.isArray(t?.thresholds) ? t.thresholds : []);
       setHiddenNoDataCount(t?.hidden_no_data_count || 0);
@@ -177,7 +200,7 @@ export default function Settings() {
 
   useEffect(() => {
     if (!loading && thresholds.length === 0 && accountId) {
-      fetch(`${BASE}/api/settings/thresholds/seed?account_id=${accountId}`, { method: "POST" })
+      guardedFetch(`/api/settings/thresholds/seed?account_id=${accountId}`, { method: "POST" })
         .then(() => load())
         .catch(console.error);
     }
@@ -187,7 +210,7 @@ export default function Settings() {
     setSaving(t.id);
     setSaveMsg(prev => ({ ...prev, [t.id]: null }));
     try {
-      const res = await fetch(`${BASE}/api/settings/thresholds`, {
+      const res = await guardedFetch(`/api/settings/thresholds`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -216,7 +239,7 @@ export default function Settings() {
     const newEnabled = t.enabled ? 0 : 1;
     setThresholds(prev => prev.map(x => x.id === t.id ? { ...x, enabled: newEnabled } : x));
     try {
-      const res = await fetch(`${BASE}/api/settings/thresholds/${t.id}/toggle`, {
+      const res = await guardedFetch(`/api/settings/thresholds/${t.id}/toggle`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled: newEnabled }),
@@ -235,7 +258,7 @@ export default function Settings() {
     if (!accountId) return;
     setChecking(true);
     try {
-      const r = await fetch(`${BASE}/api/settings/check?account_id=${accountId}`).then(r => r.json());
+      const r = await guardedFetch(`/api/settings/check?account_id=${accountId}`).then(r => r.json());
       setCheckResult(r);
     } catch (e) {
       setCheckResult({ breaches: [], error: e.message });
@@ -245,9 +268,24 @@ export default function Settings() {
   }
 
   async function clearAlerts() {
-    if (!window.confirm("Close all open, un-acknowledged alerts?\n\nThey are resolved (recorded as a bulk clear, with your name) rather than deleted. Anything still breaching will raise a new alert on the next evaluation cycle.")) return;
+    if (!accountId) return;
+    // The resolve/count/error-handling here matches app/api/alerts.py's
+    // clear_alerts() (audit b06): it deletes nothing (resolves with
+    // resolution_reason='bulk_clear') and now accepts ?account_id= to
+    // scope the clear instead of hitting every account the caller can
+    // see. That backend fix landed without this page being updated to
+    // actually pass account_id -- so this button was still clearing
+    // every accessible account's alerts regardless of which account is
+    // selected above. Scoped it to the selected account, which also
+    // lets the confirm text finally say something true about what the
+    // click is about to do.
+    if (!window.confirm(
+      `Close all open, un-acknowledged alerts for ${selectedAccount?.account_name || "the selected account"}?\n\n` +
+      "They are resolved (recorded as a bulk clear, with your name) rather than deleted. " +
+      "Anything still breaching will raise a new alert on the next evaluation cycle."
+    )) return;
     try {
-      const res = await fetch(`${BASE}/api/alerts/clear`, { method: "DELETE" });
+      const res = await guardedFetch(`/api/alerts/clear?account_id=${accountId}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`${res.status}`);
       const d = await res.json().catch(() => ({}));
       setCheckResult(null);
@@ -344,7 +382,15 @@ export default function Settings() {
             <button className="btn-check" onClick={runCheck} disabled={checking || !accountId}>
               {checking ? "⏳ Checking…" : "▶ Check Now"}
             </button>
-            <button className="btn-clear" onClick={clearAlerts}><TrashIcon size={13}/> Clear Alerts</button>
+            {/* Backend requires alerts.clear, granted to admin only
+                (db/migrations/049_close_require_role_bypass.sql) -- this
+                page previously showed this destructive, all-accounts
+                button to every role with no gate at all, relying purely
+                on the backend 403 (which clearAlerts() used to silently
+                swallow and report as a success anyway). */}
+            {hasPermission("alerts.clear") && (
+              <button className="btn-clear" onClick={clearAlerts} disabled={!accountId}><TrashIcon size={13}/> Clear Alerts</button>
+            )}
           </div>
         </div>
 
@@ -404,7 +450,7 @@ export default function Settings() {
           <div style={{ padding: 40, textAlign: "center", color: "var(--text-muted)" }}>
             No thresholds found.{" "}
             <button className="btn-check" onClick={() =>
-              fetch(`${BASE}/api/settings/thresholds/seed?account_id=${accountId}`, { method: "POST" })
+              guardedFetch(`/api/settings/thresholds/seed?account_id=${accountId}`, { method: "POST" })
                 .then(() => load())
             }>Seed defaults</button>
           </div>
@@ -417,6 +463,7 @@ export default function Settings() {
               onSave={saveThreshold}
               saving={saving}
               saveMsg={saveMsg}
+              canConfigure={hasPermission("alerts.configure")}
             />
           ))
         )}
@@ -440,7 +487,11 @@ export default function Settings() {
                 {metricsSaveMsg}
               </span>
             )}
-            <button className="btn-clear" onClick={resetToDefaultMetrics} disabled={metricsSaving || !accountId}>
+            <button
+              className="btn-clear" onClick={resetToDefaultMetrics}
+              disabled={metricsSaving || !accountId || !hasPermission("metric_catalog.manage")}
+              title={hasPermission("metric_catalog.manage") ? undefined : "You don't have permission to manage the metric catalog"}
+            >
               <RotateCcwIcon size={13}/> Reset to Recommended
             </button>
             {/* Legacy YACE config.yml download buttons REMOVED entirely --
@@ -454,7 +505,11 @@ export default function Settings() {
                 (GET /api/account-metrics/{id}/yace-config) is left in place
                 in case it's used directly by anyone with a genuine external
                 need -- only the UI entry point is removed. */}
-            <button className="btn-check" onClick={saveMetricSelection} disabled={metricsSaving || !metricsDirty}>
+            <button
+              className="btn-check" onClick={saveMetricSelection}
+              disabled={metricsSaving || !metricsDirty || !hasPermission("metric_catalog.manage")}
+              title={hasPermission("metric_catalog.manage") ? undefined : "You don't have permission to manage the metric catalog"}
+            >
               {metricsSaving ? "Saving…" : <span style={{display:"inline-flex",alignItems:"center",gap:6}}><SaveIcon size={13}/> Save Selection</span>}
             </button>
           </div>
@@ -497,7 +552,7 @@ export default function Settings() {
   );
 }
 
-function ServiceThresholdSection({ svc, items, onToggle, onUpdate, onSave, saving, saveMsg }) {
+function ServiceThresholdSection({ svc, items, onToggle, onUpdate, onSave, saving, saveMsg, canConfigure }) {
   const Icon  = SVC_ICON[svc]  || BarChartIcon;
   const color = SVC_COLOR[svc] || "#2bb3ac";
   return (
@@ -520,6 +575,7 @@ function ServiceThresholdSection({ svc, items, onToggle, onUpdate, onSave, savin
             onSave={() => onSave(t)}
             saving={saving === t.id}
             savedState={saveMsg[t.id]}
+            canConfigure={canConfigure}
           />
         ))}
       </div>
@@ -527,7 +583,7 @@ function ServiceThresholdSection({ svc, items, onToggle, onUpdate, onSave, savin
   );
 }
 
-function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState }) {
+function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState, canConfigure }) {
   // Auto-tune history (2026-09-14) -- lazy-fetched only when the badge
   // is clicked, so a page with many thresholds doesn't fire N extra
   // requests on load for something most rows won't have anyway.
@@ -543,7 +599,7 @@ function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState }) {
     setAutoTuneExpanded(true);
     if (autoTuneHistory !== null) return;
     setAutoTuneLoading(true);
-    fetch(`${BASE}/api/settings/thresholds/${t.id}/auto-tune-history`)
+    guardedFetch(`/api/settings/thresholds/${t.id}/auto-tune-history`)
       .then(r => r.ok ? r.json() : [])
       .then(setAutoTuneHistory)
       .catch(() => setAutoTuneHistory([]))
@@ -608,7 +664,12 @@ function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState }) {
             </div>
           )}
         </div>
-        <label className="toggle-sm" onClick={onToggle}>
+        <label
+          className="toggle-sm"
+          onClick={canConfigure ? onToggle : undefined}
+          style={canConfigure ? undefined : { cursor: "not-allowed", opacity: 0.6 }}
+          title={canConfigure ? undefined : "You don't have permission to configure alert thresholds"}
+        >
           <div className={`sm-track ${t.enabled ? "on" : ""}`} />
           <span className={`sm-label ${t.enabled ? "enabled-txt" : "disabled-txt"}`}>
             {t.enabled ? "ON" : "OFF"}
@@ -634,7 +695,7 @@ function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState }) {
           <div className="thresh-input-row">
             <span style={{ fontSize: 10, color: "var(--yellow)", width: 16, display:"inline-flex" }}><AlertTriangleIcon size={12}/></span>
             <span className="thresh-hint">Warn</span>
-            <input className="thresh-input" type="number" disabled={!t.enabled}
+            <input className="thresh-input" type="number" disabled={!t.enabled || !canConfigure}
               value={t.warning_value} min={minVal} max={maxVal}
               onChange={e => onUpdate("warning_value", clamp(e.target.value))} />
             <span className="thresh-unit">{t.unit || ideal.unit || ""}</span>
@@ -655,7 +716,7 @@ function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState }) {
         <div className="thresh-input-row">
           <span style={{ fontSize: 10, color: "var(--red)", width: 16, display:"inline-flex" }}><RedDotIcon size={12}/></span>
           <span className="thresh-hint">Crit</span>
-          <input className="thresh-input" type="number" disabled={!t.enabled}
+          <input className="thresh-input" type="number" disabled={!t.enabled || !canConfigure}
             value={t.critical_value} min={minVal} max={maxVal}
             onChange={e => onUpdate("critical_value", clamp(e.target.value))} />
           <span className="thresh-unit">{t.unit || ideal.unit || ""}</span>
@@ -676,7 +737,8 @@ function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState }) {
           color: savedState === "ok" ? "#22c55e" : savedState === "err" ? "#ef4444" : undefined,
         }}
         onClick={onSave}
-        disabled={saving || !t.enabled}
+        disabled={saving || !t.enabled || !canConfigure}
+        title={canConfigure ? undefined : "You don't have permission to configure alert thresholds"}
       >
         {saving ? "Saving…" : savedState === "ok"
           ? <span style={{display:"inline-flex",alignItems:"center",gap:5,justifyContent:"center"}}><CheckIcon size={12}/> Saved</span>

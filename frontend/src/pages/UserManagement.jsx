@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../auth/AuthContext";
+import { clearAllCached } from "../utils/dataCache";
 import "./UserManagement.css";
 import {
   PlusIcon, XIcon, AlertTriangleIcon, UsersIcon, LockIcon,
@@ -13,6 +14,19 @@ async function apiFetch(path, options = {}) {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
+  if (res.status === 401) {
+    // This local apiFetch previously diverged from src/api/api.js's
+    // apiFetch (used by every other page) by never handling session
+    // expiry -- a 401 here fell into the generic !res.ok branch below,
+    // surfacing as an inline "Request failed: 401" error banner
+    // instead of the redirect-to-login + cache-clear every other page
+    // gets. Matched to api.js's behavior.
+    clearAllCached();
+    if (window.location.pathname !== "/login") {
+      window.location.href = "/login";
+    }
+    throw new Error(`API ${path} \u2192 401 (session expired)`);
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || `Request failed: ${res.status}`);
@@ -85,7 +99,14 @@ export default function UserManagement() {
   const loadAccounts = useCallback(() => {
     if (!isAdmin) return;
     fetch(`${BASE}/api/live/accounts`)
-      .then(r => r.json())
+      .then(r => {
+        if (r.status === 401) {
+          clearAllCached();
+          if (window.location.pathname !== "/login") window.location.href = "/login";
+          return [];
+        }
+        return r.json();
+      })
       .then(data => setAccounts(Array.isArray(data) ? data : []))
       .catch(() => {});
   }, [isAdmin]);
@@ -317,8 +338,16 @@ export default function UserManagement() {
         method: "POST",
         body: JSON.stringify({ user_ids: [Number(userId)] }),
       });
+      // Groups are a pure scope container -- adding someone here never
+      // touches users.role (see app/api/admin/groups.py's
+      // add_group_members(), which deliberately removed the old
+      // auto-role-sync as a privilege-escalation fix) and the Users
+      // tab shows nothing about group membership, so there's nothing
+      // in the users list that this action could have changed. A
+      // previous `loadUsers()` call here referenced that removed
+      // auto-sync in a stale comment and re-fetched the whole user
+      // list for no effect; dropped.
       await refreshGroupDetail(groupId);
-      await loadUsers(); // the member's role may have just been synced to the group's level
     } catch (err) {
       alert("Add member failed: " + err.message);
     }
@@ -631,7 +660,19 @@ export default function UserManagement() {
           editable from here. */}
       {tab === "roles" && (
         <div className="roles-grid" style={{ alignItems: "start" }}>
-          {permCategories.length === 0 ? (
+          {!isAdmin ? (
+            // GET /api/permissions requires the permissions.view
+            // permission, which only admin holds (see
+            // db/migrations/015_permissions_rbac.sql) -- the fetch
+            // above is gated on isAdmin and simply never runs for an
+            // editor/viewer, so without this branch permCategories
+            // stayed permanently empty and this tab showed "Loading
+            // permission catalog…" forever for those roles instead of
+            // explaining why nothing loaded.
+            <div style={{ gridColumn: "1 / -1", padding: 24, color: "var(--text-muted)", fontSize: 13 }}>
+              Only admins can view the permission catalog.
+            </div>
+          ) : permCategories.length === 0 ? (
             <div style={{ gridColumn: "1 / -1", padding: 24, color: "var(--text-muted)", fontSize: 13 }}>
               Loading permission catalog…
             </div>
