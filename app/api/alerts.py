@@ -85,14 +85,18 @@ def _get_alert_account_id(alert_id: int):
     """
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
-        SELECT aws_account_id AS account_id
-        FROM alerts
-        WHERE id = %s
-    """, (alert_id,))
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute("""
+            SELECT aws_account_id AS account_id
+            FROM alerts
+            WHERE id = %s
+        """, (alert_id,))
+        row = cursor.fetchone()
+    finally:
+        # AUDIT(b06): runs before EVERY single-alert action -- must never
+        # leak a pooled connection on a query error.
+        cursor.close()
+        conn.close()
     return row["account_id"] if row else None
 
 
@@ -472,7 +476,8 @@ def get_console_url(alert_id: int, user: dict = Depends(require_permission("aler
 
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
+    try:
+        cursor.execute("""
         SELECT
             a.resource_id                          AS resource,
             r.resource_type                        AS resource_type,
@@ -484,10 +489,11 @@ def get_console_url(alert_id: int, user: dict = Depends(require_permission("aler
                                AND r.aws_account_id = a.aws_account_id
         JOIN aws_accounts acc ON acc.id = r.aws_account_id
         WHERE a.id = %s
-    """, (alert_id,))
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
+        """, (alert_id,))
+        row = cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
 
     if not row:
         raise HTTPException(status_code=404, detail="Alert not found")
@@ -873,7 +879,10 @@ def ack_group(group_key: str, current_user: dict = Depends(require_permission("o
 
 # ── CLEAR ─────────────────────────────────────────────────────
 @router.delete("/clear")
-def clear_alerts(current_user: dict = Depends(require_permission("alerts.clear"))):
+def clear_alerts(
+    account_id: Optional[int] = None,   # ?account_id= limits the clear to one account
+    current_user: dict = Depends(require_permission("alerts.clear")),
+):
     """Bulk close of every open, un-acknowledged alert (permission
     alerts.clear -- intentionally tighter than the single-alert actions).
 
@@ -881,23 +890,43 @@ def clear_alerts(current_user: dict = Depends(require_permission("alerts.clear")
     SLO inputs and audit evidence with no trace, and the very next
     evaluation cycle simply re-created them. It now RESOLVES them with
     resolution_reason='bulk_clear' + resolved_by, and writes an audit entry
-    with the count."""
-    conn = get_connection()
-    cur  = conn.cursor()
-    try:
-        cur.execute("""
-            UPDATE alerts
-            SET status = 'resolved', resolved_at = UTC_TIMESTAMP(), last_seen_at = UTC_TIMESTAMP(),
-                resolution_reason = 'bulk_clear', resolved_by = %s
-            WHERE status = 'active' AND acked = 0
-        """, (current_user["username"],))
-        affected = cur.rowcount
-        conn.commit()
-    finally:
-        cur.close()
-        conn.close()
-    write_audit(current_user["username"], "Alerts bulk cleared", f"count={affected}",
-                role=current_user["role"].upper())
+    with the count.
+
+    AUDIT(b06): the UPDATE had no account filter, so a user granted
+    alerts.clear with a RESTRICTED account scope bulk-resolved every
+    tenant's open alerts. Now limited to the caller's accessible accounts
+    (optionally one account via ?account_id=, matching the permission's
+    catalog description "Clear all alerts for an account"), and the audit
+    entry records the scope."""
+    scope = _scope_sql(current_user)
+    if account_id is not None:
+        accessible = get_accessible_account_ids(current_user)
+        if accessible is not None and account_id not in accessible:
+            raise HTTPException(status_code=403, detail="You do not have access to this account")
+        scope = (" AND a.aws_account_id = %s", [account_id])
+    if scope is None:
+        affected = 0
+    else:
+        scope_sql, scope_params = scope
+        conn = get_connection()
+        cur  = conn.cursor()
+        try:
+            cur.execute(f"""
+                UPDATE alerts a
+                SET a.status = 'resolved', a.resolved_at = UTC_TIMESTAMP(),
+                    a.last_seen_at = UTC_TIMESTAMP(),
+                    a.resolution_reason = 'bulk_clear', a.resolved_by = %s
+                WHERE a.status = 'active' AND a.acked = 0{scope_sql}
+            """, (current_user["username"], *scope_params))
+            affected = cur.rowcount
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+    scope_label = (f"account={account_id}" if account_id is not None
+                   else "all-accounts" if scope == ("", []) else "caller-scope")
+    write_audit(current_user["username"], "Alerts bulk cleared",
+                f"count={affected} {scope_label}", role=current_user["role"].upper())
     _invalidate_cache()
     invalidate_accounts_cache()
     return {"status": "cleared", "count": affected}

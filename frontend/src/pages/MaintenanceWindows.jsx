@@ -43,9 +43,13 @@ export default function MaintenanceWindows() {
     setSaving(true);
     setError(null);
     try {
+      // datetime-local values are browser-local wall-clock with no offset;
+      // the backend stores/compares UTC, so send an explicit UTC instant.
       await createMaintenanceWindow({
         ...form,
         aws_account_id: Number(form.aws_account_id),
+        starts_at: new Date(form.starts_at).toISOString(),
+        ends_at: new Date(form.ends_at).toISOString(),
       });
       setForm(f => ({ ...EMPTY_FORM, aws_account_id: f.aws_account_id }));
       load();

@@ -105,7 +105,7 @@ def fleet_health_summary(current_user: dict = Depends(require_permission("incide
 def list_incidents(
     account_id: int,
     status: str = Query(None, description="Filter by 'active' or 'resolved'"),
-    limit: int = Query(50, le=200),
+    limit: int = Query(50, ge=1, le=200),
     current_user: dict = Depends(require_permission("incidents.view")),
 ):
     """List correlated incidents for one account, most recent first."""
@@ -233,4 +233,9 @@ def get_capacity_forecast(
     currently trending toward exhaustion."""
     _require_account_access(account_id, current_user)
     from app.collector.trend import compute_capacity_forecasts
-    return compute_capacity_forecasts(aws_resource_id=resource_id)
+    # AUDIT(b06): must pass the account too. resource_id is only unique
+    # WITHIN an account (see alerts._get_alert_account_id), so filtering by
+    # resource_id alone fitted the trend over metric_history points from
+    # every account sharing that id -- leaking another tenant's capacity
+    # data into this one AND corrupting the regression itself.
+    return compute_capacity_forecasts(aws_resource_id=resource_id, aws_account_ids=[account_id])
