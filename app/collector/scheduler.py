@@ -113,7 +113,7 @@ def _get_active_accounts():
     try:
         cursor.execute("""
             SELECT id, account_name, account_id, role_arn, auth_mode,
-                   external_id, default_region
+                   external_id, default_region, provider
             FROM aws_accounts
             WHERE status = 'active'
         """)
@@ -395,6 +395,24 @@ def _mark_tier_completed(tier: str) -> None:
     log_event(f"scheduler_tier_{tier}_completed", f"{tier} tier completed", severity="INFO")
 
 
+class _LeadershipLost(Exception):
+    """Raised between steps of one run_loop iteration once leader_event
+    has been cleared -- see _require_leader()."""
+
+
+def _require_leader(leader_event):
+    """Audit B14: leadership used to be checked only at the TOP of each
+    run_loop iteration, but one iteration runs critical + standard + low +
+    extended + slow_extended + discovery back to back (many minutes when
+    the slower tiers coincide). A worker that lost the lock mid-iteration
+    kept going through every remaining tier while the new leader started
+    its own -- duplicate billed GetMetricData calls and two concurrent
+    evaluate_alerts() runs (the Sep 5 deadlock pattern). Checked before
+    every step now, so an ex-leader stops within one step."""
+    if leader_event is not None and not leader_event.is_set():
+        raise _LeadershipLost()
+
+
 def run_loop(leader_event=None):
     """
     Tiered loop:
@@ -449,98 +467,140 @@ def run_loop(leader_event=None):
                             "(another worker is now the leader)")
             return
 
-        now    = time.time()
-        cycle += 1
-
-        # ── Critical tier (2 min) ─────────────────────────────
-        logger.info(f"[Cycle {cycle}] critical tier")
         try:
-            run_once("critical")
-        except Exception as e:
-            logger.error(f"Critical tier error: {e}")
+            now    = time.time()
+            cycle += 1
 
-        # Synthetic/uptime checks -- deliberately its own call, not
-        # inside run_once("critical"), since it has nothing to do with
-        # cloud-account metric collection (run_once's whole purpose).
-        # Only probes checks that are actually due (see synthetic.py's
-        # run_due_checks() docstring) -- cheap to call every 2-min tick
-        # even when nothing is due yet.
-        try:
-            from app.collector.synthetic import run_due_checks
-            run_due_checks()
-        except Exception as e:
-            logger.error(f"Synthetic check tier error: {e}")
-
-        # Maintenance-window silencing sync (2026-09-14) -- see
-        # app/collector/maintenance.py's module docstring. Runs every
-        # 2-min critical-tier tick so silencing activates/deactivates
-        # promptly at a window's exact start/end time.
-        try:
-            from app.collector.maintenance import sync_maintenance_silencing
-            sync_maintenance_silencing()
-        except Exception as e:
-            logger.error(f"Maintenance-window silencing sync error: {e}")
-
-        # ── Standard tier (5 min) ─────────────────────────────
-        if now - last_standard >= STANDARD_INTERVAL:
-            logger.info(f"[Cycle {cycle}] standard tier")
+            _require_leader(leader_event)
+            # ── Critical tier (2 min) ─────────────────────────────
+            logger.info(f"[Cycle {cycle}] critical tier")
             try:
-                run_once("standard")
-                last_standard = now
-                _mark_tier_completed("standard")
+                run_once("critical")
             except Exception as e:
-                logger.error(f"Standard tier error: {e}")
+                logger.error(f"Critical tier error: {e}")
 
-        # ── Low tier + discovery (15 min) ─────────────────────
-        if now - last_low >= LOW_INTERVAL:
-            logger.info(f"[Cycle {cycle}] low tier")
+            _require_leader(leader_event)
+            # Synthetic/uptime checks -- deliberately its own call, not
+            # inside run_once("critical"), since it has nothing to do with
+            # cloud-account metric collection (run_once's whole purpose).
+            # Only probes checks that are actually due (see synthetic.py's
+            # run_due_checks() docstring) -- cheap to call every 2-min tick
+            # even when nothing is due yet.
             try:
-                run_once("low")
-                last_low = now
-                _mark_tier_completed("low")
+                from app.collector.synthetic import run_due_checks
+                run_due_checks()
             except Exception as e:
-                logger.error(f"Low tier error: {e}")
+                logger.error(f"Synthetic check tier error: {e}")
 
-        # ── Extended tier (60 min) ─────────────────────────────
-        if now - last_extended >= EXTENDED_INTERVAL:
-            logger.info(f"[Cycle {cycle}] extended tier")
+            _require_leader(leader_event)
+            # Maintenance-window silencing sync (2026-09-14) -- see
+            # app/collector/maintenance.py's module docstring. Runs every
+            # 2-min critical-tier tick so silencing activates/deactivates
+            # promptly at a window's exact start/end time.
             try:
-                run_once("extended")
-                last_extended = now
-                _mark_tier_completed("extended")
+                from app.collector.maintenance import sync_maintenance_silencing
+                sync_maintenance_silencing()
             except Exception as e:
-                logger.error(f"Extended tier error: {e}")
+                logger.error(f"Maintenance-window silencing sync error: {e}")
 
-        # ── Slow-extended tier (24 h) ───────────────────────────
-        if now - last_slow_extended >= SLOW_EXTENDED_INTERVAL:
-            logger.info(f"[Cycle {cycle}] slow_extended tier")
-            try:
-                run_once("slow_extended")
-                last_slow_extended = now
-                _mark_tier_completed("slow_extended")
-            except Exception as e:
-                logger.error(f"Slow-extended tier error: {e}")
+            _require_leader(leader_event)
+            # ── Standard tier (5 min) ─────────────────────────────
+            if now - last_standard >= STANDARD_INTERVAL:
+                logger.info(f"[Cycle {cycle}] standard tier")
+                try:
+                    run_once("standard")
+                    _mark_tier_completed("standard")
+                except Exception as e:
+                    logger.error(f"Standard tier error: {e}")
+                finally:
+                    # Attempted counts as run (audit B14): a tier that keeps
+                    # failing (e.g. evaluate_alerts raising AFTER collection
+                    # succeeded) used to be retried on every 2-min tick,
+                    # repeating its billed GetMetricData calls ~2.5x-30x too
+                    # often. It now retries at its normal cadence. Only a
+                    # SUCCESS is persisted via _mark_tier_completed().
+                    last_standard = now
 
-            # Daily Ollama model refresh (2026-09-15) -- re-pulls
-            # whatever model OLLAMA_MODEL names, picking up any weight
-            # update the publisher has pushed to that SAME tag. Never
-            # switches to a different model automatically -- see
-            # app/llm/summarizer.py's refresh_ollama_model() docstring
-            # for why a full auto-upgrade policy is a real production
-            # risk this app intentionally doesn't take.
-            try:
-                from app.llm.summarizer import refresh_ollama_model
-                refresh_ollama_model()
-            except Exception as e:
-                logger.error(f"Ollama model refresh error (non-fatal): {e}")
+            _require_leader(leader_event)
+            # ── Low tier + discovery (15 min) ─────────────────────
+            if now - last_low >= LOW_INTERVAL:
+                logger.info(f"[Cycle {cycle}] low tier")
+                try:
+                    run_once("low")
+                    _mark_tier_completed("low")
+                except Exception as e:
+                    logger.error(f"Low tier error: {e}")
+                finally:
+                    # Attempted counts as run (audit B14): a tier that keeps
+                    # failing (e.g. evaluate_alerts raising AFTER collection
+                    # succeeded) used to be retried on every 2-min tick,
+                    # repeating its billed GetMetricData calls ~2.5x-30x too
+                    # often. It now retries at its normal cadence. Only a
+                    # SUCCESS is persisted via _mark_tier_completed().
+                    last_low = now
 
-        if now - last_discovery >= DISCOVERY_INTERVAL:
-            logger.info(f"[Cycle {cycle}] discovery")
-            try:
-                run_discovery_once()
-                last_discovery = now
-            except Exception as e:
-                logger.error(f"Discovery error: {e}")
+            _require_leader(leader_event)
+            # ── Extended tier (60 min) ─────────────────────────────
+            if now - last_extended >= EXTENDED_INTERVAL:
+                logger.info(f"[Cycle {cycle}] extended tier")
+                try:
+                    run_once("extended")
+                    _mark_tier_completed("extended")
+                except Exception as e:
+                    logger.error(f"Extended tier error: {e}")
+                finally:
+                    # Attempted counts as run (audit B14): a tier that keeps
+                    # failing (e.g. evaluate_alerts raising AFTER collection
+                    # succeeded) used to be retried on every 2-min tick,
+                    # repeating its billed GetMetricData calls ~2.5x-30x too
+                    # often. It now retries at its normal cadence. Only a
+                    # SUCCESS is persisted via _mark_tier_completed().
+                    last_extended = now
+
+            _require_leader(leader_event)
+            # ── Slow-extended tier (24 h) ───────────────────────────
+            if now - last_slow_extended >= SLOW_EXTENDED_INTERVAL:
+                logger.info(f"[Cycle {cycle}] slow_extended tier")
+                try:
+                    run_once("slow_extended")
+                    _mark_tier_completed("slow_extended")
+                except Exception as e:
+                    logger.error(f"Slow-extended tier error: {e}")
+                finally:
+                    # Attempted counts as run (audit B14): a tier that keeps
+                    # failing (e.g. evaluate_alerts raising AFTER collection
+                    # succeeded) used to be retried on every 2-min tick,
+                    # repeating its billed GetMetricData calls ~2.5x-30x too
+                    # often. It now retries at its normal cadence. Only a
+                    # SUCCESS is persisted via _mark_tier_completed().
+                    last_slow_extended = now
+
+                # Daily Ollama model refresh (2026-09-15) -- re-pulls
+                # whatever model OLLAMA_MODEL names, picking up any weight
+                # update the publisher has pushed to that SAME tag. Never
+                # switches to a different model automatically -- see
+                # app/llm/summarizer.py's refresh_ollama_model() docstring
+                # for why a full auto-upgrade policy is a real production
+                # risk this app intentionally doesn't take.
+                try:
+                    from app.llm.summarizer import refresh_ollama_model
+                    refresh_ollama_model()
+                except Exception as e:
+                    logger.error(f"Ollama model refresh error (non-fatal): {e}")
+
+            _require_leader(leader_event)
+            if now - last_discovery >= DISCOVERY_INTERVAL:
+                logger.info(f"[Cycle {cycle}] discovery")
+                try:
+                    run_discovery_once()
+                    last_discovery = now
+                except Exception as e:
+                    logger.error(f"Discovery error: {e}")
+
+        except _LeadershipLost:
+            logger.warning("[scheduler] leadership lost mid-cycle -- stopping this loop "
+                            "(another worker is now the leader)")
+            return
 
         # Sleep until next critical cycle
         elapsed = time.time() - now

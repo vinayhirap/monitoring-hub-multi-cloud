@@ -15,10 +15,39 @@ db/migrations for the migration that adds it and collapses any old
 history rows down to one per pair.
 """
 import logging
+import os
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 from app.db import get_connection
 
 logger = logging.getLogger(__name__)
+
+# Audit B14: collector writes are fanned out from up to 10 account threads x
+# 6 task threads (runner.py) plus the extended/multi-cloud collectors, while
+# mysql-connector's pool RAISES "pool exhausted" instead of waiting. Every
+# writer below therefore takes a slot first, so a large collection cycle
+# queues its writes instead of exhausting the shared pool (which is what
+# turns into 500s on login/API requests). Tunable; keep well under
+# DB_POOL_SIZE (default 20).
+_WRITE_SLOTS = threading.BoundedSemaphore(
+    max(1, int(os.getenv("METRICS_WRITE_CONCURRENCY", "4")))
+)
+
+# prune_metric_history deletes in chunks so one 30-day sweep never holds a
+# multi-million-row DELETE (long locks, huge undo log) against a table the
+# collectors are inserting into at the same time.
+_PRUNE_BATCH_ROWS = 10000
+_PRUNE_MAX_BATCHES = 1000
+
+
+@contextmanager
+def _write_slot():
+    _WRITE_SLOTS.acquire()
+    try:
+        yield
+    finally:
+        _WRITE_SLOTS.release()
 
 
 def write_metric(resource_db_id: int, metric_name: str, metric_value: float):
@@ -31,6 +60,11 @@ def write_metric(resource_db_id: int, metric_name: str, metric_value: float):
     if resource_db_id is None or metric_value is None:
         return
 
+    with _write_slot():
+        _write_metric_locked(resource_db_id, metric_name, metric_value)
+
+
+def _write_metric_locked(resource_db_id, metric_name, metric_value):
     conn   = get_connection()
     cursor = conn.cursor()
 
@@ -67,6 +101,11 @@ def write_metrics_batch(datapoints: list):
     if not datapoints:
         return
 
+    with _write_slot():
+        _write_metrics_batch_locked(datapoints)
+
+
+def _write_metrics_batch_locked(datapoints):
     conn   = get_connection()
     cursor = conn.cursor()
 
@@ -126,6 +165,11 @@ def write_metric_history_batch(datapoints: list):
     if not datapoints:
         return
 
+    with _write_slot():
+        _write_metric_history_batch_locked(datapoints)
+
+
+def _write_metric_history_batch_locked(datapoints):
     conn   = get_connection()
     cursor = conn.cursor()
 
@@ -161,12 +205,19 @@ def prune_metric_history(retain_days: int = 7) -> int:
     conn   = get_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute(
-            "DELETE FROM metric_history WHERE metric_timestamp < DATE_SUB(NOW(), INTERVAL %s DAY)",
-            (retain_days,)
-        )
-        deleted = cursor.rowcount
-        conn.commit()
+        deleted = 0
+        for _ in range(_PRUNE_MAX_BATCHES):
+            cursor.execute(
+                "DELETE FROM metric_history "
+                "WHERE metric_timestamp < DATE_SUB(NOW(), INTERVAL %s DAY) "
+                "LIMIT %s",
+                (retain_days, _PRUNE_BATCH_ROWS)
+            )
+            batch = cursor.rowcount or 0
+            conn.commit()
+            deleted += batch
+            if batch < _PRUNE_BATCH_ROWS:
+                break
         if deleted:
             logger.info(f"metric_history: pruned {deleted} row(s) older than {retain_days} days")
         return deleted
