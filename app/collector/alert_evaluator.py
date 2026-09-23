@@ -32,7 +32,7 @@ from app.ws.publisher import publish_alert, publish_alert_resolved
 from app.alert_rules import (
     SYSTEM_METRICS, cadence_class_sql, eval_window_sql, hard_expiry_hours_sql,
 )
-from app.threshold_defaults import is_placeholder_threshold
+from app.threshold_defaults import is_placeholder_threshold, AWS_METRIC_NAME_TO_DB_NAME
 
 # 2026-09-15 fix: this background evaluator resolves alerts directly via SQL
 # (both the stale/stopped-instance sweep in _auto_resolve_stale_alerts() and
@@ -441,6 +441,34 @@ def _silenced_now(cursor):
         return {}
 
 
+def _db_metric_name_sql(resource_type_col="r.resource_type", catalog_col="mc.metric_name"):
+    """
+    SQL expression equivalent to threshold_defaults.resolve_db_metric_name():
+    "given a metric_catalog row's metric_name and resource_type, what string
+    actually appears in metrics.metric_name?" -- built from the SAME
+    AWS_METRIC_NAME_TO_DB_NAME table `resolve_db_metric_name()` uses, so the
+    two can never drift apart again.
+
+    2026-09-21: this evaluator's JOIN used to be a plain
+    "mc.metric_name = m.metric_name". metric_catalog stores the OFFICIAL
+    CloudWatch name (e.g. "HTTPCode_Target_5XX_Count"); the collector writes
+    readings under a hand-picked abbreviation for a handful of AWS metrics
+    (e.g. "errors5xx") -- see threshold_defaults.py's own comment on
+    AWS_METRIC_NAME_TO_DB_NAME. A literal string match therefore NEVER
+    matched for these, so no threshold was ever looked up for them: RDS
+    DatabaseConnections/FreeStorageSpace and ELB
+    HTTPCode_Target_5XX_Count/TargetResponseTime could never alert, on any
+    account, since this evaluator was written -- found auditing the Services
+    page's ELB tile, not introduced by this audit's other changes.
+    """
+    case = "CASE "
+    for (rtype, cw_name), db_name in AWS_METRIC_NAME_TO_DB_NAME.items():
+        case += (f"WHEN {resource_type_col} = '{rtype}' AND {catalog_col} = '{cw_name}' "
+                 f"THEN '{db_name}' ")
+    case += f"ELSE LOWER({catalog_col}) END"
+    return case
+
+
 def _evaluate_alerts_body(conn, cursor):
     """
     Body of evaluate_alerts(), split out so the connection/cursor acquired in
@@ -496,7 +524,7 @@ def _evaluate_alerts_body(conn, cursor):
             ON aa.id = r.aws_account_id
            AND aa.status = 'active'
         JOIN metric_catalog mc
-            ON mc.metric_name = m.metric_name
+            ON {_db_metric_name_sql('r.resource_type', 'mc.metric_name')} = m.metric_name
         JOIN thresholds t
             ON t.metric_id       = mc.id
            AND t.resource_type   = r.resource_type
