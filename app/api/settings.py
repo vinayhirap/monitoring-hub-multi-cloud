@@ -1,10 +1,10 @@
 # app/api/settings.py
 from fastapi import APIRouter, Body, Query, Depends, HTTPException
-from app.db import get_connection
+from app.db import get_db_cursor
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
 from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type, resolve_db_metric_name
-import datetime, json, logging
+import datetime, json, logging, math
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
@@ -79,11 +79,88 @@ def _require_account_access(account_id: int, current_user: dict) -> None:
         raise HTTPException(status_code=403, detail="You do not have access to this account")
 
 
+_VALID_COMPARISONS = (">", ">=", "<", "<=")
+_MAX_EVAL_PERIOD_MINUTES = 24 * 60
+_MAX_DYNAMIC_K = 10.0
+
+
+def _finite_float(payload: dict, key: str) -> float:
+    try:
+        value = float(payload[key])
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"{key} is required")
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{key} must be a number")
+    if not math.isfinite(value):
+        raise HTTPException(status_code=400, detail=f"{key} must be a finite number")
+    return value
+
+
+def _int_field(payload: dict, key: str, default):
+    try:
+        return int(payload.get(key, default))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{key} must be an integer")
+
+
+def _flag_field(payload: dict, key: str, default: int) -> int:
+    value = _int_field(payload, key, default)
+    if value not in (0, 1):
+        raise HTTPException(status_code=400, detail=f"{key} must be 0 or 1")
+    return value
+
+
+def _validate_threshold_payload(payload: dict) -> dict:
+    """
+    upsert_threshold input validation (audit B07). Previously any value
+    went straight to SQL: missing keys / null (the UI sends parseFloat("")
+    -> NaN -> JSON null) produced 500s, NaN/inf reached MySQL, an unknown
+    comparison was rejected by the ENUM only in strict mode (and silently
+    stored as '' otherwise, which compare() treats as "never breaches"),
+    and an inverted pair (warning past critical) made WARNING unreachable.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON object body required")
+    try:
+        metric_id = int(payload["metric_id"])
+    except KeyError:
+        raise HTTPException(status_code=400, detail="metric_id is required")
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="metric_id must be an integer")
+    warning_value  = _finite_float(payload, "warning_value")
+    critical_value = _finite_float(payload, "critical_value")
+    comparison = payload.get("comparison", ">")
+    if comparison not in _VALID_COMPARISONS:
+        raise HTTPException(status_code=400, detail="comparison must be one of > >= < <=")
+    if comparison in (">", ">=") and warning_value > critical_value:
+        raise HTTPException(status_code=400,
+                            detail="warning_value must be <= critical_value for '>'/'>=' thresholds")
+    if comparison in ("<", "<=") and warning_value < critical_value:
+        raise HTTPException(status_code=400,
+                            detail="warning_value must be >= critical_value for '<'/'<=' thresholds")
+    eval_period = _int_field(payload, "evaluation_period", 5)
+    if not 1 <= eval_period <= _MAX_EVAL_PERIOD_MINUTES:
+        raise HTTPException(status_code=400,
+                            detail=f"evaluation_period must be 1..{_MAX_EVAL_PERIOD_MINUTES} minutes")
+    enabled = _flag_field(payload, "enabled", 1)
+    resource_type = payload.get("resource_type", "ec2")
+    if not isinstance(resource_type, str) or not resource_type.strip() or len(resource_type) > 50:
+        raise HTTPException(status_code=400, detail="resource_type must be a non-empty string (max 50)")
+    return {
+        "metric_id": metric_id,
+        "resource_type": normalize_threshold_resource_type(resource_type.strip()),
+        "warning_value": warning_value,
+        "critical_value": critical_value,
+        "comparison": comparison,
+        "evaluation_period": eval_period,
+        "enabled": enabled,
+    }
+
+
 def _get_threshold_account_id(threshold_id: int):
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT aws_account_id FROM thresholds WHERE id = %s", (threshold_id,))
-    row = cur.fetchone()
-    cur.close(); conn.close()
+    with get_db_cursor(dictionary=True, commit=False) as (_conn, cur):
+        cur.execute("SELECT aws_account_id FROM thresholds WHERE id = %s", (threshold_id,))
+        row = cur.fetchone()
     return row["aws_account_id"] if row else None
 
 
@@ -124,20 +201,19 @@ def _metrics_with_data_for_account(account_id: int) -> set:
     -- it's tuned to catch abandoned metrics measured in hours/days, not
     to be a tight liveness check.
     """
-    conn = get_connection(); cur = conn.cursor()
-    cur.execute("""
-        SELECT DISTINCT r.resource_type, m.metric_name, r.resource_id
-        FROM metrics m
-        JOIN resources r ON r.id = m.resource_id
-        WHERE r.aws_account_id = %s
-          AND m.metric_timestamp >= DATE_SUB(NOW(), INTERVAL %s MINUTE)
-    """, (account_id, _STALE_DATA_CUTOFF_MINUTES))
-    triples = {
+    with get_db_cursor(commit=False) as (_conn, cur):
+        cur.execute("""
+            SELECT DISTINCT r.resource_type, m.metric_name, r.resource_id
+            FROM metrics m
+            JOIN resources r ON r.id = m.resource_id
+            WHERE r.aws_account_id = %s
+              AND m.metric_timestamp >= DATE_SUB(NOW(), INTERVAL %s MINUTE)
+        """, (account_id, _STALE_DATA_CUTOFF_MINUTES))
+        fetched = cur.fetchall()
+    return {
         (resource_type, metric_name.lower(), resource_id or "")
-        for resource_type, metric_name, resource_id in cur.fetchall()
+        for resource_type, metric_name, resource_id in fetched
     }
-    cur.close(); conn.close()
-    return triples
 
 
 def _has_data_for_threshold_row(service, resource_type, db_metric_name, has_data_triples):
@@ -190,19 +266,19 @@ def get_thresholds(
     current_user: dict = Depends(require_permission("alerts.view")),
 ):
     _require_account_access(account_id, current_user)
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT
-            t.id, t.aws_account_id, t.resource_type, t.metric_id,
-            t.warning_value, t.critical_value, t.comparison,
-            t.evaluation_period, t.enabled, t.use_dynamic, t.dynamic_k, t.created_at,
-            mc.metric_name, mc.service, mc.namespace, mc.statistic, mc.unit
-        FROM thresholds t
-        LEFT JOIN metric_catalog mc ON t.metric_id = mc.id
-        WHERE t.aws_account_id = %s
-        ORDER BY mc.service, mc.metric_name
-    """, (account_id,))
-    rows = cur.fetchall(); cur.close(); conn.close()
+    with get_db_cursor(dictionary=True, commit=False) as (_conn, cur):
+        cur.execute("""
+            SELECT
+                t.id, t.aws_account_id, t.resource_type, t.metric_id,
+                t.warning_value, t.critical_value, t.comparison,
+                t.evaluation_period, t.enabled, t.use_dynamic, t.dynamic_k, t.created_at,
+                mc.metric_name, mc.service, mc.namespace, mc.statistic, mc.unit
+            FROM thresholds t
+            LEFT JOIN metric_catalog mc ON t.metric_id = mc.id
+            WHERE t.aws_account_id = %s
+            ORDER BY mc.service, mc.metric_name
+        """, (account_id,))
+        rows = cur.fetchall()
 
     has_data_triples = _metrics_with_data_for_account(account_id)
     no_data_count = 0
@@ -222,32 +298,39 @@ def get_thresholds(
 
 @router.post("/thresholds")
 def upsert_threshold(payload: dict = Body(...), current_user: dict = Depends(require_permission("alerts.configure"))):
-    account_id     = int(payload.get("account_id", 3))
+    account_id = _int_field(payload if isinstance(payload, dict) else {}, "account_id", 3)
     _require_account_access(account_id, current_user)
-    metric_id      = payload["metric_id"]
-    resource_type  = normalize_threshold_resource_type(payload.get("resource_type", "ec2"))
-    warning_value  = float(payload["warning_value"])
-    critical_value = float(payload["critical_value"])
-    comparison     = payload.get("comparison", ">")
-    eval_period    = int(payload.get("evaluation_period", 5))
-    enabled        = int(payload.get("enabled", 1))
+    v = _validate_threshold_payload(payload)
+    metric_id      = v["metric_id"]
+    resource_type  = v["resource_type"]
+    warning_value  = v["warning_value"]
+    critical_value = v["critical_value"]
+    comparison     = v["comparison"]
+    eval_period    = v["evaluation_period"]
+    enabled        = v["enabled"]
 
-    conn = get_connection(); cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO thresholds
-          (aws_account_id, resource_type, metric_id, warning_value,
-           critical_value, comparison, evaluation_period, enabled)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-        ON DUPLICATE KEY UPDATE
-          resource_type     = VALUES(resource_type),
-          warning_value     = VALUES(warning_value),
-          critical_value    = VALUES(critical_value),
-          comparison        = VALUES(comparison),
-          evaluation_period = VALUES(evaluation_period),
-          enabled           = VALUES(enabled)
-    """, (account_id, resource_type, metric_id, warning_value,
-          critical_value, comparison, eval_period, enabled))
-    conn.commit(); new_id = cur.lastrowid; cur.close(); conn.close()
+    with get_db_cursor() as (_conn, cur):
+        cur.execute("SELECT id FROM metric_catalog WHERE id = %s", (metric_id,))
+        if cur.fetchone() is None:
+            raise HTTPException(status_code=400, detail="Unknown metric_id")
+        # id = LAST_INSERT_ID(id) so lastrowid is the existing row's id on
+        # the UPDATE path too (was 0, so the UI got {"id": 0} back).
+        cur.execute("""
+            INSERT INTO thresholds
+              (aws_account_id, resource_type, metric_id, warning_value,
+               critical_value, comparison, evaluation_period, enabled)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
+              id                = LAST_INSERT_ID(id),
+              resource_type     = VALUES(resource_type),
+              warning_value     = VALUES(warning_value),
+              critical_value    = VALUES(critical_value),
+              comparison        = VALUES(comparison),
+              evaluation_period = VALUES(evaluation_period),
+              enabled           = VALUES(enabled)
+        """, (account_id, resource_type, metric_id, warning_value,
+              critical_value, comparison, eval_period, enabled))
+        new_id = cur.lastrowid
 
     _write_audit(current_user["username"], "Threshold updated",
                  f"account={account_id} metric_id={metric_id} warn={warning_value} crit={critical_value}",
@@ -262,10 +345,15 @@ def toggle_threshold(threshold_id: int, payload: dict = Body(...), current_user:
         raise HTTPException(status_code=404, detail="Threshold not found")
     _require_account_access(account_id, current_user)
 
-    enabled = int(payload.get("enabled", 1))
-    conn = get_connection(); cur = conn.cursor()
-    cur.execute("UPDATE thresholds SET enabled=%s WHERE id=%s", (enabled, threshold_id))
-    conn.commit(); cur.close(); conn.close()
+    enabled = _flag_field(payload if isinstance(payload, dict) else {}, "enabled", 1)
+    with get_db_cursor() as (_conn, cur):
+        cur.execute("UPDATE thresholds SET enabled=%s WHERE id=%s", (enabled, threshold_id))
+
+    # Disabling a threshold silences alerting for every resource under it
+    # -- was the only threshold mutation with no audit row.
+    _write_audit(current_user["username"], "Threshold updated",
+                 f"threshold_id={threshold_id} enabled={enabled}",
+                 role=current_user["role"].upper())
     return {"status": "updated", "enabled": enabled}
 
 
@@ -286,17 +374,21 @@ def toggle_dynamic_threshold(threshold_id: int, payload: dict = Body(...), curre
         raise HTTPException(status_code=404, detail="Threshold not found")
     _require_account_access(account_id, current_user)
 
-    use_dynamic = int(payload.get("use_dynamic", 0))
-    dynamic_k   = float(payload.get("dynamic_k", 3.0))
-    if dynamic_k <= 0:
-        raise HTTPException(status_code=400, detail="dynamic_k must be positive")
+    payload = payload if isinstance(payload, dict) else {}
+    use_dynamic = _flag_field(payload, "use_dynamic", 0)
+    try:
+        dynamic_k = float(payload.get("dynamic_k", 3.0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="dynamic_k must be a number")
+    # NaN slipped through the old `<= 0` check (NaN <= 0 is False).
+    if not math.isfinite(dynamic_k) or not 0 < dynamic_k <= _MAX_DYNAMIC_K:
+        raise HTTPException(status_code=400, detail=f"dynamic_k must be > 0 and <= {_MAX_DYNAMIC_K}")
 
-    conn = get_connection(); cur = conn.cursor()
-    cur.execute(
-        "UPDATE thresholds SET use_dynamic=%s, dynamic_k=%s WHERE id=%s",
-        (use_dynamic, dynamic_k, threshold_id),
-    )
-    conn.commit(); cur.close(); conn.close()
+    with get_db_cursor() as (_conn, cur):
+        cur.execute(
+            "UPDATE thresholds SET use_dynamic=%s, dynamic_k=%s WHERE id=%s",
+            (use_dynamic, dynamic_k, threshold_id),
+        )
 
     _write_audit(current_user["username"], "Threshold updated",
                  f"threshold_id={threshold_id} use_dynamic={use_dynamic} dynamic_k={dynamic_k}",
@@ -320,18 +412,17 @@ def get_threshold_auto_tune_history(threshold_id: int, current_user: dict = Depe
         raise HTTPException(status_code=404, detail="Threshold not found")
     _require_account_access(account_id, current_user)
 
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT created_at, payload
-        FROM audit_logs
-        WHERE actor = 'system:threshold_tuning'
-          AND action = 'auto_enable_dynamic_threshold'
-          AND JSON_EXTRACT(payload, '$.threshold_id') = %s
-        ORDER BY created_at DESC
-        LIMIT 5
-    """, (threshold_id,))
-    rows = cur.fetchall()
-    cur.close(); conn.close()
+    with get_db_cursor(dictionary=True, commit=False) as (_conn, cur):
+        cur.execute("""
+            SELECT created_at, payload
+            FROM audit_logs
+            WHERE actor = 'system:threshold_tuning'
+              AND action = 'auto_enable_dynamic_threshold'
+              AND JSON_EXTRACT(payload, '$.threshold_id') = %s
+            ORDER BY created_at DESC
+            LIMIT 5
+        """, (threshold_id,))
+        rows = cur.fetchall()
 
     history = []
     for row in rows:
@@ -357,45 +448,48 @@ def seed_default_thresholds(account_id: int = Query(3), current_user: dict = Dep
     # pulled from the entire metric_catalog regardless of selection, so the
     # Metric Thresholds section could show/create rows for metrics that
     # weren't even being collected for this account.
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT mc.* FROM metric_catalog mc
-        JOIN account_metric_selections ams ON ams.metric_id = mc.id
-        WHERE ams.aws_account_id = %s AND ams.enabled = 1 AND mc.metric_name != ''
-    """, (account_id,))
-    metrics = cur.fetchall()
     inserted = 0
-    for m in metrics:
-        warn, crit, comp = DEFAULT_THRESHOLDS.get(m["metric_name"], FALLBACK_THRESHOLD)
-        try:
-            cur.execute("""
-                INSERT IGNORE INTO thresholds
-                  (aws_account_id, resource_type, metric_id,
-                   warning_value, critical_value, comparison, evaluation_period, enabled)
-                VALUES (%s,%s,%s,%s,%s,%s,5,1)
-            """, (account_id, normalize_threshold_resource_type(m["service"]), m["id"], warn, crit, comp))
-            inserted += cur.rowcount
-        except Exception as e:
-            logger.warning(f"Seed skip {m['metric_name']}: {e}")
-    conn.commit(); cur.close(); conn.close()
+    with get_db_cursor(dictionary=True) as (_conn, cur):
+        cur.execute("""
+            SELECT mc.* FROM metric_catalog mc
+            JOIN account_metric_selections ams ON ams.metric_id = mc.id
+            WHERE ams.aws_account_id = %s AND ams.enabled = 1 AND mc.metric_name != ''
+        """, (account_id,))
+        metrics = cur.fetchall()
+        for m in metrics:
+            warn, crit, comp = DEFAULT_THRESHOLDS.get(m["metric_name"], FALLBACK_THRESHOLD)
+            try:
+                cur.execute("""
+                    INSERT IGNORE INTO thresholds
+                      (aws_account_id, resource_type, metric_id,
+                       warning_value, critical_value, comparison, evaluation_period, enabled)
+                    VALUES (%s,%s,%s,%s,%s,%s,5,1)
+                """, (account_id, normalize_threshold_resource_type(m["service"]), m["id"], warn, crit, comp))
+                inserted += cur.rowcount
+            except Exception as e:
+                logger.warning(f"Seed skip {m['metric_name']}: {e}")
     return {"status": "seeded", "inserted": inserted}
 
 
 @router.get("/check")
-def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(require_permission("alerts.view"))):
+def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(require_permission("alerts.configure"))):
+    # alerts.configure, not alerts.view (audit B07): check_and_write_alerts()
+    # is a read-only preview now, but every click still makes live AWS
+    # Describe* calls and billed CloudWatch GetMetricData calls for this
+    # account, so a read-only viewer must not be able to trigger it. Kept as
+    # GET only because the shipped UI calls it that way.
     _require_account_access(account_id, current_user)
     from app.aws.collector_direct import check_and_write_alerts
     from app.api.live_data import _get_db_account
 
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT t.*, mc.metric_name, mc.namespace, mc.statistic, mc.service
-        FROM thresholds t
-        JOIN metric_catalog mc ON t.metric_id = mc.id
-        WHERE t.aws_account_id = %s AND t.enabled = 1
-    """, (account_id,))
-    thresholds = cur.fetchall()
-    cur.close(); conn.close()
+    with get_db_cursor(dictionary=True, commit=False) as (_conn, cur):
+        cur.execute("""
+            SELECT t.*, mc.metric_name, mc.namespace, mc.statistic, mc.service
+            FROM thresholds t
+            JOIN metric_catalog mc ON t.metric_id = mc.id
+            WHERE t.aws_account_id = %s AND t.enabled = 1
+        """, (account_id,))
+        thresholds = cur.fetchall()
 
     # Bug fixed here (see check_and_write_alerts()'s docstring in
     # collector_direct.py for the full history): this used to fetch only
@@ -412,8 +506,10 @@ def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(re
         return {"breaches": breaches, "checked": len(thresholds), "region": region,
                 "written_to_db": 0, "preview": True}
     except Exception as e:
-        logger.error(f"Check error: {e}")
-        return {"breaches": [], "error": str(e)}
+        # Raw exception text (boto/ARN/role details) is logged, not
+        # returned to the browser.
+        logger.error(f"Check error for account {account_id}: {e}")
+        return {"breaches": [], "error": "Threshold check failed; see server logs"}
 
 
 from app.audit import write_audit as _write_audit
