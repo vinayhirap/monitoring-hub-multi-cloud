@@ -22,6 +22,7 @@ from app.aws.metric_catalog_data import CURATED
 from app.aws.boto_config import STANDARD_RETRY
 from app.threshold_defaults import resolve_db_metric_name
 from app.collector.metrics.runner import _execute_gmd, STALE_RESOURCE_HOURS
+from app.collector import polling_model
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,10 @@ for _service_key, (_display, _namespace, _category, _metrics) in CURATED.items()
     if _category != "extended" or _service_key == "nlb":
         continue  # nlb already covered by the core ELB collector
     EXTENDED_METRICS[_service_key] = [
-        (m_name, resolve_db_metric_name(_service_key, m_name), stat, _namespace)
+        (m_name, resolve_db_metric_name(_service_key, m_name), stat,
+         polling_model.AWS_EXTENDED_NAMESPACE_OVERRIDES.get((_service_key, m_name), _namespace))
         for (m_name, unit, stat, is_default, desc) in _metrics
+        if (_service_key, m_name) not in polling_model.AWS_EXTENDED_UNSUPPORTED
     ]
 
 # Services confirmed, via a live 24h metric_history audit on 2026-09-12
@@ -56,7 +59,7 @@ for _service_key, (_display, _namespace, _category, _metrics) in CURATED.items()
 # real activity up to 24h late. Left on the hourly "extended" tier;
 # worth checking with the resource owners whether those specific
 # queues/streams are actually still in use before touching further.
-SLOW_EXTENDED_SERVICES = {"s3", "logs", "backup", "cloudfront", "wafv2"}
+SLOW_EXTENDED_SERVICES = polling_model.AWS_SLOW_EXTENDED_SERVICES
 
 # GetMetricData lookback window (minutes), keyed by tier -- see the
 # 2026-09-16 fix below for why this exists as its own map instead of
@@ -170,6 +173,7 @@ _SIMPLE_DIM_NAME = {
     "vpn":                "VpnId",
     "ecs":                "ClusterName",
     "s3":                 "BucketName",
+    "globalaccelerator":  "Accelerator",
 }
 
 # Services needing a second, static dimension beyond resource_id -- read
@@ -203,6 +207,10 @@ def _build_dimensions(resource, cw_metric_name=None):
     # bare cluster name CloudWatch's ClusterName dimension actually needs
     # is in resources.name instead (same row, stored separately).
     dim_value = resource["name"] if rt == "ecs" else resource["resource_id"]
+    if rt == "globalaccelerator":
+        # resource_id is the accelerator ARN; CloudWatch's Accelerator
+        # dimension is the trailing accelerator id.
+        dim_value = (resource["resource_id"] or "").rsplit("/", 1)[-1]
     dims = [{"Name": dim_name, "Value": dim_value}]
     tags = resource.get("tags") or {}
     extra = tags.get("cw_extra_dims") if isinstance(tags, dict) else None
@@ -261,14 +269,29 @@ def _build_dimensions(resource, cw_metric_name=None):
 
 
 def _region_for_service(service_key, resource_region):
-    """A handful of extended services' CloudWatch metrics only exist in
-    a fixed region regardless of where the resource itself is discovered
-    from -- see discovery/extended.py's docstring for why."""
-    if service_key == "cloudfront":
-        return "us-east-1"
-    if service_key == "globalaccelerator":
-        return "us-west-2"
-    return resource_region
+    """Services whose CloudWatch metrics exist only in one fixed region
+    (CloudFront, Route 53 health checks: us-east-1; Global Accelerator:
+    us-west-2) regardless of where the resource was discovered."""
+    return polling_model.AWS_EXTENDED_REGION_OVERRIDES.get(service_key, resource_region)
+
+
+_SAFE_SEARCH_VALUE = __import__("re").compile(r"^[A-Za-z0-9_.:/-]+$")
+
+
+def _search_query(qid, service_key, cw_name, resource, namespace):
+    """SEARCH-expression query for metrics AWS publishes per extra
+    dimension (DynamoDB Operation, MSK Broker ID), reduced to one series
+    for the resource. None if the key value isn't safe to embed."""
+    reducer, schema_dims, key_dim, stat = polling_model.AWS_SEARCH_METRICS[(service_key, cw_name)]
+    dims = _build_dimensions(resource, cw_name) or []
+    key_value = next((d["Value"] for d in dims if d["Name"] == key_dim), None)
+    if not key_value or not _SAFE_SEARCH_VALUE.match(key_value):
+        return None
+    schema = ",".join([namespace] + [f'"{d}"' if " " in d else d for d in schema_dims])
+    key = f'"{key_dim}"' if " " in key_dim else key_dim
+    expr = (f"{reducer}(SEARCH('{{{schema}}} MetricName=\"{cw_name}\" "
+            f"{key}=\"{key_value}\"', '{stat}', 300))")
+    return {"Id": qid, "Expression": expr, "Label": cw_name, "ReturnData": True}
 
 
 def _enabled_extended_metrics(cur, account_id):
@@ -299,7 +322,7 @@ def _enabled_extended_metrics(cur, account_id):
     return {(row["service"], row["metric_name"]) for row in cur.fetchall()}
 
 
-def _collect_extended_service(cw, resources, service_key, enabled_keys, minutes=16):
+def _collect_extended_service(cw, resources, service_key, enabled_keys, minutes=16, tier=None):
     """resources: list of dicts (id, resource_id, resource_type, name,
     region, tags) all belonging to the same (service_key, region) group.
     Mirrors app/collector/metrics/runner.py's _build_queries/_execute_gmd
@@ -316,6 +339,9 @@ def _collect_extended_service(cw, resources, service_key, enabled_keys, minutes=
     # Only the metrics this account has actually enabled -- see
     # _enabled_extended_metrics()'s docstring for why this filter exists.
     metric_defs = [d for d in metric_defs if (service_key, d[0]) in enabled_keys]
+    if tier is not None:
+        metric_defs = [d for d in metric_defs
+                       if polling_model.aws_extended_tier(service_key, d[0]) == tier]
     if not metric_defs:
         return 0
 
@@ -323,10 +349,16 @@ def _collect_extended_service(cw, resources, service_key, enabled_keys, minutes=
     id_map = {}
     for r in resources:
         for cw_name, db_name, stat, namespace in metric_defs:
+            qid = f"ext{len(queries)}"
+            if (service_key, cw_name) in polling_model.AWS_SEARCH_METRICS:
+                q = _search_query(qid, service_key, cw_name, r, namespace)
+                if q:
+                    queries.append(q)
+                    id_map[qid] = (r["id"], db_name)
+                continue
             dims = _build_dimensions(r, cw_name)
             if not dims:
                 continue
-            qid = f"ext{len(queries)}"
             queries.append({
                 "Id": qid,
                 "MetricStat": {
@@ -419,17 +451,21 @@ def collect_extended_for_account(session, account, tier="extended"):
         logger.info(f"    Extended: no enabled extended-tier metrics for [{account['account_name']}] -- skipping")
         return
 
+    minutes = polling_model.AWS_EXTENDED_LOOKBACK_MIN.get(tier, _LOOKBACK_MINUTES.get(tier, 16))
     for (resource_type, region), resources in grouped_resources.items():
         if resource_type not in EXTENDED_METRICS:
             continue
-        is_slow = resource_type in SLOW_EXTENDED_SERVICES
-        if (tier == "slow_extended") != is_slow:
+        # Per-metric tiers (polling_model.aws_extended_tier): a service only
+        # gets a call on this tier if at least one enabled metric lives here.
+        if not any(polling_model.aws_extended_tier(resource_type, d[0]) == tier
+                   and (resource_type, d[0]) in enabled_keys
+                   for d in EXTENDED_METRICS[resource_type]):
             continue
         cw_region = _region_for_service(resource_type, region)
         try:
             cw = session.client("cloudwatch", region_name=cw_region, config=STANDARD_RETRY)
-            minutes = _LOOKBACK_MINUTES.get(tier, 16)
-            _collect_extended_service(cw, resources, resource_type, enabled_keys, minutes=minutes)
+            _collect_extended_service(cw, resources, resource_type, enabled_keys,
+                                      minutes=minutes, tier=tier)
         except Exception as e:
             logger.error(f"  Extended collection failed [{resource_type}/{cw_region}] "
                          f"[{account['account_name']}]: {e}")

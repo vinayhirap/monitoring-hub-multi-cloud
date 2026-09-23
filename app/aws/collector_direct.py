@@ -620,6 +620,15 @@ def _s3_raw(role_arn=None, external_id=None, account=None) -> list:
 # ── S3 metric series (unchanged — not in YACE config) ────────────────────
 
 def get_s3_metric_series(bucket_name: str, hours: int = 24, account=None) -> dict:
+    """Cached 15 min per (bucket, hours, account): S3 storage metrics are
+    daily and request metrics are only charted, so re-running billed
+    GetMetricStatistics on every page view bought nothing (polling audit
+    2026-09-23)."""
+    return _cached(f"s3series_{(account or {}).get('id')}_{bucket_name}_{hours}",
+                   lambda: _get_s3_metric_series_raw(bucket_name, hours, account), ttl=900)
+
+
+def _get_s3_metric_series_raw(bucket_name: str, hours: int = 24, account=None) -> dict:
     try:
         cw            = get_session(None, account=account).client(
                             "cloudwatch", region_name="us-east-1", config=STANDARD_RETRY)
@@ -1201,7 +1210,9 @@ def _global_accelerator_raw() -> list:
 
 def collect_ecs_clusters(region=None, role_arn=None, external_id=None, account=None) -> list:
     cache_key = (account or {}).get("id") or role_arn or "self"
-    return _cached(f"ecs_{region}_{cache_key}", lambda: _ecs_raw(region, role_arn, external_id, account))
+    # 300 s (was 60): this list view makes billed GetMetricData calls per
+    # page view; ECS basic metrics publish at 1 min, charts refresh at 5.
+    return _cached(f"ecs_{region}_{cache_key}", lambda: _ecs_raw(region, role_arn, external_id, account), ttl=300)
 
 def _ecs_raw(region, role_arn=None, external_id=None, account=None) -> list:
     try:
@@ -1361,6 +1372,14 @@ def _ec2_cwagent_dimensions(cw, metric_name, instance_id):
 
 
 def get_ec2_metric_series(instance_id, region=None, hours=6, account=None) -> dict:
+    """Cached 5 min per (instance, region, hours, account): the CWAgent part
+    of this page makes billed ListMetrics + GetMetricData calls on every
+    view (polling audit 2026-09-23); EC2 data itself refreshes every 5 min."""
+    return _cached(f"ec2series_{(account or {}).get('id')}_{region}_{instance_id}_{hours}",
+                   lambda: _get_ec2_metric_series_raw(instance_id, region, hours, account), ttl=300)
+
+
+def _get_ec2_metric_series_raw(instance_id, region=None, hours=6, account=None) -> dict:
     """
     Bug fixed here (same root cause as the 2026-09-16 U4RAD incident
     documented on get_session() above, part 2): `account` was never
@@ -1570,7 +1589,9 @@ def _get_lambda_metric_series_raw(function_name, region=None, hours=6, account=N
             "throttles":   vm_series("throttles"),
         }
 
-        missing = [k for k, v in result.items() if not v]
+        # Polling audit 2026-09-23: all five series are collected on schedule
+        # (ConcurrentExecutions included) -- no per-view GetMetricData.
+        missing = []
         if missing:
             cw   = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
             dims = [{"Name": "FunctionName", "Value": function_name}]
@@ -1708,8 +1729,8 @@ def _get_elb_metric_series(lb_name: str, region=None, hours=6, account=None) -> 
         result = {
             "requests":           vm_series("requestcount"),
             "errors_5xx":         vm_series("errors5xx"),
-            "errors_4xx":         vm_series("errors4xx"),
-            "errors_elb_5xx":     vm_series("errorselb5xx"),
+            "errors_4xx":         vm_series("httpcode_target_4xx_count"),
+            "errors_elb_5xx":     vm_series("httpcode_elb_5xx_count"),
             "latency":            vm_series("responselatency"),
             # healthyhosts/unhealthyhosts (the plain names) NEVER had data via
             # ANY path -- confirmed against AWS's own docs: CloudWatch's
@@ -1722,11 +1743,15 @@ def _get_elb_metric_series(lb_name: str, region=None, hours=6, account=None) -> 
             # apply_fix_alb_healthy_hosts.py.
             "healthy_hosts":      _metric_history_query_range("elb", lb_name, "healthyhosts_describe", start, end, match_field="name", account_id=(account or {}).get("id")),
             "unhealthy_hosts":    _metric_history_query_range("elb", lb_name, "unhealthyhosts_describe", start, end, match_field="name", account_id=(account or {}).get("id")),
-            "active_connections": vm_series("activeconnections"),
-            "new_connections":    vm_series("newconnections"),
+            "active_connections": vm_series("activeconnectioncount"),
+            "new_connections":    vm_series("newconnectioncount"),
         }
 
-        missing = [k for k, v in result.items() if not v]
+        # Polling audit 2026-09-23: every one of these is now collected on a
+        # schedule (app/collector/polling_model.py), so the per-page-view
+        # GetMetricData fallback that used to live here (billed on every
+        # chart open) is gone. An empty series now means "no data yet".
+        missing = []
         if missing:
             cw   = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
             dims = [{"Name": "LoadBalancer", "Value": lb_dim}]
@@ -1956,7 +1981,7 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list, accou
     # app/collector/discovery/runner.py.
     LOCAL_KEY_FIELD = {
         "ec2": "resource_id", "ebs": "resource_id", "rds": "resource_id",
-        "alb": "name",
+        "alb": "name", "nlb": "name", "lambda": "name",
     }
     # metric_catalog's service key for ALB metrics is "alb" (matches
     # SERVICE_RESOURCES/NAMESPACE_MAP above, pre-existing), but
@@ -1965,7 +1990,7 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list, accou
     # CloudWatch/GMD calls elsewhere in this function never used
     # resources.resource_type at all, so this mapping is new, not a fix
     # to something that was broken before.
-    LOCAL_RESOURCE_TYPE = {"alb": "elb"}
+    LOCAL_RESOURCE_TYPE = {"alb": "elb", "nlb": "elb"}
 
     # db_metric_name strings below are copied verbatim from
     # app/collector/metrics/runner.py's EC2_METRICS_CRITICAL/LOW,
@@ -1980,42 +2005,21 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list, accou
     # them out of this dict means they correctly fall through to the
     # existing GMD/boto3 fallback branch below instead of ever being
     # looked up here.
-    LOCAL_METRIC_STUB = {
-        ("ec2", "CPUUtilization"):  "cpuutilization",
-        ("ec2", "NetworkIn"):       "networkin",
-        ("ec2", "NetworkOut"):      "networkout",
-        ("ec2", "DiskReadBytes"):   "diskreadbytes",
-        ("ec2", "DiskWriteBytes"):  "diskwritebytes",
-        # Fixed here (apply_final_cleanup.py) -- Phase 5 documented this
-        # as "left on vm_query()" but its own patch actually removed the
-        # vm_query() path entirely, so this was silently falling through
-        # to a real billed CloudWatch call. app/aws/describe_polling.py
-        # now also writes this into the local `metrics` table (in
-        # addition to its existing VM push, unchanged), so it belongs
-        # here for real now.
-        ("ec2", "StatusCheckFailed"): "statuscheckfailed",
-
-        ("ebs", "VolumeQueueLength"): "volumequeuelength",
-        ("ebs", "VolumeReadOps"):     "volumereadops",
-        ("ebs", "VolumeWriteOps"):    "volumewriteops",
-        ("ebs", "VolumeReadBytes"):   "volumereadbytes",
-        ("ebs", "VolumeWriteBytes"):  "volumewritebytes",
-
-        ("rds", "CPUUtilization"):   "cpuutilization",
-        ("rds", "FreeStorageSpace"): "freestorage",
-
-        ("alb", "RequestCount"):              "requestcount",
-        ("alb", "HTTPCode_Target_5XX_Count"): "errors5xx",
-        ("alb", "TargetResponseTime"):        "responselatency",
-        # Both HealthyHostCount and UnHealthyHostCount now map to
-        # describe_polling.py's DescribeTargetHealth-based aggregation --
-        # neither ever had a working CloudWatch-based source (confirmed:
-        # both require a TargetGroup dimension this app never supplied).
-        # UnHealthyHostCount is a NEW entry here -- it never had ANY
-        # local source before this fix. See apply_fix_alb_healthy_hosts.py.
-        ("alb", "HealthyHostCount"):          "healthyhosts_describe",
-        ("alb", "UnHealthyHostCount"):        "unhealthyhosts_describe",
-    }
+    # Derived from the polling model (audit 2026-09-23) so every metric
+    # collected on a schedule is read from the local cache here instead of
+    # a billed GetMetricData call; hand-maintained copies drifted before.
+    from app.collector.polling_model import AWS_CORE_METRICS
+    LOCAL_METRIC_STUB = {}
+    for _m in AWS_CORE_METRICS:
+        _svc = {"alb": "alb", "nlb": "nlb"}.get(_m.gate, _m.resource_type)
+        LOCAL_METRIC_STUB[(_svc, _m.cw_name)] = _m.db_name
+    LOCAL_METRIC_STUB.update({
+        ("ec2", "StatusCheckFailed"):  "statuscheckfailed",
+        ("ec2", "mem_used_percent"):   "mem_used_percent",
+        ("ec2", "disk_used_percent"):  "disk_used_percent",
+        ("alb", "HealthyHostCount"):   "healthyhosts_describe",
+        ("alb", "UnHealthyHostCount"): "unhealthyhosts_describe",
+    })
 
     local_lookups  = []   # (t_idx, resource_id, value_or_None)
     gmd_queries    = []

@@ -66,7 +66,7 @@ def _run_describe_poll_loop(leader_event):
     """
     Free EC2 status + ALB target health via Describe APIs — not CloudWatch,
     zero GetMetricData cost either way, so this runs on its own tight loop
-    (default 30s) independent of the tiered scheduler's cadence, for the
+    (every 60s) independent of the tiered scheduler's cadence, for the
     lowest latency the AWS Describe APIs can give us.
 
     leader_event: checked once per cycle so this loop stops itself if this
@@ -76,7 +76,7 @@ def _run_describe_poll_loop(leader_event):
     """
     import time
     from app.aws.describe_polling import poll_all
-    interval = 30
+    interval = 60   # polling audit 2026-09-23: 30 s bought no alerting speed (alerts evaluate every 2-5 min) and doubled Describe* throttling exposure
     while True:
         if not leader_event.is_set():
             logger.warning("[describe-poll] leadership lost -- stopping this loop")

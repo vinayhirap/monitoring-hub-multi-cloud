@@ -215,3 +215,17 @@ def clean_sys_modules():
     clear_stubs()
     yield
     clear_stubs()
+
+
+def install_polling_modules():
+    """Register the REAL, dependency-free app.collector.polling_model and
+    app.collector.api_usage modules (pure data / in-memory counters) so a
+    module under test can `from app.collector import polling_model` through
+    the isolated loader's stub package tree. Returns (polling_model,
+    api_usage)."""
+    pm = load_module("app/collector/polling_model.py")
+    au = load_module("app/collector/api_usage.py")
+    sys.modules["app.collector.polling_model"] = pm
+    sys.modules["app.collector.api_usage"] = au
+    install_stub("app.collector", polling_model=pm, api_usage=au)
+    return pm, au

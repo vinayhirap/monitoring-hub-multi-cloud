@@ -27,7 +27,7 @@ import sys
 from unittest.mock import MagicMock
 
 sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
-from tests.conftest import load_module, install_stub
+from tests.conftest import load_module, install_stub, install_polling_modules
 
 
 # ── 1 & 2: AWS tier-dispatch dedup ──────────────────────────────────
@@ -96,83 +96,65 @@ def _load_runner_and_record_tasks(tier):
     install_stub("app.collector.disk_mounts",
                  all_cwagent_disk_dims=lambda cw, iid: [],
                  ensure_disk_mount_metric_registered=lambda *a, **k: None)
+    install_polling_modules()
     mod = load_module("app/collector/metrics/runner.py")
 
-    fired = set()
-    for fn_name in ("_collect_ec2_critical", "_collect_ec2_low",
-                     "_collect_ec2_cwagent_mem", "_collect_ec2_cwagent_disk",
-                     "_collect_ebs", "_collect_rds", "_collect_elb",
-                     "_collect_lambda_standard", "_collect_lambda_low"):
-        def _make_recorder(name):
-            def _recorder(*a, **k):
-                fired.add(name)
-            return _recorder
-        setattr(mod, fn_name, _make_recorder(fn_name))
+    fired = set()   # {(resource_type, cw_metric_name)} actually queried
+
+    def _record_run_gmd(cw, resources, metric_defs, minutes=5, **k):
+        for r in resources:
+            for cw_name, _db, _stat, _ns in metric_defs:
+                fired.add((r["resource_type"], cw_name))
+        return 0
+    mod._run_gmd = _record_run_gmd
+    mod._collect_ec2_cwagent_mem = lambda *a, **k: fired.add(("ec2", "mem_used_percent"))
+    mod._collect_ec2_cwagent_disk = lambda *a, **k: fired.add(("ec2", "disk_used_percent"))
 
     account = {"account_name": "test", "default_region": "ap-south-1", "id": 1}
     mod._collect_account(account, tier=tier)
     return fired
 
 
-def test_critical_tier_fires_elb_and_rds_but_not_ec2_critical_or_ebs():
-    """ELB (1-min publish) and RDS (1-min publish, revenue-critical) both
-    stay on the fast 2-min tier. EC2 CPU/Network moved OFF critical
-    entirely on 2026-09-10 after live DEV data showed a 100%-basic-
-    monitoring fleet was wasting ~60% of 2-min polls -- see scheduler.py's
-    module docstring and metrics/runner.py's _log_monitoring_mode_mismatch().
-    RDS itself was gated to critical-only in this same fix series -- it
-    previously had no tier gate at all and was redundantly re-polled
-    whenever standard/low coincided with critical's always-running loop."""
+def test_critical_tier_polls_only_p1_rds_and_alb():
+    """Polling audit 2026-09-23: critical = 1-min availability/error
+    signals that are also alert-evaluated every tick."""
     fired = _load_runner_and_record_tasks("critical")
-    assert "_collect_elb" in fired
-    assert "_collect_rds" in fired
-    assert "_collect_ec2_critical" not in fired
-    assert "_collect_ebs" not in fired
-    assert "_collect_ec2_low" not in fired
-    assert "_collect_lambda_standard" not in fired
+    assert ("rds", "CPUUtilization") in fired
+    assert ("elb", "HTTPCode_Target_5XX_Count") in fired
+    assert ("elb", "HTTPCode_ELB_5XX_Count") in fired
+    assert ("rds", "ReadIOPS") not in fired
+    assert ("rds", "FreeStorageSpace") not in fired
+    assert not any(rt in ("ec2", "ebs", "lambda") for rt, _ in fired)
 
 
-def test_standard_tier_fires_ebs_and_ec2_critical_but_not_elb_or_rds():
-    """Covers three fixes: (1) the original dedup bug -- "standard" no
-    longer re-triggers "elb" (dispatch was `tier in
-    ("critical","standard")`), which used to duplicate a GetMetricData
-    call the "critical" tier's own independent 2-min loop had already
-    just made; (2) the 2026-09-10 EC2 tier move -- ec2_critical (CPU/
-    Network) now belongs to "standard" (5 min), matching AWS basic
-    monitoring's real publish cadence for this fleet, confirmed live;
-    (3) RDS is now gated to "critical" only (previously had NO tier gate
-    at all, so it fired here too whenever standard coincided with
-    critical's always-running loop -- a redundant, un-gated duplicate
-    call the same as ALB/EBS/EC2 had, just never caught until now)."""
+def test_standard_tier_contents():
     fired = _load_runner_and_record_tasks("standard")
-    assert "_collect_ebs" in fired
-    assert "_collect_lambda_standard" in fired
-    assert "_collect_ec2_critical" in fired, \
-        "standard tier must poll EC2 CPU/Network -- it moved here from critical on 2026-09-10"
-    assert "_collect_elb" not in fired, \
-        "standard tier must not re-poll ALB -- critical tier already covers it"
-    assert "_collect_rds" not in fired, \
-        "standard tier must not re-poll RDS -- critical tier already covers it, and RDS is now gated"
+    assert ("ec2", "CPUUtilization") in fired
+    assert ("ec2", "mem_used_percent") in fired
+    assert ("ebs", "VolumeQueueLength") in fired
+    assert ("lambda", "Throttles") in fired
+    assert ("rds", "ReadLatency") in fired
+    assert ("rds", "CPUUtilization") not in fired
+    assert ("elb", "RequestCount") not in fired
 
 
-def test_low_tier_fires_ec2_low_and_cwagent_but_not_ebs_or_rds():
-    """The other half of the original dedup fix: "low" previously also
-    re-triggered ebs (dispatch was `tier in ("standard","low")`),
-    duplicating a read of EBS's 5-min-resolution data that "standard" had
-    already just fetched. RDS is now also confirmed absent here for the
-    same reason as the standard-tier test above."""
+def test_low_tier_contents():
     fired = _load_runner_and_record_tasks("low")
-    assert "_collect_ec2_low" in fired
-    assert "_collect_ec2_cwagent_mem" in fired
-    assert "_collect_ec2_cwagent_disk" in fired
-    assert "_collect_lambda_low" in fired
-    assert "_collect_rds" not in fired, \
-        "low tier must not re-poll RDS -- critical tier already covers it, and RDS is now gated"
-    assert "_collect_ebs" not in fired, \
-        "low tier must not re-poll EBS -- standard tier already covers its 5-min-resolution data"
+    assert ("ebs", "VolumeReadOps") in fired
+    assert ("rds", "FreeStorageSpace") in fired
+    assert ("ec2", "disk_used_percent") in fired
+    assert ("ec2", "DiskReadBytes") not in fired      # removed: instance-store only
+    assert ("ec2", "CPUUtilization") not in fired
 
 
-# ── 3: VM call sites disabled by default ────────────────────────────
+def test_every_core_metric_is_polled_on_exactly_one_tier():
+    seen = {}
+    for tier in ("critical", "standard", "low", "extended", "slow_extended"):
+        for key in _load_runner_and_record_tasks(tier):
+            seen.setdefault(key, []).append(tier)
+    dupes = {k: v for k, v in seen.items() if len(v) > 1}
+    assert not dupes, f"billed duplicate polling: {dupes}"
+
 
 def test_describe_polling_vm_push_is_a_noop_by_default():
     """_push_to_vm() itself is untouched (module not cleaned up yet, per
@@ -236,7 +218,7 @@ def test_azure_enabled_metrics_applies_category_filter_when_given():
     cur2 = _CapturingCursor()
     mod._enabled_azure_metrics(cur2, 1, categories=None)
     sql2, params2 = cur2.queries[0]
-    assert "mc.category" not in sql2
+    assert "mc.category IN" not in sql2
     assert params2 == [1]
 
 

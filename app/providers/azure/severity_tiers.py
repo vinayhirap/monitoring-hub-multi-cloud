@@ -44,35 +44,48 @@ existing 15-min extended cadence.
 #    cycle. Free to do (see module docstring), and matches this app's own
 #    "Recommended Default? = Yes" flags in the metric catalog for the
 #    metrics that most directly indicate an outage or failure in progress.
+# Polling-model audit (2026-09-23): critical is 2 min, not 1 -- alerts are
+# evaluated on the 2-min AWS scheduler tick, and Azure's newest minute is
+# usually still null when polled at 1 min (so the extra calls bought no
+# fresher value). Only availability / error signals stay critical; CPU is
+# a 5-min (standard) signal.
 CRITICAL_METRICS = {
-    "vm":              {"Percentage CPU", "VM Availability Metric"},
+    "vm":              {"VM Availability Metric"},
     "storage_account": {"Availability"},
-    "sql_database":    {"cpu_percent", "connection_failed"},
+    "sql_database":    {"connection_failed"},
     "app_service":     {"Http5xx", "HealthCheckStatus"},
 }
 
-# ── CORE tier: trend/diagnostic signals -> no freshness lost by polling
-#    slower than the 5-min standard core cadence (nobody alerts on these
-#    within a 5-min window in practice, matching AWS's EC2 Disk /
-#    Lambda-Invocations "low" precedent in runner.py).
 LOW_METRICS = {
     "vm": {
         "Disk Read Bytes", "Disk Write Bytes",
         "Disk Read Operations/Sec", "Disk Write Operations/Sec",
         "CPU Credits Remaining", "OS Disk Queue Depth",
     },
-    "storage_account": {"Ingress", "Egress", "SuccessE2ELatency"},
+    # UsedCapacity is published at a 1-hour grain only.
+    "storage_account": {"Ingress", "Egress", "SuccessE2ELatency", "UsedCapacity"},
     "sql_database":    {"connection_successful", "deadlock", "blocked_by_firewall"},
     "app_service":     {"CpuTime", "MemoryWorkingSet", "Http4xx"},
 }
 
-# ── EXTENDED tier split: services whose real Azure-side publish rate is
-#    already 5 min (not 1 min) per the workbook, or whose data changes
-#    rarely enough (cert/pipeline/vault-config-adjacent signals) that
-#    slowing to 60 min loses nothing a user would notice, while directly
-#    reducing call volume as more extended services get enabled --
-#    the same "not every extended service deserves the same cadence"
-#    principle AWS applies inside its own extended tier.
+# Extended-service metrics that are availability/saturation signals --
+# polled with the 5-min standard pass instead of the 15/60-min extended ones.
+EXTENDED_STANDARD_METRICS = {
+    "application_gateway": {"UnhealthyHostCount"},
+    "load_balancer":       {"VipAvailability", "DipAvailability"},
+    "key_vault":           {"Availability"},
+    "redis_cache":         {"UsedMemoryPercentage", "PercentProcessorTime"},
+    "cosmosdb_account":    {"NormalizedRUConsumption"},
+    "aks_cluster":         {"node_cpu_usage_percentage", "node_memory_working_set_percentage",
+                            "kube_pod_status_phase"},
+    "function_app":        {"Http5xx"},
+}
+
+# Extended-service failure counters polled with the 15-min low pass.
+EXTENDED_LOW_METRICS = {
+    "data_factory": {"PipelineFailedRuns"},
+}
+
 SLOW_EXTENDED_SERVICES = {
     "vpn_gateway",     # TunnelAverageBandwidth etc. publish at 5 min, not 1 min
     "managed_disk",    # Composite Disk metrics publish at 5 min, not 1 min
@@ -81,6 +94,10 @@ SLOW_EXTENDED_SERVICES = {
     "key_vault",       # published only around actual vault API calls -- bursty, not steady 1-min
 }
 
+TIER_INTERVAL_SECONDS = {
+    "critical": 120, "standard": 300, "low": 900,
+    "extended": 900, "slow_extended": 3600,
+}
 
 def _service_metric_names(curated, service_key):
     _, _, _category, metrics = curated[service_key]
@@ -112,7 +129,9 @@ def build_extended_fast_metrics(curated):
     out = {}
     for service_key, (_, _, category, _metrics) in curated.items():
         if category == "extended" and service_key not in SLOW_EXTENDED_SERVICES:
-            out[service_key] = _service_metric_names(curated, service_key)
+            names = _service_metric_names(curated, service_key) - _promoted(service_key)
+            if names:
+                out[service_key] = names
     return out
 
 
@@ -122,5 +141,46 @@ def build_extended_slow_metrics(curated):
     out = {}
     for service_key, (_, _, category, _metrics) in curated.items():
         if category == "extended" and service_key in SLOW_EXTENDED_SERVICES:
-            out[service_key] = _service_metric_names(curated, service_key)
+            names = _service_metric_names(curated, service_key) - _promoted(service_key)
+            if names:
+                out[service_key] = names
+    return out
+
+
+def _promoted(service_key):
+    return (EXTENDED_STANDARD_METRICS.get(service_key, set())
+            | EXTENDED_LOW_METRICS.get(service_key, set()))
+
+
+def _merge(*maps):
+    out = {}
+    for m in maps:
+        for k, v in m.items():
+            out.setdefault(k, set()).update(v)
+    return out
+
+
+def build_standard_pass_metrics(curated):
+    """Allowlist for the 5-min pass: standard core + promoted extended."""
+    return _merge(build_standard_metrics(curated), EXTENDED_STANDARD_METRICS)
+
+
+def build_low_pass_metrics():
+    """Allowlist for the 15-min pass: low core + promoted extended."""
+    return _merge(LOW_METRICS, EXTENDED_LOW_METRICS)
+
+
+def metric_tiers(curated):
+    """{(service, metric_name): tier} for every curated metric."""
+    out = {}
+    for tier, mapping in (
+        ("standard", build_standard_pass_metrics(curated)),
+        ("low", build_low_pass_metrics()),
+        ("extended", build_extended_fast_metrics(curated)),
+        ("slow_extended", build_extended_slow_metrics(curated)),
+        ("critical", CRITICAL_METRICS),
+    ):
+        for service, names in mapping.items():
+            for n in names:
+                out[(service, n)] = tier
     return out

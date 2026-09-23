@@ -344,6 +344,9 @@ def collect_account_metrics(account: dict, categories=None, only_metric_names=No
         service = row["service"]
         result["metric_types_queried"] += 1
 
+        if row["metric_name"] in _REMOVED_METRICS.get(service, set()):
+            continue
+
         resolver = _RESOLVERS.get(service)
         if resolver is None:
             result["errors"].append(
@@ -379,14 +382,17 @@ def collect_account_metrics(account: dict, categories=None, only_metric_names=No
             continue
 
         try:
-            time_series = client.list_time_series(
-                request={
-                    "name": project_name,
-                    "filter": f'metric.type = "{metric_type}"',
-                    "interval": interval,
-                    "view": monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL,
-                }
-            )
+            request = {
+                "name": project_name,
+                "filter": f'metric.type = "{metric_type}"',
+                "interval": interval,
+                "view": monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL,
+            }
+            aggregation = _aggregation_for(monitoring_v3, client, project_name, metric_type,
+                                           service, _statistic_for(service, row["metric_name"]))
+            if aggregation is not None:
+                request["aggregation"] = aggregation
+            time_series = client.list_time_series(request=request)
         except Exception as e:
             result["errors"].append(f"{metric_type}: {e}")
             continue
@@ -401,8 +407,10 @@ def collect_account_metrics(account: dict, categories=None, only_metric_names=No
         metrics_rows = []
         history_rows = []
         unmatched = 0
+        series_returned = 0
         try:
             for ts in time_series:
+                series_returned += 1
                 if not ts.points:
                     continue
                 resource_db_id = resolver(
@@ -430,8 +438,10 @@ def collect_account_metrics(account: dict, categories=None, only_metric_names=No
                 if latest_value is not None:
                     metrics_rows.append((resource_db_id, row["metric_name"], latest_value))
         except Exception as e:
+            _record_usage(series_returned)
             result["errors"].append(f"{metric_type}: error parsing results: {e}")
             continue
+        _record_usage(series_returned)
 
         if metrics_rows:
             write_metrics_batch(metrics_rows)
@@ -449,9 +459,124 @@ def collect_account_metrics(account: dict, categories=None, only_metric_names=No
     return result
 
 
-def collect_all_gcp_accounts(categories=None, only_metric_names=None, window_seconds: int = _WINDOW_SECONDS) -> dict:
+# ── Aggregation (polling audit 2026-09-23) ──────────────────────────────
+# Without an aggregation, ListTimeSeries returned one billed series per
+# label combination (e.g. every Cloud Run response_code) and raw
+# DISTRIBUTION points, which _point_value() cannot read -- latency metrics
+# were paid for and thrown away. Now: per-series aligner chosen from the
+# metric's descriptor, reduced to ONE series per resource by grouping on
+# exactly the resource labels the resolver needs.
+try:
+    from app.providers.gcp.severity_tiers import REMOVED_METRICS as _REMOVED_METRICS
+except Exception:  # isolated test loader without the real package tree
+    _REMOVED_METRICS = {"compute_instance": {"cpu/usage_time", "uptime_total"}}
+
+_GROUP_BY = {
+    "compute_instance":        ["resource.labels.instance_id"],
+    "gcs_bucket":              ["resource.labels.bucket_name"],
+    "cloudsql_instance":       ["resource.labels.database_id"],
+    "cloud_run_service":       ["resource.labels.location", "resource.labels.service_name"],
+    "gke_cluster":             ["resource.labels.location", "resource.labels.cluster_name"],
+    "cloudfunctions_function": ["resource.labels.region", "resource.labels.function_name"],
+    "pubsub_topic":            ["resource.labels.topic_id"],
+    "pubsub_subscription":     ["resource.labels.subscription_id"],
+    "cloud_lb":                ["resource.labels.forwarding_rule_name", "resource.labels.region"],
+    "redis_instance":          ["resource.labels.region", "resource.labels.instance_id"],
+    "bigquery_project":        ["resource.labels.dataset_id"],
+    "spanner_instance":        ["resource.labels.instance_id"],
+    "firestore_database":      ["resource.labels.database"],
+    "nat_gateway":             ["resource.labels.region", "resource.labels.router_id",
+                                "resource.labels.gateway_name"],
+}
+
+_DESCRIPTOR_CACHE = {}   # metric_type -> (kind, value_type) names, or None
+
+
+def _statistic_for(service, metric_name):
+    try:
+        from app.providers.gcp.metric_catalog_data import CURATED
+        entry = CURATED.get(service)
+        if entry:
+            for m in entry[3]:
+                if m[0] == metric_name:
+                    return m[2]
+    except Exception:
+        pass
+    return "Average"
+
+
+def _descriptor(client, project_name, metric_type):
+    """(metric_kind, value_type) enum names; descriptor reads return no
+    time series, so they are not billed under the per-series meter."""
+    if metric_type not in _DESCRIPTOR_CACHE:
+        try:
+            d = client.get_metric_descriptor(name=f"{project_name}/metricDescriptors/{metric_type}")
+            _DESCRIPTOR_CACHE[metric_type] = (d.metric_kind.name, d.value_type.name)
+        except Exception as e:
+            logger.info(f"{metric_type}: descriptor lookup failed ({e}) -- querying unaggregated")
+            _DESCRIPTOR_CACHE[metric_type] = None
+    return _DESCRIPTOR_CACHE[metric_type]
+
+
+def _choose_aligner(kind, value_type, statistic):
+    """(aligner, reducer) enum-member names, or None for no aggregation."""
+    if value_type == "STRING":
+        return None
+    if value_type == "DISTRIBUTION":
+        return ("ALIGN_DELTA", "REDUCE_MEAN") if kind == "CUMULATIVE" else ("ALIGN_MEAN", "REDUCE_MEAN")
+    if value_type == "BOOL":
+        return ("ALIGN_FRACTION_TRUE", "REDUCE_MEAN")
+    stat = (statistic or "Average").lower()
+    if stat == "total":
+        aligner = {"DELTA": "ALIGN_SUM", "CUMULATIVE": "ALIGN_DELTA"}.get(kind, "ALIGN_MEAN")
+        return (aligner, "REDUCE_SUM")
+    if stat == "maximum":
+        return ("ALIGN_DELTA" if kind == "CUMULATIVE" else "ALIGN_MAX", "REDUCE_MAX")
+    if stat == "minimum":
+        return ("ALIGN_DELTA" if kind == "CUMULATIVE" else "ALIGN_MIN", "REDUCE_MIN")
+    return ("ALIGN_RATE" if kind == "CUMULATIVE" else "ALIGN_MEAN", "REDUCE_MEAN")
+
+
+def _aggregation_for(monitoring_v3, client, project_name, metric_type, service, statistic):
+    try:
+        desc = _descriptor(client, project_name, metric_type)
+        if desc is None:
+            return None
+        choice = _choose_aligner(desc[0], desc[1], statistic)
+        if choice is None:
+            return None
+        Aggregation = monitoring_v3.Aggregation
+        agg = {
+            "alignment_period": {"seconds": 60},
+            "per_series_aligner": getattr(Aggregation.Aligner, choice[0]),
+        }
+        group_by = _GROUP_BY.get(service)
+        if group_by:
+            agg["cross_series_reducer"] = getattr(Aggregation.Reducer, choice[1])
+            agg["group_by_fields"] = list(group_by)
+        return agg
+    except Exception as e:
+        logger.info(f"{metric_type}: aggregation unavailable ({e}) -- querying unaggregated")
+        return None
+
+
+def _record_usage(series):
+    try:
+        from app.collector import api_usage
+        api_usage.record("gcp", _CURRENT_TIER, calls=1, units=series)
+    except Exception:
+        pass
+
+
+_CURRENT_TIER = "unknown"
+
+
+def collect_all_gcp_accounts(categories=None, only_metric_names=None, window_seconds: int = _WINDOW_SECONDS,
+                             tier_label: str = "unknown") -> dict:
     """Runs collect_account_metrics() for every active GCP account. Used by the scheduler.
     categories, only_metric_names, window_seconds: see collect_account_metrics()'s docstring."""
+    global _CURRENT_TIER
+    _CURRENT_TIER = tier_label
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""

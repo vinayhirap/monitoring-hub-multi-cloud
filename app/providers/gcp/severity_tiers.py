@@ -31,21 +31,20 @@ close to real-time" half.
 #    AWS RDS/EC2-critical's own cadence). These are the metrics whose
 #    "Recommended Default? = Yes" flag most directly indicates an outage
 #    or failure mode in progress.
+# Polling-model audit (2026-09-23): only availability stays critical
+# (2 min, evaluated every tick). CPU/latency are 5-min signals -- polling
+# them every 2 min multiplied billed time series without faster alerting.
 CRITICAL_METRICS = {
-    "compute_instance":  {"cpu/utilization"},
-    "cloudsql_instance": {"cpu/utilization", "up"},
-    "cloud_run_service": {"cpu/utilizations", "request_latencies"},
+    "cloudsql_instance": {"up"},
 }
 
-# ── CORE tier: trend/diagnostic signals -> LOW (15 min, matching AWS's
-#    EC2-Disk / Lambda-Invocations "low" precedent). Cumulative counters
-#    and rarely-actioned replication/ops-count metrics: no freshness lost.
 LOW_METRICS = {
     "compute_instance": {
-        "cpu/usage_time", "disk/read_bytes_count", "disk/write_bytes_count",
-        "disk/read_ops_count", "disk/write_ops_count", "uptime_total",
+        "disk/read_bytes_count", "disk/write_bytes_count",
+        "disk/read_ops_count", "disk/write_ops_count",
     },
-    "gcs_bucket": {"network/sent_bytes_count", "total_byte_seconds"},
+    "gcs_bucket": {"network/sent_bytes_count", "total_byte_seconds",
+                   "total_bytes", "object_count"},
     "cloudsql_instance": {
         "disk/read_ops_count", "disk/write_ops_count",
         "mysql/replication/seconds_behind_master",
@@ -53,6 +52,28 @@ LOW_METRICS = {
     },
     "cloud_run_service": {"billable_instance_time", "startup_latencies"},
 }
+
+# Removed from collection: cpu/usage_time duplicates cpu/utilization, and
+# uptime_total duplicates uptime. Skipped even if still enabled in an
+# account's saved selection (billed per time series returned).
+REMOVED_METRICS = {
+    "compute_instance": {"cpu/usage_time", "uptime_total"},
+}
+
+# Extended-service incident signals polled with the 5-min standard pass.
+EXTENDED_STANDARD_METRICS = {
+    "pubsub_subscription": {"oldest_unacked_message_age", "num_undelivered_messages"},
+    "nat_gateway":         {"nat_allocation_failed"},
+    "redis_instance":      {"stats/memory/usage_ratio"},
+}
+
+# Extended-service failure/saturation signals polled with the 15-min pass.
+EXTENDED_LOW_METRICS = {
+    "gke_cluster": {"restart_count", "memory/limit_utilization", "cpu/limit_utilization"},
+    "cloud_lb":    {"backend_latencies", "total_latencies"},
+}
+
+TIER_INTERVAL_SECONDS = {"critical": 120, "standard": 300, "low": 900, "extended": 3600}
 
 
 def _service_metric_names(curated, service_key):
@@ -70,7 +91,7 @@ def build_standard_metrics(curated):
     for service_key, (_, _, category, _metrics) in curated.items():
         if category != "core":
             continue
-        names = _service_metric_names(curated, service_key)
+        names = _service_metric_names(curated, service_key) - REMOVED_METRICS.get(service_key, set())
         claimed = CRITICAL_METRICS.get(service_key, set()) | LOW_METRICS.get(service_key, set())
         standard = names - claimed
         if standard:
@@ -90,5 +111,40 @@ def build_extended_metrics(curated):
     out = {}
     for service_key, (_, _, category, _metrics) in curated.items():
         if category == "extended":
-            out[service_key] = _service_metric_names(curated, service_key)
+            names = (_service_metric_names(curated, service_key)
+                     - EXTENDED_STANDARD_METRICS.get(service_key, set())
+                     - EXTENDED_LOW_METRICS.get(service_key, set()))
+            if names:
+                out[service_key] = names
+    return out
+
+
+def _merge(*maps):
+    out = {}
+    for m in maps:
+        for k, v in m.items():
+            out.setdefault(k, set()).update(v)
+    return out
+
+
+def build_standard_pass_metrics(curated):
+    return _merge(build_standard_metrics(curated), EXTENDED_STANDARD_METRICS)
+
+
+def build_low_pass_metrics():
+    return _merge(LOW_METRICS, EXTENDED_LOW_METRICS)
+
+
+def metric_tiers(curated):
+    """{(service, metric_name): tier} for every collected curated metric."""
+    out = {}
+    for tier, mapping in (
+        ("standard", build_standard_pass_metrics(curated)),
+        ("low", build_low_pass_metrics()),
+        ("extended", build_extended_metrics(curated)),
+        ("critical", CRITICAL_METRICS),
+    ):
+        for service, names in mapping.items():
+            for n in names:
+                out[(service, n)] = tier
     return out

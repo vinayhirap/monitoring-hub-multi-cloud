@@ -59,6 +59,17 @@ logger = logging.getLogger(__name__)
 # this too.
 CYCLE_MINUTES = 5
 
+# Evaluations now also run on the 2-min critical tick for P1 metrics
+# (scheduler.py). A breach/healthy counter only advances when at least this
+# long has passed since the row was last touched, so an extra evaluation is
+# never an extra "cycle": evaluation_period semantics are unchanged, only
+# the FIRST detection gets faster. MySQL assigns SET columns left to right,
+# so the counter expressions must precede last_seen_at in every UPDATE.
+MIN_CYCLE_SECONDS = 240
+_GATED_STREAK_SQL = (f"IF(COALESCE(last_seen_at, triggered_at) <= "
+                     f"DATE_SUB(UTC_TIMESTAMP(), INTERVAL {MIN_CYCLE_SECONDS} SECOND), "
+                     f"healthy_streak + 1, healthy_streak)")
+
 # alerts.environment / alert_pending.environment are VARCHAR(50) after
 # db/migrations/059 (were VARCHAR(10): an "Environment=development" tag
 # (11 chars) raised "Data too long" on INSERT under MySQL 8 strict mode and
@@ -435,15 +446,16 @@ def _touch_pending(cursor, aws_account_id, resource_id, metric_name, severity, e
                     metric_value, threshold_value):
     """Upsert a breach candidate; returns the row's state AFTER the touch.
     aws_account_id is REQUIRED (see migration 046)."""
-    cursor.execute("""
+    cursor.execute(f"""
         INSERT INTO alert_pending
             (aws_account_id, resource_id, metric_name, severity, environment,
              first_breach_at, last_seen_at, breach_cycles,
              current_value, threshold_value)
         VALUES (%s, %s, %s, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 1, %s, %s)
         ON DUPLICATE KEY UPDATE
+            breach_cycles   = IF(last_seen_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {MIN_CYCLE_SECONDS} SECOND),
+                                 breach_cycles + 1, breach_cycles),
             last_seen_at    = UTC_TIMESTAMP(),
-            breach_cycles   = breach_cycles + 1,
             current_value   = VALUES(current_value),
             threshold_value = VALUES(threshold_value),
             severity = IF(VALUES(severity) = 'CRITICAL', 'CRITICAL', severity)
@@ -465,11 +477,14 @@ def _clear_pending(cursor, aws_account_id, resource_id, metric_name):
     """, (aws_account_id, resource_id, metric_name))
 
 
-def evaluate_alerts():
+def evaluate_alerts(p1_only=False):
+    """p1_only=True: evaluate only polling_model.p1_metric_keys() (called on
+    every 2-min critical tick) and skip the stale-alert sweep, which the
+    full 5-min evaluation already runs."""
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        _evaluate_alerts_body(conn, cursor)
+        _evaluate_alerts_body(conn, cursor, p1_only=p1_only)
     except Exception:
         try:
             conn.rollback()
@@ -520,14 +535,14 @@ def _db_metric_name_sql(resource_type_col="r.resource_type", catalog_col="mc.met
     return case
 
 
-def _evaluate_alerts_body(conn, cursor):
+def _evaluate_alerts_body(conn, cursor, p1_only=False):
     """
     Body of evaluate_alerts(), split out so the connection/cursor acquired in
     evaluate_alerts() are released via try/finally even if a MySQL deadlock
     (observed in production, Sep 5 2026) or any other exception happens
     partway through.
     """
-    stale_total, stale_by_reason = _auto_resolve_stale_alerts(cursor)
+    stale_total, stale_by_reason = (0, {}) if p1_only else _auto_resolve_stale_alerts(cursor)
     conn.commit()
     if stale_total:
         logger.info(f"Auto-resolved {stale_total} alert(s): "
@@ -556,7 +571,7 @@ def _evaluate_alerts_body(conn, cursor):
             r.region,
             aa.account_name,
             aa.default_region,
-            {cadence_class_sql('r', 'aa')} AS cadence,
+            {cadence_class_sql('r', 'aa', 'm.metric_name')} AS cadence,
             mc.unit                AS unit,
             mc.service             AS service,
             m.metric_name,
@@ -582,11 +597,16 @@ def _evaluate_alerts_body(conn, cursor):
            AND t.resource_type   = r.resource_type
            AND t.aws_account_id  = r.aws_account_id
            AND t.enabled         = 1
-        WHERE m.metric_timestamp >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {eval_window_sql('r', 'aa')} MINUTE)
+        WHERE m.metric_timestamp >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {eval_window_sql('r', 'aa', 'm.metric_name')} MINUTE)
         ORDER BY t.id
     """)
 
     rows = _select_threshold_rows(cursor.fetchall())
+    if p1_only:
+        from app.collector.polling_model import p1_metric_keys
+        p1 = p1_metric_keys()
+        rows = [r for r in rows
+                if (r["resource_type"], (r["metric_name"] or "").lower()) in p1]
     # Release the read snapshot before per-row writes start.
     conn.commit()
     logger.info(f"Evaluating {len(rows)} metric readings")
@@ -705,18 +725,19 @@ def _evaluate_row(cursor, row, silenced_map, stats):
                 critical_value if existing["severity"] == "CRITICAL" else warning_value
             )
             if resolve_threshold_value is None:
-                cursor.execute("""
-                    UPDATE alerts SET current_value = %s, last_seen_at = UTC_TIMESTAMP(),
-                                      healthy_streak = healthy_streak + 1
+                cursor.execute(f"""
+                    UPDATE alerts SET current_value = %s,
+                                      healthy_streak = {_GATED_STREAK_SQL},
+                                      last_seen_at = UTC_TIMESTAMP()
                     WHERE id = %s
                 """, (metric_value, existing["id"]))
             else:
-                cursor.execute("""
+                cursor.execute(f"""
                     UPDATE alerts
                     SET current_value  = %s,
                         threshold      = %s,
-                        last_seen_at   = UTC_TIMESTAMP(),
-                        healthy_streak = healthy_streak + 1
+                        healthy_streak = {_GATED_STREAK_SQL},
+                        last_seen_at   = UTC_TIMESTAMP()
                     WHERE id = %s
                 """, (metric_value, resolve_threshold_value, existing["id"]))
 

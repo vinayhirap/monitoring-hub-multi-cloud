@@ -81,8 +81,64 @@ def _in(values):
     return ", ".join(f"'{v}'" for v in values)
 
 
-def cadence_class_sql(r="r", acc="acc"):
-    """SQL expression -> 'core' | 'extended' | 'slow' for an alert's resource."""
+# ── Metric-level cadence (polling audit 2026-09-23) ─────────────────────
+# The resource-type class above assumes every metric of a resource type is
+# polled at the same cadence; it isn't (e.g. EBS ops at 15 min, SQS age at
+# 5 min, Azure/GCP low/extended tiers at 15/60 min). When a metric column is
+# supplied, these helpers first match the metric's REAL polling interval
+# from app/collector/polling_model.py, falling back to the class.
+_OVERRIDE_GROUPS = None
+
+
+def _sql_str(v):
+    return "'" + str(v).replace(chr(92), chr(92) * 2).replace("'", "''") + "'"
+
+
+def _override_groups():
+    """{interval_seconds: [(provider, resource_type, lower_metric), ...]} and
+    prefix rules; built once per process from the polling model."""
+    global _OVERRIDE_GROUPS
+    if _OVERRIDE_GROUPS is None:
+        from app.collector import polling_model as pm
+        groups = {}
+        for key, seconds in pm.metric_interval_overrides().items():
+            groups.setdefault(seconds, []).append(key)
+        _OVERRIDE_GROUPS = (groups, list(pm.PREFIX_INTERVAL_OVERRIDES))
+    return _OVERRIDE_GROUPS
+
+
+def _metric_case(metric, r, acc, value_for_interval, fallback_sql):
+    groups, prefixes = _override_groups()
+    parts = []
+    for seconds in sorted(groups):
+        tuples = ", ".join(
+            f"({_sql_str(p)}, {_sql_str(t)}, {_sql_str(m)})" for p, t, m in sorted(groups[seconds]))
+        parts.append(f"WHEN ({acc}.provider, {r}.resource_type, LOWER({metric})) IN ({tuples}) "
+                     f"THEN {value_for_interval(seconds)} ")
+    for provider, rtype, prefix, seconds in prefixes:
+        like = prefix.replace("_", "\\_") + "%"
+        parts.append(f"WHEN {acc}.provider = {_sql_str(provider)} AND {r}.resource_type = {_sql_str(rtype)} "
+                     f"AND LOWER({metric}) LIKE {_sql_str(like)} THEN {value_for_interval(seconds)} ")
+    return "CASE " + "".join(parts) + f"ELSE {fallback_sql} END"
+
+
+def _interval_value(table):
+    from app.collector import polling_model as pm
+    src = getattr(pm, table)
+
+    def f(seconds):
+        return int(src.get(seconds, src[min(src, key=lambda k: abs(k - seconds))]))
+    return f
+
+
+def cadence_class_sql(r="r", acc="acc", metric=None):
+    """SQL expression -> 'core' | 'extended' | 'slow' for an alert's resource
+    (and, when `metric` is given, that metric's real polling cadence)."""
+    if metric is not None:
+        from app.collector import polling_model as pm
+        return _metric_case(metric, r, acc,
+                            lambda s: _sql_str(pm.cadence_for_interval(s)),
+                            cadence_class_sql(r, acc))
     return (
         f"CASE "
         f"WHEN {acc}.provider = 'aws' AND {r}.resource_type IN ({_in(SLOW_AWS_RESOURCE_TYPES)}) THEN 'slow' "
@@ -100,11 +156,17 @@ def _by_class_sql(mapping, r="r", acc="acc"):
     )
 
 
-def stale_minutes_sql(r="r", acc="acc"):
+def stale_minutes_sql(r="r", acc="acc", metric=None):
+    if metric is not None:
+        return _metric_case(metric, r, acc, _interval_value("STALE_MIN_BY_INTERVAL"),
+                            _by_class_sql(STALE_MINUTES, r, acc))
     return _by_class_sql(STALE_MINUTES, r, acc)
 
 
-def eval_window_sql(r="r", acc="acc"):
+def eval_window_sql(r="r", acc="acc", metric=None):
+    if metric is not None:
+        return _metric_case(metric, r, acc, _interval_value("EVAL_WINDOW_MIN_BY_INTERVAL"),
+                            _by_class_sql(EVAL_WINDOW_MINUTES, r, acc))
     return _by_class_sql(EVAL_WINDOW_MINUTES, r, acc)
 
 
@@ -118,7 +180,7 @@ def is_stale_sql(a="a", r="r", acc="acc"):
     being treated as forever-fresh, which is how they used to hide."""
     return (
         f"({a}.status = 'active' AND COALESCE({a}.last_seen_at, {a}.triggered_at) "
-        f"< DATE_SUB(UTC_TIMESTAMP(), INTERVAL {stale_minutes_sql(r, acc)} MINUTE))"
+        f"< DATE_SUB(UTC_TIMESTAMP(), INTERVAL {stale_minutes_sql(r, acc, f'{a}.metric_name')} MINUTE))"
     )
 
 
