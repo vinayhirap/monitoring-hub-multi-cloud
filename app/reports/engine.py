@@ -260,7 +260,9 @@ class ReportPDF(FPDF):
         self.set_font("Helvetica", "", 8)
         self.set_text_color(*_GRAY_TEXT)
         self.set_y(-13)
-        self.cell(0, 8, _safe("CONFIDENTIAL -- prepared by CloudOps Monitoring for the named client/account only"))
+        self.cell(0, 8, _safe(
+            f"CONFIDENTIAL -- prepared by Aurionpro CloudOps for \"{self._meta.get('scope_label') or 'the named client/account'}\" only"
+        ))
         self.set_y(-13)
         self.cell(0, 8, _safe(f"Page {self.page_no()}"), align="R")
 
@@ -563,7 +565,7 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
         f"Generated: {now:%d %b %Y %H:%M} UTC by {generated_by}",
     ]
 
-    pdf = ReportPDF({"title": title}, format="A4")
+    pdf = ReportPDF({"title": title, "scope_label": scope_label or scope_id}, format="A4")
     _draw_cover(pdf, title=title, subtitle=subtitle, meta_lines=meta_lines)
 
     pdf.add_page()
@@ -691,7 +693,9 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
         pdf.set_xy(pdf.get_x() + col_w[1], row_y)
         pdf.pill(pdf.get_x(), row_y + 0.4, a.get("status") or "-", _status_color(a.get("status")), w=col_w[2] - 2)
         pdf.set_xy(pdf.get_x() + col_w[2], row_y)
-        pdf.cell(col_w[3], ROW_H, _safe((a.get("resource_name") or a["resource_id"])[:30]))
+        pdf.set_font("Helvetica", "", 8.5)
+        resource_label = _fit_text(pdf, a.get("resource_name") or a["resource_id"], col_w[3] - 2)
+        pdf.cell(col_w[3], ROW_H, _safe(resource_label))
         pdf.cell(col_w[4], ROW_H, _safe(a.get("metric_name") or "-"))
         pdf.cell(col_w[5], ROW_H, _safe(a.get("value")), new_x="LMARGIN", new_y="NEXT")
     if not alerts_list:
