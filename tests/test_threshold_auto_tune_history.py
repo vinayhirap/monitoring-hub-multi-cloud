@@ -24,6 +24,33 @@ import app.auth     # noqa: F401 -- see test_resource_health_json_parsing.py's
 from tests.conftest import load_module, install_stub, FakeCursor, FakeConn
 
 
+def _fake_get_db_cursor(get_connection):
+    """Mirror of app.db.get_db_cursor for stubs (settings.py uses it
+    since audit B07)."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def get_db_cursor(dictionary=False, commit=True):
+        conn = get_connection()
+        cur = conn.cursor(dictionary=dictionary)
+        try:
+            yield conn, cur
+            if commit:
+                conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
+            conn.close()
+    return get_db_cursor
+
+
+def _install_db_stub(conn_factory):
+    install_stub("app.db", get_connection=conn_factory,
+                 get_db_cursor=_fake_get_db_cursor(conn_factory))
+
+
 def _install_common_stubs():
     install_stub("app.auth.permissions", require_permission=lambda code: (lambda: None))
 
@@ -98,7 +125,7 @@ def test_auto_tune_history_returns_parsed_detail_and_trigger_path():
         def cursor(self, dictionary=True):
             return _Cursor([])
 
-    install_stub("app.db", get_connection=lambda: _Conn([]))
+    _install_db_stub(lambda: _Conn([]))
     install_stub("app.auth.authorization", get_accessible_account_ids=lambda user: None)
     _install_common_stubs()
     mod = load_module("app/api/settings.py")
@@ -125,7 +152,7 @@ def test_auto_tune_history_empty_for_never_tuned_threshold():
         def cursor(self, dictionary=True):
             return _Cursor([])
 
-    install_stub("app.db", get_connection=lambda: _Conn([]))
+    _install_db_stub(lambda: _Conn([]))
     install_stub("app.auth.authorization", get_accessible_account_ids=lambda user: None)
     _install_common_stubs()
     mod = load_module("app/api/settings.py")
@@ -143,7 +170,7 @@ def test_auto_tune_history_404_for_unknown_threshold():
         def cursor(self, dictionary=True):
             return _Cursor([])
 
-    install_stub("app.db", get_connection=lambda: _Conn([]))
+    _install_db_stub(lambda: _Conn([]))
     install_stub("app.auth.authorization", get_accessible_account_ids=lambda user: None)
     _install_common_stubs()
     mod = load_module("app/api/settings.py")

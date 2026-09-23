@@ -132,6 +132,7 @@ should self-correct continuously.
 """
 import logging
 from app.db import get_connection
+from app.threshold_defaults import resolve_db_metric_name
 
 logger = logging.getLogger(__name__)
 
@@ -313,7 +314,7 @@ def auto_tune_static_thresholds() -> int:
         cursor.execute("""
             SELECT t.id, t.aws_account_id, t.resource_type, t.metric_id,
                    t.warning_value, t.critical_value, t.comparison, t.dynamic_k,
-                   mc.metric_name, a.account_name
+                   mc.metric_name, mc.service, a.account_name
             FROM thresholds t
             JOIN metric_catalog mc ON mc.id = t.metric_id
             LEFT JOIN aws_accounts a ON a.id = t.aws_account_id
@@ -325,134 +326,172 @@ def auto_tune_static_thresholds() -> int:
         static_thresholds = cursor.fetchall()
 
         for th in static_thresholds:
-            cursor.execute("""
-                SELECT b.resource_id, AVG(b.mean_value) AS typical_value,
-                       AVG(b.stddev_value) AS typical_stddev,
-                       SUM(b.sample_count) AS total_samples
-                FROM metric_baseline b
-                JOIN resources r ON r.resource_id = b.resource_id AND r.aws_account_id = b.aws_account_id
-                WHERE b.aws_account_id = %s AND r.resource_type = %s
-                  AND b.metric_name = %s
-                GROUP BY b.resource_id
-                HAVING total_samples >= %s
-            """, (th["aws_account_id"], th["resource_type"], th["metric_name"], MIN_CONFIDENT_SAMPLES))
-            resource_baselines = cursor.fetchall()
-
-            if not resource_baselines:
-                continue
-
-            # Compares against warning_value, not critical_value
-            # (Revision 3, 2026-09-14): warning is always the closer/
-            # first-crossed line, so this is a strict broadening -- a
-            # resource whose mean crosses critical necessarily crosses
-            # warning too, so nothing that qualified before stops
-            # qualifying now. It also catches the case that motivated
-            # this revision: chronically breaching warning while
-            # staying under critical (real production example:
-            # Aurionpro-Finops's NetworkOut, critical raised to 5M but
-            # warning left at 1M -- see module docstring).
-            if th["comparison"] in (">", ">="):
-                mean_breaching = [r for r in resource_baselines if r["typical_value"] > th["warning_value"]]
-            else:
-                mean_breaching = [r for r in resource_baselines if r["typical_value"] < th["warning_value"]]
-
-            fraction = len(mean_breaching) / len(resource_baselines)
-            majority_path = (len(resource_baselines) >= MIN_RESOURCES_FOR_DECISION
-                              and fraction >= CHRONIC_BREACH_FRACTION)
-
-            chronic_example = None
-            chronic_path = None
-            if not majority_path:
-                for candidate in resource_baselines:
-                    if _false_positive_mark_count(cursor, th["aws_account_id"], candidate["resource_id"], th["metric_name"]) >= MIN_FALSE_POSITIVE_MARKS:
-                        chronic_example, chronic_path = candidate, "manually_confirmed"
-                        break
-                if chronic_example is None:
-                    for candidate in mean_breaching:
-                        if _has_chronic_active_alert(cursor, th["aws_account_id"], candidate["resource_id"], th["metric_name"]):
-                            chronic_example, chronic_path = candidate, "chronic_mean"
-                            break
-                if chronic_example is None:
-                    noisy_candidates = [r for r in resource_baselines
-                                         if r not in mean_breaching and _noise_band_crosses_line(r, th)]
-                    for candidate in noisy_candidates:
-                        if _has_chronic_active_alert(cursor, th["aws_account_id"], candidate["resource_id"], th["metric_name"]):
-                            chronic_example, chronic_path = candidate, "chronic_noise"
-                            break
-
-            if not majority_path and chronic_example is None:
-                continue
-
-            cursor.execute("UPDATE thresholds SET use_dynamic = 1 WHERE id = %s", (th["id"],))
-
-            example = chronic_example or mean_breaching[0]
-            if majority_path:
-                trigger_path, trigger_desc = "majority", (
-                    f"{len(mean_breaching)}/{len(resource_baselines)} resources have a normal operating "
-                    f"range past the configured warning value"
-                )
-            elif chronic_path == "manually_confirmed":
-                trigger_desc = (
-                    f"a person has directly marked {MIN_FALSE_POSITIVE_MARKS}+ past alerts on "
-                    f"{example['resource_id']} for this metric as false positives"
-                )
-                trigger_path = "manually_confirmed"
-            elif chronic_path == "chronic_mean":
-                trigger_desc = (
-                    f"{example['resource_id']} alone has been continuously alerting on this metric "
-                    f"for {CHRONIC_ALERT_AGE_HOURS}+ hours with a confidently-baselined normal range "
-                    f"past the configured warning value (no majority of peer resources needed)"
-                )
-                trigger_path = "chronic_mean"
-            else:
-                trigger_desc = (
-                    f"{example['resource_id']}'s average is healthy, but it has been continuously "
-                    f"alerting on this metric for {CHRONIC_ALERT_AGE_HOURS}+ hours -- its normal "
-                    f"variability alone already crosses the configured warning value"
-                )
-                trigger_path = "chronic_noise"
-            account_label = th["account_name"] or f"account {th['aws_account_id']}"
-            note = (
-                f"Auto-switched {th['metric_name']} threshold for {th['resource_type']} "
-                f"({account_label}) from static to dynamic: {trigger_desc} "
-                f"of {th['warning_value']} (critical is {th['critical_value']}; e.g. "
-                f"{example['resource_id']} typically runs around "
-                f"{round(example['typical_value'], 1)}). This was producing repeated alerts with no "
-                f"genuine cause -- switched to a per-resource dynamic band based on each resource's "
-                f"own history."
-            )
-
             try:
-                from app.audit import write_audit
-                write_audit(
-                    actor="system:threshold_tuning",
-                    action="auto_enable_dynamic_threshold",
-                    payload={
-                        "detail": note,
-                        "threshold_id": th["id"], "metric_name": th["metric_name"],
-                        "resource_type": th["resource_type"], "aws_account_id": th["aws_account_id"],
-                        "trigger_path": trigger_path,
-                        "breaching_resources": len(mean_breaching), "total_resources": len(resource_baselines),
-                    },
-                )
+                result = _tune_one(cursor, th)
+                if result is None:
+                    conn.rollback()
+                    continue
+                conn.commit()
             except Exception as e:
-                logger.warning(f"[threshold_tuning] audit write failed (non-fatal): {e}")
-
-            try:
-                from app.collector.op_log import log_event
-                log_event("threshold_auto_tuned", note, severity="INFO",
-                          account_id=th["aws_account_id"], detail={"threshold_id": th["id"]})
-            except Exception as e:
-                logger.warning(f"[threshold_tuning] op_event write failed (non-fatal): {e}")
-
-            logger.info(f"[threshold_tuning] {note}")
+                # One bad row must not roll back every other switch, nor
+                # leave audit rows (own connection) describing switches
+                # that were rolled back.
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.warning(f"[threshold_tuning] threshold {th.get('id')} skipped: {e}")
+                continue
             switched += 1
-
-        conn.commit()
+            _record_switch(th, result)
         return switched
-    except Exception:
-        conn.rollback()
-        raise
     finally:
         cursor.close()
         conn.close()
+
+
+def _tune_one(cursor, th):
+    """Evaluate one static threshold row. If a path fires, issues the
+    UPDATE (uncommitted) and returns {"note", "payload"}; otherwise None.
+    The caller commits, THEN records audit/op_event (_record_switch)."""
+    # metric_baseline.metric_name and alerts.metric_name hold the
+    # COLLECTOR's name (e.g. "dbconnections", "errors5xx"), not the
+    # catalog name -- same mapping the evaluator's join uses.
+    db_metric_name = resolve_db_metric_name(th["resource_type"], th["metric_name"])
+    cursor.execute("""
+        SELECT b.resource_id, AVG(b.mean_value) AS typical_value,
+               AVG(b.stddev_value) AS typical_stddev,
+               SUM(b.sample_count) AS total_samples
+        FROM metric_baseline b
+        JOIN resources r ON r.resource_id = b.resource_id AND r.aws_account_id = b.aws_account_id
+        WHERE b.aws_account_id = %s AND r.resource_type = %s
+          AND b.metric_name = %s
+        GROUP BY b.resource_id
+        HAVING total_samples >= %s
+    """, (th["aws_account_id"], th["resource_type"], db_metric_name, MIN_CONFIDENT_SAMPLES))
+    resource_baselines = cursor.fetchall()
+
+    # ALB and NLB are both resources.resource_type='elb': an NLB threshold
+    # must not be tuned off ALB baselines (or vice versa).
+    service = (th.get("service") or "").lower()
+    if th["resource_type"] == "elb" and service in ("alb", "nlb"):
+        pattern = "loadbalancer/app/" if service == "alb" else "loadbalancer/net/"
+        resource_baselines = [r for r in resource_baselines
+                              if pattern in (r["resource_id"] or "")]
+
+    if not resource_baselines:
+        return None
+
+    # Compares against warning_value, not critical_value
+    # (Revision 3, 2026-09-14): warning is always the closer/
+    # first-crossed line, so this is a strict broadening -- a
+    # resource whose mean crosses critical necessarily crosses
+    # warning too, so nothing that qualified before stops
+    # qualifying now. It also catches the case that motivated
+    # this revision: chronically breaching warning while
+    # staying under critical (real production example:
+    # Aurionpro-Finops's NetworkOut, critical raised to 5M but
+    # warning left at 1M -- see module docstring).
+    if th["comparison"] in (">", ">="):
+        mean_breaching = [r for r in resource_baselines if r["typical_value"] > th["warning_value"]]
+    else:
+        mean_breaching = [r for r in resource_baselines if r["typical_value"] < th["warning_value"]]
+
+    fraction = len(mean_breaching) / len(resource_baselines)
+    majority_path = (len(resource_baselines) >= MIN_RESOURCES_FOR_DECISION
+                      and fraction >= CHRONIC_BREACH_FRACTION)
+
+    chronic_example = None
+    chronic_path = None
+    if not majority_path:
+        for candidate in resource_baselines:
+            if _false_positive_mark_count(cursor, th["aws_account_id"], candidate["resource_id"], db_metric_name) >= MIN_FALSE_POSITIVE_MARKS:
+                chronic_example, chronic_path = candidate, "manually_confirmed"
+                break
+        if chronic_example is None:
+            for candidate in mean_breaching:
+                if _has_chronic_active_alert(cursor, th["aws_account_id"], candidate["resource_id"], db_metric_name):
+                    chronic_example, chronic_path = candidate, "chronic_mean"
+                    break
+        if chronic_example is None:
+            noisy_candidates = [r for r in resource_baselines
+                                 if r not in mean_breaching and _noise_band_crosses_line(r, th)]
+            for candidate in noisy_candidates:
+                if _has_chronic_active_alert(cursor, th["aws_account_id"], candidate["resource_id"], db_metric_name):
+                    chronic_example, chronic_path = candidate, "chronic_noise"
+                    break
+
+    if not majority_path and chronic_example is None:
+        return None
+
+    cursor.execute("UPDATE thresholds SET use_dynamic = 1 WHERE id = %s", (th["id"],))
+
+    example = chronic_example or mean_breaching[0]
+    if majority_path:
+        trigger_path, trigger_desc = "majority", (
+            f"{len(mean_breaching)}/{len(resource_baselines)} resources have a normal operating "
+            f"range past the configured warning value"
+        )
+    elif chronic_path == "manually_confirmed":
+        trigger_desc = (
+            f"a person has directly marked {MIN_FALSE_POSITIVE_MARKS}+ past alerts on "
+            f"{example['resource_id']} for this metric as false positives"
+        )
+        trigger_path = "manually_confirmed"
+    elif chronic_path == "chronic_mean":
+        trigger_desc = (
+            f"{example['resource_id']} alone has been continuously alerting on this metric "
+            f"for {CHRONIC_ALERT_AGE_HOURS}+ hours with a confidently-baselined normal range "
+            f"past the configured warning value (no majority of peer resources needed)"
+        )
+        trigger_path = "chronic_mean"
+    else:
+        trigger_desc = (
+            f"{example['resource_id']}'s average is healthy, but it has been continuously "
+            f"alerting on this metric for {CHRONIC_ALERT_AGE_HOURS}+ hours -- its normal "
+            f"variability alone already crosses the configured warning value"
+        )
+        trigger_path = "chronic_noise"
+    account_label = th.get("account_name") or f"account {th['aws_account_id']}"
+    note = (
+        f"Auto-switched {th['metric_name']} threshold for {th['resource_type']} "
+        f"({account_label}) from static to dynamic: {trigger_desc} "
+        f"of {th['warning_value']} (critical is {th['critical_value']}; e.g. "
+        f"{example['resource_id']} typically runs around "
+        f"{round(example['typical_value'], 1)}). This was producing repeated alerts with no "
+        f"genuine cause -- switched to a per-resource dynamic band based on each resource's "
+        f"own history."
+    )
+
+    return {"note": note, "payload": {
+        "detail": note,
+        "threshold_id": th["id"], "metric_name": th["metric_name"],
+        "resource_type": th["resource_type"], "aws_account_id": th["aws_account_id"],
+        "trigger_path": trigger_path,
+        "breaching_resources": len(mean_breaching), "total_resources": len(resource_baselines),
+    }}
+
+
+def _record_switch(th, result):
+    """Audit + op_event + log for a switch that has ALREADY been committed
+    -- never before, so the auto-tune history can't show a rolled-back
+    switch."""
+    note = result["note"]
+    try:
+        from app.audit import write_audit
+        write_audit(
+            actor="system:threshold_tuning",
+            action="auto_enable_dynamic_threshold",
+            payload=result["payload"],
+        )
+    except Exception as e:
+        logger.warning(f"[threshold_tuning] audit write failed (non-fatal): {e}")
+
+    try:
+        from app.collector.op_log import log_event
+        log_event("threshold_auto_tuned", note, severity="INFO",
+                  account_id=th["aws_account_id"], detail={"threshold_id": th["id"]})
+    except Exception as e:
+        logger.warning(f"[threshold_tuning] op_event write failed (non-fatal): {e}")
+
+    logger.info(f"[threshold_tuning] {note}")

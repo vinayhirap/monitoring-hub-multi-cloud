@@ -26,13 +26,14 @@ Standard tier runs every 5 minutes (app/collector/scheduler.py), so one
 import json
 import logging
 import math
-from datetime import datetime
 from app.db import get_connection
 from app.ws.publisher import publish_alert, publish_alert_resolved
 from app.alert_rules import (
     SYSTEM_METRICS, cadence_class_sql, eval_window_sql, hard_expiry_hours_sql,
 )
-from app.threshold_defaults import is_placeholder_threshold, AWS_METRIC_NAME_TO_DB_NAME
+from app.threshold_defaults import (
+    is_placeholder_threshold, AWS_METRIC_NAME_TO_DB_NAME, normalize_service_key,
+)
 
 # 2026-09-15 fix: this background evaluator resolves alerts directly via SQL
 # (both the stale/stopped-instance sweep in _auto_resolve_stale_alerts() and
@@ -57,6 +58,56 @@ logger = logging.getLogger(__name__)
 # dependency on the scheduler; if you change STANDARD_INTERVAL, update
 # this too.
 CYCLE_MINUTES = 5
+
+# alerts.environment / alert_pending.environment are VARCHAR(50) after
+# db/migrations/059 (were VARCHAR(10): an "Environment=development" tag
+# (11 chars) raised "Data too long" on INSERT under MySQL 8 strict mode and
+# aborted the WHOLE evaluation cycle for every account).
+ENVIRONMENT_MAX_LEN = 50
+
+
+def _environment_from_tags(raw_tags):
+    """resources.tags -> lower-cased environment label. Never raises:
+    tags may be NULL, the JSON literal "null", a non-object, or hold
+    non-string values -- each of which used to throw outside any try and
+    abort the whole cycle."""
+    try:
+        tags = json.loads(raw_tags or "{}")
+    except Exception:
+        tags = {}
+    if not isinstance(tags, dict):
+        tags = {}
+    env = tags.get("environment", tags.get("Environment", "prod"))
+    env = str(env).strip().lower() if env is not None else "prod"
+    return (env or "prod")[:ENVIRONMENT_MAX_LEN]
+
+
+def _select_threshold_rows(rows):
+    """
+    One threshold per (account, resource, metric) per cycle.
+
+    ALB and NLB are both stored as resources.resource_type='elb' and share
+    catalog metric names (HealthyHostCount / UnHealthyHostCount -- both now
+    matched via AWS_METRIC_NAME_TO_DB_NAME), so the evaluation join returns
+    the ALB AND the NLB threshold row for every load balancer. Evaluating
+    both double-counted breach_cycles (early promotion) and let one row
+    clear the pending candidate the other had just touched. Keep only the
+    row whose catalog service matches the resource's ARN
+    (normalize_service_key), then dedupe deterministically on the lowest
+    threshold id.
+    """
+    chosen = {}
+    for row in rows:
+        service = (row.get("service") or "").lower()
+        if row.get("resource_type") == "elb" and service in ("alb", "nlb"):
+            key_service = normalize_service_key("elb", row.get("aws_resource_id") or "")
+            if key_service in ("alb", "nlb") and key_service != service:
+                continue
+        key = (row["aws_account_id"], row["aws_resource_id"], (row["metric_name"] or "").lower())
+        prev = chosen.get(key)
+        if prev is None or (row.get("threshold_id") or 0) < (prev.get("threshold_id") or 0):
+            chosen[key] = row
+    return list(chosen.values())
 
 
 def compare(value, threshold, op):
@@ -347,7 +398,7 @@ def _auto_resolve_stale_alerts(cursor):
               WHERE t.aws_account_id = a.aws_account_id
                 AND t.resource_type  = r.resource_type
                 AND t.enabled = 1
-                AND mc.metric_name = a.metric_name
+                AND {_db_metric_name_sql('r.resource_type', 'mc.metric_name')} = a.metric_name
           )
     """)
 
@@ -507,6 +558,7 @@ def _evaluate_alerts_body(conn, cursor):
             aa.default_region,
             {cadence_class_sql('r', 'aa')} AS cadence,
             mc.unit                AS unit,
+            mc.service             AS service,
             m.metric_name,
             m.metric_value,
             m.metric_timestamp,
@@ -531,212 +583,246 @@ def _evaluate_alerts_body(conn, cursor):
            AND t.aws_account_id  = r.aws_account_id
            AND t.enabled         = 1
         WHERE m.metric_timestamp >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {eval_window_sql('r', 'aa')} MINUTE)
+        ORDER BY t.id
     """)
 
-    rows = cursor.fetchall()
+    rows = _select_threshold_rows(cursor.fetchall())
+    # Release the read snapshot before per-row writes start.
+    conn.commit()
     logger.info(f"Evaluating {len(rows)} metric readings")
 
-    new_alerts      = 0
-    resolved        = 0
-    already_open    = 0
-    pending_touched = 0
-    reopened        = 0
+    stats = {"new": 0, "resolved": 0, "already_open": 0,
+             "pending_touched": 0, "reopened": 0, "failed": 0}
 
     for row in rows:
-        aws_resource_id = row["aws_resource_id"]
-        metric_name     = row["metric_name"]
-        metric_value    = row["metric_value"]
-        aws_account_id  = row["aws_account_id"]
-        cadence         = row["cadence"]
-        # Hourly/daily metrics are one reading per collection; requiring N
-        # 5-minute "cycles" of the SAME reading would be meaningless.
-        required_cycles = _required_cycles(row["evaluation_period"]) if cadence == "core" else 1
-
+        # Per-row isolation (audit B07): each reading is its own short
+        # transaction. Previously ONE exception (deadlock, "Data too long",
+        # bad tag JSON) rolled back the whole cycle for EVERY account, every
+        # 5 minutes, until the offending row went away. Redis pushes are
+        # deferred until after the row commits so clients are never told
+        # about an alert that was rolled back.
         try:
-            tags = json.loads(row["tags"] or "{}")
-        except Exception:
-            tags = {}
-        environment = tags.get("environment", tags.get("Environment", "prod")).lower()
-
-        warning_value, critical_value = row["warning_value"], row["critical_value"]
-        comparison = row["comparison"]
-        anomaly_only = is_placeholder_threshold(warning_value, critical_value, comparison)
-        severity_cap = None
-
-        if anomaly_only:
-            # Placeholder default (see threshold_defaults.PLACEHOLDER_THRESHOLD):
-            # volume is not failure. Alert only on a sustained, confident,
-            # statistically extreme reading vs. this resource's OWN baseline,
-            # never above WARNING.
-            line = _anomaly_only_bound(cursor, aws_account_id, aws_resource_id,
-                                       metric_name, row["dynamic_k"] or 3.0)
-            required_cycles = max(required_cycles, ANOMALY_MIN_CYCLES) if cadence == "core" else 1
-            severity_cap = "WARNING"
-            if line is None:
-                warning_value = critical_value = None
-            else:
-                warning_value = critical_value = line
-        elif row.get("use_dynamic"):
-            dynamic = _dynamic_bounds(
-                cursor, aws_account_id, aws_resource_id, metric_name,
-                comparison, row["dynamic_k"] or 3.0,
-                static_warning=warning_value, static_critical=critical_value,
-            )
-            if dynamic is not None:
-                warning_value, critical_value = clamp_dynamic_bounds(
-                    dynamic[0], dynamic[1], row["warning_value"], row["critical_value"],
-                    comparison, row.get("unit"))
-
-        is_critical = compare(metric_value, critical_value, comparison) and severity_cap is None
-        is_warning  = compare(metric_value, warning_value,  comparison)
-        is_breaching = is_critical or is_warning
-
-        cursor.execute("""
-            SELECT id, severity, status FROM alerts
-            WHERE aws_account_id = %s AND resource_id = %s AND metric_name = %s
-              AND status IN ('active', 'acknowledged')
-            ORDER BY id DESC LIMIT 1
-        """, (aws_account_id, aws_resource_id, metric_name))
-        existing = cursor.fetchone()
-
-        if not is_breaching:
-            _clear_pending(cursor, aws_account_id, aws_resource_id, metric_name)
-
-            if existing:
-                # threshold shown on the alert tracks the value actually in
-                # force (static or dynamic/anomaly), matched to its severity.
-                # In anomaly-only mode with no usable baseline there is no
-                # line; keep the previous displayed threshold.
-                resolve_threshold_value = (
-                    critical_value if existing["severity"] == "CRITICAL" else warning_value
-                )
-                if resolve_threshold_value is None:
-                    cursor.execute("""
-                        UPDATE alerts SET current_value = %s, last_seen_at = UTC_TIMESTAMP(),
-                                          healthy_streak = healthy_streak + 1
-                        WHERE id = %s
-                    """, (metric_value, existing["id"]))
-                else:
-                    cursor.execute("""
-                        UPDATE alerts
-                        SET current_value  = %s,
-                            threshold      = %s,
-                            last_seen_at   = UTC_TIMESTAMP(),
-                            healthy_streak = healthy_streak + 1
-                        WHERE id = %s
-                    """, (metric_value, resolve_threshold_value, existing["id"]))
-
-                cursor.execute("SELECT healthy_streak FROM alerts WHERE id = %s", (existing["id"],))
-                streak = cursor.fetchone()["healthy_streak"]
-
-                # `existing` may be ACKNOWLEDGED: those used to be skipped by
-                # the evaluator entirely, so they never resolved on recovery.
-                if streak >= required_cycles:
-                    cursor.execute("""
-                        UPDATE alerts
-                        SET status = 'resolved', resolved_at = UTC_TIMESTAMP(),
-                            resolution_reason = %s, resolved_by = 'system'
-                        WHERE id = %s AND status IN ('active', 'acknowledged')
-                    """, ("placeholder_threshold" if anomaly_only and warning_value is None else "recovered",
-                          existing["id"]))
-                    resolved += cursor.rowcount
-                    try:
-                        publish_alert_resolved(alert_id=existing["id"], account_id=aws_account_id)
-                    except Exception as e:
-                        logger.warning(f"Resolve publish failed: {e}")
-            continue
-
-        # ── Breaching ───────────────────────────────────────────
-        if is_critical:
-            severity = "CRITICAL"
-        elif environment in ("prod", "production"):
-            severity = "WARNING"
-        else:
-            severity = "INFO"
-
-        threshold_value = critical_value if is_critical else warning_value
-
-        if existing:
-            update_fields = ["current_value = %s", "threshold = %s",
-                              "last_seen_at = UTC_TIMESTAMP()", "healthy_streak = 0"]
-            params = [metric_value, threshold_value]
-            if existing["severity"] == "CRITICAL" and severity != "CRITICAL":
-                # DE-ESCALATION (2026-09-21). An open CRITICAL whose reading no
-                # longer reaches the critical line -- volume anomalies (never
-                # CRITICAL), or an alert raised by the old evaluator against a
-                # tight dynamic band -- is brought down to what it is now
-                # instead of staying CRITICAL until it fully recovers.
-                update_fields.append("severity = %s")
-                params.append(severity)
-                logger.debug(f"De-escalated alert {existing['id']} to {severity}")
-            elif existing["severity"] != severity and severity == "CRITICAL":
-                update_fields.append("severity = %s")
-                params.append(severity)
-                if existing["status"] == "acknowledged":
-                    # It got WORSE after a human acknowledged the milder
-                    # state: the acknowledgement no longer covers it.
-                    update_fields += ["status = 'active'", "acked = 0",
-                                      "acked_by = NULL", "acked_at = NULL"]
-                    reopened += 1
-                logger.debug(f"Escalated alert {existing['id']} to CRITICAL")
-            params.append(existing["id"])
-            cursor.execute(f"UPDATE alerts SET {', '.join(update_fields)} WHERE id = %s", params)
-            already_open += 1
-            continue
-
-        pending = _touch_pending(
-            cursor, aws_account_id, aws_resource_id, metric_name, severity, environment,
-            metric_value, threshold_value,
-        )
-        pending_touched += 1
-
-        if pending["breach_cycles"] < required_cycles:
-            continue
-
-        promoted_severity = pending["severity"]
-        if severity_cap == "WARNING" and promoted_severity == "CRITICAL":
-            promoted_severity = "WARNING"
-        group_key = f"{aws_account_id}:{row['resource_type']}:{metric_name}"
-        silence_reason = silenced_map.get((aws_account_id, aws_resource_id))
-        cursor.execute("""
-            INSERT INTO alerts
-                (aws_account_id, resource_id, metric_name, severity,
-                 environment, group_key, status, triggered_at, last_seen_at,
-                 healthy_streak, current_value, threshold, silenced, silenced_reason)
-            VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, UTC_TIMESTAMP(), 0, %s, %s, %s, %s)
-        """, (
-            aws_account_id, aws_resource_id, metric_name, promoted_severity, environment,
-            group_key, pending["first_breach_at"], metric_value, threshold_value,
-            1 if silence_reason else 0, silence_reason,
-        ))
-        new_alert_id = cursor.lastrowid
-        new_alerts  += 1
-        _clear_pending(cursor, aws_account_id, aws_resource_id, metric_name)
-
-        if silence_reason:
-            continue   # born silenced by a maintenance window: no toast/sound/page
-        try:
-            publish_alert(
-                alert_id     = new_alert_id,
-                severity     = promoted_severity,
-                metric       = metric_name,
-                value        = metric_value,
-                threshold    = threshold_value,
-                account_id   = aws_account_id,
-                account_name = row["account_name"],
-                region       = row["region"] or row["default_region"],
-            )
+            publishes = _evaluate_row(cursor, row, silenced_map, stats)
+            conn.commit()
         except Exception as e:
-            logger.warning(f"Alert publish failed: {e}")
+            stats["failed"] += 1
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.error(
+                f"Alert evaluation failed for account={row.get('aws_account_id')} "
+                f"resource={row.get('aws_resource_id')} metric={row.get('metric_name')}: {e}"
+            )
+            continue
+        for fn in publishes:
+            try:
+                fn()
+            except Exception as e:
+                logger.warning(f"Alert publish failed: {e}")
 
-    conn.commit()
-
-    if resolved or reopened:
+    if stats["resolved"] or stats["reopened"]:
         invalidate_accounts_cache()
         _invalidate_cache()
 
     logger.info(
         f"Alert evaluation complete — "
-        f"new: {new_alerts}, resolved: {resolved}, already open: {already_open}, "
-        f"reopened after escalation: {reopened}, pending touched: {pending_touched}"
+        f"new: {stats['new']}, resolved: {stats['resolved']}, already open: {stats['already_open']}, "
+        f"reopened after escalation: {stats['reopened']}, pending touched: {stats['pending_touched']}, "
+        f"failed rows: {stats['failed']}"
     )
+
+
+def _evaluate_row(cursor, row, silenced_map, stats):
+    """
+    Evaluate one (resource, metric, threshold) reading. Writes through
+    `cursor` (the caller commits / rolls back) and returns zero-arg
+    callables that publish to Redis -- run by the caller only AFTER the
+    commit succeeded.
+    """
+    publishes = []
+    aws_resource_id = row["aws_resource_id"]
+    metric_name     = row["metric_name"]
+    metric_value    = row["metric_value"]
+    aws_account_id  = row["aws_account_id"]
+    cadence         = row["cadence"]
+    # Hourly/daily metrics are one reading per collection; requiring N
+    # 5-minute "cycles" of the SAME reading would be meaningless.
+    required_cycles = _required_cycles(row["evaluation_period"]) if cadence == "core" else 1
+
+    environment = _environment_from_tags(row.get("tags"))
+
+    warning_value, critical_value = row["warning_value"], row["critical_value"]
+    comparison = row["comparison"]
+    anomaly_only = is_placeholder_threshold(warning_value, critical_value, comparison)
+    severity_cap = None
+
+    if anomaly_only:
+        # Placeholder default (see threshold_defaults.PLACEHOLDER_THRESHOLD):
+        # volume is not failure. Alert only on a sustained, confident,
+        # statistically extreme reading vs. this resource's OWN baseline,
+        # never above WARNING.
+        line = _anomaly_only_bound(cursor, aws_account_id, aws_resource_id,
+                                   metric_name, row["dynamic_k"] or 3.0)
+        required_cycles = max(required_cycles, ANOMALY_MIN_CYCLES) if cadence == "core" else 1
+        severity_cap = "WARNING"
+        if line is None:
+            warning_value = critical_value = None
+        else:
+            warning_value = critical_value = line
+    elif row.get("use_dynamic"):
+        dynamic = _dynamic_bounds(
+            cursor, aws_account_id, aws_resource_id, metric_name,
+            comparison, row["dynamic_k"] or 3.0,
+            static_warning=warning_value, static_critical=critical_value,
+        )
+        if dynamic is not None:
+            warning_value, critical_value = clamp_dynamic_bounds(
+                dynamic[0], dynamic[1], row["warning_value"], row["critical_value"],
+                comparison, row.get("unit"))
+
+    is_critical = compare(metric_value, critical_value, comparison) and severity_cap is None
+    is_warning  = compare(metric_value, warning_value,  comparison)
+    is_breaching = is_critical or is_warning
+
+    cursor.execute("""
+        SELECT id, severity, status FROM alerts
+        WHERE aws_account_id = %s AND resource_id = %s AND metric_name = %s
+          AND status IN ('active', 'acknowledged')
+        ORDER BY id DESC LIMIT 1
+    """, (aws_account_id, aws_resource_id, metric_name))
+    existing = cursor.fetchone()
+
+    if not is_breaching:
+        _clear_pending(cursor, aws_account_id, aws_resource_id, metric_name)
+
+        if existing:
+            # threshold shown on the alert tracks the value actually in
+            # force (static or dynamic/anomaly), matched to its severity.
+            # In anomaly-only mode with no usable baseline there is no
+            # line; keep the previous displayed threshold.
+            resolve_threshold_value = (
+                critical_value if existing["severity"] == "CRITICAL" else warning_value
+            )
+            if resolve_threshold_value is None:
+                cursor.execute("""
+                    UPDATE alerts SET current_value = %s, last_seen_at = UTC_TIMESTAMP(),
+                                      healthy_streak = healthy_streak + 1
+                    WHERE id = %s
+                """, (metric_value, existing["id"]))
+            else:
+                cursor.execute("""
+                    UPDATE alerts
+                    SET current_value  = %s,
+                        threshold      = %s,
+                        last_seen_at   = UTC_TIMESTAMP(),
+                        healthy_streak = healthy_streak + 1
+                    WHERE id = %s
+                """, (metric_value, resolve_threshold_value, existing["id"]))
+
+            cursor.execute("SELECT healthy_streak FROM alerts WHERE id = %s", (existing["id"],))
+            streak = cursor.fetchone()["healthy_streak"]
+
+            # `existing` may be ACKNOWLEDGED: those used to be skipped by
+            # the evaluator entirely, so they never resolved on recovery.
+            if streak >= required_cycles:
+                cursor.execute("""
+                    UPDATE alerts
+                    SET status = 'resolved', resolved_at = UTC_TIMESTAMP(),
+                        resolution_reason = %s, resolved_by = 'system'
+                    WHERE id = %s AND status IN ('active', 'acknowledged')
+                """, ("placeholder_threshold" if anomaly_only and warning_value is None else "recovered",
+                      existing["id"]))
+                stats["resolved"] += cursor.rowcount
+                if cursor.rowcount:
+                    alert_id = existing["id"]
+                    publishes.append(
+                        lambda: publish_alert_resolved(alert_id=alert_id, account_id=aws_account_id))
+        return publishes
+
+    # ── Breaching ───────────────────────────────────────────
+    if is_critical:
+        severity = "CRITICAL"
+    elif environment in ("prod", "production"):
+        severity = "WARNING"
+    else:
+        severity = "INFO"
+
+    threshold_value = critical_value if is_critical else warning_value
+
+    if existing:
+        update_fields = ["current_value = %s", "threshold = %s",
+                          "last_seen_at = UTC_TIMESTAMP()", "healthy_streak = 0"]
+        params = [metric_value, threshold_value]
+        if existing["severity"] == "CRITICAL" and severity != "CRITICAL":
+            # DE-ESCALATION (2026-09-21). An open CRITICAL whose reading no
+            # longer reaches the critical line -- volume anomalies (never
+            # CRITICAL), or an alert raised by the old evaluator against a
+            # tight dynamic band -- is brought down to what it is now
+            # instead of staying CRITICAL until it fully recovers.
+            update_fields.append("severity = %s")
+            params.append(severity)
+            logger.debug(f"De-escalated alert {existing['id']} to {severity}")
+        elif existing["severity"] != severity and severity == "CRITICAL":
+            update_fields.append("severity = %s")
+            params.append(severity)
+            if existing["status"] == "acknowledged":
+                # It got WORSE after a human acknowledged the milder
+                # state: the acknowledgement no longer covers it.
+                update_fields += ["status = 'active'", "acked = 0",
+                                  "acked_by = NULL", "acked_at = NULL"]
+                stats["reopened"] += 1
+            logger.debug(f"Escalated alert {existing['id']} to CRITICAL")
+        params.append(existing["id"])
+        cursor.execute(f"UPDATE alerts SET {', '.join(update_fields)} WHERE id = %s", params)
+        stats["already_open"] += 1
+        return publishes
+
+    pending = _touch_pending(
+        cursor, aws_account_id, aws_resource_id, metric_name, severity, environment,
+        metric_value, threshold_value,
+    )
+    stats["pending_touched"] += 1
+
+    if pending["breach_cycles"] < required_cycles:
+        return publishes
+
+    promoted_severity = pending["severity"]
+    if severity_cap == "WARNING" and promoted_severity == "CRITICAL":
+        promoted_severity = "WARNING"
+    # The pending row can hold CRITICAL from an earlier cycle while this cycle
+    # only crossed warning -- store the line matching the severity raised.
+    if promoted_severity == "CRITICAL" and not is_critical and critical_value is not None:
+        threshold_value = critical_value
+    group_key = f"{aws_account_id}:{row['resource_type']}:{metric_name}"
+    silence_reason = silenced_map.get((aws_account_id, aws_resource_id))
+    cursor.execute("""
+        INSERT INTO alerts
+            (aws_account_id, resource_id, metric_name, severity,
+             environment, group_key, status, triggered_at, last_seen_at,
+             healthy_streak, current_value, threshold, silenced, silenced_reason)
+        VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, UTC_TIMESTAMP(), 0, %s, %s, %s, %s)
+    """, (
+        aws_account_id, aws_resource_id, metric_name, promoted_severity, environment,
+        group_key, pending["first_breach_at"], metric_value, threshold_value,
+        1 if silence_reason else 0, silence_reason,
+    ))
+    new_alert_id = cursor.lastrowid
+    stats["new"] += 1
+    _clear_pending(cursor, aws_account_id, aws_resource_id, metric_name)
+
+    if silence_reason:
+        return publishes   # born silenced by a maintenance window: no toast/sound/page
+    region = row["region"] or row["default_region"]
+    account_name = row["account_name"]
+    publishes.append(lambda: publish_alert(
+        alert_id     = new_alert_id,
+        severity     = promoted_severity,
+        metric       = metric_name,
+        value        = metric_value,
+        threshold    = threshold_value,
+        account_id   = aws_account_id,
+        account_name = account_name,
+        region       = region,
+    ))
+    return publishes
