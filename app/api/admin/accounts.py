@@ -91,16 +91,18 @@ def get_account(account_id: int, current_user: dict = Depends(require_permission
 
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM aws_accounts WHERE id = %s", (account_id,))
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute("SELECT * FROM aws_accounts WHERE id = %s", (account_id,))
+        row = cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Account not found")
     return _serialize(row)
 
 
-def _check_duplicate_account_id(account_id_value: str, id_label: str) -> None:
+def _check_duplicate_account_id(account_id_value: str, id_label: str, current_user: dict) -> None:
     """Guard against onboarding the same underlying account twice under a
     different-but-equivalent identifier string.
 
@@ -117,6 +119,35 @@ def _check_duplicate_account_id(account_id_value: str, id_label: str) -> None:
     normalized (trimmed, case-insensitive) match here -- before any DB
     write or external credential validation -- closes that gap and fails
     fast with a clear message instead of a generic 500 or a silent dup.
+
+    SECURITY (fix: 2026-09 B04 audit -- HIGH, cross-tenant info
+    disclosure): this used to raise the detailed 409 (account_name,
+    internal id, provider, status) for a MATCH REGARDLESS OF THE CALLER'S
+    RBAC SCOPE. Any user holding only accounts.onboard -- which can be
+    scoped to a handful of accounts, same as accounts.view -- could probe
+    arbitrary account/subscription/project id strings during "add
+    account" and read back the name/id/status of accounts they have no
+    accounts.view visibility into at all; no AWS/Azure/GCP call, no
+    accounts.view permission, and no correct guess required (a WRONG
+    guess that happens to collide still returns the real account's
+    details). Now the identifying detail is only included when the
+    matched account is inside the caller's own accessible scope (or the
+    caller has FULL_ACCESS); otherwise the 409 is generic.
+
+    FUNCTIONAL (fix: 2026-09 B04 audit -- reactivation was unreachable):
+    a previously-removed account (delete_account only ever sets
+    status='inactive', see that function's updated docstring -- the row
+    and its account_id/subscription_id/project_id live on forever) could
+    never be re-onboarded through this endpoint: this check unconditionally
+    raised 409 for ANY match, active or inactive, before add_account's own
+    `INSERT ... ON DUPLICATE KEY UPDATE` reactivation logic (already
+    present further down in _add_aws_account/_add_azure_account/
+    _add_gcp_account) ever got a chance to run. An inactive match inside
+    the caller's own scope is no longer blocked here, so reactivation
+    actually works; an inactive match OUTSIDE the caller's scope is still
+    blocked (with the same generic message as an active out-of-scope
+    match) -- a lower-scoped onboarder should not be able to silently
+    reactivate/take over an account outside their assigned scope.
     """
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -131,19 +162,39 @@ def _check_duplicate_account_id(account_id_value: str, id_label: str) -> None:
         cursor.close()
         conn.close()
 
-    if existing:
+    if not existing:
+        return
+
+    accessible = get_accessible_account_ids(current_user)
+    in_scope = accessible is None or existing["id"] in accessible
+
+    if not in_scope:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"This account is already onboarded as '{existing['account_name']}' "
-                f"(id={existing['id']}, provider={existing['provider']}, status={existing['status']}). "
-                f"Double-check the {id_label} for a typo or case difference if you meant to "
-                f"onboard a different account."
+                "This external account ID is already onboarded under a "
+                "monitoring-hub account you do not have visibility into. "
+                "Ask an administrator to resolve the conflict."
             ),
         )
 
+    if existing["status"] == "inactive":
+        # Previously removed and back in the caller's own scope -- let
+        # the caller's INSERT ... ON DUPLICATE KEY UPDATE reactivate it.
+        return
 
-def _add_aws_account(payload: dict) -> tuple[int, str, str]:
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"This account is already onboarded as '{existing['account_name']}' "
+            f"(id={existing['id']}, provider={existing['provider']}, status={existing['status']}). "
+            f"Double-check the {id_label} for a typo or case difference if you meant to "
+            f"onboard a different account."
+        ),
+    )
+
+
+def _add_aws_account(payload: dict, current_user: dict) -> tuple[int, str, str]:
     import json as _json
     from app.credentials import save_credential, new_credential_ref
 
@@ -158,7 +209,7 @@ def _add_aws_account(payload: dict) -> tuple[int, str, str]:
     if not region:
         raise HTTPException(status_code=400, detail="default_region is required")
 
-    _check_duplicate_account_id(account_id, "AWS account ID")
+    _check_duplicate_account_id(account_id, "AWS account ID", current_user)
 
     region = region.split(" ")[0]
     role_arn    = (payload.get("role_arn") or payload.get("iam_role_arn") or "").strip()
@@ -207,21 +258,54 @@ def _add_aws_account(payload: dict) -> tuple[int, str, str]:
         else:
             cursor.execute("SELECT id FROM aws_accounts WHERE account_id = %s", (account_id,))
             new_id = cursor.fetchone()[0]
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
+        # Fix: 2026-09 B04 audit -- raw DB exception text (could include
+        # table/column names or other internal detail) no longer goes to
+        # the client; logged server-side instead, matching this file's
+        # other internal-error handling.
+        logger.error(f"add_account (aws): DB error inserting account_id={account_id}: {e}")
+        raise HTTPException(status_code=500, detail="Could not save the account -- see server logs.")
     finally:
         cursor.close()
         conn.close()
 
     if auth_mode == "static_keys":
+        # Fix: 2026-09 B04 audit -- MEDIUM, partial-onboarding rollback
+        # gap. The account row above is already committed by this point;
+        # if the credential save or the credential_ref link-back below
+        # failed with no try/except at all, the row was left behind as
+        # status='active', auth_mode='static_keys', with NO credential --
+        # exactly the broken state get_boto3_session()'s own RuntimeError
+        # message already anticipates ("onboarding may have failed
+        # partway through"), except nothing actually caught or cleaned it
+        # up, so it kept trying (and failing) on every future discovery/
+        # collection cycle. Deactivate it the same way the "wrong AWS
+        # account resolved" check just below already does for its own
+        # failure mode, instead of leaving a silently-broken active row.
         ref = new_credential_ref()
-        save_credential(new_id, "aws", _json.dumps({
-            "access_key_id": access_key,
-            "secret_access_key": secret_key,
-        }), ref)
-        conn = get_connection(); cursor = conn.cursor()
-        cursor.execute("UPDATE aws_accounts SET credential_ref = %s WHERE id = %s", (ref, new_id))
-        conn.commit(); cursor.close(); conn.close()
+        try:
+            save_credential(new_id, "aws", _json.dumps({
+                "access_key_id": access_key,
+                "secret_access_key": secret_key,
+            }), ref)
+            conn = get_connection(); cursor = conn.cursor()
+            cursor.execute("UPDATE aws_accounts SET credential_ref = %s WHERE id = %s", (ref, new_id))
+            conn.commit(); cursor.close(); conn.close()
+        except Exception as e:
+            logger.error(f"add_account (aws): credential save failed for new id={new_id}: {e}")
+            conn = get_connection(); cursor = conn.cursor()
+            cursor.execute("UPDATE aws_accounts SET status = 'inactive' WHERE id = %s", (new_id,))
+            conn.commit(); cursor.close(); conn.close()
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "The account row was created but saving its credential failed, "
+                    "so the account has been deactivated rather than left broken. "
+                    "Try onboarding again."
+                ),
+            )
 
     # Verify the credentials actually land in the AWS account number typed
     # into the form. account_id above is just a label the operator typed;
@@ -263,7 +347,7 @@ def _add_aws_account(payload: dict) -> tuple[int, str, str]:
     return new_id, account_name, "aws"
 
 
-def _add_azure_account(payload: dict) -> tuple[int, str, str]:
+def _add_azure_account(payload: dict, current_user: dict) -> tuple[int, str, str]:
     from app.providers.registry import get_provider
     from app.credentials import save_credential, new_credential_ref
 
@@ -289,7 +373,7 @@ def _add_azure_account(payload: dict) -> tuple[int, str, str]:
             detail="default_region must be a valid Azure region short-name (e.g. 'centralindia', 'eastus2') -- lowercase letters/digits only",
         )
 
-    _check_duplicate_account_id(subscription_id, "Azure subscription ID")
+    _check_duplicate_account_id(subscription_id, "Azure subscription ID", current_user)
 
     # Validate against real Azure ARM before writing anything.
     provider = get_provider("azure")
@@ -325,22 +409,42 @@ def _add_azure_account(payload: dict) -> tuple[int, str, str]:
             cursor.execute("SELECT id FROM aws_accounts WHERE account_id = %s AND provider = 'azure'",
                             (subscription_id,))
             new_id = cursor.fetchone()[0]
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
+        logger.error(f"add_account (azure): DB error inserting subscription_id={subscription_id}: {e}")
+        raise HTTPException(status_code=500, detail="Could not save the account -- see server logs.")
     finally:
         cursor.close()
         conn.close()
 
+    # Fix: 2026-09 B04 audit -- same partial-onboarding rollback gap as
+    # the AWS static_keys path above: this save was previously
+    # unguarded, so a failure here left an active row with no credential.
     ref = new_credential_ref()
-    save_credential(new_id, "azure", client_secret, ref)
-    conn = get_connection(); cursor = conn.cursor()
-    cursor.execute("UPDATE aws_accounts SET credential_ref = %s WHERE id = %s", (ref, new_id))
-    conn.commit(); cursor.close(); conn.close()
+    try:
+        save_credential(new_id, "azure", client_secret, ref)
+        conn = get_connection(); cursor = conn.cursor()
+        cursor.execute("UPDATE aws_accounts SET credential_ref = %s WHERE id = %s", (ref, new_id))
+        conn.commit(); cursor.close(); conn.close()
+    except Exception as e:
+        logger.error(f"add_account (azure): credential save failed for new id={new_id}: {e}")
+        conn = get_connection(); cursor = conn.cursor()
+        cursor.execute("UPDATE aws_accounts SET status = 'inactive' WHERE id = %s", (new_id,))
+        conn.commit(); cursor.close(); conn.close()
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "The account row was created but saving its credential failed, "
+                "so the account has been deactivated rather than left broken. "
+                "Try onboarding again."
+            ),
+        )
 
     return new_id, account_name, "azure"
 
 
-def _add_gcp_account(payload: dict) -> tuple[int, str, str]:
+def _add_gcp_account(payload: dict, current_user: dict) -> tuple[int, str, str]:
     from app.providers.registry import get_provider
     from app.credentials import save_credential, new_credential_ref
     import json as _json
@@ -359,7 +463,7 @@ def _add_gcp_account(payload: dict) -> tuple[int, str, str]:
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing required field(s): {', '.join(missing)}")
 
-    _check_duplicate_account_id(project_id, "GCP project ID")
+    _check_duplicate_account_id(project_id, "GCP project ID", current_user)
 
     try:
         key_obj = _json.loads(service_account_key)
@@ -398,17 +502,36 @@ def _add_gcp_account(payload: dict) -> tuple[int, str, str]:
             cursor.execute("SELECT id FROM aws_accounts WHERE account_id = %s AND provider = 'gcp'",
                             (project_id,))
             new_id = cursor.fetchone()[0]
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
+        logger.error(f"add_account (gcp): DB error inserting project_id={project_id}: {e}")
+        raise HTTPException(status_code=500, detail="Could not save the account -- see server logs.")
     finally:
         cursor.close()
         conn.close()
 
+    # Fix: 2026-09 B04 audit -- same partial-onboarding rollback gap as
+    # the AWS static_keys path above.
     ref = new_credential_ref()
-    save_credential(new_id, "gcp", service_account_key, ref)
-    conn = get_connection(); cursor = conn.cursor()
-    cursor.execute("UPDATE aws_accounts SET credential_ref = %s WHERE id = %s", (ref, new_id))
-    conn.commit(); cursor.close(); conn.close()
+    try:
+        save_credential(new_id, "gcp", service_account_key, ref)
+        conn = get_connection(); cursor = conn.cursor()
+        cursor.execute("UPDATE aws_accounts SET credential_ref = %s WHERE id = %s", (ref, new_id))
+        conn.commit(); cursor.close(); conn.close()
+    except Exception as e:
+        logger.error(f"add_account (gcp): credential save failed for new id={new_id}: {e}")
+        conn = get_connection(); cursor = conn.cursor()
+        cursor.execute("UPDATE aws_accounts SET status = 'inactive' WHERE id = %s", (new_id,))
+        conn.commit(); cursor.close(); conn.close()
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "The account row was created but saving its credential failed, "
+                "so the account has been deactivated rather than left broken. "
+                "Try onboarding again."
+            ),
+        )
 
     return new_id, account_name, "gcp"
 
@@ -418,11 +541,11 @@ def add_account(payload: dict = Body(...), current_user: dict = Depends(require_
     provider_name = (payload.get("provider") or "aws").strip().lower()
 
     if provider_name == "azure":
-        new_id, account_name, provider_name = _add_azure_account(payload)
+        new_id, account_name, provider_name = _add_azure_account(payload, current_user)
     elif provider_name == "gcp":
-        new_id, account_name, provider_name = _add_gcp_account(payload)
+        new_id, account_name, provider_name = _add_gcp_account(payload, current_user)
     else:
-        new_id, account_name, provider_name = _add_aws_account(payload)
+        new_id, account_name, provider_name = _add_aws_account(payload, current_user)
 
     # Optional: list of metric_catalog IDs the user explicitly picked in the
     # onboarding wizard's "Metrics to Monitor" step (manual override always
@@ -530,46 +653,108 @@ def delete_account(account_id: int, current_user: dict = Depends(require_permiss
     # monitored account" (accounts.onboard is scoped to ADDING one in the
     # permission catalog's own description), and this is irreversible --
     # deliberately not extending accounts.onboard to also cover deletion.
+    #
+    # IMPORTANT: this is a SOFT delete (status set to 'inactive') -- the
+    # aws_accounts row itself is never removed. Every ON DELETE CASCADE
+    # foreign key that references aws_accounts(id) (provider_credentials,
+    # account_metric_selections, escalation_policies, cloud_events,
+    # incidents, resource_health, ...) therefore NEVER FIRES, because
+    # nothing ever deletes that row. Every child table must be cleaned up
+    # explicitly here, exactly like this function was already doing for
+    # alerts/metrics/resources/resource_relationships.
+    #
+    # SECURITY/CORRECTNESS (fix: 2026-09 B04 audit -- CRITICAL, complete
+    # cascade): a repo-wide grep for `aws_account_id`/`account_id` columns
+    # found 12 more tables this function left completely untouched:
+    # provider_credentials, account_metric_selections, escalation_policies,
+    # cloud_events, incidents (which cascades incident_alerts via its own
+    # FK once incidents rows are deleted), resource_health,
+    # synthetic_checks (cascades synthetic_check_results via its own FK),
+    # slo_definitions, security_findings, maintenance_windows,
+    # status_page_components, alert_pending, metric_baseline. Left as-is,
+    # a "removed" account kept: (a) its encrypted credential sitting in
+    # provider_credentials indefinitely, readable by load_credential() by
+    # anyone who could still reach it via id; (b) stale
+    # incidents/security_findings/synthetic-check results/SLO data,
+    # invisible in the (correctly status='active'-filtered) accounts list
+    # but still directly queryable by id through every other endpoint in
+    # this app that doesn't itself filter by account status; and (c) most
+    # seriously, since _check_duplicate_account_id matches the SAME
+    # account_id string regardless of status, re-onboarding the exact same
+    # AWS/Azure/GCP account later (see that function's reactivation fix
+    # above) reactivated this same row -- resurrecting all of that stale
+    # data as if it belonged to the "new" onboarding, with no indication
+    # any of it was actually left over from before the account was removed.
+    # op_events (nullable aws_account_id -- this app's OWN operational
+    # health log, not account-facing data) and reports/report_jobs
+    # (historical report artifacts, out of this slice's file scope) are
+    # deliberately NOT touched here -- see this chat's handoff notes.
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT account_name, account_id FROM aws_accounts WHERE id = %s",
+            (account_id,)
+        )
+        account = cursor.fetchone()
+        if not account:
+            raise HTTPException(status_code=404, detail="Account not found")
 
-    cursor.execute(
-        "SELECT account_name, account_id FROM aws_accounts WHERE id = %s",
-        (account_id,)
-    )
-    account = cursor.fetchone()
-    if not account:
+        cursor.execute(
+            "UPDATE aws_accounts SET status = 'inactive' WHERE id = %s",
+            (account_id,)
+        )
+
+        # Clean up everything this account left behind so it can't show up
+        # as stale/orphaned alerts later (this was previously a bug — removed
+        # accounts left their resources/metrics/alerts behind indefinitely).
+        cursor.execute("DELETE FROM alerts WHERE aws_account_id = %s", (account_id,))
+        cursor.execute("""
+            DELETE m FROM metrics m
+            JOIN resources r ON r.id = m.resource_id
+            WHERE r.aws_account_id = %s
+        """, (account_id,))
+        cursor.execute("DELETE FROM resources WHERE aws_account_id = %s", (account_id,))
+        cursor.execute("DELETE FROM resource_relationships WHERE aws_account_id = %s", (account_id,))
+
+        # -- Fix: 2026-09 B04 audit -- the remaining account-scoped tables --
+        cursor.execute("DELETE FROM account_metric_selections WHERE aws_account_id = %s", (account_id,))
+        cursor.execute("DELETE FROM escalation_policies WHERE aws_account_id = %s", (account_id,))
+        cursor.execute("DELETE FROM cloud_events WHERE aws_account_id = %s", (account_id,))
+        # incident_alerts cascades automatically (FK ON DELETE CASCADE on
+        # incident_id) once the matching incidents rows are removed.
+        cursor.execute("DELETE FROM incidents WHERE aws_account_id = %s", (account_id,))
+        cursor.execute("DELETE FROM resource_health WHERE aws_account_id = %s", (account_id,))
+        # synthetic_check_results cascades automatically (FK ON DELETE
+        # CASCADE on check_id) once the matching synthetic_checks rows
+        # are removed; slo_definitions.synthetic_check_id also cascades.
+        cursor.execute("DELETE FROM synthetic_checks WHERE aws_account_id = %s", (account_id,))
+        cursor.execute("DELETE FROM slo_definitions WHERE aws_account_id = %s", (account_id,))
+        cursor.execute("DELETE FROM security_findings WHERE aws_account_id = %s", (account_id,))
+        cursor.execute("DELETE FROM maintenance_windows WHERE aws_account_id = %s", (account_id,))
+        cursor.execute("DELETE FROM status_page_components WHERE aws_account_id = %s", (account_id,))
+        cursor.execute("DELETE FROM alert_pending WHERE aws_account_id = %s", (account_id,))
+        cursor.execute("DELETE FROM metric_baseline WHERE aws_account_id = %s", (account_id,))
+
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
         cursor.close()
         conn.close()
-        raise HTTPException(status_code=404, detail="Account not found")
 
-    cursor.execute(
-        "UPDATE aws_accounts SET status = 'inactive' WHERE id = %s",
-        (account_id,)
-    )
-
-    # Clean up everything this account left behind so it can't show up
-    # as stale/orphaned alerts later (this was previously a bug — removed
-    # accounts left their resources/metrics/alerts behind indefinitely).
-    cursor.execute("DELETE FROM alerts WHERE aws_account_id = %s", (account_id,))
-    cursor.execute("""
-        DELETE m FROM metrics m
-        JOIN resources r ON r.id = m.resource_id
-        WHERE r.aws_account_id = %s
-    """, (account_id,))
-    cursor.execute("DELETE FROM resources WHERE aws_account_id = %s", (account_id,))
-    # Follow-up flagged (never implemented) in
-    # db/migrations/021_resource_relationships.sql's ON DELETE RESTRICT
-    # comment: resource_relationships isn't cleaned up here, so a
-    # removed account's ALB->EC2/EC2->EBS/etc edges were left behind
-    # indefinitely -- the same class of orphaned-data bug this block
-    # already fixed for alerts/metrics/resources, just missed for the
-    # table added after this block was originally written.
-    cursor.execute("DELETE FROM resource_relationships WHERE aws_account_id = %s", (account_id,))
-
-    conn.commit()
-    cursor.close()
-    conn.close()
+    # provider_credentials: use the existing dedicated helper (same
+    # encryption-key module every other credential write/read goes
+    # through) rather than a raw DELETE here.
+    try:
+        from app.credentials import delete_credential
+        delete_credential(account_id)
+    except Exception as e:
+        logger.warning(f"delete_account: credential cleanup failed for id={account_id}: {e}")
 
     # Bust cache so next poll doesn't return deleted account
     _bust_accounts_cache()
@@ -618,10 +803,12 @@ def get_account_console_url(
 
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM aws_accounts WHERE id = %s AND status = 'active'", (account_id,))
-    account = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute("SELECT * FROM aws_accounts WHERE id = %s AND status = 'active'", (account_id,))
+        account = cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
 
     if not account:
         raise HTTPException(status_code=404, detail="Account not found or inactive")
@@ -810,10 +997,12 @@ def discover_account(account_id: int, current_user: dict = Depends(require_permi
 
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM aws_accounts WHERE id = %s AND status = 'active'", (account_id,))
-    account = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute("SELECT * FROM aws_accounts WHERE id = %s AND status = 'active'", (account_id,))
+        account = cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
 
     if not account:
         raise HTTPException(status_code=404, detail="Account not found or inactive")
@@ -834,10 +1023,12 @@ def discover_account(account_id: int, current_user: dict = Depends(require_permi
 
     conn   = get_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE aws_accounts SET last_discovered_at = NOW() WHERE id = %s", (account_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute("UPDATE aws_accounts SET last_discovered_at = NOW() WHERE id = %s", (account_id,))
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
 
     _write_audit(current_user["username"], "Account discovery triggered", f"{account['account_name']} ({account['account_id']})", role=current_user["role"].upper())
     return {"status": "discovery triggered", "account_id": account_id}
