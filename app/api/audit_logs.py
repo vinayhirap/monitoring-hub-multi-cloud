@@ -50,9 +50,6 @@ def get_audit_logs(
     Fetch audit logs from DB.
     Optional filters: actor, action (partial match).
     """
-    conn   = get_connection()
-    cursor = conn.cursor(dictionary=True)
-
     query  = "SELECT id, actor, action, payload, created_at FROM audit_logs WHERE 1=1"
     params = []
 
@@ -66,10 +63,15 @@ def get_audit_logs(
     query += " ORDER BY created_at DESC LIMIT %s"
     params.append(limit)
 
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
+    # AUDIT(b06): connection is now released on error too (pool is 10).
+    conn   = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
 
     return [_serialize_row(r) for r in rows]
 

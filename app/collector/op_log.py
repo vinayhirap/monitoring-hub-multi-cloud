@@ -28,6 +28,12 @@ def log_event(event_type: str, message: str, severity: str = "ERROR",
     log_fn = {"INFO": logger.info, "WARNING": logger.warning}.get(severity, logger.error)
     log_fn(f"[{event_type}] {message}" + (f" (account={account_id})" if account_id else ""))
 
+    # AUDIT(b06): conn/cursor are now closed in `finally`. Previously a
+    # failed INSERT (the exact moment this is most likely: DB trouble, or
+    # an event_type > VARCHAR(80)) leaked the pooled connection, and this
+    # runs on collector failure paths -- a failure storm could drain the
+    # 10-connection pool and take logins down with it.
+    conn = cur = None
     try:
         conn = get_connection(); cur = conn.cursor()
         cur.execute("""
@@ -35,15 +41,22 @@ def log_event(event_type: str, message: str, severity: str = "ERROR",
                 (event_type, severity, aws_account_id, resource_id, message, detail)
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (
-            event_type, severity, account_id, resource_id, message[:4000],
-            json.dumps(detail) if detail else None,
+            (event_type or "")[:80], (severity or "ERROR")[:10], account_id,
+            resource_id[:512] if resource_id else None, (message or "")[:4000],
+            json.dumps(detail, default=str) if detail else None,
         ))
         conn.commit()
-        cur.close(); conn.close()
     except Exception as e:
         # Deliberately swallowed -- see module docstring. Falls back to
         # the logger call above, which already happened.
         logger.warning(f"[op_log] failed to persist op_event (non-fatal): {e}")
+    finally:
+        for closer in (cur, conn):
+            if closer is not None:
+                try:
+                    closer.close()
+                except Exception:
+                    pass
 
 
 def prune_op_events(retain_days: int = 30) -> int:
