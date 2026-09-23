@@ -120,34 +120,44 @@ def assume_role(role_arn: str, external_id: str | None = None,
     takes the INTERSECTION of the role's own permissions and this
     policy, so it can only restrict, never expand, access.
 
-    SAME-ACCOUNT SHORT-CIRCUIT (fix: 2026-08-26 AuroGov Mumbai incident):
-    role_arn's account can legitimately be the SAME account the server's
-    own credentials belong to (an account row doesn't have to be
-    cross-account). Real sts:AssumeRole on your own role always fails
-    AccessDenied unless its trust policy explicitly allows self-assumption
-    -- which nothing here configures and shouldn't have to. Detect this via
-    the role ARN's account id vs get_own_account_id() and skip straight to
-    the instance's own default credential chain instead. Any genuinely
-    cross-account role_arn is completely unaffected by this check.
+    SECURITY (fix: 2026-09 B04 audit -- CRITICAL, confused-deputy /
+    privilege escalation): this function used to short-circuit straight
+    to the server's own ambient/instance-profile credentials (bypassing
+    AssumeRole entirely) whenever role_arn's account-id segment matched
+    get_own_account_id() -- a check performed by regex-parsing the
+    caller-supplied role_arn string, with NO verification that the role
+    actually exists, is assumable, or was ever configured by an admin.
+    Any editor holding only the accounts.onboard permission (a lower
+    trust tier than accounts.delete/full admin -- see delete_account's
+    own comment on that distinction) could onboard or test-role an
+    account with account_id set to the server's own AWS account number
+    and role_arn set to ANY arn:aws:iam::<that number>:role/<anything,
+    even nonexistent>, and would be handed back the server's own
+    instance-profile session -- not a scoped ReadOnlyAccess assumption,
+    the server's actual ambient credentials -- for every subsequent
+    boto3 call made against that "account" (test-role, discover,
+    console-url, and ongoing monitoring/collection cycles). That is a
+    privilege escalation from accounts.onboard up to whatever the
+    server's own instance profile can do, gated on nothing but guessing
+    or learning a non-secret 12-digit account number.
+    The legitimate case this was trying to serve (server's own AWS
+    account being one of the monitored accounts, where self-assumption
+    normally fails AccessDenied without an explicit self-trust policy)
+    is already served safely elsewhere: get_boto3_session() already
+    falls back to plain boto3.Session() whenever role_arn is left EMPTY
+    for an account. That is an explicit admin decision made once at
+    onboarding time, not something inferred per-call from unvalidated
+    input. So: no more account-number short-circuit here. A role_arn
+    that really does point at the server's own account is now attempted
+    for real via sts:AssumeRole like any other role_arn, and fails
+    loudly (AccessDenied) unless a genuine self-assumption trust policy
+    exists -- surfacing a clear, honest error instead of silently
+    substituting a different, more powerful credential set. Operators
+    onboarding the server's own account should leave role_arn blank.
+    get_own_account_id() is kept (unused by this function now) only in
+    case a future, explicitly admin-gated feature needs it -- see its
+    own docstring.
     """
-    match = re.match(r"arn:aws:iam::(\d+):role/", role_arn or "")
-    if match:
-        target_account_id = match.group(1)
-        own_account_id = get_own_account_id()
-        if own_account_id and target_account_id == own_account_id:
-            # NOTE (2026-08-26): get_self_federation_session() was tried
-            # here first but AWS rejects STS GetFederationToken when called
-            # with SESSION credentials -- confirmed live: "Cannot call
-            # GetFederationToken with session credentials". An EC2 instance
-            # profile (what this server runs as) always provides temporary
-            # session credentials via IMDS, so that call can never succeed
-            # regardless of target account. No STS call is actually needed
-            # for the same-account case -- the instance's own default
-            # credential chain already has whatever permissions its
-            # instance profile grants, same as the existing no-role_arn
-            # fallback in discovery/runner.py and metrics/runner.py.
-            return boto3.Session()
-
     sts = boto3.client("sts", config=STANDARD_RETRY)
 
     params = {

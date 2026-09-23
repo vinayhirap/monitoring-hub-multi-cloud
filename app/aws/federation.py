@@ -221,34 +221,50 @@ def resource_console_destination(service: str, resource_id: str, region: str,
     svc = (service or "").lower()
     base = f"https://{region}.console.aws.amazon.com"
 
+    # Fix: 2026-09 B04 audit -- LOW/defense-in-depth. resource_id/
+    # resource_name/ecs_service_name are caller-supplied (this endpoint's
+    # `resource_id`/`resource_name`/`ecs_service_name` query params --
+    # app/api/admin/accounts.py's get_account_console_url) and, unlike the
+    # dynamodb/logs branches below (which already url-encode, see their
+    # own comments), were being placed directly into the URL unescaped.
+    # The fixed https://{validated-region}.console.aws.amazon.com prefix
+    # (via _safe_region above) means this was never a host-takeover/open-
+    # redirect vector on its own, but an unescaped value containing '#',
+    # '&', '?' etc. could still corrupt the resulting deep link (wrong
+    # fragment/query parsed by the console) -- encode consistently instead
+    # of only where a bug was previously noticed.
+    resource_id_enc = urllib.parse.quote(resource_id, safe="")
+    resource_name_enc = urllib.parse.quote(resource_name, safe="") if resource_name else None
+    ecs_service_name_enc = urllib.parse.quote(ecs_service_name, safe="") if ecs_service_name else None
+
     if svc == "ec2":
-        return f"{base}/ec2/home?region={region}#Instances:instanceId={resource_id}"
+        return f"{base}/ec2/home?region={region}#Instances:instanceId={resource_id_enc}"
     if svc == "ebs":
-        return f"{base}/ec2/home?region={region}#Volumes:volumeId={resource_id}"
+        return f"{base}/ec2/home?region={region}#Volumes:volumeId={resource_id_enc}"
     if svc == "rds":
-        return f"{base}/rds/home?region={region}#database:id={resource_id}"
+        return f"{base}/rds/home?region={region}#database:id={resource_id_enc}"
     if svc == "lambda":
-        return f"{base}/lambda/home?region={region}#/functions/{resource_id}"
+        return f"{base}/lambda/home?region={region}#/functions/{resource_id_enc}"
     if svc == "s3":
-        return f"https://s3.console.aws.amazon.com/s3/buckets/{resource_id}"
+        return f"https://s3.console.aws.amazon.com/s3/buckets/{resource_id_enc}"
     if svc == "elb":
-        search_term = resource_name or resource_id
+        search_term = resource_name_enc or resource_id_enc
         return f"{base}/ec2/home?region={region}#LoadBalancers:search={search_term}"
     if svc == "ecs":
-        cluster = resource_name or resource_id
-        if ecs_service_name:
+        cluster = resource_name_enc or resource_id_enc
+        if ecs_service_name_enc:
             return (f"{base}/ecs/home?region={region}"
-                    f"#/clusters/{cluster}/services/{ecs_service_name}")
+                    f"#/clusters/{cluster}/services/{ecs_service_name_enc}")
         return f"{base}/ecs/home?region={region}#/clusters/{cluster}"
     if svc == "security_group":
-        return f"{base}/ec2/home?region={region}#SecurityGroups:groupId={resource_id}"
+        return f"{base}/ec2/home?region={region}#SecurityGroups:groupId={resource_id_enc}"
     if svc == "iam_user":
         # `resource_name` carries the username -- for the stale-access-key
         # check `resource_id` is "username:key-id" (see cspm.py), so the
         # username alone (not the raw resource_id) is what belongs in the
         # path here. Falls back to resource_id itself when it's already a
         # bare username (the no-MFA check's case).
-        username = resource_name or resource_id
+        username = resource_name_enc or resource_id_enc
         return f"{base}/iam/home#/users/details/{username}?section=security_credentials"
 
     # -- Extended-tier resource types (2026-09-18) ------------------------
