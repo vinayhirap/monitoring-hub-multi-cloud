@@ -21,7 +21,7 @@ from app.db import get_connection
 from app.aws.metric_catalog_data import CURATED
 from app.aws.boto_config import STANDARD_RETRY
 from app.threshold_defaults import resolve_db_metric_name
-from app.collector.metrics.runner import _execute_gmd
+from app.collector.metrics.runner import _execute_gmd, STALE_RESOURCE_HOURS
 
 logger = logging.getLogger(__name__)
 
@@ -360,18 +360,24 @@ def _get_extended_resources_for_account(account_id):
     existing core query, so core collection's row shape/behavior is
     untouched by this addition.
     """
+    # Audit B14: try/finally (was leaking on error), and skip rows
+    # discovery hasn't re-confirmed for STALE_RESOURCE_HOURS (deleted
+    # buckets/log groups/etc. -- billed, always-empty queries every cycle).
+    placeholders = ",".join(["%s"] * len(EXTENDED_METRICS))
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
-    placeholders = ",".join(["%s"] * len(EXTENDED_METRICS))
-    cursor.execute(f"""
-        SELECT id, resource_id, resource_type, name, region, tags
-        FROM resources
-        WHERE aws_account_id = %s
-          AND resource_type IN ({placeholders})
-    """, (account_id, *EXTENDED_METRICS.keys()))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(f"""
+            SELECT id, resource_id, resource_type, name, region, tags
+            FROM resources
+            WHERE aws_account_id = %s
+              AND resource_type IN ({placeholders})
+              AND (last_seen_at IS NULL OR last_seen_at >= DATE_SUB(NOW(), INTERVAL %s HOUR))
+        """, (account_id, *EXTENDED_METRICS.keys(), STALE_RESOURCE_HOURS))
+        rows = cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
 
     grouped = {}
     for r in rows:

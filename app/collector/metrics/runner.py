@@ -56,7 +56,7 @@ from datetime import datetime, timedelta
 from app.db import get_connection
 from app.aws.sts import get_boto3_session
 from app.aws.boto_config import STANDARD_RETRY
-from app.collector.metrics_writer import write_metric, write_metric_history_batch
+from app.collector.metrics_writer import write_metrics_batch, write_metric_history_batch
 from app.collector.disk_mounts import all_cwagent_disk_dims, ensure_disk_mount_metric_registered
 import boto3
 
@@ -127,6 +127,37 @@ LAMBDA_METRICS_LOW = [
 
 # ── GMD helpers ───────────────────────────────────────────────
 
+# GetMetricData accepts at most 500 MetricDataQueries per call; a bigger
+# request fails with a ValidationError and returns NOTHING for any of them.
+GMD_MAX_QUERIES = 500
+
+# Resources discovery has not re-confirmed for this long are skipped (the
+# resource was deleted; its `resources` row is only pruned much later).
+# Discovery refreshes last_seen_at every 15 min, so 48h only excludes rows
+# that are genuinely gone -- each of which was a billed, always-empty
+# GetMetricData query every cycle.
+STALE_RESOURCE_HOURS = 48
+
+
+def _chunk_gmd_queries(queries, size=GMD_MAX_QUERIES):
+    """Split into <= size chunks WITHOUT separating a ReturnData=False
+    input query from the Expression that references it (CWAgent Windows
+    disk: raw + "100 - raw") -- a chunk never ends on a hidden input."""
+    chunks, current = [], []
+    for q in queries:
+        current.append(q)
+        if len(current) >= size and q.get("ReturnData", True):
+            chunks.append(current)
+            current = []
+        elif len(current) >= size:
+            # last one is a hidden input: move it to the next chunk
+            carry = current.pop()
+            chunks.append(current)
+            current = [carry]
+    if current:
+        chunks.append(current)
+    return chunks
+
 def _resource_dim_value(r):
     """Return the CW dimension value for this resource."""
     rt = r["resource_type"]
@@ -190,41 +221,51 @@ def _execute_gmd(cw, queries, id_map, minutes=5):
     end   = datetime.utcnow()
     start = end - timedelta(minutes=minutes)
     count = 0
+    latest_rows = []
     history_rows = []
 
-    try:
-        resp = cw.get_metric_data(
-            MetricDataQueries=queries,
-            StartTime=start,
-            EndTime=end,
-            ScanBy="TimestampDescending",
-        )
-    except Exception as e:
-        logger.error(f"GMD call failed: {e}")
-        return 0
-
-    for result in resp.get("MetricDataResults", []):
-        values = result.get("Values", [])
-        timestamps = result.get("Timestamps", [])
-        if not values:
+    # Audit B14: chunked here (not only in _run_gmd) because
+    # _collect_extended_service and the CWAgent collectors call this
+    # directly -- e.g. 102 CloudWatch Logs groups x 5 metrics is > 500
+    # queries, which used to fail the whole call and collect nothing.
+    for chunk in _chunk_gmd_queries(queries):
+        try:
+            resp = cw.get_metric_data(
+                MetricDataQueries=chunk,
+                StartTime=start,
+                EndTime=end,
+                ScanBy="TimestampDescending",
+            )
+        except Exception as e:
+            logger.error(f"GMD call failed ({len(chunk)} queries): {e}")
             continue
-        resource_db_id, db_name = id_map.get(result["Id"], (None, None))
-        if resource_db_id is None:
-            continue
-        write_metric(resource_db_id, db_name, values[0])  # values[0] = most recent
-        count += 1
-        # Full history -- every returned datapoint, not just the latest.
-        # Timestamps/Values are parallel lists per boto3's own contract.
-        for ts, val in zip(timestamps, values):
-            history_rows.append((resource_db_id, db_name, val, ts))
 
+        for result in resp.get("MetricDataResults", []):
+            values = result.get("Values", [])
+            timestamps = result.get("Timestamps", [])
+            if not values:
+                continue
+            resource_db_id, db_name = id_map.get(result["Id"], (None, None))
+            if resource_db_id is None:
+                continue
+            latest_rows.append((resource_db_id, db_name, values[0]))  # values[0] = most recent
+            count += 1
+            # Full history -- every returned datapoint, not just the latest.
+            # Timestamps/Values are parallel lists per boto3's own contract.
+            for ts, val in zip(timestamps, values):
+                history_rows.append((resource_db_id, db_name, val, ts))
+
+    # One pooled connection per call instead of one per datapoint (was
+    # write_metric() in the loop above) -- same upsert, same timestamp.
+    if latest_rows:
+        write_metrics_batch(latest_rows)
     if history_rows:
         write_metric_history_batch(history_rows)
 
     return count
 
 
-def _run_gmd(cw, resources, metric_defs, minutes=5, chunk_size=500):
+def _run_gmd(cw, resources, metric_defs, minutes=5, chunk_size=GMD_MAX_QUERIES):
     """Build + chunk + execute GMD. Returns total datapoints written."""
     queries, id_map = _build_queries(resources, metric_defs)
     if not queries:
@@ -526,33 +567,35 @@ def _get_resources_for_account(account_id, tier):
     low:               all non-terminated (for disk trend metrics)
     ECS always excluded — free basic monitoring, no paid CW calls needed.
     """
-    conn   = get_connection()
-    cursor = conn.cursor(dictionary=True)
-
     # tags included (previously omitted) so the "critical" tier's EC2
     # basic-vs-detailed monitoring visibility check (see
     # _log_monitoring_mode_mismatch above) can read tags._cw_monitoring_state
     # without a second query. No other caller of this function used tags
     # before, so this is additive, not a behavior change for them.
-    if tier in ("critical", "standard"):
-        cursor.execute("""
+    #
+    # Audit B14: `instance_state != 'terminated'` alone is NULL -- i.e.
+    # FALSE -- for every non-EC2 row (discovery only ever sets
+    # instance_state for EC2), so EBS/RDS/ELB/Lambda were silently never
+    # collected by this runner. NULL now counts as "not terminated".
+    # Rows discovery hasn't re-confirmed for STALE_RESOURCE_HOURS are
+    # skipped (deleted resources; each was a billed, always-empty query).
+    running_only = "AND NOT (resource_type = 'ec2' AND COALESCE(instance_state, '') != 'running')" \
+        if tier in ("critical", "standard") else ""
+    conn   = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(f"""
             SELECT id, resource_id, resource_type, name, region, tags
             FROM resources
-            WHERE aws_account_id  = %s
-              AND instance_state != 'terminated'
-              AND NOT (resource_type = 'ec2' AND instance_state != 'running')
-        """, (account_id,))
-    else:
-        cursor.execute("""
-            SELECT id, resource_id, resource_type, name, region, tags
-            FROM resources
-            WHERE aws_account_id  = %s
-              AND instance_state != 'terminated'
-        """, (account_id,))
-
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
+            WHERE aws_account_id = %s
+              AND (instance_state IS NULL OR instance_state != 'terminated')
+              AND (last_seen_at IS NULL OR last_seen_at >= DATE_SUB(NOW(), INTERVAL %s HOUR))
+              {running_only}
+        """, (account_id, STALE_RESOURCE_HOURS))
+        rows = cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
 
     grouped = {}
     for r in rows:
@@ -710,13 +753,15 @@ def _collect_account(account, tier="standard"):
 
     conn   = get_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE aws_accounts SET last_synced_at = NOW() WHERE id = %s",
-        (account["id"],)
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(
+            "UPDATE aws_accounts SET last_synced_at = NOW() WHERE id = %s",
+            (account["id"],)
+        )
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
 
 
 # ── Main entry point ──────────────────────────────────────────
@@ -729,6 +774,13 @@ def run_metrics_collection(accounts, tier="standard"):
     tier = 'extended'      — most extended-tier services     (60-min cycle)
     tier = 'slow_extended' — S3/Logs/Backup/CloudFront/WAFv2  (24h cycle)
     """
+    # Audit B14: scheduler.py hands over every ACTIVE account, including
+    # Azure/GCP ones (no provider filter) -- those must never reach
+    # get_boto3_session(), which falls back to the host's ambient AWS
+    # credentials, nor have last_synced_at stamped by the AWS collector.
+    accounts = [a for a in accounts if (a.get("provider") or "aws") == "aws"]
+    if not accounts:
+        return
     logger.info(f"Metrics [{tier}] — {len(accounts)} accounts")
 
     with ThreadPoolExecutor(max_workers=min(len(accounts), 10)) as ex:

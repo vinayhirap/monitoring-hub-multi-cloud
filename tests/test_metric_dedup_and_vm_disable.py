@@ -91,6 +91,7 @@ def _load_runner_and_record_tasks(tier):
     install_stub("app.aws.boto_config", STANDARD_RETRY=None)
     install_stub("app.collector.metrics_writer",
                  write_metric=lambda *a, **k: None,
+                 write_metrics_batch=lambda *a, **k: None,
                  write_metric_history_batch=lambda *a, **k: None)
     install_stub("app.collector.disk_mounts",
                  all_cwagent_disk_dims=lambda cw, iid: [],
