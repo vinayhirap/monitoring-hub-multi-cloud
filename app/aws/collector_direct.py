@@ -2321,5 +2321,5 @@ def _calc_uptime(lt) -> int:
         if lt.tzinfo is None:
             lt = lt.replace(tzinfo=timezone.utc)
         return (now - lt).days
-    except:
+    except Exception:
         return 0
