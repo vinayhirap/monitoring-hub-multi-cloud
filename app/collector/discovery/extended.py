@@ -609,13 +609,27 @@ def _discover_wafv2(session, account, region, cursor):
     # WebACL (name) AND Region dimensions together.
     waf = session.client("wafv2", region_name=region)
     count = 0
-    resp = waf.list_web_acls(Scope="REGIONAL")
-    for acl in resp.get("WebACLs", []):
-        name = acl["Name"]
-        acl_id = acl["Id"]
-        _upsert_resource(cursor, account["id"], "wafv2", name, name,
-                          {"acl_id": acl_id, "cw_extra_dims": {"Region": region}}, region)
-        count += 1
+    # list_web_acls has no botocore paginator (WAFv2 predates that
+    # convention for most of its list operations) and caps each response
+    # server-side -- a single unpaginated call silently missed every
+    # WebACL past the first page for any account with more than that.
+    # Manual NextMarker loop, matching the pattern every other paginated
+    # AWS list call in this app already uses via get_paginator().
+    marker = None
+    while True:
+        kwargs = {"Scope": "REGIONAL"}
+        if marker:
+            kwargs["NextMarker"] = marker
+        resp = waf.list_web_acls(**kwargs)
+        for acl in resp.get("WebACLs", []):
+            name = acl["Name"]
+            acl_id = acl["Id"]
+            _upsert_resource(cursor, account["id"], "wafv2", name, name,
+                              {"acl_id": acl_id, "cw_extra_dims": {"Region": region}}, region)
+            count += 1
+        marker = resp.get("NextMarker")
+        if not marker:
+            break
     logger.info(f"  WAFv2 (REGIONAL): {count} web ACLs in {account['account_name']} / {region}")
 
 
