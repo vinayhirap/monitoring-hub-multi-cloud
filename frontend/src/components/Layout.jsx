@@ -4,6 +4,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useState, useEffect } from "react";
 import AlertToast from "./AlertToast";
 import { useTimezone, TIMEZONE_OPTIONS } from "../contexts/TimezoneContext";
+import { getAlertCounts } from "../api/api";
 import "./Layout.css";
 
 // Role-based nav visibility:
@@ -73,9 +74,14 @@ export default function Layout() {
         // /counts endpoint. Previously this counted the (LIMIT-capped)
         // /api/alerts/open row list client-side, which silently
         // undercounts once real active alerts exceed that cap.
-        const res = await fetch("/api/alerts/counts");
-        if (!res.ok) return;
-        const data = await res.json();
+        // Routed through api.js's getAlertCounts()/apiFetch rather than
+        // a bare fetch() -- this poll runs every 30s for as long as the
+        // user is on any page, so it's the one most likely to still be
+        // ticking when a session expires; apiFetch's 401 handling is
+        // what actually bounces to /login and clears the stale cache
+        // (see AuthContext/api.js) instead of this silently no-op-ing
+        // forever against a dead session.
+        const data = await getAlertCounts();
         setAlertCount(data.active ?? 0);
       } catch {}
     }

@@ -50,7 +50,22 @@ export function AuthProvider({ children }) {
         if (!cancelled) {
           const ok = res.ok;
           setUser(ok ? await res.json() : null);
-          if (ok) await loadPermissions();
+          if (ok) {
+            await loadPermissions();
+          } else {
+            // SECURITY: this is the OTHER place a session can end besides
+            // logout() and apiFetch's runtime-401 handler (see clearCached()
+            // usages there) -- a tab opened fresh with no cookie, or one
+            // whose 12h cookie already expired before this box's first
+            // request. Without clearing here too, the shared-device gap
+            // those two spots were built to close reopens on the very
+            // first load: whatever the PREVIOUS user's session cached
+            // under mh_cache: keys would still be sitting in localStorage
+            // for a DIFFERENT person to see rendered immediately on this
+            // browser the moment they log in, before their own scoped
+            // fetch resolves.
+            clearAllCached();
+          }
         }
       } catch {
         if (!cancelled) setUser(null);

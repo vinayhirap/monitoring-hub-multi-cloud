@@ -39,7 +39,7 @@ function getOrCreate(channel) {
     } catch {}
   };
 
-  socket.onclose = () => {
+  socket.onclose = (event) => {
     clearInterval(socket._ping);
     notifyStatus(channel, false);
     delete _sockets[channel];
@@ -57,6 +57,20 @@ function getOrCreate(channel) {
     // channel any more (all components using it have unmounted) --
     // no reason to keep a dead channel alive in the background.
     if (!_listeners[channel] || _listeners[channel].size === 0) {
+      delete _backoffMs[channel];
+      return;
+    }
+
+    // 4401 == invalid/missing session cookie (see app/main.py's
+    // websocket_endpoint, close(code=4401)). AlertToast keeps a
+    // listener mounted for the whole logged-in session, so without
+    // this, an expired session with the tab still open would retry
+    // this same rejected handshake forever (capped at 30s, but
+    // forever) instead of ever giving up -- retrying can't fix an
+    // auth failure; only a fresh login can. apiFetch's own 401
+    // handling is what actually bounces the tab to /login once any
+    // REST call runs, independent of this socket.
+    if (event.code === 4401) {
       delete _backoffMs[channel];
       return;
     }

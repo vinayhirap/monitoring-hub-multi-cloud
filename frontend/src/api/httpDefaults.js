@@ -15,6 +15,32 @@
  */
 const nativeFetch = window.fetch.bind(window);
 
+// SECURITY: only attach credentials:"include" to same-origin requests.
+// This patch exists so none of the 30+ fetch() call sites across the
+// app have to remember `credentials: "include"` individually for our
+// OWN /api/* calls -- it was never meant to apply to a request to
+// somewhere else. Without this check, the day any call site fetches a
+// third-party or absolute cross-origin URL (an analytics endpoint, a
+// CDN health-check, anything), this patch would silently attach the
+// httpOnly session cookie to that other origin too. Every current call
+// site happens to be same-origin/relative, so this has been a latent
+// gap rather than an active leak -- guarding it here removes the trap
+// for whatever gets added next.
+function isSameOrigin(input) {
+  try {
+    const url = typeof input === "string" || input instanceof URL
+      ? new URL(input, window.location.origin)
+      : new URL(input.url, window.location.origin);
+    return url.origin === window.location.origin;
+  } catch {
+    // Unparseable input -- let the native fetch surface its own error
+    // rather than guessing; don't add credentials to something we
+    // couldn't identify the origin of.
+    return false;
+  }
+}
+
 window.fetch = (input, init = {}) => {
+  if (!isSameOrigin(input)) return nativeFetch(input, init);
   return nativeFetch(input, { credentials: "include", ...init });
 };
