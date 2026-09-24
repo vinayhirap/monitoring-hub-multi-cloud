@@ -115,3 +115,59 @@ def test_poll_ec2_status_handles_empty_account_gracefully():
     assert total == 0
     assert written == []
     assert not mod._push_to_vm.called
+
+
+def test_poll_ec2_status_survives_one_stale_instance_id_in_the_chunk():
+    """
+    Regression test (audit b13): before the fix, a single stale/
+    terminated instance id in the DB (AWS returns
+    InvalidInstanceID.NotFound for the whole DescribeInstanceStatus
+    call) took down status polling for every OTHER instance in the
+    same account/chunk too, because the try/except wrapped the entire
+    per-account loop. The fix retries the chunk with the bad id
+    dropped, so i-bbb's real status must still get written.
+    """
+    from botocore.exceptions import ClientError
+
+    stale_id = "i-0deadbeef1234567"
+    ok_id = "i-0abc1234abc123456"
+    rows = [
+        {"account_db_id": 1, "role_arn": None, "external_id": None, "auth_mode": "assume_role", "default_region": "ap-south-1",
+         "resource_db_id": 501, "resource_id": stale_id},
+        {"account_db_id": 1, "role_arn": None, "external_id": None, "auth_mode": "assume_role", "default_region": "ap-south-1",
+         "resource_db_id": 502, "resource_id": ok_id},
+    ]
+    install_stub("app.db", get_connection=lambda: _FakeConn(rows))
+    mod, written = _load()
+
+    mod._session_for = MagicMock()
+    fake_ec2 = MagicMock()
+
+    calls = {"n": 0}
+
+    def fake_describe(InstanceIds, IncludeAllInstances):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ClientError(
+                {"Error": {"Code": "InvalidInstanceID.NotFound",
+                           "Message": f"The instance ID '{stale_id}' does not exist"}},
+                "DescribeInstanceStatus",
+            )
+        return {
+            "InstanceStatuses": [
+                {"InstanceId": iid, "SystemStatus": {"Status": "ok"}, "InstanceStatus": {"Status": "ok"}}
+                for iid in InstanceIds
+            ]
+        }
+
+    fake_ec2.describe_instance_status.side_effect = fake_describe
+    mod._session_for.return_value.client.return_value = fake_ec2
+    mod._push_to_vm = MagicMock()
+
+    total = mod.poll_ec2_status()
+
+    assert calls["n"] == 2, "expected one failed call plus one retry without the stale id"
+    assert (502, "statuscheckfailed", 0.0) in written, "the healthy instance's real status must survive the stale one's failure"
+    # total counts instances attempted in the chunk (unchanged semantics
+    # from before this fix), not just ones that returned a status.
+    assert total == 2

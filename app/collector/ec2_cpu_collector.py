@@ -10,19 +10,26 @@ logger = logging.getLogger(__name__)
 def collect_ec2_metrics():
     logger.info("EC2 collector started")
 
+    # Bug fix: no try/finally around the connection -- a transient DB
+    # error on execute()/fetchall() would leak a connection out of the
+    # pool (primer bug class #2). This module has no live callers
+    # anywhere in the codebase (superseded by collector_direct.py's
+    # path) but is fixed here for defense-in-depth rather than left as
+    # a live leak if it's ever wired back in.
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-
-    cursor.execute("""
-        SELECT r.id, r.resource_id, a.default_region
-        FROM resources r
-        JOIN aws_accounts a ON a.id = r.aws_account_id
-        WHERE r.resource_type = 'ec2'
-          AND r.instance_state != 'terminated'
-    """)
-    instances = cursor.fetchall()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute("""
+            SELECT r.id, r.resource_id, a.default_region
+            FROM resources r
+            JOIN aws_accounts a ON a.id = r.aws_account_id
+            WHERE r.resource_type = 'ec2'
+              AND r.instance_state != 'terminated'
+        """)
+        instances = cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
 
     logger.info(f"Collecting metrics for {len(instances)} EC2 instances")
 

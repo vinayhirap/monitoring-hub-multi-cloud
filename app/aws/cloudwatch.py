@@ -51,5 +51,14 @@ def fetch_metric(
         return None
     dim_value = dimensions[0]["Value"]
 
-    promql = f'{yace_metric}{{{dim_label}="{dim_value}"}}'
+    # Bug fix: a bare instant query drops any series whose last sample is
+    # older than VictoriaMetrics' default instant-query staleness window
+    # (~5 min) -- see system primer bug class #5. That's shorter than
+    # this app's own "extended" (60 min) and "slow_extended" (24 h)
+    # collection tiers, so metrics on those tiers were looking
+    # permanently "missing" through this call even though YACE had
+    # genuinely scraped them. last_over_time(...[26h]) returns the most
+    # recent sample within a 26h window (covers slow_extended plus
+    # buffer) instead of requiring one inside the last ~5 min.
+    promql = f'last_over_time({yace_metric}{{{dim_label}="{dim_value}"}}[26h])'
     return vm_query(promql)

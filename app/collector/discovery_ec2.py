@@ -11,136 +11,155 @@ def discover_ec2():
     single choke point in app.aws.sts.get_boto3_session().
     """
 
+    # Bug fix: conn/cursor were never wrapped in try/finally -- any
+    # exception mid-loop (bad instance data, a DB write error, an
+    # unexpected boto3 error not caught by the narrow per-account try
+    # below) skipped conn.close() entirely and leaked a connection out
+    # of the 10-connection pool (primer bug class #2: DB connections
+    # opened without try/finally exhausting the pool -> 500s on login).
+    # This runs across every active account on each discovery cycle, so
+    # one recurring bad account/instance would leak on every cycle.
+    # Also moved the per-account AWS work into its own try/except (same
+    # pattern as describe_polling.py / cloudtrail_collector.py) so one
+    # account's failure can't abort discovery for every other account.
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT *
+            FROM aws_accounts
+            WHERE status = 'active'
+        """)
+        accounts = cursor.fetchall()
 
-    cursor.execute("""
-        SELECT *
-        FROM aws_accounts
-        WHERE status = 'active'
-    """)
-    accounts = cursor.fetchall()
+        if not accounts:
+            print("No active AWS accounts found.")
+            return
 
-    if not accounts:
-        print("No active AWS accounts found.")
-        return
+        for account in accounts:
+            print(f"Discovering EC2 in account: {account['account_name']}")
 
-    for account in accounts:
-        print(f"Discovering EC2 in account: {account['account_name']}")
+            # -------------------------
+            # SESSION SELECTION
+            # -------------------------
+            # Previously hardcoded to check account_id == this instance's own
+            # account id -- redundant with (and could drift from) the generic
+            # same-account short-circuit already in app.aws.sts.assume_role()
+            # (fix: 22ff060), and never handled static_keys accounts at all.
+            # get_boto3_session() is the one place this logic should live.
+            try:
+                session = get_boto3_session(account)
+            except Exception as e:
+                print(f"Session failed for {account['account_name']}: {e}")
+                continue
 
-        # -------------------------
-        # SESSION SELECTION
-        # -------------------------
-        # Previously hardcoded to check account_id == this instance's own
-        # account id -- redundant with (and could drift from) the generic
-        # same-account short-circuit already in app.aws.sts.assume_role()
-        # (fix: 22ff060), and never handled static_keys accounts at all.
-        # get_boto3_session() is the one place this logic should live.
-        try:
-            session = get_boto3_session(account)
-        except Exception as e:
-            print(f"Session failed for {account['account_name']}: {e}")
-            continue
+            try:
+                region = account.get("default_region")
+                ec2 = session.client("ec2", region_name=region)
+                paginator = ec2.get_paginator("describe_instances")
 
-        region = account.get("default_region")
-        ec2 = session.client("ec2", region_name=region)
-        paginator = ec2.get_paginator("describe_instances")
+                for page in paginator.paginate():
+                    for reservation in page.get("Reservations", []):
+                        for instance in reservation.get("Instances", []):
 
-        for page in paginator.paginate():
-            for reservation in page.get("Reservations", []):
-                for instance in reservation.get("Instances", []):
+                            instance_id = instance["InstanceId"]
 
-                    instance_id = instance["InstanceId"]
+                            # -------------------------
+                            # Normalize tags
+                            # -------------------------
+                            raw_tags = {t["Key"]: t["Value"] for t in instance.get("Tags", [])}
 
-                    # -------------------------
-                    # Normalize tags
-                    # -------------------------
-                    raw_tags = {t["Key"]: t["Value"] for t in instance.get("Tags", [])}
+                            env = (
+                                raw_tags.get("environment")
+                                or raw_tags.get("Environment")
+                                or raw_tags.get("ENVIRONMENT")
+                            )
 
-                    env = (
-                        raw_tags.get("environment")
-                        or raw_tags.get("Environment")
-                        or raw_tags.get("ENVIRONMENT")
-                    )
+                            tags = dict(raw_tags)
+                            if env:
+                                tags["environment"] = env.lower()
 
-                    tags = dict(raw_tags)
-                    if env:
-                        tags["environment"] = env.lower()
+                            name = raw_tags.get("Name")
 
-                    name = raw_tags.get("Name")
+                            # -------------------------
+                            # EC2 INSERT
+                            # -------------------------
+                            cursor.execute("""
+                                INSERT INTO resources
+                                    (aws_account_id, resource_type, resource_id, name, tags)
+                                VALUES (%s, %s, %s, %s, %s)
+                                ON DUPLICATE KEY UPDATE
+                                    name = VALUES(name),
+                                    tags = VALUES(tags)
+                            """, (
+                                account["id"],
+                                "ec2",
+                                instance_id,
+                                name,
+                                json.dumps(tags),
+                            ))
 
-                    # -------------------------
-                    # EC2 INSERT
-                    # -------------------------
-                    cursor.execute("""
-                        INSERT INTO resources
-                            (aws_account_id, resource_type, resource_id, name, tags)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON DUPLICATE KEY UPDATE
-                            name = VALUES(name),
-                            tags = VALUES(tags)
-                    """, (
-                        account["id"],
-                        "ec2",
-                        instance_id,
-                        name,
-                        json.dumps(tags),
-                    ))
+                            print("  EC2:", instance_id, name)
 
-                    print("  EC2:", instance_id, name)
+                            # -------------------------
+                            # EBS INHERITANCE
+                            # -------------------------
+                            for mapping in instance.get("BlockDeviceMappings", []):
+                                ebs = mapping.get("Ebs")
+                                if not ebs:
+                                    continue
 
-                    # -------------------------
-                    # EBS INHERITANCE
-                    # -------------------------
-                    for mapping in instance.get("BlockDeviceMappings", []):
-                        ebs = mapping.get("Ebs")
-                        if not ebs:
-                            continue
+                                volume_id = ebs["VolumeId"]
 
-                        volume_id = ebs["VolumeId"]
+                                inherited_tags = dict(tags)
+                                inherited_tags["parent_ec2"] = instance_id
 
-                        inherited_tags = dict(tags)
-                        inherited_tags["parent_ec2"] = instance_id
+                                cursor.execute("""
+                                    INSERT INTO resources
+                                        (aws_account_id, resource_type, resource_id, name, tags)
+                                    VALUES (%s, %s, %s, %s, %s)
+                                    ON DUPLICATE KEY UPDATE
+                                        tags = VALUES(tags)
+                                """, (
+                                    account["id"],
+                                    "ebs",
+                                    volume_id,
+                                    volume_id,
+                                    json.dumps(inherited_tags),
+                                ))
 
-                        cursor.execute("""
-                            INSERT INTO resources
-                                (aws_account_id, resource_type, resource_id, name, tags)
-                            VALUES (%s, %s, %s, %s, %s)
-                            ON DUPLICATE KEY UPDATE
-                                tags = VALUES(tags)
-                        """, (
-                            account["id"],
-                            "ebs",
-                            volume_id,
-                            volume_id,
-                            json.dumps(inherited_tags),
-                        ))
+                            # -------------------------
+                            # ENI INHERITANCE
+                            # -------------------------
+                            for eni in instance.get("NetworkInterfaces", []):
+                                eni_id = eni["NetworkInterfaceId"]
 
-                    # -------------------------
-                    # ENI INHERITANCE
-                    # -------------------------
-                    for eni in instance.get("NetworkInterfaces", []):
-                        eni_id = eni["NetworkInterfaceId"]
+                                inherited_tags = dict(tags)
+                                inherited_tags["parent_ec2"] = instance_id
 
-                        inherited_tags = dict(tags)
-                        inherited_tags["parent_ec2"] = instance_id
+                                cursor.execute("""
+                                    INSERT INTO resources
+                                        (aws_account_id, resource_type, resource_id, name, tags)
+                                    VALUES (%s, %s, %s, %s, %s)
+                                    ON DUPLICATE KEY UPDATE
+                                        tags = VALUES(tags)
+                                """, (
+                                    account["id"],
+                                    "eni",
+                                    eni_id,
+                                    eni_id,
+                                    json.dumps(inherited_tags),
+                                ))
+            except Exception as e:
+                print(f"EC2 discovery failed for {account['account_name']}: {e}")
+                continue
 
-                        cursor.execute("""
-                            INSERT INTO resources
-                                (aws_account_id, resource_type, resource_id, name, tags)
-                            VALUES (%s, %s, %s, %s, %s)
-                            ON DUPLICATE KEY UPDATE
-                                tags = VALUES(tags)
-                        """, (
-                            account["id"],
-                            "eni",
-                            eni_id,
-                            eni_id,
-                            json.dumps(inherited_tags),
-                        ))
-
-    conn.commit()
-    cursor.close()
-    conn.close()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
 
     print("EC2 discovery completed.")

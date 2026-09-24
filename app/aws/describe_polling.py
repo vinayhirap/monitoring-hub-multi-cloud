@@ -32,9 +32,11 @@ ALB target-group health stays VM-only: no "target_group" resource type
 exists in `resources` to write against, and this module's external-
 Grafana-compatible push (see above) is the only known consumer for it.
 """
+import re
 import time
 import logging
 import requests
+from botocore.exceptions import ClientError
 
 from app.db import get_connection
 from datetime import datetime
@@ -116,6 +118,40 @@ def _session_for(account_db_id, role_arn, external_id, auth_mode, region):
     })
 
 
+_INVALID_INSTANCE_ID_RE = re.compile(r"i-[0-9a-f]{8,}")
+
+
+def _describe_instance_status_chunk(ec2, chunk):
+    """
+    DescribeInstanceStatus for one <=100-id chunk, tolerant of stale DB
+    state: if the DB still shows an instance as 'running' (see
+    _get_ec2_instances_by_region()'s WHERE clause) after AWS has fully
+    purged it from the status API -- not merely terminated-but-still-
+    tracked, which IncludeAllInstances=True already covers, but truly
+    gone -- the whole call fails with InvalidInstanceID.NotFound and,
+    before this fix, took every OTHER valid instance in the same
+    100-id chunk down with it every single poll cycle until discovery
+    happened to correct the DB. Bug fix: on that specific error, drop
+    the instance ids AWS names as invalid from the chunk and retry
+    once -- self-heals every cycle instead of blacking out real,
+    running instances' status data indefinitely.
+    """
+    try:
+        return ec2.describe_instance_status(InstanceIds=chunk, IncludeAllInstances=True)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "InvalidInstanceID.NotFound":
+            raise
+        bad_ids = set(_INVALID_INSTANCE_ID_RE.findall(e.response.get("Error", {}).get("Message", "")))
+        remaining = [iid for iid in chunk if iid not in bad_ids]
+        logger.warning(f"describe_polling: dropping stale/invalid instance id(s) {sorted(bad_ids) or chunk}")
+        if not remaining:
+            return {"InstanceStatuses": []}
+        # One retry only -- if this still fails (a second, different bad
+        # id, or an unrelated error) let it propagate to the per-account
+        # handler in poll_ec2_status() rather than looping indefinitely.
+        return ec2.describe_instance_status(InstanceIds=remaining, IncludeAllInstances=True)
+
+
 def poll_ec2_status() -> int:
     """
     DescribeInstanceStatus for every running EC2 instance across all active
@@ -134,10 +170,17 @@ def poll_ec2_status() -> int:
             ts = int(time.time() * 1000)
             lines = []
             local_rows = []  # (resource_db_id, "statuscheckfailed", value) for the `metrics` table
+            polled = 0
             # DescribeInstanceStatus accepts up to 100 IDs per call — chunk defensively.
             for i in range(0, len(instance_ids), 100):
                 chunk = instance_ids[i:i + 100]
-                resp = ec2.describe_instance_status(InstanceIds=chunk, IncludeAllInstances=True)
+                try:
+                    resp = _describe_instance_status_chunk(ec2, chunk)
+                except Exception as e:
+                    # Don't let one bad chunk take the rest of this
+                    # account's chunks down with it.
+                    logger.warning(f"describe_polling: EC2 status chunk [{region}, account {account_db_id}]: {e}")
+                    continue
                 for s in resp.get("InstanceStatuses", []):
                     iid = s["InstanceId"]
                     sys_ok = s.get("SystemStatus", {}).get("Status") == "ok"
@@ -153,10 +196,11 @@ def poll_ec2_status() -> int:
                     resource_db_id = resource_db_id_by_iid.get(iid)
                     if resource_db_id is not None:
                         local_rows.append((resource_db_id, "statuscheckfailed", float(failed)))
+                polled += len(chunk)
             _push_to_vm(lines)
             if local_rows:
                 write_metrics_batch(local_rows)
-            total += len(instance_ids)
+            total += polled
         except Exception as e:
             logger.warning(f"describe_polling: EC2 status [{region}, account {account_db_id}]: {e}")
     return total
@@ -409,7 +453,12 @@ def poll_alb_target_health() -> int:
             for tg_arn, lb_arns in tg_pairs:
                 try:
                     health = elbv2.describe_target_health(TargetGroupArn=tg_arn)
-                except Exception:
+                except Exception as e:
+                    # Bug fix: this used to swallow every error (deleted
+                    # target group, throttling, permission issue) with
+                    # zero logging, making a failing target group
+                    # invisible instead of just skipped.
+                    logger.warning(f"describe_polling: target health [{tg_arn}]: {e}")
                     continue
                 descs = health.get("TargetHealthDescriptions", [])
                 healthy = sum(1 for t in descs if t.get("TargetHealth", {}).get("State") == "healthy")
