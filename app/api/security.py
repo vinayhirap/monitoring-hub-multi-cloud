@@ -241,7 +241,9 @@ def get_finding_console_url(
     # assigned scope just by iterating finding_id.
     accessible = get_accessible_account_ids(current_user)
     if accessible is not None and row["f_account_id"] not in accessible:
-        raise HTTPException(status_code=403, detail="You do not have access to this finding")
+        # 404, not 403: a distinct status let an out-of-scope caller
+        # enumerate which finding ids exist in other accounts.
+        raise HTTPException(status_code=404, detail="Finding not found")
 
     service, resource_id, resource_name = _console_params_for_finding(row["f_check_id"], row["f_resource_id"])
 

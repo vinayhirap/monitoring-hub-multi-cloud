@@ -30,7 +30,8 @@ PERMISSIONS WARNING (read this before enabling in a new environment):
   AWS:   iam:ListUsers, iam:ListMFADevices, iam:GetLoginProfile,
          iam:ListAccessKeys, s3:GetBucketPolicyStatus,
          s3:GetPublicAccessBlock, ec2:DescribeSecurityGroups,
-         ec2:DescribeVolumes -- broader than this app's CloudWatch/
+         ec2:DescribeVolumes, s3:GetAccountPublicAccessBlock (optional;
+         sts:GetCallerIdentity needs no grant) -- broader than this app's CloudWatch/
          Describe-only metrics permissions.
   Azure: Reader on the subscription is enough for all three checks
          (network_security_groups.list_all, storage_accounts.list) --
@@ -41,7 +42,7 @@ PERMISSIONS WARNING (read this before enabling in a new environment):
          discovery/metrics covers both checks.
 If credentials for an account don't have these, that CHECK (not the
 whole account, not the whole run) is skipped with a logged warning --
-see _run_check()'s try/except. Add these to get full coverage;
+see _CheckRun.run()'s try/except. Add these to get full coverage;
 everything else in this app keeps working with zero changes if you don't.
 
 Every check function returns a list of finding dicts:
@@ -87,10 +88,27 @@ def _get_active_accounts():
         cur.close(); conn.close()
 
 
+def _account_public_access_fully_blocked(session) -> bool:
+    """Account-level S3 Block Public Access overrides every bucket's
+    own setting. Ignoring it produced a MEDIUM false positive for every
+    bucket in accounts that (correctly) block public access account-wide.
+    Missing permission / no config -> False (bucket-level check decides)."""
+    from botocore.exceptions import ClientError
+    try:
+        account_number = session.client("sts", config=STANDARD_RETRY).get_caller_identity()["Account"]
+        cfg = session.client("s3control", config=STANDARD_RETRY).get_public_access_block(
+            AccountId=account_number
+        )["PublicAccessBlockConfiguration"]
+        return bool(cfg) and all(cfg.values())
+    except ClientError:
+        return False
+
+
 def _check_public_s3_buckets(session) -> list:
     from botocore.exceptions import ClientError
     findings = []
     s3 = session.client("s3", config=STANDARD_RETRY)
+    account_blocked = _account_public_access_fully_blocked(session)
     for bucket in s3.list_buckets().get("Buckets", []):
         name = bucket["Name"]
         try:
@@ -98,11 +116,14 @@ def _check_public_s3_buckets(session) -> list:
             is_public = status["PolicyStatus"]["IsPublic"]
         except ClientError:
             is_public = False  # no bucket policy at all -- not public via policy
-        try:
-            pab = s3.get_public_access_block(Bucket=name)["PublicAccessBlockConfiguration"]
-            fully_blocked = all(pab.values())
-        except ClientError:
-            fully_blocked = False  # no public access block configured at all
+        if account_blocked:
+            fully_blocked = True
+        else:
+            try:
+                pab = s3.get_public_access_block(Bucket=name)["PublicAccessBlockConfiguration"]
+                fully_blocked = all(pab.values())
+            except ClientError:
+                fully_blocked = False  # no public access block configured at all
 
         if is_public or not fully_blocked:
             findings.append({
@@ -122,7 +143,8 @@ def _check_public_s3_buckets(session) -> list:
 def _check_open_security_groups(session, region: str) -> list:
     findings = []
     ec2 = session.client("ec2", region_name=region, config=STANDARD_RETRY)
-    for sg in ec2.describe_security_groups().get("SecurityGroups", []):
+    for sg in (sg for page in ec2.get_paginator("describe_security_groups").paginate()
+               for sg in page.get("SecurityGroups", [])):
         for perm in sg.get("IpPermissions", []):
             from_port = perm.get("FromPort")
             to_port = perm.get("ToPort")
@@ -149,7 +171,8 @@ def _check_open_security_groups(session, region: str) -> list:
 def _check_unencrypted_ebs(session, region: str) -> list:
     findings = []
     ec2 = session.client("ec2", region_name=region, config=STANDARD_RETRY)
-    for vol in ec2.describe_volumes().get("Volumes", []):
+    for vol in (v for page in ec2.get_paginator("describe_volumes").paginate()
+                for v in page.get("Volumes", [])):
         if not vol.get("Encrypted", True):
             findings.append({
                 "check_id": "ebs_unencrypted",
@@ -162,10 +185,19 @@ def _check_unencrypted_ebs(session, region: str) -> list:
     return findings
 
 
+def _iam_users(iam):
+    for page in iam.get_paginator("list_users").paginate():
+        for user in page.get("Users", []):
+            yield user
+
+
 def _check_iam_users_without_mfa(session) -> list:
     findings = []
     iam = session.client("iam", config=STANDARD_RETRY)
-    for user in iam.list_users().get("Users", []):
+    # Paginated: ListUsers returns at most 100 per call, so users past
+    # the first page were never checked AND their existing findings
+    # were auto-resolved by _upsert_findings.
+    for user in _iam_users(iam):
         username = user["UserName"]
         try:
             iam.get_login_profile(UserName=username)  # raises if no console password set
@@ -193,7 +225,7 @@ def _check_stale_access_keys(session, max_age_days: int = 90) -> list:
     findings = []
     iam = session.client("iam", config=STANDARD_RETRY)
     now = datetime.datetime.now(datetime.timezone.utc)
-    for user in iam.list_users().get("Users", []):
+    for user in _iam_users(iam):
         username = user["UserName"]
         for key in iam.list_access_keys(UserName=username).get("AccessKeyMetadata", []):
             if key["Status"] != "Active":
@@ -218,7 +250,7 @@ def _check_stale_access_keys(session, max_age_days: int = 90) -> list:
 
 
 # ── AZURE ────────────────────────────────────────────────────────────
-_AZURE_SENSITIVE_PORTS = {"22", "3389", "3306", "5432", "1433", "6379"}
+_AZURE_SENSITIVE_PORTS = {str(p) for p in SENSITIVE_PORTS}
 
 
 def _azure_credential(account: dict):
@@ -261,7 +293,7 @@ def _check_azure_nsg_open_to_world(cred, subscription_id: str) -> list:
             sources = list(rule.source_address_prefixes or [])
             if rule.source_address_prefix:
                 sources.append(rule.source_address_prefix)
-            open_sources = [s for s in sources if s in ("*", "0.0.0.0/0", "Internet", "Any")]
+            open_sources = [s for s in sources if s in ("*", "0.0.0.0/0", "::/0", "Internet", "Any")]
             if not open_sources:
                 continue
             port_ranges = list(rule.destination_port_ranges or [])
@@ -318,7 +350,7 @@ def _check_azure_storage_insecure_transport(cred, subscription_id: str) -> list:
     return findings
 
 
-def _run_azure_checks(account: dict) -> list:
+def _run_azure_checks(account: dict):
     """Reader-level checks only (see module PERMISSIONS WARNING). No
     Azure AD/Entra user-MFA or access-key-age equivalent yet -- that
     needs Microsoft Graph scopes this app doesn't request; flagged
@@ -326,15 +358,15 @@ def _run_azure_checks(account: dict) -> list:
     found nothing'."""
     cred = _azure_credential(account)
     subscription_id = account["subscription_id"]
-    findings = []
-    findings += _run_check("azure_nsg_open_to_world", _check_azure_nsg_open_to_world, cred, subscription_id)
-    findings += _run_check("azure_storage_public_access", _check_azure_storage_public_access, cred, subscription_id)
-    findings += _run_check("azure_storage_insecure_transport", _check_azure_storage_insecure_transport, cred, subscription_id)
-    return findings
+    run = _CheckRun()
+    run.run("azure_nsg_open_to_world", _check_azure_nsg_open_to_world, cred, subscription_id)
+    run.run("azure_storage_public_access", _check_azure_storage_public_access, cred, subscription_id)
+    run.run("azure_storage_insecure_transport", _check_azure_storage_insecure_transport, cred, subscription_id)
+    return run
 
 
 # ── GCP ──────────────────────────────────────────────────────────────
-_GCP_SENSITIVE_PORTS = {22, 3389, 3306, 5432, 1433, 6379}
+_GCP_SENSITIVE_PORTS = set(SENSITIVE_PORTS)
 
 
 def _gcp_credentials(account: dict):
@@ -377,7 +409,8 @@ def _check_gcp_firewall_open_to_world(creds, project_id: str) -> list:
     for rule in client.list(project=project_id):
         if rule.direction != "INGRESS" or rule.disabled:
             continue
-        if "0.0.0.0/0" not in list(rule.source_ranges or []):
+        world_ranges = [r for r in (rule.source_ranges or []) if r in ("0.0.0.0/0", "::/0")]
+        if not world_ranges:
             continue
         allowed = [{"ipProtocol": a.I_p_protocol, "ports": list(a.ports)} for a in (rule.allowed or [])]
         if not allowed:
@@ -389,7 +422,7 @@ def _check_gcp_firewall_open_to_world(creds, project_id: str) -> list:
             "severity": "HIGH" if hits_sensitive else "LOW",
             "title": f"Firewall rule '{rule.name}' allows ingress from the internet",
             "description": (
-                f"Allows {', '.join(a['ipProtocol'] for a in allowed)} from 0.0.0.0/0"
+                f"Allows {', '.join(a['ipProtocol'] for a in allowed)} from {', '.join(world_ranges)}"
                 + (" -- includes a sensitive port (SSH/RDP/DB)." if hits_sensitive else ".")
             ),
         })
@@ -419,7 +452,7 @@ def _check_gcp_gcs_bucket_public(creds, project_id: str) -> list:
     return findings
 
 
-def _run_gcp_checks(account: dict) -> list:
+def _run_gcp_checks(account: dict):
     """Viewer-level checks only (see module PERMISSIONS WARNING). No
     Cloud IAM user-MFA or service-account-key-age equivalent yet --
     the former needs Cloud Identity Admin API scope, the latter needs
@@ -427,25 +460,65 @@ def _run_gcp_checks(account: dict) -> list:
     this app today; flagged here rather than silently skipped."""
     creds = _gcp_credentials(account)
     project_id = account["project_id"]
-    findings = []
-    findings += _run_check("gcp_firewall_open_to_world", _check_gcp_firewall_open_to_world, creds, project_id)
-    findings += _run_check("gcp_gcs_bucket_public", _check_gcp_gcs_bucket_public, creds, project_id)
-    return findings
+    run = _CheckRun()
+    run.run("gcp_firewall_open_to_world", _check_gcp_firewall_open_to_world, creds, project_id)
+    run.run("gcp_gcs_bucket_public", _check_gcp_gcs_bucket_public, creds, project_id)
+    return run
 
 
-def _run_check(name, fn, *args) -> list:
-    try:
-        return fn(*args)
-    except Exception as e:
-        # Most common cause: the assumed role/static keys lack the IAM
-        # permission this check needs -- see module docstring's
-        # PERMISSIONS WARNING. Skip just this check, not the account.
-        logger.warning(f"[cspm] check '{name}' failed (likely a missing IAM permission on the "
-                        f"monitoring role -- see cspm.py's module docstring): {e}")
-        return []
+class _CheckRun:
+    """Collects findings for one account's checklist and remembers which
+    checks FAILED to run. A failed check must not auto-resolve its
+    previously-open findings: before this, a transient throttle or a
+    missing permission returned [] and _upsert_findings marked every
+    open finding of that check 'resolved' (then reopened it next hour)."""
+
+    def __init__(self):
+        self.findings = []
+        self.failed_checks = set()
+
+    def run(self, name, fn, *args) -> None:
+        try:
+            self.findings += fn(*args)
+        except Exception as e:
+            self.failed_checks.add(name)
+            _log_check_failure(name, e)
 
 
-def _upsert_findings(cursor, account_id: int, findings: list) -> None:
+def _log_check_failure(name, e) -> None:
+    # Most common cause: the assumed role/static keys lack the IAM
+    # permission this check needs -- see module docstring's
+    # PERMISSIONS WARNING. Skip just this check, not the account.
+    logger.warning(f"[cspm] check '{name}' failed (likely a missing IAM permission on the "
+                    f"monitoring role -- see cspm.py's module docstring): {e}")
+
+
+_SEVERITY_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+
+
+def _merge_findings(findings: list) -> list:
+    """Collapses findings sharing (check_id, resource_id) -- one security
+    group / NSG / firewall can yield several rules. Previously each was
+    upserted in turn, so the LAST rule's severity won and a HIGH (SSH
+    open to the world) could be stored as LOW. Keeps the highest
+    severity and joins the distinct descriptions."""
+    merged = {}
+    for f in findings:
+        key = (f["check_id"], f["resource_id"])
+        cur = merged.get(key)
+        if cur is None:
+            merged[key] = dict(f)
+            continue
+        if _SEVERITY_RANK.get(f["severity"], 0) > _SEVERITY_RANK.get(cur["severity"], 0):
+            cur["severity"] = f["severity"]
+            cur["title"] = f["title"]
+        if f.get("description") and f["description"] not in (cur.get("description") or ""):
+            cur["description"] = f"{cur.get('description') or ''}\n{f['description']}".strip()
+    return list(merged.values())
+
+
+def _upsert_findings(cursor, account_id: int, findings: list, failed_checks=frozenset()) -> None:
+    findings = _merge_findings(findings)
     seen_keys = set()
     for f in findings:
         seen_keys.add((f["check_id"], f["resource_id"]))
@@ -461,6 +534,8 @@ def _upsert_findings(cursor, account_id: int, findings: list) -> None:
     cursor.execute("SELECT id, check_id, resource_id FROM security_findings "
                     "WHERE aws_account_id = %s AND status = 'open'", (account_id,))
     for row in cursor.fetchall():
+        if row["check_id"] in failed_checks:
+            continue  # check didn't run this cycle -- keep its findings as-is
         if (row["check_id"], row["resource_id"]) not in seen_keys:
             cursor.execute("""
                 UPDATE security_findings SET status = 'resolved', resolved_at = NOW()
@@ -468,16 +543,16 @@ def _upsert_findings(cursor, account_id: int, findings: list) -> None:
             """, (row["id"],))
 
 
-def _run_aws_checks(account: dict) -> list:
+def _run_aws_checks(account: dict):
     session = get_boto3_session(account)
     region = account["default_region"] or "us-east-1"
-    findings = []
-    findings += _run_check("s3_bucket_public", _check_public_s3_buckets, session)
-    findings += _run_check("sg_open_to_world", _check_open_security_groups, session, region)
-    findings += _run_check("ebs_unencrypted", _check_unencrypted_ebs, session, region)
-    findings += _run_check("iam_user_no_mfa", _check_iam_users_without_mfa, session)
-    findings += _run_check("iam_stale_access_key", _check_stale_access_keys, session)
-    return findings
+    run = _CheckRun()
+    run.run("s3_bucket_public", _check_public_s3_buckets, session)
+    run.run("sg_open_to_world", _check_open_security_groups, session, region)
+    run.run("ebs_unencrypted", _check_unencrypted_ebs, session, region)
+    run.run("iam_user_no_mfa", _check_iam_users_without_mfa, session)
+    run.run("iam_stale_access_key", _check_stale_access_keys, session)
+    return run
 
 
 _CHECKS_BY_PROVIDER = {
@@ -494,28 +569,40 @@ def run_security_checks() -> int:
     findings across the fleet after this run. Non-fatal per account
     AND per check -- one account's credential failure, or one check's
     missing permission, never blocks the rest."""
+    # One short-lived DB connection per account, opened only AFTER the
+    # (slow) cloud API calls: previously a single pooled connection was
+    # held for the whole multi-account run (minutes), starving the
+    # 10-connection pool.
+    for account in _get_active_accounts():
+        provider = account.get("provider") or "aws"
+        run_checks = _CHECKS_BY_PROVIDER.get(provider)
+        if run_checks is None:
+            logger.warning(f"[cspm] no security checklist implemented for provider "
+                            f"'{provider}' (account id={account['id']}) -- skipping")
+            continue
+        try:
+            run = run_checks(account)
+        except Exception:
+            logger.exception(f"[cspm] security checks failed entirely for account id={account['id']} "
+                              f"(provider={provider}, likely a credential/session failure) -- "
+                              f"skipping this account this cycle")
+            continue
+        conn = get_connection()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            _upsert_findings(cursor, account["id"], run.findings, run.failed_checks)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            logger.exception(f"[cspm] failed to store findings for account id={account['id']} -- "
+                              f"skipping this account this cycle")
+        finally:
+            cursor.close()
+            conn.close()
+
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
-    total_open = 0
     try:
-        for account in _get_active_accounts():
-            provider = account.get("provider") or "aws"
-            run_checks = _CHECKS_BY_PROVIDER.get(provider)
-            if run_checks is None:
-                logger.warning(f"[cspm] no security checklist implemented for provider "
-                                f"'{provider}' (account id={account['id']}) -- skipping")
-                continue
-            try:
-                findings = run_checks(account)
-                _upsert_findings(cursor, account["id"], findings)
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                logger.exception(f"[cspm] security checks failed entirely for account id={account['id']} "
-                                  f"(provider={provider}, likely a credential/session failure) -- "
-                                  f"skipping this account this cycle")
-                continue
-
         cursor.execute("SELECT COUNT(*) AS n FROM security_findings WHERE status = 'open'")
         total_open = cursor.fetchone()["n"]
         logger.info(f"[cspm] security checks complete -- {total_open} open finding(s) fleet-wide")

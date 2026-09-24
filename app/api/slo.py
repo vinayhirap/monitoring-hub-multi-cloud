@@ -23,6 +23,29 @@ def _require_account_access(account_id: int, current_user: dict) -> None:
         raise HTTPException(status_code=403, detail="You do not have access to this account")
 
 
+_MAX_WINDOW_DAYS = 365
+
+
+def _validate_target_pct(raw) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="target_pct must be a number")
+    if not (0 < value <= 100):
+        raise HTTPException(status_code=400, detail="target_pct must be between 0 and 100")
+    return value
+
+
+def _validate_window_days(raw) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="window_days must be an integer")
+    if not (1 <= value <= _MAX_WINDOW_DAYS):
+        raise HTTPException(status_code=400, detail=f"window_days must be between 1 and {_MAX_WINDOW_DAYS}")
+    return value
+
+
 def _compute_status(cursor, slo: dict) -> dict:
     """
     Returns {uptime_pct, budget_consumed_pct, budget_remaining_pct,
@@ -42,10 +65,11 @@ def _compute_status(cursor, slo: dict) -> dict:
 
     if slo["synthetic_check_id"]:
         cursor.execute("""
-            SELECT COUNT(*) AS total, SUM(success) AS successful
-            FROM synthetic_check_results
-            WHERE check_id = %s AND checked_at >= %s
-        """, (slo["synthetic_check_id"], window_start))
+            SELECT COUNT(*) AS total, SUM(r.success) AS successful
+            FROM synthetic_check_results r
+            JOIN synthetic_checks c ON c.id = r.check_id AND c.aws_account_id = %s
+            WHERE r.check_id = %s AND r.checked_at >= %s
+        """, (slo["aws_account_id"], slo["synthetic_check_id"], window_start))
         row = cursor.fetchone()
         total = row["total"] or 0
         if total == 0:
@@ -98,12 +122,16 @@ def _compute_status(cursor, slo: dict) -> dict:
         actual_bad_minutes = bad_seconds / 60
         uptime_pct = round(100 * (1 - actual_bad_minutes / window_minutes), 3) if window_minutes else None
 
-    budget_consumed_pct = round(100 * actual_bad_minutes / allowed_bad_minutes, 1) if allowed_bad_minutes > 0 else None
-    budget_remaining_pct = round(100 - budget_consumed_pct, 1) if budget_consumed_pct is not None else None
+    if allowed_bad_minutes > 0:
+        budget_consumed_pct = round(100 * actual_bad_minutes / allowed_bad_minutes, 1)
+    else:
+        # target_pct = 100: zero budget. Any bad minute is a breach;
+        # this previously fell through to status 'no_data' even while
+        # the service was down.
+        budget_consumed_pct = 0.0 if actual_bad_minutes <= 0 else 100.0
+    budget_remaining_pct = round(100 - budget_consumed_pct, 1)
 
-    if budget_consumed_pct is None:
-        status = "no_data"
-    elif budget_consumed_pct >= 100:
+    if budget_consumed_pct >= 100:
         status = "breached"
     elif budget_consumed_pct >= 75:
         status = "warning"
@@ -127,11 +155,14 @@ def list_slos(current_user: dict = Depends(require_permission("slo.view"))):
         cursor.execute("""
             SELECT s.*, acc.account_name,
                    sc.name AS synthetic_check_name,
-                   r.name AS resource_name
+                   (SELECT r.name FROM resources r
+                    WHERE r.resource_id = s.resource_id
+                      AND r.aws_account_id = s.aws_account_id
+                    LIMIT 1) AS resource_name
             FROM slo_definitions s
             JOIN aws_accounts acc ON acc.id = s.aws_account_id
             LEFT JOIN synthetic_checks sc ON sc.id = s.synthetic_check_id
-            LEFT JOIN resources r ON r.resource_id = s.resource_id AND r.aws_account_id = s.aws_account_id
+                                           AND sc.aws_account_id = s.aws_account_id
             ORDER BY s.name
         """)
         rows = cursor.fetchall()
@@ -149,7 +180,11 @@ def create_slo(payload: dict = Body(...), current_user: dict = Depends(require_p
     account_id = payload.get("aws_account_id")
     if not account_id:
         raise HTTPException(status_code=400, detail="aws_account_id is required")
-    _require_account_access(int(account_id), current_user)
+    try:
+        account_id = int(account_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="aws_account_id must be an integer")
+    _require_account_access(account_id, current_user)
 
     name = (payload.get("name") or "").strip()
     if not name:
@@ -163,28 +198,45 @@ def create_slo(payload: dict = Body(...), current_user: dict = Depends(require_p
             detail="Exactly one of synthetic_check_id or resource_id must be set (not both, not neither)",
         )
 
-    target_pct = float(payload.get("target_pct", 99.9))
-    if not (0 < target_pct <= 100):
-        raise HTTPException(status_code=400, detail="target_pct must be between 0 and 100")
+    target_pct = _validate_target_pct(payload.get("target_pct", 99.9))
+    window_days = _validate_window_days(payload.get("window_days", 30))
 
-    conn = get_connection(); cursor = conn.cursor()
+    conn = get_connection(); cursor = conn.cursor(dictionary=True)
     try:
+        # Tenant isolation: the referenced check/resource must belong
+        # to the SLO's own account, otherwise a user scoped to account A
+        # could read account B's uptime/alert history through the SLO.
+        if synthetic_check_id:
+            cursor.execute("SELECT aws_account_id FROM synthetic_checks WHERE id = %s", (synthetic_check_id,))
+            ref = cursor.fetchone()
+        else:
+            cursor.execute(
+                "SELECT aws_account_id FROM resources WHERE resource_id = %s AND aws_account_id = %s LIMIT 1",
+                (resource_id, account_id),
+            )
+            ref = cursor.fetchone()
+        if not ref or ref["aws_account_id"] != account_id:
+            raise HTTPException(status_code=400, detail="Referenced synthetic check / resource not found in this account")
+
         cursor.execute("""
             INSERT INTO slo_definitions
                 (aws_account_id, name, synthetic_check_id, resource_id, metric_name,
                  target_pct, window_days, enabled, created_by)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
-            int(account_id), name, synthetic_check_id, resource_id,
+            account_id, name, synthetic_check_id, resource_id,
             payload.get("metric_name"), target_pct,
-            int(payload.get("window_days", 30)), bool(payload.get("enabled", True)),
+            window_days, bool(payload.get("enabled", True)),
             int(current_user["id"]),
         ))
         conn.commit()
         return {"status": "created", "id": cursor.lastrowid}
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         conn.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.exception("create SLO failed")
+        raise HTTPException(status_code=400, detail="Could not create SLO")
     finally:
         cursor.close(); conn.close()
 
@@ -203,6 +255,17 @@ def update_slo(slo_id: int, payload: dict = Body(...), current_user: dict = Depe
         updates = {k: v for k, v in payload.items() if k in editable}
         if not updates:
             raise HTTPException(status_code=400, detail="No editable fields provided")
+        if "target_pct" in updates:
+            updates["target_pct"] = _validate_target_pct(updates["target_pct"])
+        if "window_days" in updates:
+            updates["window_days"] = _validate_window_days(updates["window_days"])
+        if "name" in updates:
+            name = updates["name"].strip() if isinstance(updates["name"], str) else ""
+            if not name or len(name) > 255:
+                raise HTTPException(status_code=400, detail="name is required (max 255 characters)")
+            updates["name"] = name
+        if "enabled" in updates:
+            updates["enabled"] = bool(updates["enabled"])
 
         set_clause = ", ".join(f"{k} = %s" for k in updates)
         cursor.execute(f"UPDATE slo_definitions SET {set_clause} WHERE id = %s", (*updates.values(), slo_id))
