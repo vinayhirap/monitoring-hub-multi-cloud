@@ -24,6 +24,7 @@ every 5-min alert-evaluation cycle.
 """
 import logging
 from app.db import get_connection
+from app import alert_rules
 
 logger = logging.getLogger(__name__)
 
@@ -50,30 +51,50 @@ def correlate_alerts_into_incidents():
     alerts_attached = 0
     _new_incident_ids = []
     try:
-        cursor.execute("""
+        # "Loose" = active, user-visible, and not already a member of ANY
+        # active incident. The old LEFT JOIN form returned an alert once
+        # per incident_alerts row, so an alert in both a resolved and an
+        # active incident still looked loose and could seed a second,
+        # duplicate active incident. Hidden internal metrics
+        # (multivariate_anomaly) never seed user-facing incidents.
+        cursor.execute(f"""
             SELECT a.id, a.resource_id, a.severity, a.triggered_at AS created_at,
                    a.aws_account_id
             FROM alerts a
-            LEFT JOIN incident_alerts ia ON ia.alert_id = a.id
-            LEFT JOIN incidents i ON i.id = ia.incident_id AND i.status = 'active'
-            WHERE a.status = 'active' AND i.id IS NULL
+            WHERE a.status = 'active'
+              AND a.aws_account_id IS NOT NULL
+              AND {alert_rules.base_where("a")}
+              AND NOT EXISTS (
+                  SELECT 1 FROM incident_alerts ia
+                  JOIN incidents i ON i.id = ia.incident_id AND i.status = 'active'
+                  WHERE ia.alert_id = a.id
+              )
         """)
         loose_alerts = cursor.fetchall()
 
         for alert in loose_alerts:
             # 1. Can this alert join an EXISTING open incident?
+            # Tenant isolation (audit b08): every join is pinned to the
+            # alert's own account. resource_ids are not unique across
+            # accounts (GCP instance names, RDS identifiers, IAM names),
+            # so matching on resource_id alone merged another account's
+            # alerts into this account's incident -- visible to anyone
+            # who can see this account's incidents.
             cursor.execute("""
                 SELECT DISTINCT i.id
                 FROM incidents i
                 JOIN incident_alerts ia ON ia.incident_id = i.id
-                JOIN alerts a2 ON a2.id = ia.alert_id
+                JOIN alerts a2 ON a2.id = ia.alert_id AND a2.aws_account_id = %s
                 JOIN resource_relationships rel
-                    ON (rel.source_resource_id = a2.resource_id AND rel.target_resource_id = %s)
-                    OR (rel.target_resource_id = a2.resource_id AND rel.source_resource_id = %s)
+                    ON rel.aws_account_id = %s
+                   AND ((rel.source_resource_id = a2.resource_id AND rel.target_resource_id = %s)
+                     OR (rel.target_resource_id = a2.resource_id AND rel.source_resource_id = %s))
                 WHERE i.status = 'active'
+                  AND i.aws_account_id = %s
                   AND ABS(TIMESTAMPDIFF(MINUTE, i.started_at, %s)) <= %s
                 LIMIT 1
-            """, (alert["resource_id"], alert["resource_id"],
+            """, (alert["aws_account_id"], alert["aws_account_id"],
+                  alert["resource_id"], alert["resource_id"], alert["aws_account_id"],
                   alert["created_at"], CORRELATION_WINDOW_MINUTES))
             existing = cursor.fetchone()
 
@@ -88,7 +109,7 @@ def correlate_alerts_into_incidents():
                 cursor.execute("""
                     UPDATE incidents
                     SET last_seen_at = NOW(),
-                        severity = IF(%s = 'CRITICAL', 'CRITICAL', severity)
+                        severity = IF(UPPER(%s) = 'CRITICAL', 'CRITICAL', severity)
                     WHERE id = %s
                 """, (alert["severity"], incident_id))
                 continue
@@ -96,19 +117,22 @@ def correlate_alerts_into_incidents():
             # 2. No open incident to join -- does this alert have a
             #    topologically-connected, also-loose active alert to
             #    seed a NEW incident with?
-            cursor.execute("""
-                SELECT a2.id AS other_alert_id
+            cursor.execute(f"""
+                SELECT a2.id AS other_alert_id, a2.severity AS other_severity
                 FROM alerts a2
                 LEFT JOIN incident_alerts ia2 ON ia2.alert_id = a2.id
                 JOIN resource_relationships rel
-                    ON (rel.source_resource_id = a2.resource_id AND rel.target_resource_id = %s)
-                    OR (rel.target_resource_id = a2.resource_id AND rel.source_resource_id = %s)
+                    ON rel.aws_account_id = a2.aws_account_id
+                   AND ((rel.source_resource_id = a2.resource_id AND rel.target_resource_id = %s)
+                     OR (rel.target_resource_id = a2.resource_id AND rel.source_resource_id = %s))
                 WHERE a2.status = 'active'
+                  AND {alert_rules.base_where("a2")}
+                  AND a2.aws_account_id = %s
                   AND a2.id != %s
                   AND ia2.alert_id IS NULL
                   AND ABS(TIMESTAMPDIFF(MINUTE, a2.triggered_at, %s)) <= %s
                 LIMIT 1
-            """, (alert["resource_id"], alert["resource_id"], alert["id"],
+            """, (alert["resource_id"], alert["resource_id"], alert["aws_account_id"], alert["id"],
                   alert["created_at"], CORRELATION_WINDOW_MINUTES))
             partner = cursor.fetchone()
             if not partner:
@@ -120,8 +144,12 @@ def correlate_alerts_into_incidents():
                 VALUES (%s, %s, %s, 'active', %s, NOW())
             """, (
                 alert["aws_account_id"],
-                f"Correlated breach on {alert['resource_id']} and related resource(s)",
-                alert["severity"],
+                f"Correlated breach on {alert['resource_id']} and related resource(s)"[:255],
+                # Worst of the two seeding alerts (was: the first alert's
+                # severity only, so a CRITICAL partner made a WARNING incident).
+                "CRITICAL" if "CRITICAL" in (str(alert["severity"]).upper(),
+                                             str(partner.get("other_severity") or "").upper())
+                else alert["severity"],
                 alert["created_at"],
             ))
             incident_id = cursor.lastrowid
@@ -135,6 +163,9 @@ def correlate_alerts_into_incidents():
             _new_incident_ids.append(incident_id)
 
         # Auto-resolve incidents whose member alerts have ALL resolved.
+        # 'acknowledged' is still OPEN (a human took ownership, lifecycle
+        # migration 051) -- counting only 'active' resolved an incident the
+        # moment its members were acked, while the alerts were still live.
         cursor.execute("""
             UPDATE incidents i
             SET status = 'resolved', resolved_at = NOW()
@@ -142,7 +173,7 @@ def correlate_alerts_into_incidents():
               AND NOT EXISTS (
                   SELECT 1 FROM incident_alerts ia
                   JOIN alerts a ON a.id = ia.alert_id
-                  WHERE ia.incident_id = i.id AND a.status = 'active'
+                  WHERE ia.incident_id = i.id AND a.status IN ('active', 'acknowledged')
               )
         """)
 
@@ -151,23 +182,25 @@ def correlate_alerts_into_incidents():
             logger.info(f"[correlate] {incidents_created} incident(s) created, "
                         f"{alerts_attached} alert(s) attached this cycle")
 
-        # Rank a probable root cause for every newly-created incident so
-        # the incidents list already has one to show, not just on first
-        # detail-view open. Uses its own connection (see rca.py) --
-        # deliberately not folded into this function's transaction, so
-        # an RCA-ranking failure for one incident can't roll back the
-        # correlation work above that already succeeded.
-        for incident_id in _new_incident_ids:
-            try:
-                from app.collector.rca import rank_probable_cause
-                rank_probable_cause(incident_id)
-            except Exception as e:
-                logger.warning(f"[correlate] RCA ranking failed for incident {incident_id}: {e}")
-
-        return incidents_created, alerts_attached
     except Exception:
         conn.rollback()
         raise
     finally:
         cursor.close()
         conn.close()
+
+    # Rank a probable root cause for every newly-created incident so
+    # the incidents list already has one to show, not just on first
+    # detail-view open. Runs AFTER this function's connection is
+    # released (rank_probable_cause opens its own) -- previously two
+    # pooled connections were held per new incident -- and outside the
+    # correlation transaction, so an RCA-ranking failure for one incident
+    # can't roll back the correlation work that already succeeded.
+    for incident_id in _new_incident_ids:
+        try:
+            from app.collector.rca import rank_probable_cause
+            rank_probable_cause(incident_id)
+        except Exception as e:
+            logger.warning(f"[correlate] RCA ranking failed for incident {incident_id}: {e}")
+
+    return incidents_created, alerts_attached

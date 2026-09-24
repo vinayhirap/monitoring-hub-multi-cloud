@@ -20,7 +20,7 @@ def _install_stub(member_rows, is_configured=True, send_results=None):
     class _Cursor(FakeCursor):
         def execute(self, sql, params=None):
             normalized = " ".join(sql.split())
-            if normalized.startswith("SELECT DISTINCT u.email"):
+            if normalized.startswith("SELECT DISTINCT u."):
                 self._pending = member_rows
             else:
                 raise AssertionError(f"unexpected query: {normalized!r}")

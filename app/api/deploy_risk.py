@@ -18,6 +18,11 @@ from app.collector.rca import DEPLOY_LOOKBACK_MINUTES
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/deploy-risk", tags=["Deploy Risk"])
 
+# One follow-up query runs per deployment (N+1); bound N so a chatty CI
+# pipeline over a 90-day window can't turn one GET into thousands of
+# queries on a pooled connection.
+MAX_DEPLOYMENTS = 500
+
 
 @router.get("")
 def list_deploy_risk(
@@ -53,10 +58,11 @@ def list_deploy_risk(
             SELECT e.id, e.aws_account_id, acc.account_name, e.resource_id,
                    e.message, e.detail, e.created_at
             FROM op_events e
-            JOIN aws_accounts acc ON acc.id = e.aws_account_id
+            JOIN aws_accounts acc ON acc.id = e.aws_account_id AND acc.status = 'active'
             WHERE {' AND '.join(where)}
             ORDER BY e.created_at DESC
-        """, tuple(params))
+            LIMIT %s
+        """, (*params, MAX_DEPLOYMENTS))
         deployments = cursor.fetchall()
 
         results = []
@@ -66,12 +72,18 @@ def list_deploy_risk(
                 FROM alerts a
                 WHERE a.aws_account_id = %s
                   AND a.metric_name != 'multivariate_anomaly'
+                  -- same "not real trouble" exclusions as the SLO budget
+                  -- (app/api/slo.py): maintenance-silenced alerts and ones
+                  -- the system closed as never genuine.
+                  AND a.silenced = 0
+                  AND COALESCE(a.resolution_reason, '') NOT IN
+                      ('duplicate', 'placeholder_threshold', 'threshold_disabled', 'bulk_clear')
                   AND a.triggered_at BETWEEN %s AND DATE_ADD(%s, INTERVAL %s MINUTE)
                 ORDER BY a.triggered_at ASC
             """, (d["aws_account_id"], d["created_at"], d["created_at"], DEPLOY_LOOKBACK_MINUTES))
             followed_by = cursor.fetchall()
 
-            has_critical = any(a["severity"] == "CRITICAL" for a in followed_by)
+            has_critical = any(str(a["severity"] or "").upper() == "CRITICAL" for a in followed_by)
             if not followed_by:
                 risk = "clean"
             elif has_critical or len(followed_by) >= 2:
