@@ -17,6 +17,7 @@ history rows down to one per pair.
 import logging
 import os
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from app.db import get_connection
@@ -39,6 +40,63 @@ _WRITE_SLOTS = threading.BoundedSemaphore(
 # collectors are inserting into at the same time.
 _PRUNE_BATCH_ROWS = 10000
 _PRUNE_MAX_BATCHES = 1000
+
+
+# MySQL errors worth retrying: 1213 = deadlock (InnoDB already rolled the
+# transaction back), 1205 = lock wait timeout. Seen at service startup when
+# two uvicorn workers wrote overlapping rows at the same moment. The whole
+# batch transaction is re-run on a fresh connection; any other error is
+# logged and the batch dropped, as before.
+_RETRYABLE_ERRNOS = {1213, 1205}
+_RETRY_DELAYS = (0.2, 0.4)  # sleeps between attempts -> max 3 attempts
+
+
+def _is_retryable(exc) -> bool:
+    return getattr(exc, "errno", None) in _RETRYABLE_ERRNOS
+
+
+def _sorted_for_locking(rows, key):
+    """Sort a batch by the table's unique key so concurrent writers take row
+    locks in the same order (reduces deadlocks). Falls back to the original
+    order if the rows can't be compared."""
+    try:
+        return sorted(rows, key=key)
+    except TypeError:
+        return list(rows)
+
+
+def _run_batch_with_retry(execute, error_label, success_label):
+    """Run execute(cursor) + commit, retrying the whole transaction on
+    deadlock / lock-wait-timeout. Logs WARNING per retry, ERROR only if the
+    final attempt fails (or on any non-retryable error)."""
+    attempts = len(_RETRY_DELAYS) + 1
+    for attempt in range(1, attempts + 1):
+        conn   = get_connection()
+        cursor = conn.cursor()
+        retry  = False
+        try:
+            execute(cursor)
+            conn.commit()
+            logger.debug(success_label.format(cursor.rowcount))
+            return
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            if _is_retryable(e) and attempt < attempts:
+                logger.warning(
+                    f"{error_label} (attempt {attempt}/{attempts}, retrying): {e}"
+                )
+                retry = True
+            else:
+                logger.error(f"{error_label}: {e}")
+                return
+        finally:
+            cursor.close()
+            conn.close()
+        if retry:
+            time.sleep(_RETRY_DELAYS[attempt - 1])
 
 
 @contextmanager
@@ -106,11 +164,17 @@ def write_metrics_batch(datapoints: list):
 
 
 def _write_metrics_batch_locked(datapoints):
-    conn   = get_connection()
-    cursor = conn.cursor()
+    now  = datetime.utcnow()
+    rows = _sorted_for_locking(
+        [
+            (r_id, name, round(float(val), 6), now)
+            for r_id, name, val in datapoints
+            if r_id is not None and val is not None
+        ],
+        key=lambda r: (r[0], r[1]),  # UNIQUE (resource_id, metric_name)
+    )
 
-    try:
-        now = datetime.utcnow()
+    def _execute(cursor):
         cursor.executemany("""
             INSERT INTO metrics
                 (resource_id, metric_name, metric_value, metric_timestamp)
@@ -118,20 +182,13 @@ def _write_metrics_batch_locked(datapoints):
             ON DUPLICATE KEY UPDATE
                 metric_value     = VALUES(metric_value),
                 metric_timestamp = VALUES(metric_timestamp)
-        """, [
-            (r_id, name, round(float(val), 6), now)
-            for r_id, name, val in datapoints
-            if r_id is not None and val is not None
-        ])
-        conn.commit()
-        logger.debug(f"Batch upserted {cursor.rowcount} metrics")
+        """, rows)
 
-    except Exception as e:
-        logger.error(f"metrics_writer batch error: {e}")
-        conn.rollback()
-    finally:
-        cursor.close()
-        conn.close()
+    _run_batch_with_retry(
+        _execute,
+        error_label="metrics_writer batch error",
+        success_label="Batch upserted {} metrics",
+    )
 
 
 def write_metric_history_batch(datapoints: list):
@@ -170,28 +227,28 @@ def write_metric_history_batch(datapoints: list):
 
 
 def _write_metric_history_batch_locked(datapoints):
-    conn   = get_connection()
-    cursor = conn.cursor()
+    rows = _sorted_for_locking(
+        [
+            (r_id, name, round(float(val), 6), ts)
+            for r_id, name, val, ts in datapoints
+            if r_id is not None and val is not None
+        ],
+        # UNIQUE (resource_id, metric_name, metric_timestamp)
+        key=lambda r: (r[0], r[1], r[3]),
+    )
 
-    try:
+    def _execute(cursor):
         cursor.executemany("""
             INSERT IGNORE INTO metric_history
                 (resource_id, metric_name, metric_value, metric_timestamp)
             VALUES (%s, %s, %s, %s)
-        """, [
-            (r_id, name, round(float(val), 6), ts)
-            for r_id, name, val, ts in datapoints
-            if r_id is not None and val is not None
-        ])
-        conn.commit()
-        logger.debug(f"Wrote {cursor.rowcount} history datapoints")
+        """, rows)
 
-    except Exception as e:
-        logger.error(f"metric_history batch write error: {e}")
-        conn.rollback()
-    finally:
-        cursor.close()
-        conn.close()
+    _run_batch_with_retry(
+        _execute,
+        error_label="metric_history batch write error",
+        success_label="Wrote {} history datapoints",
+    )
 
 
 def prune_metric_history(retain_days: int = 7) -> int:
