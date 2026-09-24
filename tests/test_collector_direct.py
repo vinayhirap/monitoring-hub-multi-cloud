@@ -260,3 +260,25 @@ def test_concurrent_client_retry_config_has_adequate_pool_and_adaptive_retry():
     # Must still be a superset of the app-wide retry policy, not a
     # separate one-off that could drift from it.
     assert mod.CONCURRENT_CLIENT_RETRY.retries == mod.STANDARD_RETRY.retries
+
+
+def test_calc_uptime_bare_except_replaced_with_exception():
+    """
+    Regression test for audit b12 LOW fix: _calc_uptime used a bare
+    `except:`, which also swallows KeyboardInterrupt/SystemExit and masks
+    real bugs. Confirms the source now catches Exception specifically,
+    and that normal/garbage input still behave the same as before
+    (0 on garbage, correct day count on a real datetime).
+    """
+    import inspect
+    conn = _RoutingConn()
+    mod = _stub_and_load(conn)
+    src = inspect.getsource(mod._calc_uptime)
+    assert "except:" not in src
+    assert "except Exception:" in src
+
+    from datetime import datetime, timezone, timedelta
+    lt = datetime.now(timezone.utc) - timedelta(days=3)
+    assert mod._calc_uptime(lt) == 3
+    assert mod._calc_uptime(None) == 0
+    assert mod._calc_uptime("not-a-datetime") == 0
