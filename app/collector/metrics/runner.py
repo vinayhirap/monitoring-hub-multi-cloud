@@ -60,7 +60,7 @@ import time
 import threading
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from app.db import get_connection
 from app.aws.sts import get_boto3_session
 from app.aws.boto_config import STANDARD_RETRY
@@ -240,7 +240,7 @@ def _execute_gmd(cw, queries, id_map, minutes=5):
     if not queries:
         return 0
 
-    end   = datetime.utcnow()
+    end   = datetime.now(timezone.utc)
     start = end - timedelta(minutes=minutes)
     count = 0
     latest_rows = []
