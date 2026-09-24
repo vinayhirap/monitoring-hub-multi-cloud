@@ -96,10 +96,22 @@ def _discover_ec2(session, account, region, cursor):
 
                     _upsert_resource(cursor, account["id"], "ec2", iid, name, tags, region)
 
-                    # Update instance state
+                    # Update instance state. Every other write in this
+                    # module scopes by (aws_account_id, resource_type,
+                    # resource_id) -- the exact composite key migration
+                    # 045 added specifically because a resource_id shared
+                    # across two different monitored accounts (routine
+                    # for stock/default-named resources) let one
+                    # account's write silently land on another account's
+                    # row with no error (confirmed live, AuroGov/U4RAD,
+                    # 2026-09-16). This UPDATE was the one write path
+                    # that never got the same account_id scoping when
+                    # that fix went in, so it stayed exposed to the same
+                    # bug class it was meant to close.
                     cursor.execute(
-                        "UPDATE resources SET instance_state=%s WHERE resource_id=%s AND resource_type='ec2'",
-                        (state, iid)
+                        "UPDATE resources SET instance_state=%s "
+                        "WHERE resource_id=%s AND resource_type='ec2' AND aws_account_id=%s",
+                        (state, iid, account["id"])
                     )
 
                     # EBS volumes
@@ -300,13 +312,22 @@ def _reconcile_service_metrics(session, account, region):
         # NumberOfBackupJobsCompleted) never got auto-enabled despite
         # the resources being fully known and visible everywhere else
         # in the app.
+        # This connection was previously opened with no try/finally, so
+        # any exception here (deadlock, dropped connection, etc.) leaked
+        # it from the 10-connection pool instead of returning it -- this
+        # function runs every 15-min discovery cycle for every account,
+        # so a recurring failure here would exhaust the pool over time
+        # (the exact bug class this repo's history flags: unreleased
+        # connections -> 500s on login).
         conn = get_connection(); cur = conn.cursor()
-        cur.execute(
-            "SELECT DISTINCT resource_type FROM resources WHERE aws_account_id = %s",
-            (account["id"],),
-        )
-        detected |= {r[0] for r in cur.fetchall()}
-        cur.close(); conn.close()
+        try:
+            cur.execute(
+                "SELECT DISTINCT resource_type FROM resources WHERE aws_account_id = %s",
+                (account["id"],),
+            )
+            detected |= {r[0] for r in cur.fetchall()}
+        finally:
+            cur.close(); conn.close()
 
         result = enable_metrics_for_services(account["id"], detected, provider="aws", source="discovered")
         if result["added"]:
