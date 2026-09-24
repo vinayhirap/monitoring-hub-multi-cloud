@@ -30,7 +30,7 @@ PERMISSIONS WARNING (read this before enabling in a new environment):
   AWS:   iam:ListUsers, iam:ListMFADevices, iam:GetLoginProfile,
          iam:ListAccessKeys, s3:GetBucketPolicyStatus,
          s3:GetPublicAccessBlock, ec2:DescribeSecurityGroups,
-         ec2:DescribeVolumes, s3:GetAccountPublicAccessBlock (optional;
+         ec2:DescribeVolumes, ec2:DescribeRegions, s3:GetAccountPublicAccessBlock (optional;
          sts:GetCallerIdentity needs no grant) -- broader than this app's CloudWatch/
          Describe-only metrics permissions.
   Azure: Reader on the subscription is enough for all three checks
@@ -64,6 +64,8 @@ already provider-agnostic (keyed only on aws_account_id/check_id/
 resource_id), so it needed no changes for multi-cloud.
 """
 import logging
+import os
+import re
 
 from app.db import get_connection
 from app.aws.sts import get_boto3_session
@@ -158,6 +160,7 @@ def _check_open_security_groups(session, region: str) -> list:
             findings.append({
                 "check_id": "sg_open_to_world",
                 "resource_id": sg["GroupId"],
+                "region": region,
                 "severity": "HIGH" if hits_sensitive else "LOW",
                 "title": f"Security group '{sg.get('GroupName', sg['GroupId'])}' allows traffic from the internet",
                 "description": (
@@ -177,12 +180,57 @@ def _check_unencrypted_ebs(session, region: str) -> list:
             findings.append({
                 "check_id": "ebs_unencrypted",
                 "resource_id": vol["VolumeId"],
+                "region": region,
                 "severity": "MEDIUM",
                 "title": f"EBS volume '{vol['VolumeId']}' is not encrypted",
                 "description": "Data at rest on this volume is unencrypted. New volumes can default to "
                                 "encrypted via the account's EBS encryption-by-default setting.",
             })
     return findings
+
+
+# F17: security groups / EBS volumes are regional. Scanning only
+# default_region missed every other region the account actually uses.
+# Regions = the account's enabled regions (ec2:DescribeRegions), falling
+# back to default_region + regions this app has discovered resources in.
+# EC2 Describe* calls are not billed (unlike GetMetricData); hourly
+# cadence. CSPM_AWS_REGIONS (comma-separated) restricts the set.
+MAX_AWS_REGIONS = 30
+_REGION_RE = re.compile(r"^[a-z]{2}(-gov|-iso[a-z]?)?-[a-z]+-\d+$")
+
+
+def _discovered_regions(account_id: int) -> set:
+    conn = get_connection(); cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT DISTINCT region FROM resources WHERE aws_account_id = %s AND region IS NOT NULL",
+                    (account_id,))
+        return {r["region"] for r in cur.fetchall() if r.get("region")}
+    finally:
+        cur.close(); conn.close()
+
+
+def _aws_regions(session, account: dict) -> list:
+    default = account.get("default_region") or "us-east-1"
+    regions = set()
+    try:
+        ec2 = session.client("ec2", region_name=default, config=STANDARD_RETRY)
+        regions = {r["RegionName"] for r in ec2.describe_regions(AllRegions=False).get("Regions", [])}
+    except Exception as e:
+        logger.warning(f"[cspm] describe_regions failed for account id={account['id']} ({e}) -- "
+                        f"falling back to default + discovered regions")
+        try:
+            regions = _discovered_regions(account["id"])
+        except Exception:
+            regions = set()
+    regions.add(default)
+    allow = {r.strip() for r in (os.getenv("CSPM_AWS_REGIONS") or "").split(",") if r.strip()}
+    if allow:
+        regions = {r for r in regions if r in allow} | ({default} if default in allow else set())
+    regions = sorted(r for r in regions if _REGION_RE.match(r))
+    if default in regions:
+        regions.remove(default)
+        regions.insert(0, default)
+    return regions[:MAX_AWS_REGIONS]
 
 
 def _iam_users(iam):
@@ -477,12 +525,15 @@ class _CheckRun:
         self.findings = []
         self.failed_checks = set()
 
-    def run(self, name, fn, *args) -> None:
+    def run(self, name, fn, *args, region=None) -> None:
+        """region=None: the whole check failed. With a region, only that
+        region's findings of this check are protected from auto-resolve
+        (e.g. an SCP denying one region must not freeze every region)."""
         try:
             self.findings += fn(*args)
         except Exception as e:
-            self.failed_checks.add(name)
-            _log_check_failure(name, e)
+            self.failed_checks.add((name, region) if region else name)
+            _log_check_failure(f"{name}@{region}" if region else name, e)
 
 
 def _log_check_failure(name, e) -> None:
@@ -517,6 +568,19 @@ def _merge_findings(findings: list) -> list:
     return list(merged.values())
 
 
+def _resolve_blocked(check_id: str, region, failed_checks) -> bool:
+    """True if this open finding must NOT be auto-resolved because the
+    check (or its region) failed to run this cycle. failed_checks holds
+    check names (whole check failed) and/or (check, region) tuples."""
+    if check_id in failed_checks:
+        return True
+    region_failures = {r for f in failed_checks if isinstance(f, tuple) and f[0] == check_id for r in [f[1]]}
+    if not region_failures:
+        return False
+    # A legacy row with no region recorded can't be attributed -- keep it.
+    return region is None or region in region_failures
+
+
 def _upsert_findings(cursor, account_id: int, findings: list, failed_checks=frozenset()) -> None:
     findings = _merge_findings(findings)
     seen_keys = set()
@@ -524,18 +588,20 @@ def _upsert_findings(cursor, account_id: int, findings: list, failed_checks=froz
         seen_keys.add((f["check_id"], f["resource_id"]))
         cursor.execute("""
             INSERT INTO security_findings
-                (aws_account_id, check_id, resource_id, severity, title, description, status, last_seen_at)
-            VALUES (%s, %s, %s, %s, %s, %s, 'open', NOW())
+                (aws_account_id, check_id, resource_id, region, severity, title, description, status, last_seen_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'open', NOW())
             ON DUPLICATE KEY UPDATE
+                region = VALUES(region),
                 severity = VALUES(severity), title = VALUES(title), description = VALUES(description),
                 status = 'open', resolved_at = NULL, last_seen_at = NOW()
-        """, (account_id, f["check_id"], f["resource_id"], f["severity"], f["title"], f["description"]))
+        """, (account_id, f["check_id"], f["resource_id"], f.get("region"),
+              f["severity"], f["title"], f["description"]))
 
-    cursor.execute("SELECT id, check_id, resource_id FROM security_findings "
+    cursor.execute("SELECT id, check_id, resource_id, region FROM security_findings "
                     "WHERE aws_account_id = %s AND status = 'open'", (account_id,))
     for row in cursor.fetchall():
-        if row["check_id"] in failed_checks:
-            continue  # check didn't run this cycle -- keep its findings as-is
+        if _resolve_blocked(row["check_id"], row.get("region"), failed_checks):
+            continue  # check/region didn't run this cycle -- keep its findings as-is
         if (row["check_id"], row["resource_id"]) not in seen_keys:
             cursor.execute("""
                 UPDATE security_findings SET status = 'resolved', resolved_at = NOW()
@@ -545,11 +611,11 @@ def _upsert_findings(cursor, account_id: int, findings: list, failed_checks=froz
 
 def _run_aws_checks(account: dict):
     session = get_boto3_session(account)
-    region = account["default_region"] or "us-east-1"
     run = _CheckRun()
     run.run("s3_bucket_public", _check_public_s3_buckets, session)
-    run.run("sg_open_to_world", _check_open_security_groups, session, region)
-    run.run("ebs_unencrypted", _check_unencrypted_ebs, session, region)
+    for region in _aws_regions(session, account):
+        run.run("sg_open_to_world", _check_open_security_groups, session, region, region=region)
+        run.run("ebs_unencrypted", _check_unencrypted_ebs, session, region, region=region)
     run.run("iam_user_no_mfa", _check_iam_users_without_mfa, session)
     run.run("iam_stale_access_key", _check_stale_access_keys, session)
     return run
@@ -603,7 +669,11 @@ def run_security_checks() -> int:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT COUNT(*) AS n FROM security_findings WHERE status = 'open'")
+        cursor.execute("""
+            SELECT COUNT(*) AS n FROM security_findings f
+            JOIN aws_accounts acc ON acc.id = f.aws_account_id AND acc.status = 'active'
+            WHERE f.status = 'open'
+        """)
         total_open = cursor.fetchone()["n"]
         logger.info(f"[cspm] security checks complete -- {total_open} open finding(s) fleet-wide")
         return total_open

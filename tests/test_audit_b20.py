@@ -138,10 +138,10 @@ def test_failed_check_does_not_auto_resolve():
         def execute(self, sql, params=None):
             n = " ".join(sql.split())
             self._rows = []
-            if n.startswith("SELECT id, check_id, resource_id FROM security_findings"):
+            if n.startswith("SELECT id, check_id, resource_id, region FROM security_findings"):
                 self._rows = [
-                    {"id": 1, "check_id": "iam_user_no_mfa", "resource_id": "bob"},
-                    {"id": 2, "check_id": "ebs_unencrypted", "resource_id": "vol-1"},
+                    {"id": 1, "check_id": "iam_user_no_mfa", "resource_id": "bob", "region": None},
+                    {"id": 2, "check_id": "ebs_unencrypted", "resource_id": "vol-1", "region": "us-east-1"},
                 ]
             elif n.startswith("UPDATE security_findings"):
                 updates.append(params)
@@ -218,9 +218,11 @@ def test_slo_target_validation(bad):
 
 # ── Status page ─────────────────────────────────────────────────────
 
-def _status_page():
+def _status_page(perms=()):
     install_stub("app.db", get_connection=lambda: FakeConn([]))
-    install_stub("app.auth.permissions", require_permission=lambda code: (lambda: None))
+    install_stub("app.auth.deps", get_current_user=lambda: None, require_role=lambda *a: (lambda: None))
+    install_stub("app.auth.permissions", require_permission=lambda code: (lambda: None),
+                 has_permission=lambda user, code: code in perms)
     install_stub("app.auth.authorization", get_accessible_account_ids=lambda user: None)
     return load_module("app/api/status_page.py")
 
@@ -271,3 +273,172 @@ def test_synthetic_api_bounds(payload):
     with pytest.raises(HTTPException) as exc:
         mod._validate_common(payload)
     assert exc.value.status_code == 400
+
+
+# ── Follow-up: F17/F23/F24/F25/F26/F27 ───────────────────────────────
+
+def test_region_failure_only_blocks_that_region():
+    mod = _cspm()
+    updates = []
+    rows = [
+        {"id": 1, "check_id": "sg_open_to_world", "resource_id": "sg-a", "region": "eu-west-1"},
+        {"id": 2, "check_id": "sg_open_to_world", "resource_id": "sg-b", "region": "us-east-1"},
+        {"id": 3, "check_id": "sg_open_to_world", "resource_id": "sg-legacy", "region": None},
+    ]
+
+    class Cur:
+        def execute(self, sql, params=None):
+            n = " ".join(sql.split())
+            self._rows = rows if n.startswith("SELECT id, check_id") else []
+            if n.startswith("UPDATE security_findings"):
+                updates.append(params)
+
+        def fetchall(self):
+            return self._rows
+    mod._upsert_findings(Cur(), 5, [], failed_checks={("sg_open_to_world", "eu-west-1")})
+    assert updates == [(2,)]  # eu-west-1 kept, legacy (no region) kept
+
+
+def test_regional_finding_region_is_stored():
+    mod = _cspm()
+    inserts = []
+
+    class Cur:
+        def execute(self, sql, params=None):
+            if "INSERT INTO security_findings" in sql:
+                inserts.append(params)
+
+        def fetchall(self):
+            return []
+    mod._upsert_findings(Cur(), 5, [{"check_id": "ebs_unencrypted", "resource_id": "vol-1", "region": "ap-south-1",
+                                     "severity": "MEDIUM", "title": "t", "description": "d"}])
+    assert inserts[0][3] == "ap-south-1"
+
+
+def test_aws_regions_uses_enabled_regions_default_first(monkeypatch):
+    mod = _cspm()
+
+    class EC2:
+        def describe_regions(self, AllRegions=False):
+            return {"Regions": [{"RegionName": "us-west-2"}, {"RegionName": "ap-south-1"}, {"RegionName": "bogus"}]}
+
+    class Session:
+        def client(self, *a, **k):
+            return EC2()
+    monkeypatch.delenv("CSPM_AWS_REGIONS", raising=False)
+    regions = mod._aws_regions(Session(), {"id": 1, "default_region": "ap-south-1"})
+    assert regions[0] == "ap-south-1" and set(regions) == {"ap-south-1", "us-west-2"}
+    monkeypatch.setenv("CSPM_AWS_REGIONS", "ap-south-1")
+    assert mod._aws_regions(Session(), {"id": 1, "default_region": "ap-south-1"}) == ["ap-south-1"]
+
+
+def test_aws_regions_falls_back_when_describe_denied():
+    mod = _cspm()
+    mod._discovered_regions = lambda account_id: {"eu-central-1"}
+
+    class Session:
+        def client(self, *a, **k):
+            raise RuntimeError("AccessDenied")
+    regions = mod._aws_regions(Session(), {"id": 1, "default_region": "us-east-1"})
+    assert regions == ["us-east-1", "eu-central-1"]
+
+
+def test_slo_new_check_not_extrapolated_over_window():
+    mod = _slo()
+    # 288 probes (1 day @ 5 min), 3 failed -> 15 bad minutes. 30-day
+    # 99.9% budget = 43.2 min -> ~34.7% consumed, NOT 'breached'.
+    out = mod._compute_status(_OneRowCur({"total": 288, "successful": 285, "interval_seconds": 300}),
+                              {"window_days": 30, "target_pct": 99.9, "synthetic_check_id": 3,
+                               "aws_account_id": 9, "resource_id": None, "metric_name": None})
+    assert out["status"] == "ok" and 34 <= out["budget_consumed_pct"] <= 35
+
+
+def test_status_page_list_allows_view_permission():
+    from fastapi import HTTPException
+    mod = _status_page(perms=("status_page.view",))
+    assert mod._require_view_or_manage({"id": 1}) == {"id": 1}
+    mod = _status_page(perms=())
+    with pytest.raises(HTTPException):
+        mod._require_view_or_manage({"id": 1})
+
+
+def test_delete_check_removes_resource_row():
+    sqls = []
+
+    class Cur:
+        def execute(self, sql, params=None):
+            sqls.append((" ".join(sql.split()), params))
+            self._row = {"aws_account_id": 4}
+
+        def fetchone(self):
+            return self._row
+
+        def close(self):
+            pass
+
+    class Conn:
+        def cursor(self, dictionary=False):
+            return Cur()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+    install_stub("app.db", get_connection=lambda: Conn())
+    install_stub("app.auth.permissions", require_permission=lambda code: (lambda: None))
+    install_stub("app.auth.authorization", get_accessible_account_ids=lambda user: None)
+    mod = load_module("app/api/synthetic.py")
+    mod.delete_check(7, current_user={"id": 1, "username": "u"})
+    res = [p for s, p in sqls if s.startswith("DELETE FROM resources")]
+    assert res == [(4, "synthetic-7")]
+
+
+def _security(rows_by_prefix):
+    calls = []
+
+    class Cur:
+        def execute(self, sql, params=None):
+            n = " ".join(sql.split())
+            calls.append((n, params))
+            self._rows = next((v for k, v in rows_by_prefix.items() if n.startswith(k)), [])
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+        def fetchall(self):
+            return self._rows
+
+        def close(self):
+            pass
+
+    class Conn:
+        def cursor(self, dictionary=True):
+            return Cur()
+
+        def close(self):
+            pass
+    install_stub("app.db", get_connection=lambda: Conn())
+    install_stub("app.auth.permissions", require_permission=lambda code: (lambda: None))
+    install_stub("app.auth.authorization", get_accessible_account_ids=lambda user: None)
+    return load_module("app/api/security.py"), calls
+
+
+def test_findings_list_bounded_active_only_with_total_header():
+    from fastapi import Response
+    mod, calls = _security({"SELECT COUNT(*)": [{"n": 1234}], "SELECT f.*": [{"id": 1}]})
+    resp = Response()
+    out = mod.list_findings(status="open", severity=None, account_id=None, limit=50, offset=100,
+                            response=resp, current_user={"id": 1})
+    assert out == [{"id": 1}] and resp.headers["X-Total-Count"] == "1234"
+    sel = [c for c in calls if c[0].startswith("SELECT f.*")][0]
+    assert "acc.status = 'active'" in sel[0] and "LIMIT %s OFFSET %s" in sel[0] and sel[1][-2:] == (50, 100)
+
+
+def test_findings_summary_active_accounts_only():
+    mod, calls = _security({})
+    mod.findings_summary(current_user={"id": 1})
+    assert "acc.status = 'active'" in calls[0][0]

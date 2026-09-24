@@ -25,7 +25,8 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, HTTPException, Depends
 from app.db import get_connection
-from app.auth.permissions import require_permission
+from app.auth.permissions import require_permission, has_permission
+from app.auth.deps import get_current_user
 from app.auth.authorization import get_accessible_account_ids
 
 logger = logging.getLogger(__name__)
@@ -90,8 +91,17 @@ def _require_account_access(account_id: int, current_user: dict) -> None:
         raise HTTPException(status_code=403, detail="You do not have access to this account")
 
 
+def _require_view_or_manage(user: dict = Depends(get_current_user)) -> dict:
+    """F24: reading the component config is gated on status_page.view
+    (seeded by migration 041 for viewer/editor/admin) -- manage still
+    implies view so existing managers keep access."""
+    if not (has_permission(user, "status_page.view") or has_permission(user, "status_page.manage")):
+        raise HTTPException(status_code=403, detail="Missing permission: status_page.view")
+    return user
+
+
 @admin_router.get("")
-def list_components(current_user: dict = Depends(require_permission("status_page.manage"))):
+def list_components(current_user: dict = Depends(_require_view_or_manage)):
     accessible = get_accessible_account_ids(current_user)
     conn = get_connection(); cursor = conn.cursor(dictionary=True)
     try:

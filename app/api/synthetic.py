@@ -270,6 +270,13 @@ def delete_check(check_id: int, current_user: dict = Depends(require_permission(
               AND status IN ('active', 'acknowledged')
         """, (current_user["username"], account_id, f"synthetic-{check_id}"))
         cur.execute("DELETE FROM synthetic_checks WHERE id = %s", (check_id,))
+        # F25: drop the auto-created resources row too (collector's
+        # _ensure_resource_row), otherwise every deleted check left an
+        # orphan "synthetic-N" resource in inventory/topology forever.
+        cur.execute("""
+            DELETE FROM resources
+            WHERE aws_account_id = %s AND resource_type = 'synthetic_check' AND resource_id = %s
+        """, (account_id, f"synthetic-{check_id}"))
         conn.commit()
         return {"status": "deleted"}
     finally:
