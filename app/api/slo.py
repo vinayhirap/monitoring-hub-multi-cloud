@@ -65,7 +65,8 @@ def _compute_status(cursor, slo: dict) -> dict:
 
     if slo["synthetic_check_id"]:
         cursor.execute("""
-            SELECT COUNT(*) AS total, SUM(r.success) AS successful
+            SELECT COUNT(*) AS total, SUM(r.success) AS successful,
+                   MAX(c.interval_seconds) AS interval_seconds
             FROM synthetic_check_results r
             JOIN synthetic_checks c ON c.id = r.check_id AND c.aws_account_id = %s
             WHERE r.check_id = %s AND r.checked_at >= %s
@@ -77,12 +78,14 @@ def _compute_status(cursor, slo: dict) -> dict:
                     "budget_remaining_pct": None, "window_start": str(window_start)}
         successful = row["successful"] or 0
         uptime_pct = round(100 * successful / total, 3)
-        # Approximation: each failed probe represents one check
-        # interval's worth of downtime, spread evenly across the
-        # window -- exact for evenly-spaced probing, which is the
-        # normal case (see synthetic.py's next_check_at scheduling).
-        bad_fraction = 1 - (successful / total)
-        actual_bad_minutes = bad_fraction * window_minutes
+        # F23: each failed probe stands for one check interval of
+        # downtime. The old formula extrapolated the failure RATIO over
+        # the whole window, so a check created 1 day ago with 1% failures
+        # was charged as if it had failed 1% of all 30 days (10x budget on
+        # a 99.9% SLO -> 'breached' when only ~33% was really consumed).
+        interval_minutes = float(row.get("interval_seconds") or 300) / 60
+        failed = max(0, int(total) - int(successful))
+        actual_bad_minutes = min(window_minutes, failed * interval_minutes)
     else:
         metric_clause = "AND a.metric_name = %s" if slo["metric_name"] else ""
         params = [window_start, slo["resource_id"], slo["aws_account_id"]]

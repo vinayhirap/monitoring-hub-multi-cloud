@@ -22,7 +22,7 @@ column can deep-link straight into the correct account's console
 instead of leaving "go find this yourself in AWS/Azure/GCP" implicit.
 """
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from app.db import get_connection
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
@@ -92,11 +92,18 @@ def list_findings(
     status: str = Query("open", pattern="^(open|resolved|all)$"),
     severity: str = Query(None, pattern="^(HIGH|MEDIUM|LOW)$"),
     account_id: int = Query(None, description="Filter to a single aws_accounts.id"),
+    limit: int = Query(1000, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
+    response: Response = None,
     current_user: dict = Depends(require_permission("security.view")),
 ):
+    """Bounded (F27): at most `limit` rows per call; the full match count
+    is returned in the X-Total-Count header for paging. Findings of
+    deactivated accounts are excluded (F26) -- they can no longer be
+    rescanned, so they'd otherwise stay 'open' forever."""
     conn = get_connection(); cursor = conn.cursor(dictionary=True)
     try:
-        where = ["1=1"]
+        where = ["acc.status = 'active'"]
         params = []
         if status != "all":
             where.append("f.status = %s")
@@ -110,13 +117,23 @@ def list_findings(
             where.append("f.aws_account_id = %s")
             params.append(account_id)
 
+        where_sql = " AND ".join(where)
+        if response is not None:
+            cursor.execute(f"""
+                SELECT COUNT(*) AS n
+                FROM security_findings f
+                JOIN aws_accounts acc ON acc.id = f.aws_account_id
+                WHERE {where_sql}
+            """, tuple(params))
+            response.headers["X-Total-Count"] = str(cursor.fetchone()["n"])
         cursor.execute(f"""
             SELECT f.*, acc.account_name, acc.provider AS account_provider
             FROM security_findings f
             JOIN aws_accounts acc ON acc.id = f.aws_account_id
-            WHERE {' AND '.join(where)}
-            ORDER BY FIELD(f.severity, 'HIGH', 'MEDIUM', 'LOW'), f.last_seen_at DESC
-        """, tuple(params))
+            WHERE {where_sql}
+            ORDER BY FIELD(f.severity, 'HIGH', 'MEDIUM', 'LOW'), f.last_seen_at DESC, f.id DESC
+            LIMIT %s OFFSET %s
+        """, (*params, limit, offset))
         return cursor.fetchall()
     finally:
         cursor.close(); conn.close()
@@ -166,7 +183,7 @@ def findings_summary(current_user: dict = Depends(require_permission("security.v
     accessible = get_accessible_account_ids(current_user)
     conn = get_connection(); cursor = conn.cursor(dictionary=True)
     try:
-        where = ["f.status = 'open'"]
+        where = ["f.status = 'open'", "acc.status = 'active'"]
         params = []
         if accessible is not None:
             if not accessible:
@@ -200,7 +217,7 @@ def _get_finding_and_account(finding_id: int):
     try:
         cursor.execute("""
             SELECT f.id AS f_id, f.check_id AS f_check_id, f.resource_id AS f_resource_id,
-                   f.aws_account_id AS f_account_id, acc.*
+                   f.aws_account_id AS f_account_id, f.region AS f_region, acc.*
             FROM security_findings f
             JOIN aws_accounts acc ON acc.id = f.aws_account_id
             WHERE f.id = %s
@@ -252,7 +269,8 @@ def get_finding_console_url(
         from app.aws.federation import NoConsoleCredentialsError
         provider = get_provider(row.get("provider") or "aws")
         url = provider.get_console_url(
-            row, resource_id, row.get("default_region"),
+            # Regional findings (SG/EBS, F17) must open in THEIR region.
+            row, resource_id, row.get("f_region") or row.get("default_region"),
             service=service, resource_name=resource_name,
             requested_by=current_user["username"],
         )
