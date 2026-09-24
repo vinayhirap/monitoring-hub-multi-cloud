@@ -1111,10 +1111,10 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
             </>}
 
             {service === "EBS" && <>
-              <MetricChart title="VolumeReadOps"      data={metrics.read_ops}      color="#38bdf8" unit=" ops" timeRange={rangLabel} />
-              <MetricChart title="VolumeWriteOps"     data={metrics.write_ops}     color="#7c6ee0" unit=" ops" timeRange={rangLabel} />
-              <MetricChart title="VolumeReadBytes"      data={metrics.read_bytes}    color="#22c55e" unit="B"    timeRange={rangLabel} />
-              <MetricChart title="VolumeWriteBytes"     data={metrics.write_bytes}   color="#fbbf24" unit="B"    timeRange={rangLabel} />
+              <MetricChart title="VolumeReadOps"      data={perSecond(metrics.read_ops)}    color="#38bdf8" unit="" valueFormatter={fmtIops}      yTickFormatter={fmtCompact}      timeRange={rangLabel} />
+              <MetricChart title="VolumeWriteOps"     data={perSecond(metrics.write_ops)}   color="#7c6ee0" unit="" valueFormatter={fmtIops}      yTickFormatter={fmtCompact}      timeRange={rangLabel} />
+              <MetricChart title="VolumeReadBytes"    data={perSecond(metrics.read_bytes)}  color="#22c55e" unit="" valueFormatter={fmtBytesRate} yTickFormatter={fmtCompactBytes} timeRange={rangLabel} />
+              <MetricChart title="VolumeWriteBytes"   data={perSecond(metrics.write_bytes)} color="#fbbf24" unit="" valueFormatter={fmtBytesRate} yTickFormatter={fmtCompactBytes} timeRange={rangLabel} />
               <MetricChart title="VolumeQueueLength"    data={metrics.queue_length}  color="#ef4444" unit=""     warningThreshold={getThreshold("ebs", "VolumeQueueLength")?.warning} criticalThreshold={getThreshold("ebs", "VolumeQueueLength")?.critical} timeRange={rangLabel} />
               <MetricChart title="BurstBalance" data={metrics.burst_balance} color="#2bb3ac" unit="%"    warningThreshold={getThreshold("ebs", "BurstBalance")?.warning} criticalThreshold={getThreshold("ebs", "BurstBalance")?.critical} timeRange={rangLabel} />
             </>}
@@ -1343,7 +1343,33 @@ function StatusChip({ status, colorMap = {} }) { const s = (status || "").toLowe
 function CpuBar({ cpu, state }) { if (state !== "running") return <span className="mono small muted">—</span>; const pct = cpu ?? 0; const color = pct > 75 ? "#ef4444" : pct > 50 ? "#f59e0b" : "#22c55e"; return <div className="cpu-cell"><div className="cpu-bar-bg"><div className="cpu-bar-fill" style={{ width: `${Math.max(2, pct)}%`, background: color }} /></div><span className="cpu-label mono">{pct.toFixed(1)}%</span></div>; }
 function QuickStat({ label, value, color, mono }) { return <div className="qs-item"><div className="qs-label">{label}</div><div className={`qs-value ${color ? `c-${color}` : ""}${mono ? " mono" : ""}`}>{value}</div></div>; }
 
-function MetricChart({ title, data, color, unit, warningThreshold, criticalThreshold, timeRange, emptyReason }) {
+// EBS VolumeRead/WriteOps and VolumeRead/WriteBytes are collected as
+// CloudWatch Sum over Period=60 (app/collector/metrics/runner.py) and
+// charted as raw metric_history rows, so each point is a per-minute total.
+// Dividing by the period turns them into real per-second rates (IOPS, B/s).
+// Display-only: stored data and alert thresholds are unchanged.
+const EBS_SUM_PERIOD_SECS = 60;
+function perSecond(series) {
+  if (!Array.isArray(series)) return series; // keep null (hide card) / undefined as-is
+  return series.map(d => ({ ...d, v: d.v / EBS_SUM_PERIOD_SECS }));
+}
+function fmtIops(v) { return `${Number(v.toFixed(1))} IOPS`; }
+function fmtBytesRate(v) {
+  const units = ["B/s", "KiB/s", "MiB/s", "GiB/s"];
+  let i = 0;
+  while (Math.abs(v) >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${Number(v.toFixed(1))} ${units[i]}`;
+}
+const _compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
+function fmtCompact(v) { return _compact.format(v); }
+function fmtCompactBytes(v) {
+  const units = ["", "K", "M", "G"];
+  let i = 0;
+  while (Math.abs(v) >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${Number(v.toFixed(1))}${units[i]}`;
+}
+
+function MetricChart({ title, data, color, unit, warningThreshold, criticalThreshold, timeRange, emptyReason, valueFormatter, yTickFormatter }) {
   const { ianaName } = useTimezone();
   // data === null (not undefined, not []) means the backend knows this
   // metric structurally can never have data for this resource (e.g. EBS
@@ -1391,14 +1417,14 @@ function MetricChart({ title, data, color, unit, warningThreshold, criticalThres
     <div className="chart-box">
       <div className="chart-header">
         <span className="chart-title">{title}</span>
-        <span className="chart-latest" style={{ color }}>{latest.toFixed(1)}{unit}</span>
+        <span className="chart-latest" style={{ color }}>{valueFormatter ? valueFormatter(latest) : `${latest.toFixed(1)}${unit}`}</span>
       </div>
       <ResponsiveContainer width="100%" height={90}>
         <LineChart data={formatted} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
           <CartesianGrid stroke="rgba(99,130,190,0.08)" strokeDasharray="3 3" />
           <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} tickFormatter={fmtTick}
                  tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} scale="time" />
-          <YAxis tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} />
+          <YAxis tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} {...(yTickFormatter ? { tickFormatter: yTickFormatter } : {})} />
           <Tooltip
             contentStyle={{ background: "#0b1220", border: "1px solid rgba(99,130,190,0.2)", borderRadius: 6, fontSize: 11 }}
             labelStyle={{ color: "#7a90b8" }}
@@ -1406,7 +1432,7 @@ function MetricChart({ title, data, color, unit, warningThreshold, criticalThres
             formatter={(value, name) => {
               if (name === "warningThreshold") return [`${value}${unit}`, <span style={{display:"inline-flex",alignItems:"center",gap:4}}><AlertTriangleIcon size={11} /> Warn at</span>];
               if (name === "criticalThreshold") return [`${value}${unit}`, <span style={{display:"inline-flex",alignItems:"center",gap:4}}><AlertTriangleIcon size={11} /> Crit at</span>];
-              return [`${value.toFixed(2)}${unit}`, title];
+              return [valueFormatter ? valueFormatter(value) : `${value.toFixed(2)}${unit}`, title];
             }}
             itemStyle={{ color }}
           />
