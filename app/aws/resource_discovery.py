@@ -179,8 +179,14 @@ def disambiguate_rds_family(session, region: str, service_keys: set[str]) -> set
             for page in rds.get_paginator("describe_db_clusters").paginate():
                 for c in page.get("DBClusters", []):
                     engines.add(c.get("Engine", ""))
-        except Exception:
-            pass  # some accounts/regions have no cluster API access; instance pass already covers plain RDS
+        except Exception as e:
+            # Bug fix: this used to swallow every exception silently,
+            # including throttling/network errors, indistinguishable
+            # from the genuine "no cluster API access" case the comment
+            # describes -- log it so a real failure isn't mistaken for
+            # "this account just has no clusters". Instance-level pass
+            # above already covers plain RDS either way.
+            logger.warning(f"RDS cluster describe skipped [{region}]: {e}")
 
         if any(e == "docdb" for e in engines):
             result.add("documentdb")
