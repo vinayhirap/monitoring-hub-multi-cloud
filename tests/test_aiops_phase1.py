@@ -15,6 +15,7 @@ math) runs inside MySQL and isn't re-executed here.
 import sys
 
 sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
+import app  # noqa: F401 -- real package, so `from app import alert_rules` resolves
 from tests.conftest import load_module, install_stub, FakeCursor, FakeConn, contains
 
 
@@ -97,6 +98,9 @@ def _history_points(start_value, per_day_change, days, points_per_day=4):
     total_points = days * points_per_day
     for i in range(total_points):
         rows.append({
+            # trend.py groups per resources.id ("rid") and reports the
+            # account, since series are no longer merged across accounts.
+            "rid": 1, "aws_account_id": 1,
             "aws_resource_id": "vol-1",
             "ts": i * step_seconds,
             "metric_value": start_value + per_day_change * (i / points_per_day),
@@ -159,8 +163,8 @@ def test_trend_skips_bucket_with_too_few_points():
     class _Cursor(FakeCursor):
         def execute(self, sql, params=None):
             self._pending = [
-                {"aws_resource_id": "vol-2", "ts": 0, "metric_value": 90.0},
-                {"aws_resource_id": "vol-2", "ts": 3600, "metric_value": 91.0},
+                {"rid": 2, "aws_account_id": 1, "aws_resource_id": "vol-2", "ts": 0, "metric_value": 90.0},
+                {"rid": 2, "aws_account_id": 1, "aws_resource_id": "vol-2", "ts": 3600, "metric_value": 91.0},
             ]  # only 2 points, well under MIN_POINTS_FOR_TREND
 
     class _Conn(FakeConn):
@@ -199,7 +203,7 @@ def test_correlate_creates_incident_from_two_topologically_connected_alerts():
                 # Only the SECOND alert (i-target-1) reports a connected
                 # partner (the first, alb-1) -- simulates the real
                 # bidirectional topology-edge join.
-                if params[2] == 102:
+                if params[3] == 102:  # (res, res, account, alert_id, ...)
                     self._pending = [{"other_alert_id": 101}]
                 else:
                     self._pending = []
@@ -280,8 +284,10 @@ def test_rca_ranks_earliest_alert_as_probable_cause():
     class _Cursor(FakeCursor):
         def execute(self, sql, params=None):
             normalized = " ".join(sql.split())
-            if normalized.startswith("SELECT a.id, a.resource_id, a.metric_name"):
-                self._pending = incident_alerts
+            if normalized.startswith("SELECT a.id, a.aws_account_id, a.resource_id, a.metric_name"):
+                self._pending = [dict(a, aws_account_id=1) for a in incident_alerts]
+            elif "event_type = 'deployment'" in normalized:
+                self._pending = []  # no deploy in the window
             elif "COUNT(DISTINCT source_resource_id)" in normalized:
                 self._pending = [{"in_degree": 3}]
             elif normalized.startswith("SELECT ce.event_name"):

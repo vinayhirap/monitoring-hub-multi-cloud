@@ -58,6 +58,27 @@ def _check_account_access(current_user: dict, account_id):
         raise HTTPException(status_code=403, detail="You do not have access to this account")
 
 
+MAX_ACK_SLA_MINUTES = 10080  # 7 days
+
+
+def _positive_int(raw, name: str, hi: int = None) -> int:
+    if isinstance(raw, bool):
+        raise HTTPException(status_code=400, detail=f"{name} must be an integer")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{name} must be an integer")
+    if value <= 0 or (hi is not None and value > hi):
+        raise HTTPException(status_code=400, detail=f"{name} must be between 1 and {hi}" if hi else f"{name} must be positive")
+    return value
+
+
+def _require_group_exists(cur, group_id: int) -> None:
+    cur.execute("SELECT 1 FROM org_groups WHERE id = %s", (group_id,))
+    if not cur.fetchone():
+        raise HTTPException(status_code=400, detail="escalate_to_group_id does not exist")
+
+
 @router.get("/groups")
 def list_org_groups(current_user: dict = Depends(require_permission("escalation.view"))):
     """
@@ -107,18 +128,21 @@ def create_policy(payload: dict = Body(...), current_user: dict = Depends(requir
     severity = payload.get("severity")
     if severity not in ("WARNING", "CRITICAL"):
         raise HTTPException(status_code=400, detail="severity must be WARNING or CRITICAL")
-    ack_sla_minutes = int(payload.get("ack_sla_minutes", 0))
-    if ack_sla_minutes <= 0:
-        raise HTTPException(status_code=400, detail="ack_sla_minutes must be positive")
-    escalate_to_group_id = payload.get("escalate_to_group_id")
-    if not escalate_to_group_id:
+    ack_sla_minutes = _positive_int(payload.get("ack_sla_minutes", 0), "ack_sla_minutes", MAX_ACK_SLA_MINUTES)
+    if not payload.get("escalate_to_group_id"):
         raise HTTPException(status_code=400, detail="escalate_to_group_id is required")
+    escalate_to_group_id = _positive_int(payload.get("escalate_to_group_id"), "escalate_to_group_id")
     account_id = payload.get("aws_account_id")  # None = global fallback policy
+    if account_id is not None:
+        # "3" (string) used to fail the scope check (not in a set of
+        # ints) and a non-numeric value reached the INSERT as a raw 500.
+        account_id = _positive_int(account_id, "aws_account_id")
 
     _check_account_access(current_user, account_id)
 
     conn = get_connection(); cur = conn.cursor()
     try:
+        _require_group_exists(cur, escalate_to_group_id)
         # current_user["id"], not "sub" -- the JWT claim itself is named
         # "sub", but app/auth/security.py's decode_token() already
         # unpacks it into current_user["id"] before this function ever
@@ -132,11 +156,14 @@ def create_policy(payload: dict = Body(...), current_user: dict = Depends(requir
         """, (account_id, severity, ack_sla_minutes, escalate_to_group_id, int(current_user["id"])))
         conn.commit()
         new_id = cur.lastrowid
+    except HTTPException:
+        raise
     except Exception as e:
         conn.rollback()
         if "uniq_policy_scope" in str(e):
             raise HTTPException(status_code=409, detail="A policy for this account+severity already exists — edit or delete it instead")
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.exception("create escalation policy failed")
+        raise HTTPException(status_code=400, detail="Could not create escalation policy")
     finally:
         cur.close(); conn.close()
     return {"status": "created", "id": new_id}
@@ -145,12 +172,17 @@ def create_policy(payload: dict = Body(...), current_user: dict = Depends(requir
 @router.patch("/{policy_id}")
 def update_policy(policy_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("escalation.manage"))):
     fields, params = [], []
+    # Same validation as create: a PATCH used to accept ack_sla_minutes
+    # of 0 or negative (-> every matching alert escalated immediately).
+    new_group_id = None
     if "ack_sla_minutes" in payload:
-        fields.append("ack_sla_minutes = %s"); params.append(int(payload["ack_sla_minutes"]))
+        fields.append("ack_sla_minutes = %s")
+        params.append(_positive_int(payload["ack_sla_minutes"], "ack_sla_minutes", MAX_ACK_SLA_MINUTES))
     if "escalate_to_group_id" in payload:
-        fields.append("escalate_to_group_id = %s"); params.append(payload["escalate_to_group_id"])
+        new_group_id = _positive_int(payload["escalate_to_group_id"], "escalate_to_group_id")
+        fields.append("escalate_to_group_id = %s"); params.append(new_group_id)
     if "enabled" in payload:
-        fields.append("enabled = %s"); params.append(int(payload["enabled"]))
+        fields.append("enabled = %s"); params.append(1 if payload["enabled"] in (True, 1, "1", "true", "True") else 0)
     if not fields:
         raise HTTPException(status_code=400, detail="No updatable fields provided")
     params.append(policy_id)
@@ -162,16 +194,18 @@ def update_policy(policy_id: int, payload: dict = Body(...), current_user: dict 
         if not existing:
             raise HTTPException(status_code=404, detail="Policy not found")
         _check_account_access(current_user, existing["aws_account_id"])
+        if new_group_id is not None:
+            _require_group_exists(cur, new_group_id)
 
         cur2 = conn.cursor()
         cur2.execute(f"UPDATE escalation_policies SET {', '.join(fields)} WHERE id = %s", params)
         conn.commit()
-        updated = cur2.rowcount
         cur2.close()
     finally:
         cur.close(); conn.close()
-    if not updated:
-        raise HTTPException(status_code=404, detail="Policy not found")
+    # No rowcount check: MySQL reports 0 affected rows when the values are
+    # unchanged, which used to turn an idempotent PATCH into a false 404.
+    # Existence was already verified above.
     return {"status": "updated"}
 
 

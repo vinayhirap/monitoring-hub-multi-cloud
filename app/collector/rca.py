@@ -66,42 +66,57 @@ TREND_RECENT_WINDOW_MINUTES = 15
 SUDDEN_SPIKE_SLOPE_RATIO = 3.0
 
 
-def _gather_signals(cursor, resource_id, around_time, lookback_minutes=TRIGGER_LOOKBACK_MINUTES):
+def _gather_signals(cursor, resource_id, around_time, lookback_minutes=TRIGGER_LOOKBACK_MINUTES,
+                    aws_account_id=None):
     """Shared by both entry points: topology in-degree, real AWS
     CloudTrail activity, and this app's own config-change audit trail
-    around a given resource + point in time. See module docstring."""
-    cursor.execute("""
+    around a given resource + point in time. See module docstring.
+
+    aws_account_id (audit b08): topology and CloudTrail lookups are
+    pinned to the alert's account. resource_ids are not globally unique
+    (RDS identifiers, Lambda/IAM names, GCP instance names), so without
+    it another account's CloudTrail actor/event could be presented as
+    this alert's probable trigger. It also lets cloud_events use its
+    (aws_account_id, event_time) index instead of a full scan."""
+    acct_rel = " AND aws_account_id = %s" if aws_account_id is not None else ""
+    cursor.execute(f"""
         SELECT COUNT(DISTINCT source_resource_id) AS in_degree
         FROM resource_relationships
-        WHERE target_resource_id = %s
-    """, (resource_id,))
+        WHERE target_resource_id = %s{acct_rel}
+    """, (resource_id,) + ((aws_account_id,) if aws_account_id is not None else ()))
     in_degree = cursor.fetchone()["in_degree"] or 0
 
     # JSON_SEARCH (not JSON_CONTAINS, which does not accept a wildcard
     # path) finds the resource id string anywhere inside
     # cloud_events.resource_ids' array of {"type":..., "id":...} objects.
-    cursor.execute("""
+    ce_acct = "ce.aws_account_id = %s AND " if aws_account_id is not None else ""
+    rel_acct = " AND rel.aws_account_id = ce.aws_account_id" if aws_account_id is not None else ""
+    cursor.execute(f"""
         SELECT ce.event_name, ce.event_source, ce.username, ce.event_time,
                ce.resource_ids
         FROM cloud_events ce
-        WHERE ce.event_time BETWEEN DATE_SUB(%s, INTERVAL %s MINUTE) AND %s
+        WHERE {ce_acct}ce.event_time BETWEEN DATE_SUB(%s, INTERVAL %s MINUTE) AND %s
           AND (
               JSON_SEARCH(ce.resource_ids, 'one', %s) IS NOT NULL
               OR EXISTS (
                   SELECT 1 FROM resource_relationships rel
-                  WHERE rel.target_resource_id = %s
+                  WHERE rel.target_resource_id = %s{rel_acct}
                     AND JSON_SEARCH(ce.resource_ids, 'one', rel.source_resource_id) IS NOT NULL
               )
           )
         ORDER BY ce.event_time DESC
         LIMIT 10
-    """, (around_time, lookback_minutes, around_time, resource_id, resource_id))
+    """, ((aws_account_id,) if aws_account_id is not None else ())
+         + (around_time, lookback_minutes, around_time, resource_id, resource_id))
     cloud_events = cursor.fetchall()
 
     # audit_logs.payload is a free-form JSON blob -- best-effort
     # substring match, not a structured join; a false miss here just
     # means no config-change context is shown, never a false alarm.
-    resource_like_pattern = f"%{resource_id}%"
+    # Escape LIKE wildcards in the id itself ('_' is common in resource
+    # names and matched ANY character, producing false config-change hits).
+    escaped = str(resource_id).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    resource_like_pattern = f"%{escaped}%"
     cursor.execute("""
         SELECT actor, action, payload, created_at
         FROM audit_logs
@@ -128,7 +143,8 @@ def _gather_signals(cursor, resource_id, around_time, lookback_minutes=TRIGGER_L
 DEPLOY_LOOKBACK_MINUTES = 45
 
 
-def _gather_deployment_signal(cursor, resource_id, around_time, lookback_minutes=DEPLOY_LOOKBACK_MINUTES):
+def _gather_deployment_signal(cursor, resource_id, around_time, lookback_minutes=DEPLOY_LOOKBACK_MINUTES,
+                              aws_account_id=None):
     """Returns the most recent 'deployment' op_event (see
     app/api/webhooks.py) in the window before around_time, for this
     resource's account -- matching either the exact resource_id the
@@ -137,16 +153,23 @@ def _gather_deployment_signal(cursor, resource_id, around_time, lookback_minutes
     on that account shortly after). Returns None if no resources row
     matches (shouldn't happen for a real alert) or no deployment is
     found in the window."""
-    cursor.execute("""
-        SELECT acc.id AS account_id
-        FROM resources r
-        JOIN aws_accounts acc ON acc.id = r.aws_account_id
-        WHERE r.resource_id = %s
-        LIMIT 1
-    """, (resource_id,))
-    row = cursor.fetchone()
-    if not row:
-        return None
+    if aws_account_id is not None:
+        # The alert's own account (audit b08) -- the old resource_id-only
+        # lookup (LIMIT 1) could pick a DIFFERENT account that happens to
+        # have a resource with the same id, and then report that
+        # account's deployment as this alert's trigger.
+        row = {"account_id": aws_account_id}
+    else:
+        cursor.execute("""
+            SELECT acc.id AS account_id
+            FROM resources r
+            JOIN aws_accounts acc ON acc.id = r.aws_account_id
+            WHERE r.resource_id = %s
+            LIMIT 1
+        """, (resource_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
 
     cursor.execute("""
         SELECT message, detail, created_at
@@ -161,7 +184,7 @@ def _gather_deployment_signal(cursor, resource_id, around_time, lookback_minutes
     return cursor.fetchone()
 
 
-def _trend_context(cursor, resource_id, metric_name, breach_time):
+def _trend_context(cursor, resource_id, metric_name, breach_time, aws_account_id=None):
     """Characterizes the metric's own behavior in the hours leading up
     to the breach -- sudden spike vs gradual climb vs flat-then-breach.
     Plain linear-regression slope comparison (numpy), same tool as
@@ -169,18 +192,22 @@ def _trend_context(cursor, resource_id, metric_name, breach_time):
     instead of a long capacity-forecast window."""
     import numpy as np
 
-    cursor.execute("""
+    acct = " AND r.aws_account_id = %s" if aws_account_id is not None else ""
+    cursor.execute(f"""
         SELECT UNIX_TIMESTAMP(h.metric_timestamp) AS ts, h.metric_value
         FROM metric_history h
         JOIN resources r ON r.id = h.resource_id
-        WHERE r.resource_id = %s AND h.metric_name = %s
+        WHERE r.resource_id = %s{acct} AND h.metric_name = %s
           AND h.metric_timestamp BETWEEN DATE_SUB(%s, INTERVAL %s HOUR) AND %s
           AND h.metric_value IS NOT NULL
         ORDER BY h.metric_timestamp ASC
-    """, (resource_id, metric_name, breach_time, TREND_LOOKBACK_HOURS, breach_time))
+    """, (resource_id,) + ((aws_account_id,) if aws_account_id is not None else ())
+         + (metric_name, breach_time, TREND_LOOKBACK_HOURS, breach_time))
     points = cursor.fetchall()
 
-    if len(points) < 5:
+    # A fit needs >= 2 distinct timestamps; duplicates (same series
+    # written twice) made polyfit rank-deficient -> NaN/warning.
+    if len(points) < 5 or len({p["ts"] for p in points}) < 2:
         return {
             "pattern": "insufficient_data",
             "description": "Not enough recent history to tell whether this was a sudden change or a gradual trend.",
@@ -190,13 +217,24 @@ def _trend_context(cursor, resource_id, metric_name, breach_time):
     vals = np.array([p["metric_value"] for p in points], dtype=float)
     ts_minutes = (ts - ts.min()) / 60.0
 
-    whole_slope = float(np.polyfit(ts_minutes, vals, 1)[0])
-
-    recent_mask = ts_minutes >= (ts_minutes.max() - TREND_RECENT_WINDOW_MINUTES)
-    if recent_mask.sum() >= 3:
-        recent_slope = float(np.polyfit(ts_minutes[recent_mask], vals[recent_mask], 1)[0])
-    else:
-        recent_slope = whole_slope
+    insufficient = {
+        "pattern": "insufficient_data",
+        "description": "Not enough recent history to tell whether this was a sudden change or a gradual trend.",
+    }
+    try:
+        whole_slope = float(np.polyfit(ts_minutes, vals, 1)[0])
+        recent_mask = ts_minutes >= (ts_minutes.max() - TREND_RECENT_WINDOW_MINUTES)
+        # The recent window needs >= 2 DISTINCT timestamps too, or its
+        # fit is rank-deficient (duplicate samples) and the NaN slope
+        # silently classified every such alert as flat_then_breach.
+        if recent_mask.sum() >= 3 and np.unique(ts_minutes[recent_mask]).size >= 2:
+            recent_slope = float(np.polyfit(ts_minutes[recent_mask], vals[recent_mask], 1)[0])
+        else:
+            recent_slope = whole_slope
+    except (np.linalg.LinAlgError, ValueError, TypeError):
+        return insufficient
+    if not (np.isfinite(whole_slope) and np.isfinite(recent_slope)):
+        return insufficient
 
     ratio = abs(recent_slope) / (abs(whole_slope) + 1e-9)
 
@@ -290,7 +328,7 @@ def rank_probable_cause(incident_id: int):
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT a.id, a.resource_id, a.metric_name, a.triggered_at AS created_at, a.severity
+            SELECT a.id, a.aws_account_id, a.resource_id, a.metric_name, a.triggered_at AS created_at, a.severity
             FROM incident_alerts ia
             JOIN alerts a ON a.id = ia.alert_id
             WHERE ia.incident_id = %s
@@ -304,9 +342,10 @@ def rank_probable_cause(incident_id: int):
         candidate_resource = earliest["resource_id"]
 
         in_degree, cloud_trigger_events, config_changes = _gather_signals(
-            cursor, candidate_resource, earliest["created_at"]
+            cursor, candidate_resource, earliest["created_at"], aws_account_id=earliest["aws_account_id"]
         )
-        recent_deployment = _gather_deployment_signal(cursor, candidate_resource, earliest["created_at"])
+        recent_deployment = _gather_deployment_signal(cursor, candidate_resource, earliest["created_at"],
+                                                      aws_account_id=earliest["aws_account_id"])
 
         reason_parts = [
             f"Earliest breach in this incident: {earliest['metric_name']} on "
@@ -374,16 +413,29 @@ def explain_alert(alert_id: int):
         resource_id = alert["resource_id"]
         breach_time = alert["triggered_at"]
 
-        in_degree, cloud_events, config_changes = _gather_signals(cursor, resource_id, breach_time)
-        recent_deployment = _gather_deployment_signal(cursor, resource_id, breach_time)
-        trend = _trend_context(cursor, resource_id, alert["metric_name"], breach_time)
+        account_id = alert["aws_account_id"]
+        in_degree, cloud_events, config_changes = _gather_signals(cursor, resource_id, breach_time,
+                                                                  aws_account_id=account_id)
+        recent_deployment = _gather_deployment_signal(cursor, resource_id, breach_time,
+                                                      aws_account_id=account_id)
+        trend = _trend_context(cursor, resource_id, alert["metric_name"], breach_time,
+                               aws_account_id=account_id)
         is_flapping = _check_flapping(cursor, alert["aws_account_id"], resource_id, alert["metric_name"])
 
+        # The alert's CURRENT incident: an alert can belong to an old,
+        # resolved incident as well as an active one, and the previous
+        # unordered "LIMIT 1" could pick the resolved one and report its
+        # long-gone members as happening "around the same time".
         cursor.execute("""
             SELECT ia.incident_id, COUNT(*) AS other_count
             FROM incident_alerts ia
             WHERE ia.incident_id = (
-                SELECT incident_id FROM incident_alerts WHERE alert_id = %s LIMIT 1
+                SELECT ia2.incident_id
+                FROM incident_alerts ia2
+                JOIN incidents i ON i.id = ia2.incident_id
+                WHERE ia2.alert_id = %s
+                ORDER BY (i.status = 'active') DESC, i.id DESC
+                LIMIT 1
             )
             AND ia.alert_id != %s
             GROUP BY ia.incident_id
@@ -469,9 +521,9 @@ def explain_alert(alert_id: int):
             FROM alerts WHERE id = %s
         """, (alert_id,))
         cached = cursor.fetchone()
-        if cached and cached["llm_summary"]:
+        if cached and cached.get("llm_summary"):
             from app.llm.summarizer import source_hash
-            if cached["llm_summary_source_hash"] == source_hash(deterministic_summary):
+            if cached.get("llm_summary_source_hash") == source_hash(deterministic_summary):
                 summary = cached["llm_summary"]
                 summary_source = "llm"
 

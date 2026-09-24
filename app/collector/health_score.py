@@ -76,8 +76,8 @@ def recompute_health_scores() -> int:
             cursor.execute("""
                 SELECT COUNT(DISTINCT target_resource_id) AS fan_out
                 FROM resource_relationships
-                WHERE source_resource_id = %s
-            """, (row["resource_id"],))
+                WHERE aws_account_id = %s AND source_resource_id = %s
+            """, (row["aws_account_id"], row["resource_id"]))
             fan_out = cursor.fetchone()["fan_out"] or 0
             blast_penalty = min(MAX_BLAST_RADIUS_PENALTY, fan_out * BLAST_RADIUS_PENALTY_PER_DEPENDENT)
 
