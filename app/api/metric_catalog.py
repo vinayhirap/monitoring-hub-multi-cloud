@@ -12,7 +12,7 @@ CloudWatch metric catalog + per-account metric selection.
   GET  /api/account-metrics/{account_id}/yace-config      generate a YACE discovery config.yml for this account's selection
 """
 from fastapi import APIRouter, HTTPException, Body, Query, Response, Depends
-from app.db import get_connection
+from app.db import get_connection, get_db_cursor
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
 from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type, normalize_service_key
@@ -72,7 +72,6 @@ def get_catalog(
     search:   str = Query(None, description="matches metric name, service, or description"),
     current_user: dict = Depends(require_permission("metrics.view")),
 ):
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
     clauses, params = ["provider = %s"], [provider]
     if category:
         clauses.append("category = %s"); params.append(category)
@@ -83,15 +82,20 @@ def get_catalog(
         like = f"%{search}%"
         params += [like, like, like]
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    cur.execute(f"""
-        SELECT id, service, namespace, display_service, metric_name,
-               statistic, unit, category, description, is_default, enabled
-        FROM metric_catalog
-        {where}
-        ORDER BY category = 'core' DESC, category = 'extended' DESC,
-                 display_service, metric_name
-    """, params)
-    rows = cur.fetchall(); cur.close(); conn.close()
+    # Fix (audit b17): was opened with no try/finally (pre-scan-flagged
+    # leak; the leak-guard in app/db.py auto-recovers it eventually, but
+    # get_db_cursor() is the documented preferred pattern for new/changed
+    # code -- see that function's own docstring).
+    with get_db_cursor(dictionary=True, commit=False) as (conn, cur):
+        cur.execute(f"""
+            SELECT id, service, namespace, display_service, metric_name,
+                   statistic, unit, category, description, is_default, enabled
+            FROM metric_catalog
+            {where}
+            ORDER BY category = 'core' DESC, category = 'extended' DESC,
+                     display_service, metric_name
+        """, params)
+        rows = cur.fetchall()
 
     # Group by service for the frontend accordion
     grouped = {}
@@ -119,28 +123,28 @@ def get_catalog(
 
 @router.get("/api/metric-catalog/services")
 def get_services(provider: str = Query("aws", description="aws | azure | gcp"), current_user: dict = Depends(require_permission("metrics.view"))):
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT service, display_service, namespace, category, COUNT(*) AS metric_count
-        FROM metric_catalog
-        WHERE provider = %s AND (metric_name != '' OR metric_name IS NULL)
-        GROUP BY service, display_service, namespace, category
-        ORDER BY category = 'core' DESC, category = 'extended' DESC, display_service
-    """, (provider,))
-    rows = cur.fetchall(); cur.close(); conn.close()
+    with get_db_cursor(dictionary=True, commit=False) as (conn, cur):
+        cur.execute("""
+            SELECT service, display_service, namespace, category, COUNT(*) AS metric_count
+            FROM metric_catalog
+            WHERE provider = %s AND (metric_name != '' OR metric_name IS NULL)
+            GROUP BY service, display_service, namespace, category
+            ORDER BY category = 'core' DESC, category = 'extended' DESC, display_service
+        """, (provider,))
+        rows = cur.fetchall()
     return [_ser(r) for r in rows]
 
 
 @router.get("/api/metric-catalog/default-template")
 def get_default_template(provider: str = Query("aws", description="aws | azure | gcp"), current_user: dict = Depends(require_permission("metrics.view"))):
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT id, service, display_service, metric_name
-        FROM metric_catalog
-        WHERE is_default = 1 AND provider = %s
-        ORDER BY display_service, metric_name
-    """, (provider,))
-    rows = cur.fetchall(); cur.close(); conn.close()
+    with get_db_cursor(dictionary=True, commit=False) as (conn, cur):
+        cur.execute("""
+            SELECT id, service, display_service, metric_name
+            FROM metric_catalog
+            WHERE is_default = 1 AND provider = %s
+            ORDER BY display_service, metric_name
+        """, (provider,))
+        rows = cur.fetchall()
     return [_ser(r) for r in rows]
 
 
@@ -153,15 +157,14 @@ def _default_metric_ids(cur, provider: str = "aws") -> list:
 
 def seed_account_defaults(account_id: int, provider: str = "aws"):
     """Called by admin/accounts.py right after a new account is onboarded."""
-    conn = get_connection(); cur = conn.cursor()
-    ids = _default_metric_ids(cur, provider)
-    for mid in ids:
-        cur.execute("""
-            INSERT IGNORE INTO account_metric_selections
-                (aws_account_id, metric_id, enabled, source)
-            VALUES (%s, %s, 1, 'template')
-        """, (account_id, mid))
-    conn.commit(); cur.close(); conn.close()
+    with get_db_cursor(commit=True) as (conn, cur):
+        ids = _default_metric_ids(cur, provider)
+        for mid in ids:
+            cur.execute("""
+                INSERT IGNORE INTO account_metric_selections
+                    (aws_account_id, metric_id, enabled, source)
+                VALUES (%s, %s, 1, 'template')
+            """, (account_id, mid))
     return len(ids)
 
 
@@ -183,33 +186,25 @@ def enable_metrics_for_services(account_id: int, service_keys: set, provider: st
     if not service_keys:
         return {"added": 0, "services": []}
 
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    placeholders = ",".join(["%s"] * len(service_keys))
-    cur.execute(f"""
-        SELECT id FROM metric_catalog
-        WHERE provider = %s AND is_default = 1 AND service IN ({placeholders})
-    """, (provider, *service_keys))
-    metric_ids = [r["id"] for r in cur.fetchall()]
-    cur.close()
-
-    if not metric_ids:
-        conn.close()
-        return {"added": 0, "services": sorted(service_keys)}
-
-    cur = conn.cursor()
     added = 0
-    for mid in metric_ids:
-        cur.execute("""
-            INSERT IGNORE INTO account_metric_selections
-                (aws_account_id, metric_id, enabled, source)
-            VALUES (%s, %s, 1, %s)
-        """, (account_id, mid, source))
-        added += cur.rowcount
+    with get_db_cursor(dictionary=True, commit=True) as (conn, cur):
+        placeholders = ",".join(["%s"] * len(service_keys))
+        cur.execute(f"""
+            SELECT id FROM metric_catalog
+            WHERE provider = %s AND is_default = 1 AND service IN ({placeholders})
+        """, (provider, *service_keys))
+        metric_ids = [r["id"] for r in cur.fetchall()]
 
-    if added:
-        _sync_thresholds_for_selection(cur, account_id, set(metric_ids), set())
+        for mid in metric_ids:
+            cur.execute("""
+                INSERT IGNORE INTO account_metric_selections
+                    (aws_account_id, metric_id, enabled, source)
+                VALUES (%s, %s, 1, %s)
+            """, (account_id, mid, source))
+            added += cur.rowcount
 
-    conn.commit(); cur.close(); conn.close()
+        if added:
+            _sync_thresholds_for_selection(cur, account_id, set(metric_ids), set())
 
     if added:
         _write_audit("system", "Auto-detected services enabled",
@@ -221,82 +216,80 @@ def enable_metrics_for_services(account_id: int, service_keys: set, provider: st
 @router.get("/api/account-metrics/{account_id}")
 def get_account_metrics(account_id: int, current_user: dict = Depends(require_permission("metrics.view"))):
     _require_account_access(account_id, current_user)
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id, provider FROM aws_accounts WHERE id = %s", (account_id,))
-    account = cur.fetchone()
-    if not account:
-        cur.close(); conn.close()
-        raise HTTPException(status_code=404, detail="Account not found")
-    provider = account.get("provider") or "aws"
+    with get_db_cursor(dictionary=True, commit=False) as (conn, cur):
+        cur.execute("SELECT id, provider FROM aws_accounts WHERE id = %s", (account_id,))
+        account = cur.fetchone()
+        if not account:
+            raise HTTPException(status_code=404, detail="Account not found")
+        provider = account.get("provider") or "aws"
 
-    # IMPORTANT: scoped to this account's own provider. Without the
-    # mc.provider filter, editing an Azure/GCP account's metric selection
-    # in Settings -> Metrics rendered AWS+Azure+GCP catalog rows all mixed
-    # together (metric_catalog has no per-account provider boundary on its
-    # own) -- the exact "services listed that shouldn't be there" symptom.
-    cur.execute("""
-        SELECT mc.id, mc.service, mc.namespace, mc.display_service, mc.metric_name,
-               mc.statistic, mc.unit, mc.category, mc.description, mc.is_default,
-               COALESCE(ams.enabled, 0) AS enabled,
-               ams.source
-        FROM metric_catalog mc
-        LEFT JOIN account_metric_selections ams
-               ON ams.metric_id = mc.id AND ams.aws_account_id = %s
-        WHERE mc.provider = %s AND (mc.metric_name != '' OR mc.metric_name IS NULL)
-        ORDER BY mc.category = 'core' DESC, mc.category = 'extended' DESC,
-                 mc.display_service, mc.metric_name
-    """, (account_id, provider))
-    rows = cur.fetchall()
-
-    # Hide CORE-tier services this account has zero matching resources
-    # for -- e.g. "NLB" showing up as a selectable service in Metrics to
-    # Monitor even though this account has never had a Network Load
-    # Balancer, only ALBs. Both share resources.resource_type='elb' (see
-    # app/collector/discovery/runner.py), distinguished only by their ARN
-    # pattern (loadbalancer/app/ vs loadbalancer/net/), so a plain
-    # resource_type match can't tell them apart -- this checks the ARN
-    # pattern directly for that one case. Only applied to the 7 core
-    # AWS services this app actually discovers resources for
-    # (ec2/ebs/rds/lambda/alb/nlb/ecs); EXTENDED-tier services are left
-    # alone deliberately.
-    #
-    # CORRECTION (found auditing the Services page, see
-    # live_resource_counts in app/api/live_data.py): the reasoning this
-    # comment used to give -- "this app has no discovery for
-    # [extended-tier services] at all" -- is no longer true and hasn't
-    # been since app/collector/discovery/extended.py's
-    # discover_extended_services() was wired into every AWS discovery
-    # cycle (see discovery/runner.py's _discover_account()). Extended
-    # AWS resources DO get tracked in `resources` today, the same way
-    # core ones do. The real, still-valid reason to leave this tier
-    # unfiltered here is the one already stated above: this page's job
-    # is letting someone pre-select metrics for a service BEFORE a
-    # resource of that type exists yet (e.g. picking DynamoDB metrics
-    # ahead of provisioning a table) -- hiding a zero-resource extended
-    # service would silently remove that ability. That's a deliberate
-    # product choice for THIS page, independent of whether discovery
-    # exists. The Services page (ServiceList.jsx) is a different
-    # surface with a different job -- showing what's ACTUALLY being
-    # monitored right now -- so it correctly does hide a zero-resource
-    # service, extended or not; the two pages disagreeing here is
-    # intentional, not a bug to reconcile.
-    present_core_services = None
-    if provider == "aws":
+        # IMPORTANT: scoped to this account's own provider. Without the
+        # mc.provider filter, editing an Azure/GCP account's metric selection
+        # in Settings -> Metrics rendered AWS+Azure+GCP catalog rows all mixed
+        # together (metric_catalog has no per-account provider boundary on its
+        # own) -- the exact "services listed that shouldn't be there" symptom.
         cur.execute("""
-            SELECT resource_type, resource_id FROM resources WHERE aws_account_id = %s
-        """, (account_id,))
-        resource_rows = cur.fetchall()
-        # Uses the same normalize_service_key() live_resource_counts (app/
-        # api/live_data.py) now uses -- previously this logic was inlined
-        # here ONLY, which is exactly how it and live_resource_counts drifted
-        # apart and hid ALB/NLB from the Services page. See that function's
-        # docstring in app/threshold_defaults.py for the full history.
-        present_core_services = {
-            normalize_service_key(rr["resource_type"], rr["resource_id"] or "")
-            for rr in resource_rows
-        }
+            SELECT mc.id, mc.service, mc.namespace, mc.display_service, mc.metric_name,
+                   mc.statistic, mc.unit, mc.category, mc.description, mc.is_default,
+                   COALESCE(ams.enabled, 0) AS enabled,
+                   ams.source
+            FROM metric_catalog mc
+            LEFT JOIN account_metric_selections ams
+                   ON ams.metric_id = mc.id AND ams.aws_account_id = %s
+            WHERE mc.provider = %s AND (mc.metric_name != '' OR mc.metric_name IS NULL)
+            ORDER BY mc.category = 'core' DESC, mc.category = 'extended' DESC,
+                     mc.display_service, mc.metric_name
+        """, (account_id, provider))
+        rows = cur.fetchall()
 
-    cur.close(); conn.close()
+        # Hide CORE-tier services this account has zero matching resources
+        # for -- e.g. "NLB" showing up as a selectable service in Metrics to
+        # Monitor even though this account has never had a Network Load
+        # Balancer, only ALBs. Both share resources.resource_type='elb' (see
+        # app/collector/discovery/runner.py), distinguished only by their ARN
+        # pattern (loadbalancer/app/ vs loadbalancer/net/), so a plain
+        # resource_type match can't tell them apart -- this checks the ARN
+        # pattern directly for that one case. Only applied to the 7 core
+        # AWS services this app actually discovers resources for
+        # (ec2/ebs/rds/lambda/alb/nlb/ecs); EXTENDED-tier services are left
+        # alone deliberately.
+        #
+        # CORRECTION (found auditing the Services page, see
+        # live_resource_counts in app/api/live_data.py): the reasoning this
+        # comment used to give -- "this app has no discovery for
+        # [extended-tier services] at all" -- is no longer true and hasn't
+        # been since app/collector/discovery/extended.py's
+        # discover_extended_services() was wired into every AWS discovery
+        # cycle (see discovery/runner.py's _discover_account()). Extended
+        # AWS resources DO get tracked in `resources` today, the same way
+        # core ones do. The real, still-valid reason to leave this tier
+        # unfiltered here is the one already stated above: this page's job
+        # is letting someone pre-select metrics for a service BEFORE a
+        # resource of that type exists yet (e.g. picking DynamoDB metrics
+        # ahead of provisioning a table) -- hiding a zero-resource extended
+        # service would silently remove that ability. That's a deliberate
+        # product choice for THIS page, independent of whether discovery
+        # exists. The Services page (ServiceList.jsx) is a different
+        # surface with a different job -- showing what's ACTUALLY being
+        # monitored right now -- so it correctly does hide a zero-resource
+        # service, extended or not; the two pages disagreeing here is
+        # intentional, not a bug to reconcile.
+        present_core_services = None
+        if provider == "aws":
+            cur.execute("""
+                SELECT resource_type, resource_id FROM resources WHERE aws_account_id = %s
+            """, (account_id,))
+            resource_rows = cur.fetchall()
+            # Uses the same normalize_service_key() live_resource_counts (app/
+            # api/live_data.py) now uses -- previously this logic was inlined
+            # here ONLY, which is exactly how it and live_resource_counts drifted
+            # apart and hid ALB/NLB from the Services page. See that function's
+            # docstring in app/threshold_defaults.py for the full history.
+            present_core_services = {
+                normalize_service_key(rr["resource_type"], rr["resource_id"] or "")
+                for rr in resource_rows
+            }
+
 
     _CORE_SERVICES_WITH_DISCOVERY = {"ec2", "ebs", "rds", "lambda", "alb", "nlb", "ecs"}
 
@@ -425,41 +418,36 @@ def _set_account_metrics_internal(account_id: int, payload: dict, actor: str = "
     """
     enabled_ids = set(int(i) for i in payload.get("enabled_metric_ids", []))
 
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id FROM aws_accounts WHERE id = %s", (account_id,))
-    if not cur.fetchone():
-        cur.close(); conn.close()
-        raise HTTPException(status_code=404, detail="Account not found")
+    with get_db_cursor(dictionary=True, commit=True) as (conn, cur):
+        cur.execute("SELECT id FROM aws_accounts WHERE id = %s", (account_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Account not found")
 
-    cur.execute("SELECT metric_id FROM account_metric_selections WHERE aws_account_id = %s", (account_id,))
-    existing_ids = {r["metric_id"] for r in cur.fetchall()}
-    cur.close()
+        cur.execute("SELECT metric_id FROM account_metric_selections WHERE aws_account_id = %s", (account_id,))
+        existing_ids = {r["metric_id"] for r in cur.fetchall()}
 
-    cur = conn.cursor()
-    to_add    = enabled_ids - existing_ids
-    to_enable = enabled_ids & existing_ids
-    to_remove = existing_ids - enabled_ids
+        to_add    = enabled_ids - existing_ids
+        to_enable = enabled_ids & existing_ids
+        to_remove = existing_ids - enabled_ids
 
-    for mid in to_add:
-        cur.execute("""
-            INSERT INTO account_metric_selections (aws_account_id, metric_id, enabled, source)
-            VALUES (%s, %s, 1, 'manual')
-        """, (account_id, mid))
-    if to_enable:
-        cur.execute(f"""
-            UPDATE account_metric_selections SET enabled = 1
-            WHERE aws_account_id = %s AND metric_id IN ({','.join(['%s']*len(to_enable))})
-        """, (account_id, *to_enable))
-    if to_remove:
-        cur.execute(f"""
-            UPDATE account_metric_selections SET enabled = 0
-            WHERE aws_account_id = %s AND metric_id IN ({','.join(['%s']*len(to_remove))})
-        """, (account_id, *to_remove))
+        for mid in to_add:
+            cur.execute("""
+                INSERT INTO account_metric_selections (aws_account_id, metric_id, enabled, source)
+                VALUES (%s, %s, 1, 'manual')
+            """, (account_id, mid))
+        if to_enable:
+            cur.execute(f"""
+                UPDATE account_metric_selections SET enabled = 1
+                WHERE aws_account_id = %s AND metric_id IN ({','.join(['%s']*len(to_enable))})
+            """, (account_id, *to_enable))
+        if to_remove:
+            cur.execute(f"""
+                UPDATE account_metric_selections SET enabled = 0
+                WHERE aws_account_id = %s AND metric_id IN ({','.join(['%s']*len(to_remove))})
+            """, (account_id, *to_remove))
 
-    # Keep Settings -> Metric Thresholds aligned with this selection change.
-    _sync_thresholds_for_selection(cur, account_id, to_add | to_enable, to_remove)
-
-    conn.commit(); cur.close(); conn.close()
+        # Keep Settings -> Metric Thresholds aligned with this selection change.
+        _sync_thresholds_for_selection(cur, account_id, to_add | to_enable, to_remove)
 
     _write_audit(actor, "Account metric selection updated",
                  f"account={account_id} enabled={len(enabled_ids)} added={len(to_add)} removed={len(to_remove)}",
@@ -470,47 +458,41 @@ def _set_account_metrics_internal(account_id: int, payload: dict, actor: str = "
 @router.post("/api/account-metrics/{account_id}/apply-default")
 def apply_default_template(account_id: int, current_user: dict = Depends(require_permission("metric_catalog.manage"))):
     _require_account_access(account_id, current_user)
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id, provider FROM aws_accounts WHERE id = %s", (account_id,))
-    account = cur.fetchone()
-    if not account:
-        cur.close(); conn.close()
-        raise HTTPException(status_code=404, detail="Account not found")
-    provider = account.get("provider") or "aws"
-    cur.close(); conn.close()
+    with get_db_cursor(dictionary=True, commit=False) as (conn, cur):
+        cur.execute("SELECT id, provider FROM aws_accounts WHERE id = %s", (account_id,))
+        account = cur.fetchone()
+        if not account:
+            raise HTTPException(status_code=404, detail="Account not found")
+        provider = account.get("provider") or "aws"
 
     # Bug fix: this used to call seed_account_defaults(account_id) with no
     # provider, which silently seeded AWS's default template onto Azure/GCP
     # accounts. Always reset to THIS account's own provider's defaults.
     count = seed_account_defaults(account_id, provider=provider)
 
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id FROM metric_catalog WHERE is_default = 1 AND provider = %s", (provider,))
-    default_ids = {r["id"] for r in cur.fetchall()}
-    cur.execute(
-        "SELECT metric_id FROM account_metric_selections WHERE aws_account_id = %s AND enabled = 1",
-        (account_id,),
-    )
-    currently_enabled = {r["metric_id"] for r in cur.fetchall()}
-    cur.close()
+    with get_db_cursor(dictionary=True, commit=True) as (conn, cur):
+        cur.execute("SELECT id FROM metric_catalog WHERE is_default = 1 AND provider = %s", (provider,))
+        default_ids = {r["id"] for r in cur.fetchall()}
+        cur.execute(
+            "SELECT metric_id FROM account_metric_selections WHERE aws_account_id = %s AND enabled = 1",
+            (account_id,),
+        )
+        currently_enabled = {r["metric_id"] for r in cur.fetchall()}
 
-    # Disable anything currently enabled that isn't part of the default set
-    # for THIS provider. Scoped by mc.provider so a selection that also
-    # includes rows from another provider (shouldn't happen post-fix above,
-    # but is defensive against already-corrupted rows from the bug) is left
-    # alone rather than silently toggled by this account's provider rules.
-    cur = conn.cursor()
-    cur.execute("""
-        UPDATE account_metric_selections ams
-        JOIN metric_catalog mc ON mc.id = ams.metric_id
-        SET ams.enabled = (mc.is_default = 1)
-        WHERE ams.aws_account_id = %s AND mc.provider = %s
-    """, (account_id, provider))
+        # Disable anything currently enabled that isn't part of the default set
+        # for THIS provider. Scoped by mc.provider so a selection that also
+        # includes rows from another provider (shouldn't happen post-fix above,
+        # but is defensive against already-corrupted rows from the bug) is left
+        # alone rather than silently toggled by this account's provider rules.
+        cur.execute("""
+            UPDATE account_metric_selections ams
+            JOIN metric_catalog mc ON mc.id = ams.metric_id
+            SET ams.enabled = (mc.is_default = 1)
+            WHERE ams.aws_account_id = %s AND mc.provider = %s
+        """, (account_id, provider))
 
-    # Keep Settings -> Metric Thresholds aligned with the new default selection.
-    _sync_thresholds_for_selection(cur, account_id, default_ids, currently_enabled - default_ids)
-
-    conn.commit(); cur.close(); conn.close()
+        # Keep Settings -> Metric Thresholds aligned with the new default selection.
+        _sync_thresholds_for_selection(cur, account_id, default_ids, currently_enabled - default_ids)
 
     _write_audit(current_user["username"], "Applied default metric template",
                  f"account={account_id} provider={provider}",
@@ -667,13 +649,13 @@ def discover_namespace_metrics(account_id: int, namespace: str = Query(...), reg
     # now use metric_catalog.manage instead of alerts.configure too.
     _require_account_access(account_id, current_user)
 
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT id, provider, default_region, role_arn, auth_mode, external_id,
-               tenant_id, client_id, subscription_id, project_id
-        FROM aws_accounts WHERE id = %s
-    """, (account_id,))
-    acc = cur.fetchone(); cur.close(); conn.close()
+    with get_db_cursor(dictionary=True, commit=False) as (conn, cur):
+        cur.execute("""
+            SELECT id, provider, default_region, role_arn, auth_mode, external_id,
+                   tenant_id, client_id, subscription_id, project_id
+            FROM aws_accounts WHERE id = %s
+        """, (account_id,))
+        acc = cur.fetchone()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
 
@@ -696,24 +678,23 @@ def discover_namespace_metrics(account_id: int, namespace: str = Query(...), reg
     if not seen:
         return {"namespace": namespace, "discovered": 0, "metrics": []}
 
-    conn = get_connection(); cur = conn.cursor()
-    display_service = None
-    cur.execute(
-        "SELECT display_service, service FROM metric_catalog WHERE namespace = %s AND provider = %s LIMIT 1",
-        (namespace, provider),
-    )
-    row = cur.fetchone()
-    display_service, service_key = (row if row else (namespace, namespace.split("/")[-1].lower()))
+    with get_db_cursor(commit=True) as (conn, cur):
+        display_service = None
+        cur.execute(
+            "SELECT display_service, service FROM metric_catalog WHERE namespace = %s AND provider = %s LIMIT 1",
+            (namespace, provider),
+        )
+        row = cur.fetchone()
+        display_service, service_key = (row if row else (namespace, namespace.split("/")[-1].lower()))
 
-    for metric_name in seen:
-        cur.execute("""
-            INSERT INTO metric_catalog
-                (service, namespace, display_service, metric_name,
-                 statistic, unit, default_interval, category, description, is_default, enabled, provider)
-            VALUES (%s,%s,%s,%s,'Average',NULL,900,'directory','Discovered live',0,1,%s)
-            ON DUPLICATE KEY UPDATE metric_name = VALUES(metric_name)
-        """, (service_key, namespace, display_service, metric_name, provider))
-    conn.commit(); cur.close(); conn.close()
+        for metric_name in seen:
+            cur.execute("""
+                INSERT INTO metric_catalog
+                    (service, namespace, display_service, metric_name,
+                     statistic, unit, default_interval, category, description, is_default, enabled, provider)
+                VALUES (%s,%s,%s,%s,'Average',NULL,900,'directory','Discovered live',0,1,%s)
+                ON DUPLICATE KEY UPDATE metric_name = VALUES(metric_name)
+            """, (service_key, namespace, display_service, metric_name, provider))
 
     _write_audit(current_user["username"], "Discovered namespace metrics",
                  f"account={account_id} provider={provider} namespace={namespace} count={len(seen)}",
@@ -733,6 +714,23 @@ _SCRAPE_FLAG = {
     "standard": "--scraping-interval=300",
     "trend":    "--scraping-interval=900",
 }
+
+
+def _yaml_comment_safe(s) -> str:
+    """
+    Fix (audit b17): account_name and default_region are admin-editable
+    fields (accounts.onboard-gated, same permission this endpoint
+    requires) that get interpolated into the config's leading `#`
+    comment lines via plain f-strings, not through yaml.dump() (which
+    already escapes everything it serializes -- role_arn/external_id go
+    through that path and were never at risk). A newline embedded in
+    account_name would let its text escape the comment and start
+    injecting real YAML content ahead of the legitimate config.dump()
+    output later in the file -- low-severity in practice since it needs
+    the same accounts.onboard privilege as the person downloading the
+    file, but cheap to close off.
+    """
+    return str(s).replace("\r", " ").replace("\n", " ")
 
 
 @router.get("/api/account-metrics/{account_id}/yace-config")
@@ -790,24 +788,23 @@ def generate_yace_config(
     # test-gcp-credentials) plus the caller's own account scope.
     _require_account_access(account_id, current_user)
 
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT account_name, account_id, role_arn, external_id, default_region
-        FROM aws_accounts WHERE id = %s
-    """, (account_id,))
-    account = cur.fetchone()
-    if not account:
-        cur.close(); conn.close()
-        raise HTTPException(status_code=404, detail="Account not found")
+    with get_db_cursor(dictionary=True, commit=False) as (conn, cur):
+        cur.execute("""
+            SELECT account_name, account_id, role_arn, external_id, default_region
+            FROM aws_accounts WHERE id = %s
+        """, (account_id,))
+        account = cur.fetchone()
+        if not account:
+            raise HTTPException(status_code=404, detail="Account not found")
 
-    cur.execute("""
-        SELECT mc.namespace, mc.service, mc.metric_name, mc.statistic, mc.default_interval
-        FROM metric_catalog mc
-        JOIN account_metric_selections ams ON ams.metric_id = mc.id
-        WHERE ams.aws_account_id = %s AND ams.enabled = 1 AND mc.metric_name != ''
-        ORDER BY mc.namespace, mc.default_interval, mc.metric_name
-    """, (account_id,))
-    rows = cur.fetchall(); cur.close(); conn.close()
+        cur.execute("""
+            SELECT mc.namespace, mc.service, mc.metric_name, mc.statistic, mc.default_interval
+            FROM metric_catalog mc
+            JOIN account_metric_selections ams ON ams.metric_id = mc.id
+            WHERE ams.aws_account_id = %s AND ams.enabled = 1 AND mc.metric_name != ''
+            ORDER BY mc.namespace, mc.default_interval, mc.metric_name
+        """, (account_id,))
+        rows = cur.fetchall()
 
     if not rows:
         raise HTTPException(status_code=400, detail="No metrics enabled for this account — nothing to generate.")
@@ -870,7 +867,8 @@ def generate_yace_config(
     )
     header = (
         f"# YACE discovery config — generated for account "
-        f"'{account['account_name']}' ({account['account_id']}), region {account['default_region']}\n"
+        f"'{_yaml_comment_safe(account['account_name'])}' ({_yaml_comment_safe(account['account_id'])}), "
+        f"region {_yaml_comment_safe(account['default_region'])}\n"
         f"{tier_line}"
         f"# Deploy this to the regional monitoring server for that account/region\n"
         f"# (CloudWatch -> YACE -> local VictoriaMetrics) and reload YACE.\n"
