@@ -49,11 +49,29 @@ def refresh_llm_summaries() -> int:
         # Only active alerts -- a resolved alert's explanation is no
         # longer customer-actionable, not worth spending an API call
         # polishing. LIMIT bounds this cycle's worst-case API spend.
+        #
+        # 2026-09-23 FIX: this ordered by `created_at`, a column
+        # alerts has never had -- the real column is `triggered_at`
+        # (confirmed via DESCRIBE alerts on both Dev and Prod). Since
+        # this whole SELECT lived inside refresh_llm_summaries()'s own
+        # try/except, the 1054 "Unknown column" error was caught the
+        # same way any other failure here would be, logged as
+        # [llm_summary_refresh_failed], and swallowed non-fatally --
+        # meaning this query never once succeeded since
+        # LLM_SUMMARY_ENABLED was first turned on: EVERY active alert
+        # stayed on its plain rca.py template forever, with zero rows
+        # ever selected, on every single "low" tier cycle, for as long
+        # as the feature had been enabled. Not a timing issue, not a
+        # cold-start issue -- a plain wrong column name, one word,
+        # never previously run against a real `alerts` table before
+        # today. See tests/test_llm_summarizer_refresh.py for the
+        # regression test (confirmed it fails loudly on a revert back
+        # to `created_at` before writing this fix).
         cursor.execute("""
             SELECT id, llm_summary_source_hash
             FROM alerts
             WHERE status = 'active' AND metric_name != 'multivariate_anomaly'
-            ORDER BY created_at DESC
+            ORDER BY triggered_at DESC
             LIMIT %s
         """, (batch_limit,))
         candidates = cursor.fetchall()
