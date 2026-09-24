@@ -16,8 +16,11 @@ details" constraint). Two halves in this file:
   "public status page" and "unauthenticated internal-infrastructure
   disclosure".
 """
+import copy
 import json
 import logging
+import threading
+import time
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, HTTPException, Depends
@@ -32,9 +35,54 @@ public_router = APIRouter(prefix="/api/status-page", tags=["Status Page (public)
 
 RECENT_EVENTS_LOOKBACK_HOURS = 24
 MAX_RECENT_EVENTS = 10
+MAX_RESOURCES_PER_COMPONENT = 100
+
+# The public endpoint is unauthenticated and costs 1 + 2*N queries on a
+# pooled connection per hit; without a cache a trivial request flood
+# drains the 10-connection pool (-> 500s on login). Per-process TTL
+# cache; each uvicorn worker keeps its own copy.
+PUBLIC_CACHE_TTL_SECONDS = 30
+_public_cache = {"expires": 0.0, "payload": None}
+_public_cache_lock = threading.Lock()
+
+
+def _invalidate_public_cache() -> None:
+    with _public_cache_lock:
+        _public_cache["expires"] = 0.0
+        _public_cache["payload"] = None
 
 
 # ── ADMIN (authenticated) ───────────────────────────────────────────
+
+def _validate_resource_ids(cursor, account_id: int, resource_ids) -> list:
+    """Tenant isolation: every mapped resource_id must be a resource of
+    the component's own account. Otherwise a status_page.manage holder
+    scoped to account A could publish (unauthenticated!) the live alert
+    status of account B's resources."""
+    if not isinstance(resource_ids, list) or not resource_ids:
+        raise HTTPException(status_code=400, detail="resource_ids must be a non-empty array")
+    if len(resource_ids) > MAX_RESOURCES_PER_COMPONENT:
+        raise HTTPException(status_code=400, detail=f"at most {MAX_RESOURCES_PER_COMPONENT} resource_ids per component")
+    if not all(isinstance(r, str) and r for r in resource_ids):
+        raise HTTPException(status_code=400, detail="resource_ids must be non-empty strings")
+    unique_ids = list(dict.fromkeys(resource_ids))
+    placeholders = ", ".join(["%s"] * len(unique_ids))
+    cursor.execute(f"""
+        SELECT DISTINCT resource_id FROM resources
+        WHERE aws_account_id = %s AND resource_id IN ({placeholders})
+    """, (account_id, *unique_ids))
+    found = {row["resource_id"] if isinstance(row, dict) else row[0] for row in cursor.fetchall()}
+    missing = [r for r in unique_ids if r not in found]
+    if missing:
+        raise HTTPException(status_code=400, detail="Some resource_ids do not belong to this account")
+    return unique_ids
+
+
+def _validate_name(raw) -> str:
+    name = raw.strip() if isinstance(raw, str) else ""
+    if not name or len(name) > 100:
+        raise HTTPException(status_code=400, detail="name is required (max 100 characters)")
+    return name
 
 def _require_account_access(account_id: int, current_user: dict) -> None:
     accessible = get_accessible_account_ids(current_user)
@@ -68,32 +116,39 @@ def create_component(payload: dict = Body(...), current_user: dict = Depends(req
     account_id = payload.get("aws_account_id")
     if not account_id:
         raise HTTPException(status_code=400, detail="aws_account_id is required")
-    _require_account_access(int(account_id), current_user)
-
-    name = (payload.get("name") or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="name is required")
-
-    resource_ids = payload.get("resource_ids")
-    if not resource_ids or not isinstance(resource_ids, list):
-        raise HTTPException(status_code=400, detail="resource_ids must be a non-empty array")
-
-    conn = get_connection(); cursor = conn.cursor()
     try:
+        account_id = int(account_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="aws_account_id must be an integer")
+    _require_account_access(account_id, current_user)
+
+    name = _validate_name(payload.get("name"))
+    try:
+        display_order = int(payload.get("display_order", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="display_order must be an integer")
+
+    conn = get_connection(); cursor = conn.cursor(dictionary=True)
+    try:
+        resource_ids = _validate_resource_ids(cursor, account_id, payload.get("resource_ids"))
         cursor.execute("""
             INSERT INTO status_page_components
                 (aws_account_id, name, resource_ids, display_order, enabled, created_by)
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (
-            int(account_id), name, json.dumps(resource_ids),
-            int(payload.get("display_order", 0)), bool(payload.get("enabled", True)),
+            account_id, name, json.dumps(resource_ids),
+            display_order, bool(payload.get("enabled", True)),
             int(current_user["id"]),
         ))
         conn.commit()
+        _invalidate_public_cache()
         return {"status": "created", "id": cursor.lastrowid}
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         conn.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.exception("create status page component failed")
+        raise HTTPException(status_code=400, detail="Could not create component")
     finally:
         cursor.close(); conn.close()
 
@@ -110,15 +165,18 @@ def update_component(component_id: int, payload: dict = Body(...), current_user:
 
         updates = {}
         if "name" in payload:
-            updates["name"] = payload["name"]
+            updates["name"] = _validate_name(payload["name"])
         if "resource_ids" in payload:
-            if not isinstance(payload["resource_ids"], list):
-                raise HTTPException(status_code=400, detail="resource_ids must be an array")
-            updates["resource_ids"] = json.dumps(payload["resource_ids"])
+            updates["resource_ids"] = json.dumps(
+                _validate_resource_ids(cursor, row["aws_account_id"], payload["resource_ids"])
+            )
         if "display_order" in payload:
-            updates["display_order"] = payload["display_order"]
+            try:
+                updates["display_order"] = int(payload["display_order"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="display_order must be an integer")
         if "enabled" in payload:
-            updates["enabled"] = payload["enabled"]
+            updates["enabled"] = bool(payload["enabled"])
         if not updates:
             raise HTTPException(status_code=400, detail="No editable fields provided")
 
@@ -126,6 +184,7 @@ def update_component(component_id: int, payload: dict = Body(...), current_user:
         cursor.execute(f"UPDATE status_page_components SET {set_clause} WHERE id = %s",
                         (*updates.values(), component_id))
         conn.commit()
+        _invalidate_public_cache()
         return {"status": "updated"}
     finally:
         cursor.close(); conn.close()
@@ -143,6 +202,7 @@ def delete_component(component_id: int, current_user: dict = Depends(require_per
 
         cursor.execute("DELETE FROM status_page_components WHERE id = %s", (component_id,))
         conn.commit()
+        _invalidate_public_cache()
         return {"status": "deleted"}
     finally:
         cursor.close(); conn.close()
@@ -186,11 +246,25 @@ def public_status_page():
     resource_ids, account names, alert IDs, or any other internal
     identifier.
     """
+    now = time.monotonic()
+    with _public_cache_lock:
+        if _public_cache["payload"] is not None and now < _public_cache["expires"]:
+            return copy.deepcopy(_public_cache["payload"])
+    payload = _build_public_status_page()
+    with _public_cache_lock:
+        _public_cache["payload"] = payload
+        _public_cache["expires"] = time.monotonic() + PUBLIC_CACHE_TTL_SECONDS
+    return copy.deepcopy(payload)
+
+
+def _build_public_status_page() -> dict:
     conn = get_connection(); cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT id, aws_account_id, name, resource_ids FROM status_page_components
-            WHERE enabled = 1 ORDER BY display_order, name
+            SELECT c.id, c.aws_account_id, c.name, c.resource_ids
+            FROM status_page_components c
+            JOIN aws_accounts acc ON acc.id = c.aws_account_id AND acc.status = 'active'
+            WHERE c.enabled = 1 ORDER BY c.display_order, c.name
         """)
         components_raw = cursor.fetchall()
 
@@ -200,7 +274,12 @@ def public_status_page():
         recent_events = []
 
         for c in components_raw:
-            resource_ids = json.loads(c["resource_ids"])
+            try:
+                resource_ids = json.loads(c["resource_ids"]) or []
+            except (TypeError, ValueError):
+                logger.warning("status page component %s has malformed resource_ids -- skipped", c["id"])
+                continue
+            resource_ids = [r for r in resource_ids if isinstance(r, str)][:MAX_RESOURCES_PER_COMPONENT]
             status = _component_status(cursor, resource_ids, c["aws_account_id"])
             components.append({"name": c["name"], "status": status})
             if status == "outage":
@@ -218,13 +297,12 @@ def public_status_page():
                       AND a.metric_name != 'multivariate_anomaly'
                       AND a.silenced = 0
                       AND (a.status = 'active' OR a.resolved_at >= %s)
-                      AND a.triggered_at >= %s
                       AND COALESCE(a.resolution_reason, '') NOT IN
                           ('duplicate', 'placeholder_threshold', 'threshold_disabled',
                            'resource_gone', 'account_inactive', 'bulk_clear')
                     ORDER BY a.triggered_at DESC
                     LIMIT 5
-                """, (c["aws_account_id"], *resource_ids, lookback, lookback))
+                """, (c["aws_account_id"], *resource_ids, lookback))
                 for row in cursor.fetchall():
                     recent_events.append({
                         "component": c["name"],

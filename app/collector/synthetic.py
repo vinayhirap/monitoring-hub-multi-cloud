@@ -15,12 +15,20 @@ docstring) but only ever probes checks that are actually DUE
 genuinely only runs every ~5 minutes, not every 2-minute scheduler
 tick; the tick is just how often this module LOOKS for due work.
 """
+import ipaddress
+import json
 import logging
+import os
 import socket
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.connection import HTTPConnection, HTTPSConnection
+from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 
 from app.db import get_connection
 
@@ -40,19 +48,228 @@ RESULT_RETENTION_DAYS = 30
 
 _HTTP_USER_AGENT = "monitoring-hub-synthetic-check/1.0"
 
+# Hard bounds on user-configurable probe parameters (audit b20). A
+# probe runs inline in the leader's critical-tier thread, so an
+# unbounded timeout lets one check stall the whole tier.
+MIN_TIMEOUT_SECONDS = 1
+MAX_TIMEOUT_SECONDS = 60
+MAX_REDIRECTS = 5
+MAX_BODY_BYTES = 1_000_000  # keyword search reads at most this much
+
+# ── SSRF guard (audit b20) ───────────────────────────────────────────
+# Probes are created by any synthetic.manage holder and run from inside
+# the app's VPC with the instance role attached, so without this a
+# check could target 169.254.169.254 (IMDS credentials), 127.0.0.1
+# (MySQL/Redis/VictoriaMetrics/uvicorn) or any VPC-internal host, and
+# read the result back through status_code / expected_keyword /
+# error_message. Enforced at CONNECT time on every hop (redirects
+# included) against the IP actually dialled, so DNS rebinding between
+# validation and connect cannot bypass it.
+#
+# Always blocked: loopback, link-local (cloud metadata), multicast,
+# unspecified, reserved. Other non-global ranges (RFC1918, CGNAT, ULA)
+# are blocked unless listed in SYNTHETIC_ALLOWED_PRIVATE_CIDRS
+# (comma-separated), for deployments that deliberately probe internal
+# endpoints.
+_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _load_allowed_private_nets():
+    nets = []
+    for raw in (os.getenv("SYNTHETIC_ALLOWED_PRIVATE_CIDRS") or "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(raw, strict=False))
+        except ValueError:
+            logger.warning(f"[synthetic] ignoring invalid SYNTHETIC_ALLOWED_PRIVATE_CIDRS entry {raw!r}")
+    return nets
+
+
+_ALLOWED_PRIVATE_NETS = _load_allowed_private_nets()
+
+
+class UnsafeTargetError(Exception):
+    """Target resolves to an address synthetic probes may not reach."""
+
+
+def _is_blocked_ip(ip) -> bool:
+    if isinstance(ip, str):
+        ip = ipaddress.ip_address(ip.split("%", 1)[0])
+    if ip.version == 6:
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif ip in _NAT64_PREFIX:
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved:
+        return True
+    if ip.version == 4 and ip in ipaddress.ip_network("0.0.0.0/8"):
+        return True
+    if not ip.is_global:
+        return not any(ip.version == n.version and ip in n for n in _ALLOWED_PRIVATE_NETS)
+    return False
+
+
+def _resolve_safe_ip(host: str, port: int) -> str:
+    """Resolves host and returns one address to dial. Raises
+    UnsafeTargetError if ANY resolved address is blocked (so a
+    round-robin record mixing public and internal IPs is rejected
+    outright), socket.gaierror if it doesn't resolve."""
+    host = (host or "").strip().strip("[]").rstrip(".")
+    if not host:
+        raise UnsafeTargetError("empty host")
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    addrs = [info[4][0] for info in infos]
+    if not addrs:
+        raise socket.gaierror(f"no addresses for {host}")
+    for a in addrs:
+        if _is_blocked_ip(a):
+            raise UnsafeTargetError(
+                f"target {host} resolves to a blocked (internal/metadata) address"
+            )
+    return addrs[0]
+
+
+class _GuardedHTTPConnection(HTTPConnection):
+    def _new_conn(self):
+        ip = _resolve_safe_ip(self._dns_host, self.port)
+        original = self._dns_host
+        self._dns_host = ip
+        try:
+            return super()._new_conn()
+        finally:
+            self._dns_host = original
+
+
+class _GuardedHTTPSConnection(HTTPSConnection):
+    # TLS SNI + certificate verification still use self.host (the
+    # hostname), only the TCP dial goes to the pre-validated IP.
+    def _new_conn(self):
+        ip = _resolve_safe_ip(self._dns_host, self.port)
+        original = self._dns_host
+        self._dns_host = ip
+        try:
+            return super()._new_conn()
+        finally:
+            self._dns_host = original
+
+
+class _GuardedHTTPPool(HTTPConnectionPool):
+    ConnectionCls = _GuardedHTTPConnection
+
+
+class _GuardedHTTPSPool(HTTPSConnectionPool):
+    ConnectionCls = _GuardedHTTPSConnection
+
+
+class _GuardedAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        super().init_poolmanager(*args, **kwargs)
+        self.poolmanager.pool_classes_by_scheme = {
+            "http": _GuardedHTTPPool, "https": _GuardedHTTPSPool,
+        }
+
+
+def _guarded_session() -> requests.Session:
+    session = requests.Session()
+    # Never route probes through an env-configured proxy: the guard
+    # would validate the proxy's address instead of the real target.
+    session.trust_env = False
+    session.max_redirects = MAX_REDIRECTS
+    adapter = _GuardedAdapter(max_retries=0)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+def _split_tcp_target(target: str):
+    """'host:port' or '[v6]:port' -> (host, port). Raises ValueError."""
+    target = (target or "").strip()
+    if target.startswith("["):
+        host, sep, rest = target[1:].partition("]")
+        if not sep or not rest.startswith(":"):
+            raise ValueError("tcp target must be host:port")
+        port_str = rest[1:]
+    else:
+        host, _, port_str = target.rpartition(":")
+    port = int(port_str)
+    if not host or not (1 <= port <= 65535):
+        raise ValueError("tcp target must be host:port with port 1-65535")
+    return host, port
+
+
+def validate_target(check_type: str, target: str) -> None:
+    """API-side validation (create/update). Raises ValueError with a
+    user-safe message. A hostname that doesn't resolve yet is accepted
+    (the connect-time guard still applies on every probe); one that
+    resolves to a blocked address is rejected."""
+    target = (target or "").strip()
+    if not target:
+        raise ValueError("target is required")
+    if len(target) > 500:
+        raise ValueError("target must be at most 500 characters")
+    if check_type == "http":
+        parts = urlsplit(target)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError("http checks need a full URL (http:// or https://)")
+        try:
+            host, port = parts.hostname, parts.port or (443 if parts.scheme == "https" else 80)
+        except ValueError:
+            raise ValueError("http target has an invalid port")
+    elif check_type == "tcp":
+        host, port = _split_tcp_target(target)
+    elif check_type == "dns":
+        if any(c in target for c in "/: "):
+            raise ValueError("dns checks take a bare hostname")
+        return
+    else:
+        raise ValueError("unknown check_type")
+    try:
+        _resolve_safe_ip(host, port)
+    except UnsafeTargetError as e:
+        raise ValueError(str(e))
+    except (socket.gaierror, UnicodeError, OSError):
+        pass
+
+
+def _clamp_timeout(timeout) -> int:
+    try:
+        timeout = int(timeout)
+    except (TypeError, ValueError):
+        timeout = 10
+    return max(MIN_TIMEOUT_SECONDS, min(MAX_TIMEOUT_SECONDS, timeout))
+
+
+# Bounded pool for DNS probes -- replaces socket.setdefaulttimeout(),
+# which mutated a process-wide default under 2 workers + collector
+# threads and didn't bound getaddrinfo anyway.
+_DNS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="synthetic-dns")
+
 
 def _probe_http(target: str, timeout: int, expected_status: int, expected_keyword: str):
+    timeout = _clamp_timeout(timeout)
     start = time.monotonic()
+    session = _guarded_session()
     try:
-        resp = requests.get(
-            target, timeout=timeout, allow_redirects=True,
+        resp = session.get(
+            target, timeout=timeout, allow_redirects=True, stream=True,
             headers={"User-Agent": _HTTP_USER_AGENT},
         )
+        try:
+            status_ok = resp.status_code == (expected_status or 200)
+            keyword_ok = True
+            if expected_keyword:
+                body = bytearray()
+                for chunk in resp.iter_content(chunk_size=16384):
+                    body.extend(chunk)
+                    if len(body) >= MAX_BODY_BYTES or time.monotonic() - start > timeout:
+                        break
+                text = bytes(body[:MAX_BODY_BYTES]).decode(resp.encoding or "utf-8", errors="replace")
+                keyword_ok = expected_keyword in text
+        finally:
+            resp.close()
         elapsed_ms = int((time.monotonic() - start) * 1000)
-        status_ok = resp.status_code == (expected_status or 200)
-        keyword_ok = True
-        if expected_keyword:
-            keyword_ok = expected_keyword in resp.text
         success = status_ok and keyword_ok
         error = None
         if not success:
@@ -61,24 +278,33 @@ def _probe_http(target: str, timeout: int, expected_status: int, expected_keywor
                 reasons.append(f"expected status {expected_status or 200}, got {resp.status_code}")
             if not keyword_ok:
                 reasons.append(f"expected keyword '{expected_keyword}' not found in response")
-            error = "; ".join(reasons)
+            error = "; ".join(reasons)[:490]
         return success, elapsed_ms, resp.status_code, error
+    except UnsafeTargetError as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return False, elapsed_ms, None, f"blocked: {e}"[:490]
     except requests.exceptions.Timeout:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         return False, elapsed_ms, None, f"timed out after {timeout}s"
     except requests.exceptions.RequestException as e:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         return False, elapsed_ms, None, str(e)[:490]
+    finally:
+        session.close()
 
 
 def _probe_tcp(target: str, timeout: int):
+    timeout = _clamp_timeout(timeout)
     start = time.monotonic()
     try:
-        host, _, port_str = target.rpartition(":")
-        port = int(port_str)
-        with socket.create_connection((host, port), timeout=timeout):
+        host, port = _split_tcp_target(target)
+        ip = _resolve_safe_ip(host, port)
+        with socket.create_connection((ip, port), timeout=timeout):
             elapsed_ms = int((time.monotonic() - start) * 1000)
             return True, elapsed_ms, None, None
+    except UnsafeTargetError as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return False, elapsed_ms, None, f"blocked: {e}"[:490]
     except (socket.timeout, TimeoutError):
         elapsed_ms = int((time.monotonic() - start) * 1000)
         return False, elapsed_ms, None, f"connection timed out after {timeout}s"
@@ -88,18 +314,19 @@ def _probe_tcp(target: str, timeout: int):
 
 
 def _probe_dns(target: str, timeout: int):
+    timeout = _clamp_timeout(timeout)
     start = time.monotonic()
-    old_timeout = socket.getdefaulttimeout()
+    future = _DNS_EXECUTOR.submit(socket.gethostbyname, target)
     try:
-        socket.setdefaulttimeout(timeout)
-        socket.gethostbyname(target)
+        future.result(timeout=timeout)
         elapsed_ms = int((time.monotonic() - start) * 1000)
         return True, elapsed_ms, None, None
-    except socket.gaierror as e:
+    except FutureTimeout:
         elapsed_ms = int((time.monotonic() - start) * 1000)
-        return False, elapsed_ms, None, f"DNS resolution failed: {e}"
-    finally:
-        socket.setdefaulttimeout(old_timeout)
+        return False, elapsed_ms, None, f"DNS resolution timed out after {timeout}s"
+    except (socket.gaierror, UnicodeError, OSError) as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return False, elapsed_ms, None, f"DNS resolution failed: {e}"[:490]
 
 
 def _run_probe(check: dict):
@@ -130,7 +357,7 @@ def _ensure_resource_row(cursor, check: dict) -> str:
         ON DUPLICATE KEY UPDATE name = VALUES(name), tags = VALUES(tags)
     """, (
         check["aws_account_id"], resource_id, check["name"],
-        f'{{"environment": "{check["environment"]}"}}',
+        json.dumps({"environment": check["environment"]}),
     ))
     return resource_id
 
@@ -246,9 +473,15 @@ def run_due_checks() -> int:
                 elif new_status == "up" and check["current_status"] == "down":
                     _resolve_alert(cursor, resource_id, check["aws_account_id"])
 
+                # Commit per check: keeps row locks on alerts/
+                # synthetic_checks short (probes are slow network I/O)
+                # and stops one failing check's partial writes from
+                # being committed alongside everyone else's.
+                conn.commit()
                 probed += 1
 
             except Exception:
+                conn.rollback()
                 logger.exception(
                     f"[synthetic] probe failed unexpectedly for check id={check['id']} "
                     f"('{check.get('name')}') -- skipping this cycle, will retry next tick"
