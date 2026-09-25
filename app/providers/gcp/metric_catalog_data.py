@@ -150,7 +150,23 @@ CURATED = {
 
 DIRECTORY = [
     ("Google Kubernetes Engine (control plane)", "kubernetes.io/anthos"),
-    ("Cloud CDN",              "loadbalancing.googleapis.com/https/backend_request_bytes_count"),
+    # Bug fix: this used to be
+    #   ("Cloud CDN", "loadbalancing.googleapis.com/https/backend_request_bytes_count")
+    # -- every other DIRECTORY entry is a service-domain PREFIX (fetched
+    # on demand via ListMetricDescriptors' starts_with() filter, see
+    # app/api/metric_catalog.py::_discover_gcp_metrics), but this one was
+    # one single, fully-qualified metric TYPE. starts_with() on a full
+    # string still "works" -- it just matches nothing except that exact
+    # metric -- so clicking "Cloud CDN" to discover its available metrics
+    # silently surfaced only backend_request_bytes_count and hid every
+    # other real CDN metric (cache_hit_count, cache_fill_bytes_count,
+    # etc). GCP doesn't publish CDN metrics under a separate namespace at
+    # all -- they live under the same "loadbalancing.googleapis.com/https"
+    # prefix CURATED's cloud_lb entry already owns above, so there is no
+    # correct standalone DIRECTORY prefix to put here; removed rather
+    # than left pointing at one metric or guessed at without live-API
+    # verification. CDN-specific metric names can be added to CURATED's
+    # cloud_lb list directly if wanted.
     ("Cloud DNS",              "dns.googleapis.com"),
     ("Cloud Interconnect",     "interconnect.googleapis.com"),
     ("Vertex AI",              "aiplatform.googleapis.com"),
