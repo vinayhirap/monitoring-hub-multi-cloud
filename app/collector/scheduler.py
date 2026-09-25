@@ -183,6 +183,12 @@ def run_once(tier="standard"):
             log_event("synthetic_prune_failed",
                       f"prune_synthetic_results failed (non-fatal): {e}", severity="WARNING")
         try:
+            from app.aws.cloudtrail_collector import prune_cloud_events
+            prune_cloud_events()
+        except Exception as e:
+            log_event("cloud_events_prune_failed",
+                      f"prune_cloud_events failed (non-fatal): {e}", severity="WARNING")
+        try:
             from app.collector.baseline import recompute_baselines
             recompute_baselines()
         except Exception as e:
