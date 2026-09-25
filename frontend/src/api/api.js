@@ -47,6 +47,7 @@ export const getLiveEC2Metrics= (accountId, instanceId, region) =>
 
 // ── Admin ──────────────────────────────────────────────────────────
 export const getAccounts      = ()   => apiFetch("/api/admin/accounts");
+export const getAccount       = (id) => apiFetch(`/api/admin/accounts/${id}`);
 export const addAccount       = (data) => apiFetch("/api/admin/accounts", { method:"POST", body: JSON.stringify(data) });
 export const discoverAccount  = (id)   => apiFetch(`/api/admin/accounts/${id}/discover`, { method:"POST" });
 export const deleteAccount    = (id)   => apiFetch(`/api/admin/accounts/${id}`, { method:"DELETE" });
@@ -98,6 +99,10 @@ export const saveAccountMetrics       = (accountId, enabledIds) =>
   apiFetch(`/api/account-metrics/${accountId}`, { method: "PUT", body: JSON.stringify({ enabled_metric_ids: enabledIds }) });
 export const applyDefaultTemplate     = (accountId) =>
   apiFetch(`/api/account-metrics/${accountId}/apply-default`, { method: "POST" });
+
+// ── Thresholds ─────────────────────────────────────────────────────────
+export const getThresholds = (accountId, includeNoData = false) =>
+  apiFetch(`/api/settings/thresholds?account_id=${accountId}&include_no_data=${includeNoData}`);
 
 // ── Cloud console deep link (same endpoint the Alerts page uses; ──────
 // works for AWS/Azure/GCP -- dispatches server-side through the

@@ -44,7 +44,7 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { getResourcesList, getGenericMetrics, getConsoleUrl } from "../api/api";
+import { getResourcesList, getGenericMetrics, getConsoleUrl, getAccount, getThresholds } from "../api/api";
 import { CloudServiceIcon } from "../components/cloud-icons";
 import { ArrowLeftIcon, ExternalLinkIcon, ChevronDownIcon, AlertTriangleIcon } from "../components/icons";
 import { useTimezone } from "../contexts/TimezoneContext";
@@ -81,10 +81,14 @@ const STATE_COLOR = {
   failed: "red", error: "red", terminated: "red", degraded: "red", unhealthy: "red", deleting: "red",
 };
 
+// SECURITY/CORRECTNESS: this used to be a raw fetch() -- unlike every
+// other network call in this app, it never went through apiFetch(), so
+// a mid-session expiry here silently left `account` as null forever
+// instead of bouncing to /login like the rest of the app does on a
+// 401 (see api.js's apiFetch docstring). getAccount() is the same
+// shared helper AccountDetail.jsx/ServiceList.jsx now use.
 async function fetchAccount(id) {
-  const res = await fetch(`/api/admin/accounts/${id}`);
-  if (!res.ok) throw new Error(String(res.status));
-  return res.json();
+  return getAccount(id);
 }
 
 // Account-wide configured thresholds, keyed the same way the generic
@@ -94,12 +98,14 @@ async function fetchAccount(id) {
 // .jsx's getThreshold() does for its 7 bespoke services. Best-effort:
 // this page still renders full charts with no threshold lines if the
 // caller lacks alerts.view or the request otherwise fails.
+//
+// Was a raw fetch() -- see fetchAccount()'s comment above for why that
+// matters; getThresholds() is the same shared helper ServiceDetail.jsx
+// now uses too.
 async function fetchThresholdMap(accountId) {
   const map = {};
   try {
-    const res = await fetch(`/api/settings/thresholds?account_id=${accountId}&include_no_data=true`);
-    if (!res.ok) return map;
-    const data = await res.json();
+    const data = await getThresholds(accountId, true);
     (data.thresholds || []).forEach(t => {
       if (!t.metric_name || !t.service) return;
       map[`${t.service}:${t.metric_name}`] = { warning: t.warning_value, critical: t.critical_value };
