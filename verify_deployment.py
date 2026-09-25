@@ -149,17 +149,28 @@ def check_1_vm_reachable():
         else:
             line(WARN, "VM reachable but returned zero active jobs — check YACE/vmagent on the VM box.")
     except (urllib.error.URLError, TimeoutError, OSError) as e:
+        # AUDIT FIX (i01-followup/073, HIGH): downgraded FAIL -> WARN.
+        # This repo does not currently run VictoriaMetrics/YACE in some
+        # environments, and the i01 patch made ANY [FAIL] line cause a
+        # non-zero exit (that was the fix for a different bug — see the
+        # main i01 patch). Making VM-unreachable a hard FAIL would turn
+        # this into a permanent, unconditional deploy blocker on any box
+        # that isn't running that stack. Keep it visible as WARN instead —
+        # revert this to FAIL if/when VictoriaMetrics is confirmed to be
+        # part of this deployment again.
         my_ip = get_own_public_ip()
-        line(FAIL, f"Cannot reach {url}: {e}")
-        line(FAIL, "This is almost always a Security Group on the VictoriaMetrics box "
+        line(WARN, f"Cannot reach {url}: {e}")
+        line(WARN, "This is almost always a Security Group on the VictoriaMetrics box "
                     "(NOT this server's SG, NOT the monitored instance's SG) not allowing "
-                    "inbound from this server's IP on the port VM_URL uses.")
+                    "inbound from this server's IP on the port VM_URL uses — OR this "
+                    "deployment simply doesn't run VictoriaMetrics/YACE.")
         if my_ip:
-            line(FAIL, f"Add an inbound rule on the VM box's SG for TCP port "
-                        f"{urllib.parse.urlsplit(VM_URL).port or 80} from {my_ip}/32.")
+            line(WARN, f"If VM is supposed to be running: add an inbound rule on its SG "
+                        f"for TCP port {urllib.parse.urlsplit(VM_URL).port or 80} from {my_ip}/32.")
         else:
-            line(FAIL, "Could not auto-detect this server's public IP (IMDS unreachable) — "
-                        "find it manually and add it to the VM box's SG inbound rules.")
+            line(WARN, "Could not auto-detect this server's public IP (IMDS unreachable) — "
+                        "find it manually and add it to the VM box's SG inbound rules, if VM "
+                        "is supposed to be running here.")
 
 
 def check_2_schema_drift():
