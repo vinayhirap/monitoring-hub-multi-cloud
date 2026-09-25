@@ -157,3 +157,23 @@ inbound references anywhere.
 - `resource_inventory_check.py` (was `scripts/resource_inventory_check.py`)
 - `verify_account_health_fix.py` (was `scripts/verify_account_health_fix.py`)
 - `verify_ebs_metrics.py` (was `scripts/verify_ebs_metrics.py`)
+
+## Added 2026-09-25 (audit chat 25/39, security fix scripts A)
+- `security/fix_wire_up_permissions_and_scope.py` (was
+  `scripts/security/fix_wire_up_permissions_and_scope.py`) -- one-shot
+  patcher that wired `require_permission`/scope checks into
+  admin/accounts.py, alerts.py, settings.py, metric_catalog.py,
+  audit_logs.py and live_data.py. Confirmed fully applied at both
+  `8a25a2f` (this slice's base commit) and again here at current
+  `main`: every route in all 6 target files carries the intended
+  dependency, and every account/resource-keyed route calls a scope
+  check. `grep -rl` for the filename found zero references outside
+  `.git/index` at either point.
+- `security/fix_rbac_decouple_role_from_groups.py` (was
+  `scripts/security/fix_rbac_decouple_role_from_groups.py`) -- one-shot
+  patcher that removed the `UPDATE users SET role = ...`
+  privilege-escalation bug from add_group_members() and the matching
+  `GROUP_LEVEL_ROLE` auto-sync in authorization.py and
+  UserManagement.jsx. Confirmed fully applied, same double-check as
+  above -- no `GROUP_LEVEL_ROLE` or role-sync UPDATE remains anywhere
+  in the current tree, zero external references.
