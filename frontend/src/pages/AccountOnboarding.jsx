@@ -164,6 +164,7 @@ export default function AccountOnboarding() {
   const [selectedIds,    setSelectedIds]    = useState(new Set());
   const [catalogLoading, setCatalogLoading] = useState(true);
   const defaultsAppliedRef = useRef(false);
+  const catalogRequestIdRef = useRef(0);
 
   useEffect(() => {
     refreshQueue(setQueue);
@@ -173,14 +174,30 @@ export default function AccountOnboarding() {
 
   // Re-fetch the metric catalog whenever the provider tab changes — each
   // cloud has its own curated services/metrics (see app/providers/*/metric_catalog_data.py).
+  // AUDIT FIX (f02/079, LOW): rapid tab-switching (aws -> azure -> gcp
+  // faster than the first request round-trips) had no guard against
+  // out-of-order responses -- an earlier, slower request could resolve
+  // AFTER a later one and overwrite the catalog with the wrong
+  // provider's metrics. requestIdRef tracks which fetch is the most
+  // recent; a response is only applied if it's still the latest one.
   useEffect(() => {
     setCatalogLoading(true);
     defaultsAppliedRef.current = false;
     setSelectedIds(new Set());
+    const requestId = ++catalogRequestIdRef.current;
     getMetricCatalog({ provider })
-      .then(data => setCatalog(Array.isArray(data) ? data : []))
-      .catch(() => setCatalog([]))
-      .finally(() => setCatalogLoading(false));
+      .then(data => {
+        if (catalogRequestIdRef.current !== requestId) return; // superseded by a newer tab switch
+        setCatalog(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        if (catalogRequestIdRef.current !== requestId) return;
+        setCatalog([]);
+      })
+      .finally(() => {
+        if (catalogRequestIdRef.current !== requestId) return;
+        setCatalogLoading(false);
+      });
   }, [provider]);
 
   useEffect(() => {
@@ -202,6 +219,32 @@ export default function AccountOnboarding() {
     setMetricsEdited(false);
   }
 
+  // AUDIT FIX (f02/079, MEDIUM): previously nothing invalidated a
+  // successful "Test Connection" result when the user went on to edit
+  // the credential fields it was based on -- the green "Verified —
+  // account XXXX" checkmark and detectedServices stayed on screen
+  // unchanged even after e.g. swapping in a different IAM Role ARN,
+  // making it look like the NEW value had been validated when it never
+  // was. The backend re-runs its own detection against the live
+  // account on submit (see handleSubmit's comment) so this was never a
+  // way to bypass validation, but it was misleading. Called from the
+  // onChange/onClick of every field that feeds a Test Connection call.
+  function invalidateTest() {
+    setTestStatus(null);
+    setTestMsg("");
+    setDetectedServices([]);
+  }
+
+  // AUDIT FIX (f02/079, MEDIUM): validation parity -- account_id already
+  // had a real format check (12 digits) but iam_role_arn, the three Azure
+  // ids, and project_id only checked non-empty. A malformed value in any
+  // of these previously passed frontend validation and only surfaced
+  // later as an opaque Test Connection failure or, worse, a background
+  // collection error after the account was already onboarded.
+  const AWS_ROLE_ARN_RE = /^arn:aws:iam::\d{12}:role\/[\w+=,.@-]+$/;
+  const AZURE_UUID_RE   = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+  const GCP_PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+
   function validate() {
     const e = {};
     if (!form.account_name.trim()) e.account_name = "Required";
@@ -211,19 +254,27 @@ export default function AccountOnboarding() {
     if (provider === "aws") {
       if (!form.account_id.trim()) e.account_id = "Required";
       else if (!/^\d{12}$/.test(form.account_id.trim())) e.account_id = "Must be 12 digits";
-      if (form.auth_method === "iam_role" && !form.iam_role_arn.trim())
-        e.iam_role_arn = "IAM Role ARN is required";
+      if (form.auth_method === "iam_role") {
+        if (!form.iam_role_arn.trim()) e.iam_role_arn = "IAM Role ARN is required";
+        else if (!AWS_ROLE_ARN_RE.test(form.iam_role_arn.trim()))
+          e.iam_role_arn = "Must look like arn:aws:iam::123456789012:role/RoleName";
+      }
       if (form.auth_method === "access_keys") {
         if (!form.access_key.trim()) e.access_key = "Required";
         if (!form.secret_key.trim()) e.secret_key = "Required";
       }
     } else if (provider === "azure") {
-      if (!form.tenant_id.trim())       e.tenant_id = "Required";
+      if (!form.tenant_id.trim()) e.tenant_id = "Required";
+      else if (!AZURE_UUID_RE.test(form.tenant_id.trim())) e.tenant_id = "Must be a valid GUID";
       if (!form.subscription_id.trim()) e.subscription_id = "Required";
-      if (!form.client_id.trim())       e.client_id = "Required";
+      else if (!AZURE_UUID_RE.test(form.subscription_id.trim())) e.subscription_id = "Must be a valid GUID";
+      if (!form.client_id.trim()) e.client_id = "Required";
+      else if (!AZURE_UUID_RE.test(form.client_id.trim())) e.client_id = "Must be a valid GUID";
       if (!form.client_secret.trim())   e.client_secret = "Required";
     } else if (provider === "gcp") {
-      if (!form.project_id.trim())          e.project_id = "Required";
+      if (!form.project_id.trim()) e.project_id = "Required";
+      else if (!GCP_PROJECT_ID_RE.test(form.project_id.trim()))
+        e.project_id = "6-30 chars, lowercase letters/digits/hyphens, must start with a letter";
       if (!form.service_account_key.trim()) e.service_account_key = "Required";
       else {
         try { JSON.parse(form.service_account_key); }
@@ -478,7 +529,8 @@ export default function AccountOnboarding() {
                     id="subscription_id"
                     value={form.subscription_id}
                     placeholder="00000000-0000-0000-0000-000000000000"
-                    onChange={e => setForm(f => ({ ...f, subscription_id: e.target.value.trim() }))}
+                    autoComplete="off"
+                    onChange={e => { setForm(f => ({ ...f, subscription_id: e.target.value.trim() })); invalidateTest(); }}
                   />
                 </Field>
               )}
@@ -488,7 +540,7 @@ export default function AccountOnboarding() {
                     id="project_id"
                     value={form.project_id}
                     placeholder="my-project-123456"
-                    onChange={e => setForm(f => ({ ...f, project_id: e.target.value.trim() }))}
+                    onChange={e => { setForm(f => ({ ...f, project_id: e.target.value.trim() })); invalidateTest(); }}
                   />
                 </Field>
               )}
@@ -498,7 +550,7 @@ export default function AccountOnboarding() {
                 <select
                   id="primary_region"
                   value={form.primary_region}
-                  onChange={e => setForm(f => ({ ...f, primary_region: e.target.value }))}
+                  onChange={e => { setForm(f => ({ ...f, primary_region: e.target.value })); invalidateTest(); }}
                 >
                   <option value="">Select…</option>
                   {regionOptions.map(r => (
@@ -567,7 +619,7 @@ export default function AccountOnboarding() {
                     type="button"
                     key={m}
                     className={`ob-auth-btn ${form.auth_method === m ? "ob-auth-active" : ""}`}
-                    onClick={() => setForm(f => ({ ...f, auth_method: m }))}
+                    onClick={() => { setForm(f => ({ ...f, auth_method: m })); invalidateTest(); }}
                   >
                     {m === "iam_role" ? "IAM Role ARN" : "Access Keys"}
                   </button>
@@ -581,7 +633,8 @@ export default function AccountOnboarding() {
                       id="iam_role_arn"
                       value={form.iam_role_arn}
                       placeholder="arn:aws:iam::123…:role/CloudOps"
-                      onChange={e => setForm(f => ({ ...f, iam_role_arn: e.target.value }))}
+                      autoComplete="off"
+                      onChange={e => { setForm(f => ({ ...f, iam_role_arn: e.target.value })); invalidateTest(); }}
                     />
                   </Field>
                   <Field id="external_id" label="External ID">
@@ -589,18 +642,27 @@ export default function AccountOnboarding() {
                       id="external_id"
                       value={form.external_id}
                       placeholder="Optional STS ExternalId"
-                      onChange={e => setForm(f => ({ ...f, external_id: e.target.value }))}
+                      autoComplete="off"
+                      onChange={e => { setForm(f => ({ ...f, external_id: e.target.value })); invalidateTest(); }}
                     />
                   </Field>
                 </div>
               ) : (
                 <div className="ob-grid-2">
+                  {/* AUDIT FIX (f02/079, MEDIUM): autoComplete="off" added
+                      to every credential input below -- without it, a
+                      type="password" field inside a submitted <form> (like
+                      secret_key/client_secret) reliably triggers the
+                      browser's "Save password?" prompt, offering to save an
+                      AWS Secret Access Key or Azure Client Secret into the
+                      browser's (often account-synced) password manager. */}
                   <Field id="access_key" label="Access Key ID" required error={errors.access_key}>
                     <input
                       id="access_key"
                       value={form.access_key}
                       placeholder="AKIAIOSFODNN7EXAMPLE"
-                      onChange={e => setForm(f => ({ ...f, access_key: e.target.value }))}
+                      autoComplete="off"
+                      onChange={e => { setForm(f => ({ ...f, access_key: e.target.value })); invalidateTest(); }}
                     />
                   </Field>
                   <Field id="secret_key" label="Secret Access Key" required error={errors.secret_key}>
@@ -609,7 +671,8 @@ export default function AccountOnboarding() {
                       type="password"
                       value={form.secret_key}
                       placeholder="••••••••••••••••"
-                      onChange={e => setForm(f => ({ ...f, secret_key: e.target.value }))}
+                      autoComplete="off"
+                      onChange={e => { setForm(f => ({ ...f, secret_key: e.target.value })); invalidateTest(); }}
                     />
                   </Field>
                 </div>
@@ -638,7 +701,8 @@ export default function AccountOnboarding() {
                     id="tenant_id"
                     value={form.tenant_id}
                     placeholder="00000000-0000-0000-0000-000000000000"
-                    onChange={e => setForm(f => ({ ...f, tenant_id: e.target.value.trim() }))}
+                    autoComplete="off"
+                    onChange={e => { setForm(f => ({ ...f, tenant_id: e.target.value.trim() })); invalidateTest(); }}
                   />
                 </Field>
                 <Field id="client_id" label="Application (Client) ID" required error={errors.client_id}>
@@ -646,7 +710,8 @@ export default function AccountOnboarding() {
                     id="client_id"
                     value={form.client_id}
                     placeholder="00000000-0000-0000-0000-000000000000"
-                    onChange={e => setForm(f => ({ ...f, client_id: e.target.value.trim() }))}
+                    autoComplete="off"
+                    onChange={e => { setForm(f => ({ ...f, client_id: e.target.value.trim() })); invalidateTest(); }}
                   />
                 </Field>
               </div>
@@ -656,7 +721,8 @@ export default function AccountOnboarding() {
                   type="password"
                   value={form.client_secret}
                   placeholder="••••••••••••••••"
-                  onChange={e => setForm(f => ({ ...f, client_secret: e.target.value }))}
+                  autoComplete="off"
+                  onChange={e => { setForm(f => ({ ...f, client_secret: e.target.value })); invalidateTest(); }}
                 />
               </Field>
               <TestConnectionButton onTest={handleTestConnection} status={testStatus} resultText={testMsg} />
@@ -682,7 +748,8 @@ export default function AccountOnboarding() {
                   value={form.service_account_key}
                   rows={8}
                   placeholder={`{\n  "type": "service_account",\n  "project_id": "…",\n  "private_key": "…",\n  "client_email": "…"\n  …\n}`}
-                  onChange={e => setForm(f => ({ ...f, service_account_key: e.target.value }))}
+                  autoComplete="off"
+                  onChange={e => { setForm(f => ({ ...f, service_account_key: e.target.value })); invalidateTest(); }}
                 />
               </Field>
               <TestConnectionButton onTest={handleTestConnection} status={testStatus} resultText={testMsg} />

@@ -69,7 +69,10 @@ export default function Login() {
   const [showPw,   setShowPw]   = useState(false);
 
   // forgot/reset state
-  const [resetToken,   setResetToken]   = useState("");
+  // AUDIT FIX (f02/079, HIGH): resetToken removed -- it only ever held a
+  // token pulled straight from the forgot-password API response, which
+  // the backend stopped sending back in the 2026-09-12 audit fix. See
+  // handleForgotSubmit below for the full explanation.
   const [tokenInput,   setTokenInput]   = useState("");
   const [newPw,        setNewPw]        = useState("");
   const [newPw2,       setNewPw2]       = useState("");
@@ -81,7 +84,7 @@ export default function Login() {
 
   function resetTransientState() {
     setError(""); setInfo(""); setPassword("");
-    setResetToken(""); setTokenInput(""); setNewPw(""); setNewPw2("");
+    setTokenInput(""); setNewPw(""); setNewPw2("");
     setCurrentPw("");
   }
 
@@ -123,12 +126,27 @@ export default function Login() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Request failed");
-      if (data.token) {
-        setResetToken(data.token);
-        setMode("reset");
-      } else {
-        setInfo(data.message || "If that account exists, a reset token has been generated.");
-      }
+      // AUDIT FIX (f02/079, HIGH): this used to branch on `data.token` and
+      // display it directly (setResetToken + jump straight to the "reset"
+      // form) -- but app/api/auth.py's forgot_password() was already fixed
+      // in the 2026-09-12 audit to NEVER return the token in the response
+      // (its own docstring calls that exact behavior "a full account-
+      // takeover vector"). Two real problems followed from the frontend
+      // never being updated to match:
+      //   1. This branch was live, dangerous, dead code: if the backend
+      //      contract ever regressed and started returning a token again,
+      //      this frontend would immediately display it to whoever
+      //      triggered forgot-password for ANY username -- silently
+      //      reopening the exact vulnerability the backend fix closed.
+      //   2. `setMode("reset")` was the ONLY place in this file that ever
+      //      switched into "reset" mode -- with the backend correctly no
+      //      longer sending a token, that branch never ran, so there was
+      //      no way to reach the reset-password form at all. A real user
+      //      who received a token by email had nowhere in the UI to paste
+      //      it and complete a reset.
+      // Fixed: always show the generic message; "reset" mode is now
+      // reached via an explicit link below instead of an API response.
+      setInfo(data.message || "If that account exists, a password reset has been initiated.");
     } catch (err) {
       setError(err.message || "Could not request a reset. Try again.");
     } finally {
@@ -347,6 +365,15 @@ export default function Login() {
             <button type="submit" className={`login-btn ${loading ? "login-btn-loading" : ""}`} disabled={loading}>
               {loading ? (<><span className="login-spinner" />Requesting…</>) : "Send Reset Token →"}
             </button>
+            {/* AUDIT FIX (f02/079, HIGH): this is now the only way to reach
+                "reset" mode -- see handleForgotSubmit above for why the
+                previous API-response-driven path was both unreachable and
+                a latent account-takeover surface. A user who already has
+                a token (from email, or from an administrator) needs an
+                explicit way in. */}
+            <button type="button" className="login-link login-link-tertiary" onClick={() => goTo("reset")}>
+              Already have a reset token?
+            </button>
             <button type="button" className="login-link login-link-back" onClick={() => goTo("login")}>
               ← Back to sign in
             </button>
@@ -356,13 +383,6 @@ export default function Login() {
         {/* ── RESET PASSWORD (has token) ──────────────────────── */}
         {mode === "reset" && (
           <form className="login-form" onSubmit={handleResetSubmit} noValidate>
-            {resetToken && (
-              <div className="login-info login-token-box" role="status">
-                No email service is configured yet — here's your one-time token
-                (valid {30} min):
-                <code className="login-token-code">{resetToken}</code>
-              </div>
-            )}
             <div className="login-field">
               <label htmlFor="reset-token">Reset token</label>
               <input
