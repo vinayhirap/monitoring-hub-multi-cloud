@@ -6,13 +6,15 @@ import {
   ServerIcon, SaveIcon, DatabaseIcon, BucketIcon, PackageIcon, ScaleIcon,
   ArrowLeftIcon, CloudIcon, ExternalLinkIcon, AlertTriangleIcon, RedDotIcon,
   LockIcon, CheckIcon, XCircleIcon, LinkIcon, GlobeIcon, LayersIcon,
-  XIcon, TagIcon, BarChartIcon, ToolIcon, ZapIcon,
+  XIcon, TagIcon, BarChartIcon, ToolIcon, ZapIcon, RefreshCwIcon, Maximize2Icon,
 } from "../components/icons";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached } from "../utils/dataCache";
 import { getThresholds, getResourceHealth, getCapacityForecast } from "../api/api";
 import AlertBadge from "../components/AlertBadge";
 import { useResourceAlerts } from "../hooks/useResourceAlerts";
+import MetricZoomModal from "../components/MetricZoomModal";
+import "../components/MetricZoomModal.css";
 
 const BASE = "";
 
@@ -1389,6 +1391,7 @@ function fmtCompactBytes(v) {
 
 function MetricChart({ title, data, color, unit, warningThreshold, criticalThreshold, timeRange, emptyReason, valueFormatter, yTickFormatter }) {
   const { ianaName } = useTimezone();
+  const [zoomOpen, setZoomOpen] = useState(false);
   // data === null (not undefined, not []) means the backend knows this
   // metric structurally can never have data for this resource (e.g. EBS
   // BurstBalance -- dropped from collection with no fallback, see
@@ -1435,7 +1438,12 @@ function MetricChart({ title, data, color, unit, warningThreshold, criticalThres
     <div className="chart-box">
       <div className="chart-header">
         <span className="chart-title">{title}</span>
-        <span className="chart-latest" style={{ color }}>{valueFormatter ? valueFormatter(latest) : `${latest.toFixed(1)}${unit}`}</span>
+        <span className="chart-header-right">
+          <span className="chart-latest" style={{ color }}>{valueFormatter ? valueFormatter(latest) : `${latest.toFixed(1)}${unit}`}</span>
+          <button className="chart-expand-btn" onClick={() => setZoomOpen(true)} title={`Zoom ${title}`}>
+            <Maximize2Icon size={13} />
+          </button>
+        </span>
       </div>
       <ResponsiveContainer width="100%" height={90}>
         <LineChart data={formatted} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
@@ -1463,6 +1471,15 @@ function MetricChart({ title, data, color, unit, warningThreshold, criticalThres
           <Line type="monotone" dataKey="v" stroke={color} strokeWidth={2} dot={false} activeDot={{ r: 3, fill: color }} />
         </LineChart>
       </ResponsiveContainer>
+      <MetricZoomModal
+        open={zoomOpen}
+        onClose={() => setZoomOpen(false)}
+        title={title}
+        data={data}
+        unit={unit}
+        color={color}
+        valueFormatter={valueFormatter}
+      />
     </div>
   );
 }
