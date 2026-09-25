@@ -2,7 +2,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getAlertSummary, getAccountMetrics, getResourceCounts } from "../api/api";
-import { CloudServiceIcon, AzureBrandLogo, officialPerService } from "../components/cloud-icons";
+import { CloudServiceIcon, AzureBrandLogo, GoogleCloudBrandLogo, officialPerService } from "../components/cloud-icons";
 import { LinkIcon } from "../components/icons";
 import { sectionMeta } from "../components/MetricSelector";
 import "../components/MetricSelector.css";
@@ -208,6 +208,7 @@ export default function ServiceList() {
         <div>
           <h1 style={{ fontSize:24, fontWeight:700, marginBottom:5, letterSpacing:"-0.01em", display:"flex", alignItems:"center", gap:10 }}>
             {provider === "azure" && <AzureBrandLogo size={22} />}
+            {provider === "gcp" && <GoogleCloudBrandLogo size={22} />}
             {account?.account_name ?? "Account"}
             <span style={{ color:"var(--accent)", marginLeft:8 }}>/ Services</span>
           </h1>

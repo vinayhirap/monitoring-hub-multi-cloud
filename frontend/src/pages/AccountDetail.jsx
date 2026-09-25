@@ -44,7 +44,26 @@ export default function AccountDetail() {
   const [search,    setSearch]    = useState("");
   const [stateFilter, setStateFilter] = useState("all");
   const [sortKey,   setSortKey]   = useState("name");
-  const [account,   setAccount]   = useState({ name: "AuroGov", id: "924922671984", region: "ap-south-2" });
+  // SECURITY/CORRECTNESS: this used to be hardcoded to a single
+  // account's name/id/region ("AuroGov" / ap-south-2), shown
+  // unconditionally regardless of which account's `id` this page was
+  // actually loaded for -- the EC2 instance data below was always
+  // correctly scoped to the real :id from the URL, but the breadcrumb,
+  // header region tag, and the environment tag (hardcoded "PROD")
+  // next to it lied about which account you were looking at on every
+  // account except the one that happened to match. Now fetched the
+  // same way ServiceList.jsx's identical breadcrumb does, from the
+  // one real per-account endpoint (GET /api/admin/accounts/{id}).
+  const [account,   setAccount]   = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/admin/accounts/${id}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && !cancelled) setAccount(d); })
+      .catch(console.error);
+    return () => { cancelled = true; };
+  }, [id]);
 
   useEffect(() => {
     // Hydrate instantly from whatever was cached for THIS account last
@@ -124,7 +143,7 @@ export default function AccountDetail() {
       <div className="breadcrumb">
         <span className="bc-link" onClick={() => navigate("/overview")}>ALL ACCOUNTS</span>
         <span className="bc-sep">›</span>
-        <span className="bc-link" onClick={() => navigate("/overview")}>{account.name}</span>
+        <span className="bc-link" onClick={() => navigate("/overview")}>{account?.account_name ?? `Account ${id}`}</span>
         <span className="bc-sep">›</span>
         <span className="bc-current">EC2</span>
       </div>
@@ -134,8 +153,8 @@ export default function AccountDetail() {
         <div>
           <h1>EC2 — <span className="hl">{instances.length} instances</span></h1>
           <div className="detail-meta">
-            <span className="meta-tag">{account.region}</span>
-            <span className="meta-tag">PROD</span>
+            <span className="meta-tag">{account?.default_region ?? "—"}</span>
+            <span className="meta-tag">{account?.environment || "PROD"}</span>
             <span className="meta-sep">·</span>
             <span className="meta-running">● {running} running</span>
             <span className="meta-sep">·</span>
