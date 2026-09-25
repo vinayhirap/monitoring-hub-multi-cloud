@@ -34,6 +34,8 @@
 #   sudo bash setup.sh --wipe-db
 # =============================================================
 set -e
+set -u
+set -o pipefail
 
 REPO_URL="https://github.com/vinayhirap/monitoring-hub-multi-cloud.git"
 APP_DIR="/opt/monitoring-hub"
@@ -45,8 +47,32 @@ PUBLIC_IP="35.154.149.94"
 
 DB_NAME="monitoring_hub"
 DB_USER="monitor"
-DB_PASS="root123"
-# Same DB password as CloudOps_Main, kept identical on purpose.
+# AUDIT FIX (i01/073, CRITICAL): this literally hardcoded the well-known
+# weak/default password "root123" -- the exact anti-pattern deploy/deploy.sh's
+# own history documents fixing. This script's PUBLIC_IP above is a live
+# production server's real IP, and this repo is public, so "root123" was
+# sitting in public git history as this box's real MySQL password. Fixed
+# the same way deploy/deploy.sh was: reuse the existing DB_PASSWORD (and
+# CREDENTIAL_ENCRYPTION_KEY) from this box's current .env across redeploys
+# instead of overwriting them (this box's own DB is otherwise preserved on
+# every non---wipe-db run, so its .env must keep matching it), and only
+# generate fresh values for a genuinely first-time install.
+# ROTATE THE LIVE PASSWORD MANUALLY if this box's MySQL 'monitor' user was
+# ever actually created with "root123" -- this script cannot detect or fix
+# that retroactively (see the DEPLOY COMMANDS section of this audit for the
+# exact ALTER USER command to run).
+EXISTING_DB_PASSWORD=""
+EXISTING_CREDENTIAL_ENCRYPTION_KEY=""
+if [ -f "$REPO_DIR/.env" ]; then
+    EXISTING_DB_PASSWORD="$(grep -m1 '^DB_PASSWORD=' "$REPO_DIR/.env" 2>/dev/null | cut -d= -f2-)"
+    EXISTING_CREDENTIAL_ENCRYPTION_KEY="$(grep -m1 '^CREDENTIAL_ENCRYPTION_KEY=' "$REPO_DIR/.env" 2>/dev/null | cut -d= -f2-)"
+fi
+if [ -n "$EXISTING_DB_PASSWORD" ]; then
+    DB_PASS="$EXISTING_DB_PASSWORD"
+    echo "Reusing existing DB_PASSWORD from ${REPO_DIR}/.env (redeploy of an already-provisioned box)."
+else
+    DB_PASS="$(openssl rand -base64 24 | tr -d '=+/' | cut -c1-24)"
+fi
 # NOTE: root's MySQL password is intentionally never set/changed by this
 # script (see step 3 below) — root stays on the default auth_socket auth.
 
@@ -70,7 +96,7 @@ AWS_DEFAULT_REGION="ap-south-1"
 REAL_USER="${SUDO_USER:-$USER}"
 
 WIPE_DB=false
-if [ "$1" == "--wipe-db" ]; then
+if [ "${1:-}" == "--wipe-db" ]; then
     WIPE_DB=true
     echo "WARNING: --wipe-db passed. The existing ${DB_NAME} database will be"
     echo "DROPPED and recreated empty. This destroys any existing account"
@@ -166,7 +192,18 @@ JWT_SECRET=$(openssl rand -hex 32)
 # CloudOps_Main, since a shared encryption key across servers is not
 # something to replicate; each server's stored Azure/GCP secrets should
 # only be decryptable by that same server.
-CREDENTIAL_ENCRYPTION_KEY=$("$VENV_DIR/bin/python3" -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+# AUDIT FIX (i01/073, CRITICAL): previously generated UNCONDITIONALLY on
+# every run, including a redeploy of this same already-provisioned server
+# — permanently breaking decryption of any Azure/GCP secrets already
+# stored under the OLD key (see EXISTING_CREDENTIAL_ENCRYPTION_KEY capture
+# near the top of this script). Reuse it across redeploys; only generate
+# fresh for a genuinely first-time install of this server.
+if [ -n "$EXISTING_CREDENTIAL_ENCRYPTION_KEY" ]; then
+    CREDENTIAL_ENCRYPTION_KEY="$EXISTING_CREDENTIAL_ENCRYPTION_KEY"
+    echo "Reusing existing CREDENTIAL_ENCRYPTION_KEY from the prior .env (redeploy)."
+else
+    CREDENTIAL_ENCRYPTION_KEY=$("$VENV_DIR/bin/python3" -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+fi
 
 cat > "$REPO_DIR/.env" <<EOF
 DB_HOST=127.0.0.1

@@ -1,28 +1,17 @@
 #!/bin/bash
 set -e
 
-echo "=== ASLOps Monitoring Hub — Server Setup ==="
-
-# ── System packages ──────────────────────────────────────────
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3 python3-pip python3-venv mysql-server nginx git curl
-
-# ── MySQL setup ──────────────────────────────────────────────
-sudo systemctl start mysql
-sudo systemctl enable mysql
-
-# Create DB + user
-sudo mysql -e "
-CREATE DATABASE IF NOT EXISTS monitoring_hub CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS 'monitor'@'localhost' IDENTIFIED BY 'root123';
-GRANT ALL PRIVILEGES ON monitoring_hub.* TO 'monitor'@'localhost';
-FLUSH PRIVILEGES;
-"
-
-echo "=== MySQL ready ==="
-
-# ── App directory ────────────────────────────────────────────
-sudo mkdir -p /opt/monitoring-hub
-sudo chown $USER:$USER /opt/monitoring-hub
-
-echo "=== Setup complete. Run deploy.sh next ==="
+# AUDIT FIX (i01/073, CRITICAL): this script is superseded by
+# deploy/deploy.sh, which does everything this one did (and much more:
+# app clone, venv, systemd unit, nginx site, hardening, verification)
+# EXCEPT this one also created the MySQL 'monitor' user with the literal,
+# hardcoded, public-repo-visible password "root123" -- the exact
+# known-weak-default landmine deploy/deploy.sh's own history documents
+# fixing. A short, easy-to-mistake-for-harmless script like this one
+# re-introducing that exact landmine is worse than not having it at all.
+# Refuse to run rather than silently create a weak-password DB user.
+echo "ERROR: deploy/setup.sh is deprecated and disabled -- it created the"
+echo "MySQL user with a hardcoded weak password. Use deploy/deploy.sh"
+echo "instead; it performs this same MySQL setup step (with a securely"
+echo "generated password) plus the full app install."
+exit 1

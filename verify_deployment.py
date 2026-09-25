@@ -49,7 +49,18 @@ import mysql.connector
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
 DB_PORT = int(os.getenv("DB_PORT", 3306))
 DB_USER = os.getenv("DB_USER", "root")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "root123")
+# AUDIT FIX (i01/073, MEDIUM): previously defaulted to the literal
+# "root123" if DB_PASSWORD wasn't set (e.g. .env missing/unreadable from
+# this cwd) -- silently trying a known-weak default password instead of
+# failing loudly. Fail fast instead, matching deploy/update.sh's own
+# explicit "DB_PASSWORD not found" check.
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+if not DB_PASSWORD:
+    print("[FAIL] DB_PASSWORD is not set (.env missing, unreadable, or not "
+          "loaded from this working directory) -- refusing to guess a "
+          "default password. Run this script from the repo root with a "
+          "valid .env present.")
+    sys.exit(1)
 DB_NAME = os.getenv("DB_NAME", "monitoring_hub")
 VM_URL = os.getenv("VM_URL", "http://3.109.181.40")
 
@@ -64,8 +75,25 @@ TIMEOUT = 5
 
 OK, WARN, FAIL = "OK  ", "WARN", "FAIL"
 
+# AUDIT FIX (i01/073, HIGH): this module's docstring and deploy.sh's/
+# update.sh's own header comments both call this a "HARD verification
+# gate" that should make the calling deploy "exit non-zero ... means NOT
+# done" -- but main() always returned normally and the script always
+# exited 0 regardless of how many FAIL lines were printed, so deploy.sh's
+# `|| VERIFY_FAILED=true` after calling this script could never actually
+# fire. Schema-drift (check_2), self-assume-role (check_3), and
+# zero-resources-discovered (check_4) problems were being detected and
+# printed, but never once caused a deploy/update to be reported as failed.
+# Track FAILs and exit non-zero if any occurred -- WARNs still don't fail
+# the run, matching the existing WARN semantics everywhere else in this
+# repo's deploy tooling.
+_FAIL_COUNT = 0
+
 
 def line(status, msg):
+    global _FAIL_COUNT
+    if status == FAIL:
+        _FAIL_COUNT += 1
     print(f"[{status}] {msg}")
 
 
@@ -314,6 +342,9 @@ def main():
     check_4_discovery_producing_resources()
     print("\n=== Done. WARN/FAIL above need a manual fix (SG rule, migration, or role_arn "
           "correction) — this script only surfaces them, it doesn't change anything. ===")
+    if _FAIL_COUNT > 0:
+        print(f"\n{_FAIL_COUNT} FAIL(s) above -- exiting non-zero.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
