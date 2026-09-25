@@ -112,7 +112,10 @@ def test_gmd_follows_next_token_and_records_usage():
             return {"MetricDataResults": [{"Id": "q0", "Timestamps": [1], "Values": [1.0]}]}
 
     q = [{"Id": "q0", "MetricStat": {}, "ReturnData": True}]
-    assert mod._execute_gmd(CW(), q, {"q0": (7, "m")}) == 1
+    # id_map now carries the CloudWatch statistic too (Sum-metric zero-fill
+    # fix, 2026-09-24) -- "Average" keeps this test's own concern (NextToken
+    # paging) unchanged; real data is returned here regardless.
+    assert mod._execute_gmd(CW(), q, {"q0": (7, "m", "Average")}) == 1
     assert calls == [None, "p2"]
     assert writes["latest"] == [(7, "m", 2.0)]
     assert len(writes["history"]) == 2

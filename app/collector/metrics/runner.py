@@ -183,7 +183,7 @@ def _build_queries(resources, metric_defs):
                 },
                 "ReturnData": True,
             })
-            id_map[qid] = (r["id"], db_name)
+            id_map[qid] = (r["id"], db_name, stat)
 
     return queries, id_map
 
@@ -256,11 +256,45 @@ def _execute_gmd(cw, queries, id_map, minutes=5):
         api_usage.record("aws", _CURRENT_TIER, calls=pages, units=_billed_units(chunk))
 
         for qid, (timestamps, values) in results.items():
-            if not values:
-                continue
-            resource_db_id, db_name = id_map.get(qid, (None, None))
+            resource_db_id, db_name, stat = id_map.get(qid, (None, None, None))
             if resource_db_id is None:
                 continue
+
+            if not values:
+                # CloudWatch's documented behavior for a Sum-statistic COUNT
+                # metric (RequestCount, HTTPCode_Target_5XX_Count, Lambda
+                # Errors/Invocations/Throttles, and 15 more since the
+                # 2026-09-23 polling-model rewrite -- see AWS_CORE_METRICS
+                # in polling_model.py for the current, full list of
+                # stat == "Sum" entries): a period with a true count of
+                # zero returns NO datapoint at all, not a datapoint of 0 --
+                # it is silent, not absent data. Treating "no datapoint" the
+                # same as "genuinely unknown" (the right call for an
+                # Average/Maximum gauge, where a gap really does mean
+                # "unknown") left metrics.metric_value AND metric_timestamp
+                # frozen at the last nonzero reading indefinitely for every
+                # Sum metric.
+                #
+                # Found live on prod (2026-09-24, xrai-alb): errors5xx
+                # stayed at "12" for 5 days after errors actually stopped --
+                # a stale value masquerading as current, and had it sat
+                # above the alert threshold, a FALSE alert that would never
+                # clear on its own. Because metric_timestamp also never
+                # advanced, the evaluator's freshness window would
+                # eventually exclude the row, so alert_rules.py's staleness
+                # logic would mark any open alert "stale" and let it
+                # time out mislabeled as "no_data_expired" instead of
+                # promptly reading 0 and recovering.
+                #
+                # This is the standard, documented mitigation for this
+                # CloudWatch behavior: write an explicit 0, with a fresh
+                # timestamp, exactly as if CloudWatch had reported it.
+                if stat == "Sum":
+                    latest_rows.append((resource_db_id, db_name, 0.0))
+                    history_rows.append((resource_db_id, db_name, 0.0, end))
+                    count += 1
+                continue
+
             latest_rows.append((resource_db_id, db_name, values[0]))  # newest first
             count += 1
             for ts, val in zip(timestamps, values):
@@ -534,7 +568,10 @@ def _collect_ec2_cwagent_mem(cw, resources):
             "ReturnData": True,
         })
         # DB metric_name stays "mem_used_percent" for Linux and Windows.
-        id_map[qid] = (resource["id"], "mem_used_percent")
+        # Stat is always Average here (a gauge, not a count) -- _execute_gmd's
+        # Sum-only zero-fill (see its docstring) correctly leaves a genuine
+        # gap alone rather than fabricating a 0% reading.
+        id_map[qid] = (resource["id"], "mem_used_percent", "Average")
     n = _execute_gmd(cw, queries, id_map, minutes=polling_model.CWAGENT_MEM_LOOKBACK)
     logger.info(f"    EC2 CWAgent mem: {n} series / {len(cwagent_map)} of {len(resources)} instances")
 
@@ -605,7 +642,9 @@ def _collect_ec2_cwagent_disk(cw, resources, account_id):
                     },
                     "ReturnData": True,
                 })
-            id_map[qid] = (r["id"], metric_name)
+            # Disk-percent is also Average/gauge-shaped, not a Sum count --
+            # same reasoning as the mem_used_percent id_map entry above.
+            id_map[qid] = (r["id"], metric_name, "Average")
 
     n = _execute_gmd(cw, queries, id_map, minutes=polling_model.CWAGENT_DISK_LOOKBACK)
     logger.info(f"    EC2 CWAgent disk: {n} datapoints / {instances_reporting} of {len(resources)} instances (all mounts)")
