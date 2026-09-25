@@ -9,7 +9,7 @@ import {
   XIcon, TagIcon, BarChartIcon, ToolIcon, ZapIcon, RefreshCwIcon, Maximize2Icon,
 } from "../components/icons";
 import { useTimezone } from "../contexts/TimezoneContext";
-import { getCached, setCached } from "../utils/dataCache";
+import { getCached, setCached, clearAllCached } from "../utils/dataCache";
 import { getThresholds, getResourceHealth, getCapacityForecast } from "../api/api";
 import AlertBadge from "../components/AlertBadge";
 import { useResourceAlerts } from "../hooks/useResourceAlerts";
@@ -61,6 +61,26 @@ const TIME_RANGES = [
   { label: "ALL", hours: 17520 },
 ];
 
+// This file's three fetch functions below talk to the backend directly
+// with raw fetch() instead of going through api/api.js's apiFetch() --
+// which means none of them got apiFetch's 401 handling (redirect to
+// /login + clear the stale localStorage cache; see api.js's own
+// comment on clearAllCached() for why that matters on a shared
+// device). A session expiring while someone is sitting on this page
+// used to just fail silently (fetchMetrics had no status check at
+// all -- an error JSON body would get parsed as if it were metrics
+// data) or show a generic "Failed to load: 401" / bounce to Overview
+// instead of Login (fetchAccount's catch always navigates to
+// /overview, 401 included) -- every other page in the app forces a
+// re-login here instead. Mirrors apiFetch's exact 401 behavior so this
+// page's session handling matches the rest of the app.
+function checkSessionExpired(res) {
+  if (res.status !== 401) return false;
+  clearAllCached();
+  if (window.location.pathname !== "/login") window.location.href = "/login";
+  return true;
+}
+
 async function fetchService(accountId, service) {
   const paths = {
     EC2:    `/api/live/ec2/${accountId}`,
@@ -74,14 +94,31 @@ async function fetchService(accountId, service) {
   const path = paths[service];
   if (!path) { const e = new Error("404"); e.status = 404; throw e; }
   const res = await fetch(`${BASE}${path}`);
+  if (checkSessionExpired(res)) { const e = new Error("401"); e.status = 401; throw e; }
   if (!res.ok) { const e = new Error(String(res.status)); e.status = res.status; throw e; }
   return res.json();
 }
 
 async function fetchAccount(id) {
   const res = await fetch(`${BASE}/api/admin/accounts/${id}`);
+  if (checkSessionExpired(res)) { const e = new Error("401"); e.status = 401; throw e; }
   if (!res.ok) throw new Error(String(res.status));
   return res.json();
+}
+
+// fetchMetrics previously called `fetch(...).then(res => res.json())`
+// directly at every branch below with no status check at all -- an
+// error response (401 included) would have its JSON error body
+// parsed as if it were metrics data instead of being treated as a
+// failure. fetchJson() gives every branch the same checkSessionExpired
+// handling as fetchService/fetchAccount above, plus a real !res.ok
+// check, without changing any branch's URL or return shape.
+function fetchJson(url) {
+  return fetch(url).then(res => {
+    if (checkSessionExpired(res)) { const e = new Error("401"); e.status = 401; throw e; }
+    if (!res.ok) { const e = new Error(String(res.status)); e.status = res.status; throw e; }
+    return res.json();
+  });
 }
 
 // FIX: accountId param added — ELB was using undefined `id` from outer scope
@@ -95,26 +132,26 @@ async function fetchMetrics(service, row, region, hours, accountId) {
   switch (service) {
     case "EC2":
       if (row.state !== "running") return null;
-      return fetch(`${BASE}/api/live/metrics/ec2/${accountId}/${row.instance_id}?${r}&${h}`).then(res => res.json());
+      return fetchJson(`${BASE}/api/live/metrics/ec2/${accountId}/${row.instance_id}?${r}&${h}`);
     case "EBS":
       if (row.state !== "in-use") return null;
-      return fetch(`${BASE}/api/live/metrics/ebs/${accountId}/${row.volume_id}?${r}&${h}`).then(res => res.json());
+      return fetchJson(`${BASE}/api/live/metrics/ebs/${accountId}/${row.volume_id}?${r}&${h}`);
     case "Lambda":
-      return fetch(`${BASE}/api/live/metrics/lambda/${accountId}/${row.function_name}?${r}&${h}`).then(res => res.json());
+      return fetchJson(`${BASE}/api/live/metrics/lambda/${accountId}/${row.function_name}?${r}&${h}`);
     case "RDS":
-      return fetch(`${BASE}/api/live/metrics/rds/${accountId}/${row.db_instance_id}?${r}&${h}`).then(res => res.json());
+      return fetchJson(`${BASE}/api/live/metrics/rds/${accountId}/${row.db_instance_id}?${r}&${h}`);
     case "S3":
-      return fetch(`${BASE}/api/live/metrics/s3/${accountId}/${row.bucket_name || row.name}?${h}`).then(res => res.json());
+      return fetchJson(`${BASE}/api/live/metrics/s3/${accountId}/${row.bucket_name || row.name}?${h}`);
     case "ELB":
       // FIX: was using `id` (undefined) — now correctly uses accountId param
-      return fetch(
+      return fetchJson(
         `${BASE}/api/live/metrics/elb/${accountId}?lb_name=${encodeURIComponent(row.name)}&${r}&${h}`
-      ).then(res => res.json());
+      );
     case "ECS":
       // row here is a service object with cluster_name attached
-      return fetch(
+      return fetchJson(
         `${BASE}/api/live/metrics/ecs/${accountId}?cluster_name=${encodeURIComponent(row.cluster_name)}&service_name=${encodeURIComponent(row.service_name)}&${r}&${h}`
-      ).then(res => res.json());
+      );
     default:
       return null;
   }
@@ -148,6 +185,28 @@ function findRowByResource(rows, service, resource) {
   }) || null;
 }
 
+// The search box's predicate used to be `Object.values(r).join(" ")`,
+// which only stringifies a row's OWN top-level fields. For every
+// service except ECS, `r` is already the exact object the table
+// renders one-row-per, so that was fine. ECS is different: `rows`
+// here are CLUSTER objects (cluster_name, region, services: [...]),
+// but ECSTable flattens each cluster's `.services` array into the
+// actual per-row table entries one level down -- so a raw cluster's
+// own Object.values() never included any child service's
+// name/task_definition text, and Array.prototype.join() on the nested
+// `services` array just produces "[object Object],[object Object]"
+// rather than anything searchable. The placeholder text ("Search ECS
+// resources…") implies searching by the resource shown in the table
+// (the service), which never actually worked. Recursing into nested
+// arrays/objects fixes ECS without any ECS-specific branch here.
+function searchableText(value) {
+  if (value == null) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.map(searchableText).join(" ");
+  if (typeof value === "object") return Object.values(value).map(searchableText).join(" ");
+  return "";
+}
+
 export default function ServiceDetail() {
   const { id, service: rawService } = useParams();
   const navigate = useNavigate();
@@ -177,9 +236,30 @@ export default function ServiceDetail() {
   const notImplRef  = useRef(false);
   const selectedRef = useRef(null);
   const autoSelectedRef = useRef(null);
+  // Guards against stale-response races: none of this file's fetches use
+  // an AbortController, so switching account/service (or selecting a
+  // different resource) while a previous fetch is still in flight used
+  // to let that OLD response land AFTER the switch and overwrite the
+  // NEW account/resource's rows or metrics with stale -- sometimes a
+  // different account's -- data. idRef/serviceRef always hold the
+  // latest render's values (updated on every render below, not inside
+  // an effect, so an in-flight async callback can compare against them
+  // reliably); metricsReqRef is bumped before every metrics fetch
+  // (from either the timeRange effect or selectRow) so only the most
+  // recently started one is allowed to call setMetrics.
+  const idRef = useRef(id);
+  idRef.current = id;
+  const serviceRef = useRef(service);
+  serviceRef.current = service;
+  const metricsReqRef = useRef(0);
 
   useEffect(() => {
-fetchAccount(id).then(setAccount).catch(err => {
+    const requestedId = id;
+    fetchAccount(id).then(acc => {
+      if (idRef.current !== requestedId) return; // switched account again before this resolved
+      setAccount(acc);
+    }).catch(err => {
+      if (idRef.current !== requestedId) return;
       console.error(err);
       navigate("/overview");
     });
@@ -198,13 +278,16 @@ fetchAccount(id).then(setAccount).catch(err => {
       setLoading(false);
       return;
     }
+    const requestedId = id, requestedService = service;
     setError(null);
     try {
       const data = await fetchService(id, service);
+      if (idRef.current !== requestedId || serviceRef.current !== requestedService) return; // switched away
       const list = Array.isArray(data) ? data : [];
       setRows(list);
       setCached(`service:${id}:${service}`, list);
     } catch (e) {
+      if (idRef.current !== requestedId || serviceRef.current !== requestedService) return; // switched away
       if (e.status === 404) {
         // Any unmapped/unimplemented service 404s the same way -- treat
         // it as "not configured yet" rather than a hard error.
@@ -215,7 +298,7 @@ fetchAccount(id).then(setAccount).catch(err => {
         setError(e.message);
       }
     } finally {
-      setLoading(false);
+      if (idRef.current === requestedId && serviceRef.current === requestedService) setLoading(false);
     }
   }, [id, service]);
 
@@ -245,12 +328,13 @@ fetchAccount(id).then(setAccount).catch(err => {
     if (!selectedRef.current) return;
     const row    = selectedRef.current;
     const region = row.region || account?.default_region || "ap-south-2";
+    const myReq  = ++metricsReqRef.current;
     setMetrics(null);
     setMLoading(true);
     fetchMetrics(service, row, region, timeRange, id)
-      .then(data => setMetrics(data))
+      .then(data => { if (metricsReqRef.current === myReq) setMetrics(data); })
       .catch(console.error)
-      .finally(() => setMLoading(false));
+      .finally(() => { if (metricsReqRef.current === myReq) setMLoading(false); });
   }, [timeRange, service, account, id]);
 
   async function selectRow(row) {
@@ -263,8 +347,10 @@ fetchAccount(id).then(setAccount).catch(err => {
     setMetrics(null);
     setMLoading(true);
     const region = row.region || account?.default_region || "ap-south-2";
+    const myReq  = ++metricsReqRef.current;
     try {
       const data = await fetchMetrics(service, row, region, timeRange, id);
+      if (metricsReqRef.current !== myReq) return; // a newer selection/timeRange change superseded this
       setMetrics(data);
       if (service === "EC2" && data?.cpu?.length > 0) {
         const latestCpu = data.cpu[data.cpu.length - 1].v;
@@ -276,9 +362,10 @@ fetchAccount(id).then(setAccount).catch(err => {
         setSelected(updated);
       }
     } catch (e) {
+      if (metricsReqRef.current !== myReq) return;
       console.error("Metrics fetch error:", e);
     } finally {
-      setMLoading(false);
+      if (metricsReqRef.current === myReq) setMLoading(false);
     }
   }
 
@@ -326,7 +413,7 @@ fetchAccount(id).then(setAccount).catch(err => {
 
   const visible = rows
     .filter(r => {
-      if (search && !Object.values(r).join(" ").toLowerCase().includes(search.toLowerCase())) return false;
+      if (search && !searchableText(r).toLowerCase().includes(search.toLowerCase())) return false;
       if (filter !== "all") {
         const s = (r.state || r.status || "").toLowerCase();
         if (s !== filter) return false;
