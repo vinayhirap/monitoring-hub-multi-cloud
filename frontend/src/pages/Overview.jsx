@@ -2,13 +2,11 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWebSocket } from "../hooks/useWebSocket";
-import { getLiveAccounts } from "../api/api";
+import { getLiveAccounts, getFleetSummary, deleteAccount } from "../api/api";
 import { AlertOctagonIcon, ZapIcon } from "../components/icons";
 import "./Overview.css";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached } from "../utils/dataCache";
-
-const BASE = "";
 
 /** Group flat account rows by account_id */
 function groupByAccount(accounts) {
@@ -97,10 +95,14 @@ export default function Overview() {
   // GET /api/incidents/fleet-summary's own docstring.
   const [fleet, setFleet] = useState(null);
   useEffect(() => {
-    fetch("/api/incidents/fleet-summary")
-      .then(r => r.ok ? r.json() : null)
-      .then(setFleet)
-      .catch(() => setFleet(null));
+    // Was a raw fetch() with no credentials handling -- harmless here
+    // (a same-origin request still sends the session cookie by
+    // default, and a 401 was already swallowed into the same "just
+    // omit the tile" catch branch), but every other network call in
+    // this app goes through apiFetch() for one consistent behavior on
+    // session expiry (redirect to /login, clear the stale data
+    // cache -- see api.js's apiFetch docstring).
+    getFleetSummary().then(setFleet).catch(() => setFleet(null));
   }, []);
 
   const deletedIds = useRef(new Set());
@@ -168,8 +170,14 @@ export default function Overview() {
     deletedIds.current.add(acc.id);
     setAccounts(prev => prev.filter(a => a.id !== acc.id));
     try {
-      const res = await fetch(`${BASE}/api/admin/accounts/${acc.id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Was a raw fetch() -- unlike every other authenticated action
+      // in this app, it never went through apiFetch(), so a
+      // mid-session expiry here showed the generic "Failed to remove
+      // account" alert below instead of bouncing to /login like the
+      // rest of the app does on a 401 (see api.js's apiFetch
+      // docstring). deleteAccount() is the same shared helper other
+      // admin actions already use.
+      await deleteAccount(acc.id);
     } catch (err) {
       console.error("Delete failed:", err);
       deletedIds.current.delete(acc.id);

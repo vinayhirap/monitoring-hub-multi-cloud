@@ -49,6 +49,7 @@ export const getLiveEC2Metrics= (accountId, instanceId, region) =>
 export const getAccounts      = ()   => apiFetch("/api/admin/accounts");
 export const addAccount       = (data) => apiFetch("/api/admin/accounts", { method:"POST", body: JSON.stringify(data) });
 export const discoverAccount  = (id)   => apiFetch(`/api/admin/accounts/${id}/discover`, { method:"POST" });
+export const deleteAccount    = (id)   => apiFetch(`/api/admin/accounts/${id}`, { method:"DELETE" });
 export const testRole         = (data) => apiFetch("/api/admin/accounts/test-role", { method:"POST", body: JSON.stringify(data) });
 export const testAzureCredentials = (data) => apiFetch("/api/admin/accounts/test-azure-credentials", { method:"POST", body: JSON.stringify(data) });
 export const testGcpCredentials   = (data) => apiFetch("/api/admin/accounts/test-gcp-credentials",   { method:"POST", body: JSON.stringify(data) });
@@ -133,6 +134,7 @@ export const getOpEvents = (params = {}) => {
 };
 
 // ── Incidents / health / RCA (AIOps roadmap Phase 1, 2026-09-14) ─────────
+export const getFleetSummary = () => apiFetch("/api/incidents/fleet-summary");
 export const getIncidents = (accountId, params = {}) => {
   const qs = new URLSearchParams(params).toString();
   return apiFetch(`/api/incidents/${accountId}${qs ? `?${qs}` : ""}`);
