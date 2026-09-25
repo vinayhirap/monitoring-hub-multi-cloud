@@ -94,6 +94,74 @@ def _load_collector():
     return load_module("app/providers/azure/metrics_collector.py")
 
 
+def test_one_account_crash_does_not_abort_remaining_accounts():
+    """
+    SECURITY/RELIABILITY REGRESSION TEST: collect_all_azure_accounts()
+    must isolate a per-account failure the same way discover_account_
+    resources() isolates a per-service one. Before the fix, an
+    exception raised anywhere in collect_account_metrics() outside
+    _run_call()'s own try/except (e.g. the per-service `SELECT ...
+    FROM resources` query hitting a DB error) propagated out of the
+    account loop entirely, silently skipping every account after the
+    failing one for the rest of that tier pass.
+    """
+    install_stub("app.db", get_connection=lambda: _RoutingConn())
+    install_stub("app.credentials", load_credential=lambda a: "fake-secret")
+    install_stub(
+        "app.collector.metrics_writer",
+        write_metrics_batch=lambda rows: None,
+        write_metric_history_batch=lambda rows: None,
+    )
+    install_stub("azure.identity", ClientSecretCredential=lambda **kw: object())
+    install_stub("azure.monitor.query", MetricsClient=lambda endpoint, cred: object(),
+                 MetricAggregationType=object())
+    mod = _load_collector()
+
+    accounts = [
+        {"id": 1, "tenant_id": "t", "client_id": "c", "subscription_id": "s", "default_region": "centralindia"},
+        {"id": 2, "tenant_id": "t", "client_id": "c", "subscription_id": "s", "default_region": "centralindia"},
+        {"id": 3, "tenant_id": "t", "client_id": "c", "subscription_id": "s", "default_region": "centralindia"},
+    ]
+
+    class _AccountsCursor:
+        def execute(self, sql, params=None):
+            pass
+
+        def fetchall(self):
+            return accounts
+
+        def close(self):
+            pass
+
+    class _AccountsConn:
+        def cursor(self, dictionary=True):
+            return _AccountsCursor()
+
+        def close(self):
+            pass
+
+    import unittest.mock as um
+
+    calls = []
+
+    def fake_collect(account, categories=None, only_metric_names=None, window_seconds=600):
+        calls.append(account["id"])
+        if account["id"] == 2:
+            raise RuntimeError("simulated DB error mid-account")
+        return {"pushed": 1, "resources_queried": 1, "errors": []}
+
+    with um.patch.object(mod, "get_connection", lambda: _AccountsConn()), \
+         um.patch.object(mod, "collect_account_metrics", fake_collect):
+        totals = mod.collect_all_azure_accounts()
+
+    # All three accounts must have been attempted, in order -- account 3
+    # must NOT have been skipped just because account 2 crashed.
+    assert calls == [1, 2, 3]
+    assert totals["accounts"] == 3
+    assert totals["pushed"] == 2  # accounts 1 and 3 each pushed 1; account 2 contributed 0
+    assert any(e["account_id"] == 2 for e in totals["errors"])
+
+
 def test_writes_latest_to_metrics_and_full_series_to_history():
     def query_resources(resource_ids):
         results = []
