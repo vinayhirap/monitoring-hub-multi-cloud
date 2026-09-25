@@ -369,8 +369,14 @@ def _record_usage(calls):
     try:
         from app.collector import api_usage
         api_usage.record("azure", _CURRENT_TIER, calls=calls, units=calls)
-    except Exception:
-        pass
+    except Exception as e:
+        # Previously a bare `except: pass` -- a real bug in api_usage
+        # itself (or its DB write) would vanish with zero trace,
+        # leaving cost/quota telemetry silently wrong with nothing in
+        # the logs to explain why. Usage tracking failing is still not
+        # worth crashing a collection cycle over (hence still caught,
+        # not raised), but it should at least be visible.
+        logger.warning(f"[azure collector] api_usage.record failed (tier={_CURRENT_TIER}): {e}")
 
 
 # Tier label for api_usage (set by collect_all_azure_accounts' caller via
@@ -396,8 +402,28 @@ def collect_all_azure_accounts(categories=None, only_metric_names=None, window_s
 
     totals = {"accounts": len(accounts), "pushed": 0, "errors": []}
     for account in accounts:
-        r = collect_account_metrics(account, categories=categories, only_metric_names=only_metric_names,
-                                     window_seconds=window_seconds)
+        # SECURITY/RELIABILITY: collect_account_metrics()'s own docstring
+        # promises "Never raises -- collection failures for one account/
+        # service shouldn't crash the scheduler loop". That promise only
+        # held for failures inside _run_call()'s own try/except (a bad
+        # query_resources() response). Anything else in the function --
+        # the per-service `SELECT ... FROM resources` query hitting a
+        # transient DB error, a lock timeout, a connection drop mid-loop
+        # -- was uncaught: it would propagate out of collect_account_
+        # metrics() (past its try/finally, which only closes the cursor/
+        # connection, it doesn't catch) and out of THIS loop entirely,
+        # silently skipping every account after the failing one for the
+        # rest of this tier pass. discover_account_resources() in
+        # discovery.py already wraps each per-service step individually
+        # for exactly this reason; this loop lacked the per-account
+        # equivalent. Isolate here too.
+        try:
+            r = collect_account_metrics(account, categories=categories, only_metric_names=only_metric_names,
+                                         window_seconds=window_seconds)
+        except Exception as e:
+            totals["errors"].append({"account_id": account["id"], "errors": [str(e)]})
+            logger.warning(f"[azure collector] account={account['id']} collection cycle crashed: {e}")
+            continue
         totals["pushed"] += r["pushed"]
         if r["errors"]:
             totals["errors"].append({"account_id": account["id"], "errors": r["errors"]})
