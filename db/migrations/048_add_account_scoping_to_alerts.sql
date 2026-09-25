@@ -1,4 +1,4 @@
--- db/migrations/047_add_account_scoping_to_alerts.sql
+-- db/migrations/048_add_account_scoping_to_alerts.sql
 --
 -- Second follow-up to 045/046. audit_cross_account_keys.py's scan of
 -- unique keys in the live schema missed this one because `alerts`
