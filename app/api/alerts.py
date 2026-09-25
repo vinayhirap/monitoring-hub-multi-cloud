@@ -73,7 +73,7 @@ def _get_alert_account_id(alert_id: int):
     (ack/resolve/mute/console-url) against the caller's scope before
     touching the row -- see _require_alert_access.
 
-    Reads alerts.aws_account_id directly (migration 047) rather than
+    Reads alerts.aws_account_id directly (migration 048) rather than
     re-deriving it via `JOIN resources ON resource_id = resource_id`.
     That join was a real authorization bug, not just a display one:
     resource_id is only unique WITHIN one AWS account (confirmed

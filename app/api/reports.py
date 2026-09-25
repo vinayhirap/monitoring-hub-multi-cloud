@@ -115,10 +115,29 @@ def generate_report(
         raise HTTPException(status_code=400, detail=f"report_type must be one of {sorted(_VALID_REPORT_TYPES)}")
     if scope_type not in _VALID_SCOPE_TYPES:
         raise HTTPException(status_code=400, detail=f"scope_type must be one of {sorted(_VALID_SCOPE_TYPES)}")
-    if scope_type in ("INCIDENT", "RESOURCE") and not account_id:
+    if scope_type in ("INCIDENT", "RESOURCE", "ACCOUNT") and not account_id:
         raise HTTPException(status_code=400, detail=f"account_id is required for scope_type={scope_type} "
                                                       "-- a resource/incident id is only unique within one "
-                                                      "account, not globally (see db/migrations/048_add_account_scoping_to_alerts.sql)")
+                                                      "account, not globally (see db/migrations/048_add_account_scoping_to_alerts.sql). "
+                                                      "Without it, gather_report_data() applies no account filter at all and the "
+                                                      "resulting report aggregates every account's alerts/incidents.")
+    # CLIENT is the one scope type that legitimately spans multiple
+    # accounts. account_id is deliberately never required for it, but
+    # that also means account_id stays NULL on the resulting
+    # report_jobs/reports row, and _require_account_access() below is
+    # a no-op for a NULL account_id -- there is no RBAC scope
+    # dimension for "client" (2e79edb removed it from the UI as
+    # "unbacked" but the API enum still accepts it), so any principal
+    # holding the role-level reports.generate/reports.download
+    # permission could otherwise generate or pull a report spanning
+    # every account in the system regardless of their own account
+    # scope. Until a real client-scope dimension exists, restrict
+    # CLIENT-scoped generation to admin, matching the precedent this
+    # catalog already set for accounts.delete/credentials.manage and
+    # every rbac.* code (041/049): actions that cross the account
+    # boundary stay admin-only regardless of scope.
+    if scope_type == "CLIENT" and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="CLIENT-scoped reports span multiple accounts and are admin-only")
     _require_account_access(account_id, current_user)
 
     start, end = _resolve_period(report_type, period_start, period_end)
@@ -244,6 +263,16 @@ def _load_report_or_404(report_id: int, current_user: dict) -> dict:
         report = cur.fetchone()
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
+    if report["account_id"] is None:
+        # No account to scope-check against -- a CLIENT-scoped report
+        # (or a pre-fix legacy row left over from before this patch).
+        # Same admin-only line drawn in generate_report() for CLIENT:
+        # there is no RBAC scope dimension to check a non-admin
+        # against here, so fail closed rather than let
+        # _require_account_access's None no-op wave it through.
+        if current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="This report has no account scope and can only be accessed by an admin")
+        return report
     _require_account_access(report["account_id"], current_user)
     return report
 
