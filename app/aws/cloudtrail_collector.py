@@ -187,3 +187,40 @@ def poll_cloud_events() -> int:
     finally:
         cursor.close()
         conn.close()
+
+
+# RETENTION GAP (D02 audit, 2026-09): cloud_events is populated every
+# "low" tier tick (15 min, see CADENCE above) for every active AWS
+# account, forever -- there was no retention/prune job for it anywhere
+# in the codebase (grepped app/ for DELETE FROM cloud_events: only hit
+# was the one-time cleanup in admin/accounts.py's delete_account, which
+# only fires when an account is removed entirely). Every other
+# comparably-shaped append-only table populated by the low-tier
+# scheduler (metric_history, op_events, synthetic_check_results) has
+# its own prune_*() wired into scheduler.py's low tier; this one
+# didn't. 90 days (longer than the other tables' 30-day default)
+# matches this module's own docstring: AWS's CloudTrail LookupEvents
+# API only ever returns 90 days of management events, so keeping rows
+# older than that provides no way to backfill/re-verify from AWS
+# either way, while RCA lookback sometimes benefits from the longer
+# window these events exist for in the first place.
+def prune_cloud_events(retain_days: int = 90) -> int:
+    """Deletes cloud_events older than retain_days. Called from
+    scheduler.py's low tier, same pattern as
+    synthetic.prune_synthetic_results()."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM cloud_events WHERE event_time < DATE_SUB(NOW(), INTERVAL %s DAY)",
+            (retain_days,),
+        )
+        deleted = cursor.rowcount
+        conn.commit()
+        return deleted
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
