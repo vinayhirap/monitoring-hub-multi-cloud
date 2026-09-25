@@ -1,0 +1,84 @@
+.mzm-overlay {
+  position: fixed; inset: 0; background: rgba(3, 7, 18, 0.6);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000;
+}
+
+.mzm-panel {
+  width: min(720px, 92vw);
+  background: #0e1626;
+  border: 1px solid rgba(99, 130, 190, 0.2);
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.mzm-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.mzm-title { font-size: 15px; font-weight: 600; color: #e6ecf7; }
+
+.mzm-icon-btn {
+  background: transparent; border: none; color: #7a90b8; cursor: pointer;
+  padding: 4px; border-radius: 6px; display: inline-flex;
+}
+.mzm-icon-btn:hover { background: rgba(99, 130, 190, 0.12); color: #e6ecf7; }
+
+.mzm-controls {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px; flex-wrap: wrap; gap: 8px;
+}
+
+.mzm-range-group { display: flex; gap: 4px; }
+
+.mzm-range-btn {
+  background: transparent; border: 1px solid rgba(99, 130, 190, 0.2);
+  color: #7a90b8; font-size: 11px; font-weight: 600; padding: 4px 10px;
+  border-radius: 6px; cursor: pointer;
+}
+.mzm-range-btn.active { background: rgba(34, 211, 238, 0.12); border-color: #22d3ee; color: #22d3ee; }
+.mzm-range-btn:not(.active):hover { color: #e6ecf7; }
+
+.mzm-controls-right { display: flex; align-items: center; gap: 10px; }
+
+.mzm-tz-note { font-size: 11px; color: #4d6082; }
+
+.mzm-chart { margin: 4px 0 8px; }
+
+.mzm-empty {
+  height: 320px; display: flex; align-items: center; justify-content: center;
+  color: #4d6082; font-size: 13px;
+}
+
+.mzm-legend {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: #7a90b8; margin-bottom: 12px;
+}
+.mzm-legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+.mzm-footer { display: flex; justify-content: flex-end; gap: 8px; }
+
+.mzm-btn {
+  background: rgba(99, 130, 190, 0.1); border: 1px solid rgba(99, 130, 190, 0.2);
+  color: #e6ecf7; font-size: 12px; font-weight: 600; padding: 7px 14px;
+  border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  text-decoration: none;
+}
+.mzm-btn:hover { background: rgba(99, 130, 190, 0.18); }
+.mzm-btn-primary { background: rgba(34, 211, 238, 0.14); border-color: #22d3ee; color: #22d3ee; }
+.mzm-btn-primary:hover { background: rgba(34, 211, 238, 0.22); }
+
+/* Expand-to-zoom trigger added to the existing inline chart-header
+   (MetricChart in ServiceDetail.jsx) -- reuses that component's own
+   layout, just needs a right-aligned group to hold both the latest
+   value and this new button without disturbing the existing markup. */
+.chart-header-right { display: inline-flex; align-items: center; gap: 6px; }
+
+.chart-expand-btn {
+  background: transparent; border: none; color: #4d6082; cursor: pointer;
+  padding: 2px; border-radius: 4px; display: inline-flex; opacity: 0.7;
+}
+.chart-expand-btn:hover { opacity: 1; color: #7a90b8; background: rgba(99, 130, 190, 0.12); }
+
