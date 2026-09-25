@@ -2,7 +2,9 @@
 -- Adds full CloudWatch metric catalog support + per-account metric selection.
 -- Safe to run multiple times.
 --
--- Run: mysql -umonitor -proot123 monitoring_hub < db/migrations/003_metric_catalog_full.sql
+-- Run: mysql -umonitor -p monitoring_hub < db/migrations/003_metric_catalog_full.sql
+-- (audit d01: redacted a real-looking plaintext password that was
+--  committed here -- pass it interactively / via your own .env instead.)
 -- Then seed the catalog:  python scripts/seed_metric_catalog.py
 
 -- ── 1. Extend metric_catalog ─────────────────────────────────────

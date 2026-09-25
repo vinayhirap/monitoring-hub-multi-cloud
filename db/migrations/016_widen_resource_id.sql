@@ -1,4 +1,8 @@
--- db/migrations/011_widen_resource_id.sql
+-- db/migrations/016_widen_resource_id.sql
+-- (renumbered from 011 -- see this file's header comment history; the
+--  original "011" number was already taken by 011_access_scopes.sql by
+--  the time this was committed, and the header text below was never
+--  updated to match)
 --
 -- resources.resource_id was VARCHAR(100). AWS resource IDs (i-xxxx,
 -- vol-xxxx, ARNs for Lambda) fit comfortably. GCP resource paths

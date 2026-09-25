@@ -1,4 +1,6 @@
--- db/migrations/019_audit_log_ip_address.sql
+-- db/migrations/019b_audit_log_ip_address.sql
+-- (renumbered from 019 -- 019 was already taken by 019_alert_grouping.sql;
+--  the header text below was never updated to match)
 --
 -- audit_logs previously had no way to record WHERE an action came from
 -- -- no source IP, nothing. For a compliance/audit trail that's a real
