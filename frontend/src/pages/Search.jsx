@@ -88,7 +88,26 @@ export default function Search() {
               </thead>
               <tbody>
                 {result.results.map(a => (
-                  <tr key={a.id} className="srch-row" onClick={() => navigate("/alerts")}>
+                  <tr
+                    key={a.id}
+                    className="srch-row"
+                    onClick={() => {
+                      // Deep-link into Alerts.jsx: with server-defined
+                      // tabs + pagination there, just navigating to a
+                      // bare /alerts can easily land on a tab/page that
+                      // doesn't include the alert just clicked. `q`
+                      // reuses the same server-side search Alerts.jsx's
+                      // own search box already sends (matches
+                      // metric_name/resource_id/resource name/severity
+                      // -- see app/api/alerts.py's list_alerts), and
+                      // `tab=all` guarantees it isn't excluded by
+                      // status. Prefer the raw resource id over the
+                      // display name -- less likely to false-positive
+                      // match a LIKE search than a short human label.
+                      const term = a.aws_resource_id || a.resource_name || a.metric_name || "";
+                      navigate(`/alerts?tab=all&q=${encodeURIComponent(term)}`);
+                    }}
+                  >
                     <td><SevBadge sev={a.severity} /></td>
                     <td>{a.resource_name || a.aws_resource_id}</td>
                     <td className="mono">{a.metric_name}</td>

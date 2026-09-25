@@ -1,12 +1,13 @@
 ﻿// monitoring-hub/frontend/src/pages/Alerts.jsx
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useWebSocket } from "../hooks/useWebSocket";
 import "./Alerts.css";
 import { useTimezone, formatInTz } from "../contexts/TimezoneContext";
 import { InfoIcon, DownloadIcon } from "../components/icons";
 import { rcaReportUrl } from "../api/api";
+import { clearAllCached } from "../utils/dataCache";
 
 const BASE = "";
 
@@ -117,10 +118,28 @@ function detailRoute(resource, accountId, service) {
 }
 
 // ── API helper ─────────────────────────────────────────────────
+// SECURITY/CORRECTNESS: these two were missing the 401-session-expiry
+// handling every other network call in this app gets via api.js's
+// shared apiFetch() (redirect to /login, clear the stale data cache --
+// see that function's own docstring). This file predates api.js's
+// apiFetch and still can't call it directly here (different signature:
+// positional method/body below vs. an options object there), so the
+// same 401 behavior is replicated locally instead, in both helpers.
+function _handleUnauthorized() {
+  clearAllCached();
+  if (window.location.pathname !== "/login") {
+    window.location.href = "/login";
+  }
+}
+
 async function apiFetch(path, method = "GET", body) {
-  const opts = { method, headers: { "Content-Type": "application/json" } };
+  const opts = { method, credentials: "include", headers: { "Content-Type": "application/json" } };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(`${BASE}${path}`, opts);
+  if (res.status === 401) {
+    _handleUnauthorized();
+    throw new Error("401 (session expired)");
+  }
   if (!res.ok) {
     const d = await res.json().catch(() => ({}));
     throw new Error(d.detail || `${res.status}`);
@@ -131,7 +150,11 @@ async function apiFetch(path, method = "GET", body) {
 // List fetch that also returns the server's full match count (X-Total-Count),
 // so the UI can page instead of silently truncating at a fixed row cap.
 async function apiFetchList(path) {
-  const res = await fetch(`${BASE}${path}`, { headers: { "Content-Type": "application/json" } });
+  const res = await fetch(`${BASE}${path}`, { credentials: "include", headers: { "Content-Type": "application/json" } });
+  if (res.status === 401) {
+    _handleUnauthorized();
+    throw new Error("401 (session expired)");
+  }
   if (!res.ok) {
     const d = await res.json().catch(() => ({}));
     throw new Error(d.detail || `${res.status}`);
@@ -147,6 +170,7 @@ const PAGE_SIZE = 100;
 export default function Alerts() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { ianaName } = useTimezone();
   const role     = (user?.role || "viewer").toLowerCase();
   const canAct   = role === "admin" || role === "editor";
@@ -161,8 +185,15 @@ export default function Alerts() {
   // both honour the account filter, so a badge always equals the number of
   // rows its tab lists.
   const [counts,  setCounts]  = useState(null);
-  const [tab,     setTab]     = useState("active");
-  const [search,  setSearch]  = useState("");
+  // Seeded once from ?tab=/?q= on mount (Search.jsx's row click links
+  // here this way, since with server-defined tabs + pagination, just
+  // navigating to a bare /alerts can easily land on a page/tab that
+  // doesn't include the alert the person searched for and clicked).
+  // Deliberately a one-time lazy-initializer, not a synced effect, so
+  // the person's own subsequent tab/search changes aren't fought by
+  // the URL on every render.
+  const [tab,     setTab]     = useState(() => searchParams.get("tab") || "active");
+  const [search,  setSearch]  = useState(() => searchParams.get("q") || "");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [accountId, setAccountId] = useState("");
   const [acting,  setActing]  = useState(null);
