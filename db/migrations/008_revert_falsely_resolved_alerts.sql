@@ -5,7 +5,9 @@
 -- still-active accounts, resolved very recently, so it won't touch alerts
 -- you legitimately resolved yourself in the past.
 --
--- Run: mysql --host=127.0.0.1 --port=3307 --user=root --password=root123 monitoring_hub < db/migrations/008_revert_falsely_resolved_alerts.sql
+-- Run: mysql --host=127.0.0.1 --port=3307 --user=root --password monitoring_hub < db/migrations/008_revert_falsely_resolved_alerts.sql
+-- (audit d01: redacted a real-looking plaintext password that was
+--  committed here -- pass it interactively / via your own .env instead.)
 
 UPDATE alerts a
 JOIN resources r      ON r.resource_id = a.resource_id

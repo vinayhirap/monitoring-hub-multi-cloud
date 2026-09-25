@@ -5,7 +5,9 @@
 -- to keep showing up on the Alerts page even though only Mumbai is onboarded.
 --
 -- Safe to run multiple times.
--- Run: mysql -umonitor -proot123 monitoring_hub < db/migrations/007_purge_stale_account_data.sql
+-- Run: mysql -umonitor -p monitoring_hub < db/migrations/007_purge_stale_account_data.sql
+-- (audit d01: redacted a real-looking plaintext password that was
+--  committed here -- pass it interactively / via your own .env instead.)
 
 -- 1. Delete alerts tied to resources whose account is missing/inactive
 DELETE a FROM alerts a

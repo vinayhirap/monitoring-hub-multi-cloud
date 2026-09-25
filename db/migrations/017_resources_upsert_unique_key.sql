@@ -1,4 +1,6 @@
--- db/migrations/013_resources_upsert_unique_key.sql
+-- db/migrations/017_resources_upsert_unique_key.sql
+-- (renumbered from 013 -- 013 was already taken by 013_org_group_rbac.sql;
+--  the header text and the "Run:" line below were never updated to match)
 --
 -- app/providers/azure/discovery.py and app/providers/gcp/discovery.py's
 -- _upsert_resource() has always written via
@@ -24,7 +26,9 @@
 -- cycles, the dedup step below runs first, or the ADD UNIQUE KEY
 -- statement would fail with "Duplicate entry".
 --
--- Run: mysql -uroot -proot123 monitoring_hub < db/migrations/013_resources_upsert_unique_key.sql
+-- Run: mysql -uroot -p monitoring_hub < db/migrations/017_resources_upsert_unique_key.sql
+-- (audit d01: redacted a real-looking plaintext password that was
+--  committed here -- pass it interactively / via your own .env instead.)
 --
 -- Fix 2026-09-10: originally wrote step 2 as a single declarative
 -- `ADD UNIQUE KEY IF NOT EXISTS uniq_resource_identity (...)`, which

@@ -63,37 +63,53 @@ SELECT
     1
 FROM aws_accounts a
 CROSS JOIN metric_catalog mc
+-- Fix (audit d01): this derived table used to key ONLY on metric_name,
+-- but the metric_catalog rows above deliberately reuse the same
+-- metric_name across different services (cpuutilization exists for
+-- ec2, rds, AND ecs_service) -- with the join on metric_name alone,
+-- every metric_catalog row named 'cpuutilization' matched all THREE
+-- 'cpuutilization' candidates below at once, an unintended many-to-many
+-- explosion. It happened to be harmless today only because every one
+-- of those three duplicate rows carries identical values (70, 90, '>')
+-- -- unique-key IGNORE always landed on the same numbers regardless of
+-- which duplicate MySQL happened to pick first. The moment someone
+-- gives RDS or ECS their own, different default (a very reasonable
+-- thing to want -- RDS and EC2 don't share a normal CPU range), the
+-- match becomes genuinely ambiguous and which value wins is
+-- undefined. Adding `service` to the join key removes the ambiguity
+-- and keeps today's behavior byte-for-byte identical (same 3 rows,
+-- same values, now matched deliberately instead of by coincidence).
 JOIN (
-    SELECT 'cpuutilization'   AS metric_name, 70  AS warning_value, 90  AS critical_value, '>'  AS comparison UNION ALL
-    SELECT 'networkin',                        50000000, 100000000, '>'  UNION ALL
-    SELECT 'networkout',                       50000000, 100000000, '>'  UNION ALL
-    SELECT 'diskreadbytes',                    50000000, 100000000, '>'  UNION ALL
-    SELECT 'diskwritebytes',                   50000000, 100000000, '>'  UNION ALL
+    SELECT 'ec2' AS service, 'cpuutilization'   AS metric_name, 70  AS warning_value, 90  AS critical_value, '>'  AS comparison UNION ALL
+    SELECT 'ec2', 'networkin',                        50000000, 100000000, '>'  UNION ALL
+    SELECT 'ec2', 'networkout',                       50000000, 100000000, '>'  UNION ALL
+    SELECT 'ec2', 'diskreadbytes',                    50000000, 100000000, '>'  UNION ALL
+    SELECT 'ec2', 'diskwritebytes',                   50000000, 100000000, '>'  UNION ALL
     -- EBS
-    SELECT 'volumereadops',                    1000, 5000,  '>'  UNION ALL
-    SELECT 'volumewriteops',                   1000, 5000,  '>'  UNION ALL
-    SELECT 'volumequeuelength',                1,    5,     '>'  UNION ALL
-    SELECT 'burstbalance',                     30,   10,    '<'  UNION ALL
+    SELECT 'ebs', 'volumereadops',                    1000, 5000,  '>'  UNION ALL
+    SELECT 'ebs', 'volumewriteops',                   1000, 5000,  '>'  UNION ALL
+    SELECT 'ebs', 'volumequeuelength',                1,    5,     '>'  UNION ALL
+    SELECT 'ebs', 'burstbalance',                     30,   10,    '<'  UNION ALL
     -- RDS
-    SELECT 'cpuutilization',                   70,   90,    '>'  UNION ALL
-    SELECT 'dbconnections',                    80,   100,   '>'  UNION ALL
-    SELECT 'freestorage',                      5368709120, 1073741824, '<'  UNION ALL  -- 5GB warn, 1GB crit
-    SELECT 'readiops',                         1000, 3000,  '>'  UNION ALL
-    SELECT 'writeiops',                        1000, 3000,  '>'  UNION ALL
-    SELECT 'readlatency',                      0.02, 0.05,  '>'  UNION ALL  -- 20ms warn, 50ms crit
-    SELECT 'writelatency',                     0.02, 0.05,  '>'  UNION ALL
-    SELECT 'freeablememory',                   536870912, 268435456, '<'  UNION ALL  -- 512MB warn, 256MB crit
+    SELECT 'rds', 'cpuutilization',                   70,   90,    '>'  UNION ALL
+    SELECT 'rds', 'dbconnections',                    80,   100,   '>'  UNION ALL
+    SELECT 'rds', 'freestorage',                      5368709120, 1073741824, '<'  UNION ALL  -- 5GB warn, 1GB crit
+    SELECT 'rds', 'readiops',                         1000, 3000,  '>'  UNION ALL
+    SELECT 'rds', 'writeiops',                        1000, 3000,  '>'  UNION ALL
+    SELECT 'rds', 'readlatency',                      0.02, 0.05,  '>'  UNION ALL  -- 20ms warn, 50ms crit
+    SELECT 'rds', 'writelatency',                     0.02, 0.05,  '>'  UNION ALL
+    SELECT 'rds', 'freeablememory',                   536870912, 268435456, '<'  UNION ALL  -- 512MB warn, 256MB crit
     -- ELB
-    SELECT 'errors5xx',                        10,   50,    '>'  UNION ALL
-    SELECT 'errors4xx',                        50,   200,   '>'  UNION ALL
-    SELECT 'responselatency',                  1,    3,     '>'  UNION ALL  -- 1s warn, 3s crit
-    SELECT 'unhealthyhosts',                   1,    2,     '>=' UNION ALL
+    SELECT 'elb', 'errors5xx',                        10,   50,    '>'  UNION ALL
+    SELECT 'elb', 'errors4xx',                        50,   200,   '>'  UNION ALL
+    SELECT 'elb', 'responselatency',                  1,    3,     '>'  UNION ALL  -- 1s warn, 3s crit
+    SELECT 'elb', 'unhealthyhosts',                   1,    2,     '>=' UNION ALL
     -- ECS
-    SELECT 'cpuutilization',                   70,   90,    '>'  UNION ALL
-    SELECT 'memutilization',                   75,   90,    '>'  UNION ALL
+    SELECT 'ecs_service', 'cpuutilization',           70,   90,    '>'  UNION ALL
+    SELECT 'ecs_service', 'memutilization',           75,   90,    '>'  UNION ALL
     -- Lambda
-    SELECT 'errors',                           5,    20,    '>'  UNION ALL
-    SELECT 'duration',                         5000, 10000, '>'  UNION ALL  -- 5s warn, 10s crit
-    SELECT 'throttles',                        10,   50,    '>'
-) defaults ON defaults.metric_name = mc.metric_name
+    SELECT 'lambda', 'errors',                        5,    20,    '>'  UNION ALL
+    SELECT 'lambda', 'duration',                      5000, 10000, '>'  UNION ALL  -- 5s warn, 10s crit
+    SELECT 'lambda', 'throttles',                     10,   50,    '>'
+) defaults ON defaults.metric_name = mc.metric_name AND defaults.service = mc.service
 WHERE a.status = 'active';
