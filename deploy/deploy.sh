@@ -48,6 +48,7 @@
 #      failed deploy doesn't also take down whatever was working before.
 # =============================================================
 set -e
+set -u
 set -o pipefail
 
 REPO_URL="https://github.com/vinayhirap/monitoring-hub-multi-cloud.git"
@@ -58,20 +59,36 @@ SERVICE_NAME="monitoring-hub"
 
 DB_NAME="monitoring_hub"
 DB_USER="monitor"
-# SECURITY: previously hardcoded to the literal "root123" -- a well-known
-# weak/default password, baked directly into this script and therefore
-# public forever in this repo's git history (this repo is public). Now
-# freshly randomly generated per install, the same way JWT_SECRET already
-# is a few steps below -- there was never a real reason these two should
-# be treated differently. This does NOT touch any already-provisioned
-# server's existing DB_PASSWORD; it only affects what a brand-new
-# deploy.sh run creates the MySQL user with. Rotating an already-live
-# root123 password on an existing box is a separate, manual operation
-# (ALTER USER ... IDENTIFIED BY ..., update that box's .env, restart) --
-# intentionally not automated here, since this script only ever CREATEs
-# the user (IF NOT EXISTS) and was never the thing that would reset an
-# existing one's password anyway.
-DB_PASS="$(openssl rand -base64 24 | tr -d '=+/' | cut -c1-24)"
+
+# AUDIT FIX (i01/073, CRITICAL): this script deletes $REPO_DIR (which is
+# where .env lives) a few steps below on EVERY run, including a redeploy
+# of an already-provisioned box, and then unconditionally wrote a BRAND
+# NEW random DB_PASS into the freshly-written .env every single time --
+# regardless of whether MySQL already had a 'monitor' user with a
+# DIFFERENT, already-live password. `CREATE USER IF NOT EXISTS` is a
+# no-op on an existing user (it does NOT update the password), so every
+# redeploy of an existing box silently wrote a .env whose DB_PASSWORD no
+# longer matched the real MySQL password -- breaking every DB connection
+# app-wide immediately after the deploy "succeeded". The comment that
+# used to sit here claimed this "does NOT touch any already-provisioned
+# server's existing DB_PASSWORD" -- that claim was false; the code below
+# it did exactly that. Fix: capture the CURRENT .env's DB_PASSWORD (and
+# CREDENTIAL_ENCRYPTION_KEY -- see the [7/11] env file step for why that
+# one matters too) before the old app directory is removed, and reuse it.
+# Only a genuinely first-time install (no prior .env) gets a freshly
+# generated password.
+EXISTING_DB_PASSWORD=""
+EXISTING_CREDENTIAL_ENCRYPTION_KEY=""
+if [ -f "$REPO_DIR/.env" ]; then
+    EXISTING_DB_PASSWORD="$(grep -m1 '^DB_PASSWORD=' "$REPO_DIR/.env" 2>/dev/null | cut -d= -f2-)"
+    EXISTING_CREDENTIAL_ENCRYPTION_KEY="$(grep -m1 '^CREDENTIAL_ENCRYPTION_KEY=' "$REPO_DIR/.env" 2>/dev/null | cut -d= -f2-)"
+fi
+if [ -n "$EXISTING_DB_PASSWORD" ]; then
+    DB_PASS="$EXISTING_DB_PASSWORD"
+    echo "Reusing existing DB_PASSWORD from ${REPO_DIR}/.env (redeploy of an already-provisioned box)."
+else
+    DB_PASS="$(openssl rand -base64 24 | tr -d '=+/' | cut -c1-24)"
+fi
 # Root's MySQL password is deliberately never touched (stays on
 # auth_socket / passwordless sudo mysql) -- changing that caused a full
 # root lockout on a previous run.
@@ -235,6 +252,24 @@ fi
 
 echo "=== [7/11] Environment file (.env) ==="
 JWT_SECRET=$(openssl rand -hex 32)
+# AUDIT FIX (i01/073, CRITICAL): this .env never set CREDENTIAL_ENCRYPTION_KEY
+# at all. app/credentials.py (Fernet encryption for Azure client secrets /
+# GCP service-account keys, see that file's module docstring) falls back to
+# auto-generating and persisting a key at $REPO_DIR/config/credential.key
+# when the env var is absent -- but $REPO_DIR is deleted wholesale by the
+# "[2/11] Stop and remove old app install" step above on every redeploy,
+# taking that gitignored key file with it. Every redeploy of an
+# already-provisioned box therefore silently generated a NEW encryption
+# key, permanently breaking decryption of any Azure/GCP secrets stored
+# under the old key (existing rows in provider_credentials become
+# unreadable, not merely stale -- same failure class as the DB_PASSWORD
+# bug fixed above). Reuse the existing key across redeploys the same way.
+if [ -n "$EXISTING_CREDENTIAL_ENCRYPTION_KEY" ]; then
+    CREDENTIAL_ENCRYPTION_KEY="$EXISTING_CREDENTIAL_ENCRYPTION_KEY"
+    echo "Reusing existing CREDENTIAL_ENCRYPTION_KEY from the prior .env (redeploy)."
+else
+    CREDENTIAL_ENCRYPTION_KEY=$("$VENV_DIR/bin/python3" -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+fi
 tee "$REPO_DIR/.env" > /dev/null <<EOF
 DB_HOST=127.0.0.1
 DB_PORT=3306
@@ -242,6 +277,7 @@ DB_USER=${DB_USER}
 DB_PASSWORD=${DB_PASS}
 DB_NAME=${DB_NAME}
 JWT_SECRET=${JWT_SECRET}
+CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY}
 VM_URL=${VM_URL}
 AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
 PUBLIC_IP=${PUBLIC_IP}
