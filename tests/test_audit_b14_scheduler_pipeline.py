@@ -104,7 +104,12 @@ def test_execute_gmd_splits_calls_and_batches_last_value_writes():
             {"Id": q["Id"], "Values": [1.5], "Timestamps": ["t"]} for q in MetricDataQueries]}
     cw.get_metric_data.side_effect = _gmd
     queries = [{"Id": f"q{i}", "ReturnData": True} for i in range(750)]
-    id_map = {f"q{i}": (i, "cpuutilization") for i in range(750)}
+    # 2026-09-24: id_map now carries the CloudWatch statistic too (see
+    # _execute_gmd's docstring / app/collector/metrics/runner.py's Sum-metric
+    # zero-fill fix) -- "Average" here keeps this test's own concern (chunking
+    # and batching of REAL datapoints) exactly as it was; the zero-fill path
+    # itself is covered separately in tests/test_gmd_sparse_sum_metrics.py.
+    id_map = {f"q{i}": (i, "cpuutilization", "Average") for i in range(750)}
 
     n = mod._execute_gmd(cw, queries, id_map, minutes=6)
 
@@ -127,7 +132,7 @@ def test_execute_gmd_one_failed_chunk_keeps_the_other():
             {"Id": q["Id"], "Values": [2.0], "Timestamps": ["t"]} for q in MetricDataQueries]}
     cw.get_metric_data.side_effect = _gmd
     queries = [{"Id": f"q{i}", "ReturnData": True} for i in range(600)]
-    id_map = {f"q{i}": (i, "m") for i in range(600)}
+    id_map = {f"q{i}": (i, "m", "Average") for i in range(600)}  # see note above
     assert mod._execute_gmd(cw, queries, id_map) == 100
 
 
