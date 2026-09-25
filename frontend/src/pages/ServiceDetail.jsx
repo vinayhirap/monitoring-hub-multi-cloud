@@ -10,6 +10,7 @@ import {
 } from "../components/icons";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached } from "../utils/dataCache";
+import { getThresholds, getResourceHealth, getCapacityForecast } from "../api/api";
 import AlertBadge from "../components/AlertBadge";
 import { useResourceAlerts } from "../hooks/useResourceAlerts";
 
@@ -875,8 +876,12 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
   // apply_add_warning_threshold_line.py.
   useEffect(() => {
     if (!accountId) return;
-    fetch(`/api/settings/thresholds?account_id=${accountId}&include_no_data=true`)
-      .then(r => r.ok ? r.json() : { thresholds: [] })
+    // Was a raw fetch() -- every other network call in this app goes
+    // through apiFetch() (via api.js) for one consistent behavior on
+    // session expiry (redirect to /login, clear the stale data cache).
+    // getThresholds() is the same shared helper other threshold reads
+    // now use.
+    getThresholds(accountId, true)
       .then(data => {
         const map = {};
         (data.thresholds || []).forEach(t => {
@@ -889,7 +894,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
         });
         setThresholdMap(map);
       })
-      .catch(() => {});
+      .catch(() => setThresholdMap({}));
   }, [accountId]);
 
   const resourceId = consoleParamsFor(service, row)?.resource_id;
@@ -897,15 +902,28 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
   useEffect(() => {
     if (!accountId || !resourceId) return;
     let cancelled = false;
-    fetch(`/api/incidents/${accountId}/health`)
-      .then(r => r.ok ? r.json() : [])
+    // Reset before fetching, not just on success/failure: this
+    // component isn't remounted when switching between rows (the
+    // parent renders one <ServiceDetailPanel> and just changes its
+    // `row` prop -- see ServiceDetail's own render), so without this
+    // reset, switching from one resource to another briefly showed the
+    // PREVIOUSLY-selected resource's health score / capacity forecast
+    // under the NEWLY-selected resource's name until the new fetch
+    // resolved.
+    setHealth(null);
+    setForecasts([]);
+    // Was two raw fetch() calls -- every other network call in this
+    // app goes through apiFetch() (via api.js) for one consistent
+    // behavior on session expiry. getResourceHealth()/
+    // getCapacityForecast() are the same shared helpers the Incidents
+    // page already uses for this exact data.
+    getResourceHealth(accountId)
       .then(list => {
         if (cancelled) return;
         setHealth((list || []).find(h => h.resource_id === resourceId) || { health_score: 100 });
       })
       .catch(() => { if (!cancelled) setHealth(null); });
-    fetch(`/api/incidents/${accountId}/forecast/${encodeURIComponent(resourceId)}`)
-      .then(r => r.ok ? r.json() : [])
+    getCapacityForecast(accountId, resourceId)
       .then(data => { if (!cancelled) setForecasts(Array.isArray(data) ? data : []); })
       .catch(() => { if (!cancelled) setForecasts([]); });
     return () => { cancelled = true; };
