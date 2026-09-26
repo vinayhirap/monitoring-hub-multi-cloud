@@ -102,8 +102,19 @@ MIN_STDDEV_RATIO = 0.25
 # wrote with stddev 0 (flat-line, no seasonal shape possible) or that
 # has no bucket at all yet (cold start -- let sigma-clip accumulate
 # history first).
+#
+# SECURITY: includes aws_account_id -- metric_baseline's identity is
+# (aws_account_id, resource_id, metric_name, hour_of_day, day_of_week)
+# since migration 046 (two accounts CAN legitimately share a
+# resource_id string, e.g. the stock "System" CloudWatch Logs group;
+# see that migration's own docstring for the 2026-09-16 AuroGov
+# Mumbai/U4RAD precedent). Selecting resource_id/metric_name alone
+# would collapse both accounts' buckets into one candidate below, and
+# every query keyed off it would then match/overwrite both accounts'
+# rows at once -- baseline.py's sibling recompute was fixed for this
+# exact gap by the same migration; this module was missed.
 _CANDIDATES_SQL = """
-    SELECT DISTINCT resource_id, metric_name
+    SELECT DISTINCT aws_account_id, resource_id, metric_name
     FROM metric_baseline
     WHERE stddev_value > 0
 """
@@ -140,7 +151,7 @@ def _has_statsmodels():
         return False
 
 
-def _load_series(cursor, resource_id, metric_name):
+def _load_series(cursor, account_id, resource_id, metric_name):
     """Returns a pandas Series of metric_value indexed by a regular
     5-minute DatetimeIndex over the lookback window, gaps forward-
     filled then linearly interpolated. Returns None if coverage is too
@@ -150,12 +161,16 @@ def _load_series(cursor, resource_id, metric_name):
     cursor.execute("""
         SELECT metric_timestamp, metric_value
         FROM metric_history
-        WHERE resource_id = (SELECT id FROM resources WHERE resource_id = %s LIMIT 1)
+        WHERE resource_id = (
+                SELECT id FROM resources
+                WHERE resource_id = %s AND aws_account_id = %s
+                LIMIT 1
+              )
           AND metric_name = %s
           AND metric_timestamp >= DATE_SUB(NOW(), INTERVAL %s DAY)
           AND metric_value IS NOT NULL
         ORDER BY metric_timestamp
-    """, (resource_id, metric_name, MIN_STL_DAYS))
+    """, (resource_id, account_id, metric_name, MIN_STL_DAYS))
     rows = cursor.fetchall()
     if not rows:
         return None
@@ -219,9 +234,9 @@ def upgrade_baselines_with_stl() -> int:
         candidates = cursor.fetchall()
 
         for c in candidates:
-            resource_id, metric_name = c["resource_id"], c["metric_name"]
+            account_id, resource_id, metric_name = c["aws_account_id"], c["resource_id"], c["metric_name"]
             try:
-                series = _load_series(cursor, resource_id, metric_name)
+                series = _load_series(cursor, account_id, resource_id, metric_name)
                 if series is None:
                     continue
 
@@ -250,11 +265,19 @@ def upgrade_baselines_with_stl() -> int:
                     variance = sum((r - resid_mean) ** 2 for r in resid_vals) / max(1, len(resid_vals) - 1)
                     stddev_value = variance ** 0.5
 
+                    # SECURITY: both queries below now match
+                    # aws_account_id too -- see _CANDIDATES_SQL's
+                    # comment above for why (metric_baseline's identity
+                    # includes it since migration 046). Without this,
+                    # two accounts sharing a resource_id would have had
+                    # this UPDATE match and overwrite BOTH accounts'
+                    # buckets with whichever one's series happened to
+                    # be loaded above.
                     cursor.execute("""
                         SELECT stddev_value FROM metric_baseline
-                        WHERE resource_id = %s AND metric_name = %s
+                        WHERE aws_account_id = %s AND resource_id = %s AND metric_name = %s
                           AND hour_of_day = %s AND day_of_week = %s
-                    """, (resource_id, metric_name, hour_of_day, day_of_week))
+                    """, (account_id, resource_id, metric_name, hour_of_day, day_of_week))
                     existing = cursor.fetchone()
                     if existing and existing["stddev_value"] > 0:
                         if stddev_value < existing["stddev_value"] * MIN_STDDEV_RATIO:
@@ -265,9 +288,9 @@ def upgrade_baselines_with_stl() -> int:
                     cursor.execute("""
                         UPDATE metric_baseline
                         SET mean_value = %s, stddev_value = %s, computed_by = 'stl'
-                        WHERE resource_id = %s AND metric_name = %s
+                        WHERE aws_account_id = %s AND resource_id = %s AND metric_name = %s
                           AND hour_of_day = %s AND day_of_week = %s
-                    """, (mean_value, stddev_value, resource_id, metric_name,
+                    """, (mean_value, stddev_value, account_id, resource_id, metric_name,
                           hour_of_day, day_of_week))
                     upgraded += cursor.rowcount
 
@@ -276,8 +299,8 @@ def upgrade_baselines_with_stl() -> int:
                 # transient pandas/statsmodels error) must never block
                 # the rest of the fleet from being upgraded.
                 logger.exception(
-                    f"[baseline_stl] failed to upgrade {resource_id}/{metric_name}, "
-                    f"leaving its sigma-clipped baseline unchanged"
+                    f"[baseline_stl] failed to upgrade account={account_id} "
+                    f"{resource_id}/{metric_name}, leaving its sigma-clipped baseline unchanged"
                 )
                 continue
 
