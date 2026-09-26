@@ -146,7 +146,7 @@
 // draggable nodes.
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getTopology, addManualEdge, deleteManualEdge } from "../api/api";
+import { getTopology, addManualEdge, deleteManualEdge, getAccount } from "../api/api";
 import { useAuth } from "../auth/AuthContext";
 import { CloudServiceIcon } from "../components/cloud-icons";
 import {
@@ -311,6 +311,17 @@ function NodeCard({ node, active, dimmed, pinned, onHover, onLeave, onSelect, pr
       onMouseEnter={onHover}
       onMouseLeave={onLeave}
       onClick={onSelect}
+      // Was a plain <div onClick> -- not reachable by Tab, not
+      // activatable via Enter/Space, and with no role a screen reader
+      // announced nothing to indicate it was interactive at all. This
+      // is the ONLY way to pin/trace a resource's connections (see the
+      // file header) -- a keyboard-only or screen-reader user could not
+      // do it at all before this fix.
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(); }
+      }}
       title={pinned ? "Click to clear selection" : "Click to trace this resource's connections"}
     >
       <span className="topo-node-icon">
@@ -422,6 +433,18 @@ export default function Topology() {
   const [addingEdge, setAddingEdge] = useState(false);
   const [form, setForm] = useState({ source: "", target: "" });
   const [saving, setSaving] = useState(false);
+  // Separate from `error` above (page-load failure) -- that state's
+  // presence does an early-return that replaces the ENTIRE graph with
+  // a bare error banner (see the `if (error) return ...` below). Before
+  // this fix, handleAddEdge's catch wrote into that same `error` state,
+  // so a failed manual-edge save (a validation error, a duplicate edge,
+  // a permission race) blew away the whole topology view instead of
+  // showing an inline error next to the add-edge form -- the one place
+  // it's actually relevant.
+  const [formError, setFormError] = useState(null);
+  // Same reasoning: a failed delete must surface near the manual-edges
+  // list, not replace the whole page.
+  const [deleteError, setDeleteError] = useState(null);
   // Matches the free describe-poll loop's own 30s cadence (see
   // app/main.py's _run_describe_poll_loop) -- a shorter interval here
   // would never see fresher data anyway, since that's how often
@@ -443,7 +466,13 @@ export default function Topology() {
     return () => clearInterval(t);
   }, [autoRefresh, load]);
   useEffect(() => {
-    fetch(`/api/admin/accounts/${id}`).then(r => r.ok ? r.json() : null).then(d => d && setAccount(d)).catch(() => {});
+    // Was a raw fetch() -- unlike every other network call in this app,
+    // it never went through apiFetch(), so a mid-session expiry here
+    // silently left `account` as null forever instead of bouncing to
+    // /login like the rest of the app does on a 401 (see api.js's
+    // apiFetch docstring). getAccount() is the same shared helper
+    // AccountDetail.jsx/ServiceList.jsx/GenericServiceDetail.jsx use.
+    getAccount(id).then(d => d && setAccount(d)).catch(() => {});
   }, [id]);
 
   const layout = useMemo(() => {
@@ -526,15 +555,33 @@ export default function Topology() {
     e.preventDefault();
     if (!form.source || !form.target || form.source === form.target) return;
     setSaving(true);
+    setFormError(null);
     try {
       await addManualEdge(id, form.source, form.target);
       setForm({ source: "", target: "" });
       setAddingEdge(false);
       load();
     } catch (err) {
-      setError(err.message);
+      setFormError(err.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDeleteEdge = async (edgeId) => {
+    setDeleteError(null);
+    try {
+      await deleteManualEdge(id, edgeId);
+      load();
+    } catch (err) {
+      // Was a bare `async () => { await deleteManualEdge(...); load(); }`
+      // with no try/catch at all -- a failed delete (permission race,
+      // already-deleted edge, network error) threw an unhandled promise
+      // rejection that only ever showed up in the browser console.
+      // load() was never reached, so the UI didn't refresh either --
+      // the edge stayed listed with zero visible indication anything
+      // had gone wrong.
+      setDeleteError(err.message);
     }
   };
 
@@ -582,6 +629,11 @@ export default function Topology() {
           <button type="submit" className="topo-btn-add" disabled={saving || !form.source || !form.target}>
             {saving ? "Saving…" : "Save"}
           </button>
+          {formError && (
+            <div className="topo-form-error" role="alert">
+              <AlertTriangleIcon size={13} /> {formError}
+            </div>
+          )}
         </form>
       )}
 
@@ -705,11 +757,16 @@ export default function Topology() {
       {manualEdges.length > 0 && (
         <div className="topo-manual-list">
           <div className="topo-manual-title">Manual dependencies</div>
+          {deleteError && (
+            <div className="topo-form-error" role="alert">
+              <AlertTriangleIcon size={13} /> Failed to delete: {deleteError}
+            </div>
+          )}
           {manualEdges.map(e => (
             <div key={e.id} className="topo-manual-row">
               <span className="mono">{e.source_resource_id} → {e.target_resource_id}</span>
               {canManage && (
-                <button className="topo-btn-delete" onClick={async () => { await deleteManualEdge(id, e.id); load(); }} title="Delete this manual edge">
+                <button className="topo-btn-delete" onClick={() => handleDeleteEdge(e.id)} title="Delete this manual edge">
                   <TrashIcon size={13} />
                 </button>
               )}

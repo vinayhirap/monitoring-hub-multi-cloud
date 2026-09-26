@@ -234,7 +234,16 @@ export function GcpServiceIcon({ service, size = 32, style, ...rest }) {
       src={src}
       width={size}
       height={size}
-      alt=""
+      // Was alt="" -- a screen reader is told to skip an alt="" image
+      // entirely, so this icon (the only visual indicator of which
+      // cloud service a resource is) conveyed zero information to
+      // assistive tech. The raw service key isn't a pretty label, but
+      // it's real, non-empty, and matches what AwsServiceIcon/
+      // AzureServiceIcon's underlying icon libraries already announce
+      // for their own icons (both render real <svg> components from
+      // named icon files/keys, not a bare <img>, so they don't share
+      // this specific gap).
+      alt={service ? `${service} icon` : "cloud service icon"}
       style={{ display: "inline-block", objectFit: "contain", ...style }}
       {...rest}
     />
