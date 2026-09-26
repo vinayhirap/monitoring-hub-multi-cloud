@@ -25,9 +25,33 @@
 -- service_account_email match 009_multi_cloud_provider_columns.sql's
 -- column order exactly.
 --
--- Idempotent (MySQL 8 direct syntax, same as 002/003/etc. in this
--- directory): a no-op wherever apply_multi_cloud_credentials.py or an
--- earlier manual ALTER already put these columns in place.
-ALTER TABLE aws_accounts
-    ADD COLUMN IF NOT EXISTS client_secret VARCHAR(500) DEFAULT NULL AFTER client_id,
-    ADD COLUMN IF NOT EXISTS gcp_service_account_key TEXT DEFAULT NULL AFTER service_account_email;
+-- Fix (audit d01 follow-up): the first version of this migration used
+-- `ADD COLUMN IF NOT EXISTS`, matching the style shown in this
+-- directory's own 002/003 comments -- but those files were only ever
+-- applied as `baseline` (marked satisfied, never actually executed by
+-- migrate.py), so that syntax was never really proven against this
+-- server. It needs MySQL 8.0.29+, and dev's actual server rejected it
+-- outright with a syntax error on first real use. Rewritten to use the
+-- same information_schema-guarded PREPARE/EXECUTE pattern already
+-- proven working here (012_alert_evaluation_hardening.sql,
+-- 065_metric_catalog_unique_key_provider.sql). Same end state as
+-- before, just reached in a way this server actually supports.
+SET @has_client_secret := (
+  SELECT COUNT(*) FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'aws_accounts' AND column_name = 'client_secret'
+);
+SET @sql := IF(@has_client_secret = 0,
+  'ALTER TABLE aws_accounts ADD COLUMN client_secret VARCHAR(500) DEFAULT NULL AFTER client_id',
+  'SELECT "aws_accounts.client_secret already exists, skipping"'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @has_gcp_key := (
+  SELECT COUNT(*) FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'aws_accounts' AND column_name = 'gcp_service_account_key'
+);
+SET @sql := IF(@has_gcp_key = 0,
+  'ALTER TABLE aws_accounts ADD COLUMN gcp_service_account_key TEXT DEFAULT NULL AFTER service_account_email',
+  'SELECT "aws_accounts.gcp_service_account_key already exists, skipping"'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
