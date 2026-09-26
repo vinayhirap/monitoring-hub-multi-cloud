@@ -78,7 +78,23 @@ def run_nl_search(query_text: str, current_user: dict) -> dict:
 
         if filters["free_text"]:
             where.append("(r.name LIKE %s OR r.resource_id LIKE %s)")
-            like = f"%{filters['free_text']}%"
+            # Escape LIKE's own wildcard metacharacters (MySQL's default
+            # LIKE escape char is backslash) -- without this, a literal
+            # "_" or "%" in the search term (common in real AWS resource
+            # names, e.g. "my_bucket") is interpreted as a wildcard
+            # instead of a literal character, silently over-matching
+            # (e.g. "my_bucket" would also match "myXbucket"). Not a SQL
+            # injection risk either way -- free_text is already restricted
+            # to [a-zA-Z0-9._-] by parser.py's _extract_free_text() and is
+            # always passed as a bound parameter below, never interpolated
+            # into the SQL text itself.
+            escaped = (
+                filters["free_text"]
+                .replace("\\", "\\\\")
+                .replace("%", r"\%")
+                .replace("_", r"\_")
+            )
+            like = f"%{escaped}%"
             params.extend([like, like])
 
         # multivariate_anomaly rows are hidden from the end-user Alerts
