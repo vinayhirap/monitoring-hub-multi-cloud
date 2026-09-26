@@ -60,13 +60,38 @@ export default function MetricZoomModal({
   // so "1W" only shows real data if the parent fetched a week's worth.
   const [rangeHours, setRangeHours] = useState(RANGE_OPTIONS[RANGE_OPTIONS.length - 1].hours);
 
+  // Bug found live (screenshots showed 1H/3H correctly returning
+  // "No data" while 1D/1W worked fine): this modal windows over
+  // whatever `data` the PARENT page already fetched -- it does NOT
+  // independently re-query CloudWatch. The parent's own inline range
+  // selector (1H..ALL, in ServiceDetail.jsx) decides how wide/coarse
+  // that fetch is; if it's currently set to something wide (1M, ALL),
+  // the returned points can be sparse enough that the most recent one
+  // is genuinely hours old. Filtering against Date.now() (the
+  // browser's live clock) in that case correctly, but unhelpfully,
+  // excludes everything for a narrow "1H" window -- there's no data
+  // *right now*, even though there's plenty a few hours back.
+  //
+  // Fix: anchor the cutoff to the LATEST point actually present in
+  // `data`, not to the browser's clock. This guarantees every range
+  // option shows at least the most recent available reading -- "1H"
+  // now means "the last hour of data we actually have", which is the
+  // only thing this modal can honestly promise without independently
+  // re-fetching from the live metrics endpoint (a larger change: it
+  // would need instance/account/region plumbed down through every
+  // MetricChart call site, not just a modal-local fix).
+  const latestPointTime = useMemo(() => {
+    if (!data || data.length === 0) return null;
+    return Math.max(...data.map(d => new Date(d.t).getTime()));
+  }, [data]);
+
   const windowed = useMemo(() => {
-    if (!data || data.length === 0) return [];
-    const cutoff = Date.now() - rangeHours * 3600 * 1000;
+    if (!data || data.length === 0 || latestPointTime == null) return [];
+    const cutoff = latestPointTime - rangeHours * 3600 * 1000;
     return data
       .map(d => ({ t: new Date(d.t).getTime(), v: d.v }))
       .filter(d => d.t >= cutoff);
-  }, [data, rangeHours]);
+  }, [data, rangeHours, latestPointTime]);
 
   if (!open) return null;
 
