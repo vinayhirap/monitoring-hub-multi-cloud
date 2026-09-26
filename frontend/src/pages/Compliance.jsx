@@ -178,8 +178,17 @@ export default function Compliance() {
         displayRole(l.payload),
       ])
     ];
+    // SECURITY (CSV/formula injection, CWE-1236): actor/detail can
+    // ultimately contain account-controlled text (a resource name, a
+    // custom detail string) -- if a cell's content starts with =, +,
+    // -, or @, Excel/Sheets treats it as a formula when this file is
+    // opened, not as literal text. Prefixing such cells with a single
+    // quote forces spreadsheet apps to treat them as plain text
+    // without changing what's shown in this app itself (only the
+    // exported file).
+    const escapeFormula = (v) => /^[=+\-@]/.test(v) ? `'${v}` : v;
     const csv = rows
-      .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(","))
+      .map(r => r.map(v => `"${escapeFormula(String(v)).replace(/"/g, '""')}"`).join(","))
       .join("\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
