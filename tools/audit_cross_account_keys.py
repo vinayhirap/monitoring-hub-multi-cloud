@@ -54,8 +54,19 @@ except ImportError:
 # _EXPECTED_RESOURCE_ID_WIDTHS -- kept as a plain local list rather than
 # imported (see module docstring above for why) -- update both places
 # together if a new resource_id-shaped column is ever added.
+#
+# AUDIT FIX: added primary_resource_id (incidents table, migration 026)
+# -- an RCA-ranked probable-root-cause resource identifier, the same
+# conceptual "which resource is this row about" shape as resource_id,
+# just prefixed for that table's context. Not in any unique key today
+# (confirmed via db/migrations/026_aiops_phase1.sql -- only non-unique
+# indexes touch it), so this wasn't a live false negative, but a latent
+# one: if primary_resource_id were ever added to a unique key without
+# aws_account_id alongside it, this tool would have silently missed the
+# exact bug shape it exists to catch.
 IDENTIFIER_COLUMN_NAMES = {
     "resource_id", "source_resource_id", "target_resource_id",
+    "primary_resource_id",
 }
 
 # Columns that, if present in the SAME unique key as an identifier

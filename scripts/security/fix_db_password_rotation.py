@@ -347,7 +347,12 @@ def main():
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    apply_ = args.apply and not args.dry_run
+    # AUDIT FIX: see fix_p0_credential_leak.py's main() for the full
+    # rationale -- both flags together used to silently mean dry-run.
+    if args.apply and args.dry_run:
+        die("--apply and --dry-run are mutually exclusive -- pass exactly one "
+            "(or neither, for the default dry-run).")
+    apply_ = args.apply
 
     repo_root = find_repo_root()
     env_path = find_env_file(repo_root)

@@ -51,7 +51,16 @@ import mysql.connector
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
 DB_PORT = int(os.getenv("DB_PORT", 3306))
 DB_USER = os.getenv("DB_USER", "root")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "root123")
+# AUDIT FIX: was os.getenv("DB_PASSWORD", "root123") -- reintroduced the
+# exact insecure hardcoded-fallback-password pattern
+# scripts/security/fix_db_password_rotation.py exists specifically to
+# eliminate from app/db.py (see that script's own docstring). There is
+# deliberately no default here, same reasoning as JWT_SECRET in
+# app/auth/security.py and _require_db_password() in app/db.py.
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+if not DB_PASSWORD:
+    print("DB_PASSWORD is not set -- there is no default. Set it in .env.", file=sys.stderr)
+    sys.exit(1)
 DB_NAME = os.getenv("DB_NAME", "monitoring_hub")
 
 CREATE_SQL = """

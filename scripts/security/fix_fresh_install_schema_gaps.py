@@ -141,7 +141,15 @@ import mysql.connector
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
 DB_PORT = int(os.getenv("DB_PORT", 3306))
 DB_USER = os.getenv("DB_USER", "root")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "root123")
+# AUDIT FIX: no insecure hardcoded fallback -- same reasoning as
+# JWT_SECRET in app/auth/security.py and _require_db_password() in
+# app/db.py (see scripts/security/fix_db_password_rotation.py, which
+# exists specifically to eliminate this exact pattern elsewhere; this
+# generator was reintroducing it in a brand-new file).
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+if not DB_PASSWORD:
+    print("DB_PASSWORD is not set -- there is no default. Set it in .env.", file=sys.stderr)
+    sys.exit(1)
 DB_NAME = os.getenv("DB_NAME", "monitoring_hub")
 
 CREATE_SQL = """
@@ -279,7 +287,12 @@ def main():
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    apply_ = args.apply and not args.dry_run
+    # AUDIT FIX: see fix_p0_credential_leak.py's main() for the full
+    # rationale -- both flags together used to silently mean dry-run.
+    if args.apply and args.dry_run:
+        die("--apply and --dry-run are mutually exclusive -- pass exactly one "
+            "(or neither, for the default dry-run).")
+    apply_ = args.apply
 
     repo_root = find_repo_root()
     print(f"Repo root: {repo_root}")

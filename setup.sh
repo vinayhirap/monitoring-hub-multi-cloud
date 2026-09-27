@@ -291,6 +291,8 @@ run_migration() {
 
 run_migration apply_ensure_metric_catalog_base_table.py \
     "FOUNDATIONAL: create metric_catalog base table if this is a truly fresh DB (no-op otherwise) -- must run before everything below, which only ever ALTERs it"
+run_migration apply_ensure_thresholds_modern_columns.py \
+    "FOUNDATIONAL: ensure thresholds has its modern columns (aws_account_id/resource_type/metric_id/warning_value/critical_value/comparison/evaluation_period/enabled) if this is a truly fresh DB (no-op otherwise) -- must run before migration 020, which ALTERs thresholds assuming enabled already exists"
 run_migration apply_multi_cloud_migration.py \
     "009: aws_accounts/resources/metric_catalog provider columns"
 run_migration apply_multi_cloud_credentials.py \

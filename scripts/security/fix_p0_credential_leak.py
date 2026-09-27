@@ -346,13 +346,45 @@ def step_rotate_passwords(env_path, apply_):
     print("  Passwords rotated. Old admin123/editor123 no longer work.")
 
 
-def step_print_manual_followup(repo_root, apply_):
+def step_print_manual_followup(repo_root, apply_, jwt_rotated):
     print("\n[6/6] Manual follow-up (do these yourself)")
-    print("""
+
+    # AUDIT FIX: restarting used to be a purely manual instruction (item
+    # A below) with no automation at all -- the new JWT_SECRET sits in
+    # the env file, but the RUNNING process still has the OLD one loaded
+    # in memory, so the two leaked cookies stayed valid for however long
+    # it took the operator to notice and restart by hand. For a P0
+    # credential-leak remediation script, closing that window as fast as
+    # possible matters -- this offers to do it immediately, right here,
+    # while still requiring an explicit y/N so it's not a surprise.
+    if apply_ and jwt_rotated:
+        print("""
+  A) The new JWT_SECRET is written to the env file, but the RUNNING
+     process still has the OLD one loaded in memory -- the leaked
+     cookies stay valid until a restart picks up the new value.""")
+        try:
+            answer = input("     Restart monitoring-hub now to close that window? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer == "y":
+            result = subprocess.run(["sudo", "systemctl", "restart", "monitoring-hub"])
+            if result.returncode == 0:
+                print("     Restarted. Verify: sudo systemctl status monitoring-hub --no-pager")
+            else:
+                print("     Restart command failed (see above) -- restart manually:")
+                print("       sudo systemctl restart monitoring-hub")
+        else:
+            print("     Not restarted. Do it manually as soon as you can -- until then the")
+            print("     leaked cookies remain valid:")
+            print("       sudo systemctl restart monitoring-hub")
+            print("       sudo systemctl status monitoring-hub --no-pager")
+    else:
+        print("""
   A) Restart the backend so the new JWT_SECRET takes effect immediately:
        sudo systemctl restart monitoring-hub
-       sudo systemctl status monitoring-hub --no-pager
+       sudo systemctl status monitoring-hub --no-pager""")
 
+    print("""
   B) Review what's staged, then commit and push from the dev server
      (or from wherever you hold push credentials for this repo):
        git status
@@ -401,7 +433,16 @@ def main():
     parser.add_argument("--dry-run", action="store_true",
                          help="Explicitly request dry-run (default if neither flag given).")
     args = parser.parse_args()
-    apply_ = args.apply and not args.dry_run
+    # AUDIT FIX: was `apply_ = args.apply and not args.dry_run` -- passing
+    # BOTH flags together (a plausible slip, e.g. copy-pasting from a
+    # dry-run command and only adding --apply) silently resolved to
+    # dry-run mode with ZERO warning. For a P0 credential-leak
+    # remediation script, someone believing they rotated the leaked
+    # JWT_SECRET/passwords when they actually didn't is a real risk.
+    if args.apply and args.dry_run:
+        die("--apply and --dry-run are mutually exclusive -- pass exactly one "
+            "(or neither, for the default dry-run).")
+    apply_ = args.apply
 
     repo_root = find_repo_root()
     print(f"Repo root: {repo_root}")
@@ -412,7 +453,7 @@ def main():
     step_sanitize_env_example(repo_root, apply_)
     env_path = step_rotate_jwt_secret(repo_root, apply_)
     step_rotate_passwords(env_path, apply_)
-    step_print_manual_followup(repo_root, apply_)
+    step_print_manual_followup(repo_root, apply_, jwt_rotated=bool(env_path) and apply_)
 
     if not apply_:
         print("\nThis was a DRY RUN. Re-run with --apply to make real changes.")

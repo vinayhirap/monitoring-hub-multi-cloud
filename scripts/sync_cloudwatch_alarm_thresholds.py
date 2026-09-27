@@ -308,23 +308,24 @@ def _upsert_threshold(conn, account_id, resource_type, metric_id, warning, criti
     operator's own tuning and is deliberately left untouched here,
     only warning/critical/comparison are ever synced from AWS."""
     cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO thresholds
-          (aws_account_id, resource_type, metric_id, warning_value,
-           critical_value, comparison, evaluation_period, enabled)
-        VALUES (%s,%s,%s,%s,%s,%s,5,1)
-        ON DUPLICATE KEY UPDATE
-          warning_value  = VALUES(warning_value),
-          critical_value = VALUES(critical_value),
-          comparison     = VALUES(comparison)
-        """,
-        (account_id, resource_type, metric_id, warning, critical, comparison),
-    )
-    conn.commit()
-    new_id = cursor.lastrowid
-    cursor.close()
-    return new_id
+    try:
+        cursor.execute(
+            """
+            INSERT INTO thresholds
+              (aws_account_id, resource_type, metric_id, warning_value,
+               critical_value, comparison, evaluation_period, enabled)
+            VALUES (%s,%s,%s,%s,%s,%s,5,1)
+            ON DUPLICATE KEY UPDATE
+              warning_value  = VALUES(warning_value),
+              critical_value = VALUES(critical_value),
+              comparison     = VALUES(comparison)
+            """,
+            (account_id, resource_type, metric_id, warning, critical, comparison),
+        )
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        cursor.close()
 
 
 def _write_audit(conn, actor, action, detail):
