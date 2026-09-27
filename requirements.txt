@@ -20,12 +20,15 @@ starlette==0.52.1
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 urllib3==2.7.0
-uvicorn==0.41.0
-uvicorn[standard]
-websockets
-redis
+uvicorn[standard]==0.41.0
+websockets==17.1
+redis==8.1.0
 bcrypt==4.0.1
-passlib[bcrypt]
+# passlib's bcrypt-backend detection breaks on bcrypt>=4.1 (it reads an
+# __about__ module bcrypt removed in 4.1) -- bcrypt is intentionally
+# pinned to 4.0.1 above for exactly this reason; do not bump one
+# without the other.
+passlib[bcrypt]==1.7.4
 PyJWT==2.13.0
 requests==2.33.0
 python-dotenv==1.2.2
@@ -121,13 +124,12 @@ scikit-learn==1.8.0
 # pandas version before bumping the pin.
 statsmodels==0.15.0
 
-# app/llm/postmortem_pdf.py (downloadable incident postmortems,
-# 2026-09-14): fpdf2 is a pure-Python PDF generator (no compiled
-# system dependency like wkhtmltopdf/weasyprint needs) -- markdown
-# postmortem text in, a formatted PDF out. Small footprint, matches
-# this app's existing "avoid heavy/compiled dependencies where a light
-# one does the job" pattern (see statsmodels above vs. why Prophet was
-# deliberately NOT added).
+# app/llm/rca_report_pdf.py (downloadable RCA reports): fpdf2 is a
+# pure-Python PDF generator (no compiled system dependency like
+# wkhtmltopdf/weasyprint needs) -- markdown report text in, a formatted
+# PDF out. Small footprint, matches this app's existing "avoid heavy/
+# compiled dependencies where a light one does the job" pattern (see
+# statsmodels above vs. why Prophet was deliberately NOT added).
 fpdf2==2.8.4
 
 # app/auth/saml.py (SAML 2.0 SSO scaffolding, 2026-09-14): the

@@ -1,4 +1,4 @@
-# YACE discovery config — generated for account 'AuroGov Mumbai' (924922671984), region ap-south-1
+# YACE discovery config — generated for a real account -- name/id redacted before archiving, see ../README.md
 # Tier: critical — run this YACE instance with --scraping-interval=60
 # Deploy this to the regional monitoring server for that account/region
 # (CloudWatch -> YACE -> local VictoriaMetrics) and reload YACE.

@@ -1,4 +1,24 @@
-# Tiered YACE deployment (cost-optimization fix #2)
+# ⚠️ ARCHIVED — NOT USED IN THIS DEPLOYMENT (2026-09-26)
+#
+# This whole VictoriaMetrics + tiered-YACE stack is not run anywhere in
+# this environment -- dev and prod both rely entirely on the direct
+# cloud-API collection path (CloudWatch/Azure Monitor/GCP Monitoring ->
+# app/collector -> MySQL, see app/aws/collector_direct.py and the
+# describe-poll/multicloud-collector threads) instead. Moved here
+# (out of deploy/, preserving git history via `git mv`) rather than
+# deleted, in case this deployment model is revisited later. Nothing
+# in this directory is referenced by any live script, systemd unit, or
+# app code path -- see ../MANIFEST.md for how that was confirmed.
+#
+# The 6 files in old-generated-configs/ are one-time, real debug
+# output from an earlier manual run (account name/id redacted before
+# archiving) -- not templates, and not regenerated/consumed by
+# anything. fetch-configs.sh is what actually generates a live
+# yace-<tier>.yml, if this stack is ever brought back into use.
+#
+# ---
+#
+# # Tiered YACE deployment (cost-optimization fix #2)
 
 Why this exists: a single YACE process has exactly one global
 `--scraping-interval` — the per-job `period`/`length` values in a YACE config
