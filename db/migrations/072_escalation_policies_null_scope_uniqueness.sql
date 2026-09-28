@@ -41,12 +41,23 @@ JOIN escalation_policies ep2
   AND ep1.id > ep2.id;
 
 -- ── Generated sentinel column + new unique key ─────────────────────
+--
+-- VIRTUAL, not STORED (fix after the first attempt failed on dev with
+-- ERROR 1215 "Cannot add foreign key constraint"): fk_esc_account is
+-- ON DELETE CASCADE on aws_account_id, and MySQL refuses a STORED
+-- generated column built on the base column of a CASCADE / SET NULL /
+-- SET DEFAULT foreign key. A VIRTUAL column has no such restriction and
+-- InnoDB can still put a unique index on it, so the uniqueness
+-- guarantee is identical. Reproduced and verified on MySQL 8.0.46:
+-- STORED -> 1215, VIRTUAL -> OK. Nothing from the failed run needs
+-- cleanup: the very first ALTER was the one that failed, so the table
+-- was left exactly as 023 created it.
 SET @col_exists := (
   SELECT COUNT(*) FROM information_schema.columns
   WHERE table_schema = DATABASE() AND table_name = 'escalation_policies' AND column_name = 'account_scope_key'
 );
 SET @sql := IF(@col_exists = 0,
-  'ALTER TABLE escalation_policies ADD COLUMN account_scope_key BIGINT GENERATED ALWAYS AS (COALESCE(aws_account_id, 0)) STORED AFTER aws_account_id',
+  'ALTER TABLE escalation_policies ADD COLUMN account_scope_key BIGINT GENERATED ALWAYS AS (COALESCE(aws_account_id, 0)) VIRTUAL AFTER aws_account_id',
   'SELECT "escalation_policies.account_scope_key already exists, skipping"'
 );
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
