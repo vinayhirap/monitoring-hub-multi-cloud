@@ -33,6 +33,7 @@ no redeploy.
 """
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
@@ -171,6 +172,14 @@ def get_job_status(job_id: int, current_user: dict = Depends(require_permission(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     _require_account_access(job["account_id"], current_user)
+    # AUDIT FIX (b21/082, MEDIUM): error_message is run_job()'s raw
+    # str(exception) (see worker.py's _mark_failed), stored verbatim and
+    # previously returned as-is via this SELECT * -- raw exception text
+    # returned to a client regardless of who's asking. The full text is
+    # already in the server logs (worker.py logs it with a traceback);
+    # this endpoint only needs to tell the caller their job failed.
+    if job.get("status") == "FAILED" and job.get("error_message"):
+        job["error_message"] = "Report generation failed -- contact an administrator for details."
     return job
 
 
@@ -304,6 +313,9 @@ def download_report(
     )
 
 
+_EMAIL_RE = re.compile(r"^[^\s@\"'<>\r\n]+@[^\s@\"'<>\r\n]+\.[^\s@\"'<>\r\n]+$")
+
+
 @router.post("/{report_id}/email")
 def email_report(
     report_id: int,
@@ -314,7 +326,29 @@ def email_report(
     """SMTP-gated: returns 501 until SMTP_HOST/SMTP_PORT/SMTP_USERNAME/
     SMTP_PASSWORD/SMTP_FROM(or MAIL_FROM) are set in .env -- see
     app/email/mailer.py. Nothing else needs code changes to enable
-    this once those env vars are filled in."""
+    this once those env vars are filled in.
+
+    AUDIT FIX (b21/082, HIGH): to_addr previously had zero validation --
+    any string at all, including one containing CR/LF (a classic email-
+    header-injection vector if app/email/mailer.py's own message
+    construction doesn't already guard against it) was accepted as-is.
+    reports.email is granted to the 'editor' role by default (see
+    db/migrations/047_reports_engine.sql), not just admin, so this was
+    reachable by a broad set of non-admin users -- a real exfiltration
+    path: anyone holding reports.email could have any already-generated
+    report (which can span a full account's or, if scope_type=CLIENT,
+    every account's incident/alert history) emailed to an arbitrary
+    external address, with no recipient restriction. This fix adds
+    basic format validation (also rejects CR/LF and quote characters,
+    closing the header-injection angle at this layer regardless of
+    what mailer.py does). It deliberately does NOT restrict *which*
+    well-formed addresses are allowed -- whether to cap this to
+    known/registered stakeholder addresses or require admin approval
+    for external domains is a product policy decision, not a bug fix;
+    see this audit's findings/handoff notes.
+    """
+    if not _EMAIL_RE.match(to_addr):
+        raise HTTPException(status_code=400, detail="to_addr is not a valid email address")
     if not mailer.is_configured():
         raise HTTPException(
             status_code=501,
@@ -324,8 +358,14 @@ def email_report(
     report = _load_report_or_404(report_id, current_user)
     try:
         data = s3_client.get_report_bytes(report["s3_key"], report["sha256"])
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Report failed integrity verification -- contact support")
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Could not retrieve report: {e}")
+        # AUDIT FIX (b21/082, MEDIUM): previously f"Could not retrieve
+        # report: {e}" -- raw exception text returned to the client.
+        # download_report just above already gets this right; mirror it.
+        logger.error(f"report {report_id} email fetch failed: {e}")
+        raise HTTPException(status_code=502, detail="Could not retrieve report from storage")
 
     sent = mailer.send_report_email(to_addr, report, data)
     if not sent:

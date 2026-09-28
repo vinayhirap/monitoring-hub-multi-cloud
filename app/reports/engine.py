@@ -57,6 +57,11 @@ _INK         = (20, 26, 38)     # near-black body text, better print contrast th
 
 _LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "aslops_logo.png")
 
+# AUDIT FIX (b21/082, MEDIUM): safety-valve row cap for gather_report_data's
+# alerts/incidents queries -- see the comment at its alerts query for why.
+_MAX_QUERY_ROWS = 50000
+_MAX_QUERY_INCIDENTS = 5000
+
 _UNICODE_REPLACEMENTS = {
     "\u2022": "-", "\u2014": "--", "\u2013": "-",
     "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2026": "...",
@@ -131,6 +136,18 @@ def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
             where.append("a.aws_account_id = %s")
             params.append(account_id)
 
+        # AUDIT FIX (b21/082, MEDIUM): safety-valve cap. Nothing here
+        # bounded how many rows this can pull into memory in one go --
+        # a scope_type=CLIENT report (no account filter) or a wide
+        # CUSTOM period (up to ~400 days, see _resolve_period) has no
+        # upper bound otherwise. render_report_pdf already caps what it
+        # DRAWS (_MAX_TIMELINE_ROWS etc) but only after this fetches and
+        # processes the full result set. _MAX_QUERY_ROWS is set far
+        # above any realistic report's true row count deliberately --
+        # this is a backstop against a pathological/adversarial case,
+        # not a change to normal report content or the render layer's
+        # own significance-based truncation (which still operates on
+        # whatever this returns, most-severe-first).
         sql = f"""
             SELECT a.id, a.metric_name, a.current_value AS value, a.threshold,
                    a.severity, a.status, a.triggered_at, a.resolved_at,
@@ -139,6 +156,7 @@ def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
             JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
             WHERE {' AND '.join(where)}
             ORDER BY a.triggered_at ASC
+            LIMIT {_MAX_QUERY_ROWS}
         """
         cur.execute(sql, params)
         alerts = cur.fetchall()
@@ -164,22 +182,39 @@ def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
                 f"""SELECT i.id, i.title, i.severity, i.status, i.primary_resource_id,
                            i.probable_cause, i.started_at, i.resolved_at, i.last_seen_at
                     FROM incidents i WHERE {' AND '.join(inc_where)}
-                    ORDER BY i.started_at ASC""",
+                    ORDER BY i.started_at ASC
+                    LIMIT {_MAX_QUERY_INCIDENTS}""",
                 inc_params,
             )
             incidents = cur.fetchall()
-            for inc in incidents:
+            # AUDIT FIX (b21/082, MEDIUM): this used to run one
+            # incident_alerts query PER incident (N+1) -- for a
+            # scope_type=CLIENT report spanning every account, or any
+            # account with a large incident history over a long custom
+            # period, that's one query per incident even though the PDF
+            # only ever displays _MAX_INCIDENT_CARDS of them (the
+            # truncation happens later, at render time, in
+            # render_report_pdf). One batched IN(...) query + grouping
+            # in Python instead.
+            if incidents:
+                inc_ids = [inc["id"] for inc in incidents]
+                placeholders = ",".join(["%s"] * len(inc_ids))
                 cur.execute(
-                    """SELECT a.id, a.resource_id, a.metric_name, a.current_value AS value,
-                              a.severity, a.status, a.triggered_at, a.resolved_at,
-                              r.resource_type, r.name AS resource_name, r.region
-                       FROM incident_alerts ia
-                       JOIN alerts a ON a.id = ia.alert_id
-                       LEFT JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
-                       WHERE ia.incident_id = %s ORDER BY a.triggered_at ASC""",
-                    (inc["id"],),
+                    f"""SELECT ia.incident_id, a.id, a.resource_id, a.metric_name, a.current_value AS value,
+                               a.severity, a.status, a.triggered_at, a.resolved_at,
+                               r.resource_type, r.name AS resource_name, r.region
+                        FROM incident_alerts ia
+                        JOIN alerts a ON a.id = ia.alert_id
+                        LEFT JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
+                        WHERE ia.incident_id IN ({placeholders})
+                        ORDER BY ia.incident_id, a.triggered_at ASC""",
+                    inc_ids,
                 )
-                inc["member_alerts"] = cur.fetchall()
+                member_alerts_by_incident = {}
+                for row in cur.fetchall():
+                    member_alerts_by_incident.setdefault(row["incident_id"], []).append(row)
+                for inc in incidents:
+                    inc["member_alerts"] = member_alerts_by_incident.get(inc["id"], [])
 
         affected_resources = {}
         for a in alerts:
@@ -242,8 +277,11 @@ class ReportPDF(FPDF):
         if os.path.exists(_LOGO_PATH):
             try:
                 self.image(_LOGO_PATH, x=10, y=3, h=10)
-            except Exception:
-                pass
+            except Exception as e:
+                # AUDIT FIX (b21/082, LOW): was a bare except: pass --
+                # a corrupt/unreadable logo file silently rendered every
+                # page header without one, with zero trace anywhere.
+                logger.warning(f"Report PDF: failed to draw header logo from {_LOGO_PATH}: {e}")
         self.set_xy(0, 5)
         self.set_font("Helvetica", "B", 10)
         self.set_text_color(*_WHITE)
@@ -484,8 +522,8 @@ def _draw_cover(pdf: ReportPDF, *, title: str, subtitle: str, meta_lines: list[s
     if os.path.exists(_LOGO_PATH):
         try:
             pdf.image(_LOGO_PATH, x=(pdf.w - 55) / 2, y=32, w=55)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Report PDF: failed to draw cover logo from {_LOGO_PATH}: {e}")
 
     pdf.set_y(95)
     pdf.set_font("Helvetica", "B", 26)
@@ -538,7 +576,15 @@ def _draw_trend_chart(pdf: ReportPDF, daily_counts: "OrderedDict"):
         bar_h = (v / max_v) * plot_h
         bx = x0 + pad + i * (bar_w + bar_gap)
         by = y0 + pad + (plot_h - bar_h)
-        pdf.set_fill_color(*(_TEAL if v == 0 else _RED if v >= max_v * 0.66 else _YELLOW if v > 0 else _TEAL))
+        # AUDIT FIX (b21/082, LOW): this used to set_fill_color() twice
+        # in a row -- the severity-graded computation (red/yellow/teal
+        # by volume) was immediately overwritten by the simpler
+        # teal-only line right after it, making the first line dead
+        # code with no effect on the rendered chart. This function's
+        # own docstring already describes the intended look as "teal
+        # bars", matching what was actually being drawn -- removed the
+        # dead computation rather than restoring the never-active one,
+        # so this is a no-op on the actual rendered PDF.
         pdf.set_fill_color(*(_TEAL_DIM if v == 0 else _TEAL))
         pdf.rect(bx, by, bar_w, max(bar_h, 0.6), style="F")
 

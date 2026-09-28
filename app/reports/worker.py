@@ -25,6 +25,7 @@ Reliability without a broker:
     past a timeout (e.g. the worker that claimed it died mid-run) up
     to max_attempts, then marks it FAILED.
 """
+import hashlib
 import logging
 import os
 import socket
@@ -41,14 +42,30 @@ logger = logging.getLogger(__name__)
 
 _WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 _STUCK_TIMEOUT_MINUTES = int(os.getenv("REPORT_JOB_STUCK_TIMEOUT_MINUTES", "15"))
+# AUDIT FIX (b21/082, HIGH): see sweep_stuck_jobs() below -- a QUEUED
+# job that never got picked up (crashed before background_tasks ran, or
+# was requeued after a live failure in run_job's own except block) used
+# to sit forever, since nothing ever retried a QUEUED job. Much shorter
+# than _STUCK_TIMEOUT_MINUTES: a healthy background_tasks pickup should
+# happen within seconds, not minutes, so anything still QUEUED this
+# long is anomalous, not just "hasn't gotten to it yet".
+_QUEUED_TIMEOUT_MINUTES = int(os.getenv("REPORT_JOB_QUEUED_TIMEOUT_MINUTES", "5"))
 _RETENTION_DAYS = int(os.getenv("REPORT_RETENTION_DAYS", "365"))
 
 
 def _claim(job_id: int) -> dict | None:
+    # AUDIT FIX (b21/082, HIGH): WHERE used to also match status=
+    # 'PROCESSING', not just 'QUEUED' -- meaning two concurrent callers
+    # for the same job_id (e.g. the sweeper's new retry call below
+    # racing an in-flight background_tasks execution) could BOTH
+    # successfully claim and re-run the same job: two PDF renders, two
+    # S3 PUTs, and a duplicate-key failure on reports.job_id's UNIQUE
+    # constraint for whichever INSERT lost the race. A job already
+    # being processed should never be re-claimable by a second caller.
     with get_db_cursor(dictionary=True) as (_, cur):
         cur.execute(
             "UPDATE report_jobs SET status='PROCESSING', claimed_by=%s, claimed_at=NOW(), "
-            "attempts = attempts + 1 WHERE id=%s AND status IN ('QUEUED','PROCESSING')",
+            "attempts = attempts + 1 WHERE id=%s AND status='QUEUED'",
             (_WORKER_ID, job_id),
         )
         if cur.rowcount == 0:
@@ -108,19 +125,18 @@ def run_job(job_id: int) -> None:
             period_start=job["period_start"], period_end=job["period_end"],
             data=data, generated_by=job["requested_by"],
         )
-        put_meta = s3_client.put_report(
-            s3_client.build_key(
-                job["scope_type"], job["scope_id"], job["report_type"],
-                job["period_start"], job["period_end"],
-                __import__("hashlib").sha256(pdf_bytes).hexdigest(),
-            ),
-            pdf_bytes,
-        )
-        put_meta["bucket"] = os.getenv("REPORTS_S3_BUCKET")
-        put_meta["key"] = s3_client.build_key(
+        # AUDIT FIX (b21/082, LOW): previously hashed pdf_bytes twice
+        # (once here via __import__("hashlib") to build the key before
+        # the PUT, once again inside put_report() itself) and called
+        # build_key() twice with identical arguments. One hash, one key.
+        sha256_hex = hashlib.sha256(pdf_bytes).hexdigest()
+        key = s3_client.build_key(
             job["scope_type"], job["scope_id"], job["report_type"],
-            job["period_start"], job["period_end"], put_meta["sha256"],
+            job["period_start"], job["period_end"], sha256_hex,
         )
+        put_meta = s3_client.put_report(key, pdf_bytes)
+        put_meta["bucket"] = os.getenv("REPORTS_S3_BUCKET")
+        put_meta["key"] = key
         _mark_complete(job_id, put_meta, scope_label)
         write_audit(job["requested_by"], "Report generated",
                     f"{job['report_type']} report for {job['scope_type']}={job['scope_id']}",
@@ -132,23 +148,64 @@ def run_job(job_id: int) -> None:
 
 
 def sweep_stuck_jobs() -> int:
-    """Requeue/fail jobs stuck in PROCESSING past the timeout. Call
-    periodically from a leader-guarded background thread."""
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=_STUCK_TIMEOUT_MINUTES)
+    """Requeue/fail jobs stuck in PROCESSING past the timeout, AND
+    actually retry any job left sitting in QUEUED. Call periodically
+    from a leader-guarded background thread.
+
+    AUDIT FIX (b21/082, HIGH): this used to only flip a stuck job's
+    status back to QUEUED (or to FAILED past max_attempts) and stop --
+    but run_job() is only ever invoked once, directly, from
+    generate_report()'s background_tasks.add_task() at job-creation
+    time. Nothing else in this codebase watches for a QUEUED job and
+    re-executes it. That made this "requeue" a dead end: a job stuck in
+    PROCESSING (worker crashed/restarted mid-render) got flipped back
+    to QUEUED and then sat there forever, never actually retried, never
+    reaching FAILED either (attempts only increments inside _claim(),
+    which nothing was calling again) -- a permanently poisoned job
+    reporting "QUEUED" to anyone polling its status. The exact same
+    dead end applies to a job that fails a LIVE run_job() call (its
+    except block's _mark_failed() also just sets status back to
+    QUEUED when attempts < max_attempts) -- that path doesn't even go
+    through a PROCESSING state this function was watching for.
+    This function now actually retries both cases itself, calling
+    run_job() directly from this already-periodic, already leader-
+    guarded loop -- _claim()'s atomic, QUEUED-only UPDATE (see its own
+    fix above) makes it safe to call run_job() speculatively even on a
+    job that turns out to have already finished by the time this runs.
+    """
+    now = datetime.now(timezone.utc)
+    stuck_cutoff = now - timedelta(minutes=_STUCK_TIMEOUT_MINUTES)
+    queued_cutoff = now - timedelta(minutes=_QUEUED_TIMEOUT_MINUTES)
     with get_db_cursor(dictionary=True) as (_, cur):
         cur.execute(
             "SELECT id, attempts, max_attempts FROM report_jobs "
             "WHERE status='PROCESSING' AND claimed_at < %s",
-            (cutoff,),
+            (stuck_cutoff,),
         )
         stuck = cur.fetchall()
+        to_retry = []
         for j in stuck:
             new_status = "QUEUED" if j["attempts"] < j["max_attempts"] else "FAILED"
             cur.execute(
                 "UPDATE report_jobs SET status=%s, error_message='Requeued: worker timeout' WHERE id=%s",
                 (new_status, j["id"]),
             )
-    return len(stuck)
+            if new_status == "QUEUED":
+                to_retry.append(j["id"])
+
+        cur.execute(
+            "SELECT id FROM report_jobs WHERE status='QUEUED' AND updated_at < %s",
+            (queued_cutoff,),
+        )
+        orphaned_ids = [row["id"] for row in cur.fetchall()]
+        to_retry.extend(orphaned_ids)
+
+    # Deliberately outside the `with` block above -- run_job() opens its
+    # own DB connections/cursors internally, and holding this one open
+    # while it runs would tie up a second pool connection for no reason.
+    for job_id in to_retry:
+        run_job(job_id)
+    return len(stuck) + len(orphaned_ids)
 
 
 def run_sweeper_loop(leader_event, interval_seconds: int = 120) -> None:
