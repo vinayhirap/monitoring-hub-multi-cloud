@@ -62,6 +62,27 @@ def main():
 
     text = TARGET.read_text(encoding="utf-8")
 
+    # AUDIT FIX: this used to add GROUP_LEVEL_ROLE unconditionally. That mapping
+    # (L1->viewer, L2->editor, L3->admin) is the role-from-group auto-promotion
+    # that was REMOVED on purpose: joining an L3 group silently granted full
+    # Admin and leaving never revoked it (a permanent privilege escalation).
+    # Nothing references it any more, so re-adding it does no good and leaves a
+    # loaded gun for the next person to wire up. Only add it if some code still
+    # actually uses it (i.e. a genuinely old tree).
+    users = []
+    for p in (REPO_ROOT / "app").rglob("*.py"):
+        if p.resolve() == TARGET.resolve():
+            continue
+        for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if "GROUP_LEVEL_ROLE" in line and not line.lstrip().startswith("#"):
+                users.append(str(p.relative_to(REPO_ROOT)))
+                break
+    if not users:
+        print("Nothing in app/ references GROUP_LEVEL_ROLE -- not adding it "
+              "(the role-from-group mapping was removed deliberately; see "
+              "authorization.py's docstring). Nothing to do.")
+        return
+
     if "GROUP_LEVEL_ROLE = " in text:
         print("GROUP_LEVEL_ROLE already present in authorization.py -- nothing to do.")
         return

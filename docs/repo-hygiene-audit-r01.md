@@ -74,18 +74,45 @@ embeds is searched for in today's tree -- a partial match means applied-then-evo
   `ADD UNIQUE KEY uniq_threshold_scope` -- a name-based check that could never see the
   real key `uniq_threshold`. It had only ever been dry-run. **This patch removes the
   script and its three wire-ins.** The other parts of 037 stand.
-- **Fresh-install gap (real, statically established, not yet executed).** `setup.sh` and
-  `deploy.sh` run `migrate.py baseline --all-except-rollbacks`, recording migrations as
-  applied *without running them*. Of 37 tables in numbered migrations, **23 have no
-  creation path on a fresh install** (not in `db_schema_only.sql`, not created by any
-  live apply script or app code): `metric_baseline`, `resource_relationships`, `op_events`,
-  `escalation_policies`, `incidents`, `cloud_events`, `incident_alerts`, `resource_health`,
-  `synthetic_checks`, `synthetic_check_results`, `slo_definitions`, `security_findings`,
-  `maintenance_windows`, `status_page_components`, `rbac_service_catalog`, `rbac_scopes`,
-  `permission_overrides`, `role_permissions_v2`, `role_bindings`, `access_reviews`,
-  `report_jobs`, `reports`, `revoked_sessions` (migrations 020-052). Existing dev/prod are
-  unaffected (they got these via `migrate.py apply`). Not patched: the fix (apply instead
-  of baseline, or regenerate `db_schema_only.sql`) must be rehearsed on a scratch MySQL.
+- **Fresh installs were broken -- verified by execution, and fixed.** `setup.sh` and
+  `deploy.sh` ran `migrate.py baseline --all-except-rollbacks`, recording every migration
+  as applied *without running it*. I rehearsed a genuine fresh install on a real MySQL
+  8.0 (base schema `db_schema_only.sql`, the three seeded users, then every `setup.sh`
+  step; recipe in `docs/fresh-install-rehearsal.md`): the database ended with **24 tables
+  missing** (`incidents`, `reports`, `role_bindings`, `revoked_sessions`, `metric_baseline`,
+  `op_events`, `slo_definitions`, ... plus the RBAC v2 `roles`, because the dead-table step
+  drops the legacy one and migration 040 was only baselined) and `users.token_version`
+  absent. Booting the real app, **the seeded admin login returned HTTP 500**
+  (`Unknown column 'token_version'`). Existing dev/prod are unaffected.
+  **Fix:** new `migrate.py bootstrap` baselines only three early migrations the base schema
+  already reflects (002, 003, 009) and *applies* the rest. Measured: 60 of 63 migrations
+  apply cleanly; after `bootstrap` the DB has 46 tables, none missing, admin login is
+  HTTP 200, and re-running it is a no-op. `002`/`003` cannot simply be applied: they use
+  `ADD COLUMN IF NOT EXISTS`, which is MariaDB-only and a syntax error on MySQL 8 (this
+  also would have broken the thresholds script I removed above).
+- **The installer silently downgraded `app/auth/authorization.py` on every run
+  (found by the same rehearsal, fixed).** `apply_org_group_rbac.py` -- run by `setup.sh`,
+  `deploy.sh` and `update.sh` -- replaced the whole file with an embedded Phase-2 snapshot
+  whenever one anchor line still existed (49 lines added / 88 removed on a clean tree),
+  discarding the fail-closed JSON parsing, two of the three `try/finally` connection-
+  release blocks and a selected column. `apply_group_level_role_fix.py` then re-added
+  `GROUP_LEVEL_ROLE`. Nothing references that mapping any more, so the role-from-group
+  escalation was **not** re-activated; the real damage was the lost hardening in the
+  account-scoping module. Both scripts now skip their code half once `groups.py` and
+  migration 013 exist in the tree. Check dev/prod for a past run:
+  `git status --short app/` and `git diff --stat app/auth/authorization.py` should be empty.
+- **Fresh installs seed `admin/admin123`, `editor/editor123`, `viewer/viewer123`**
+  (`setup.sh` step 7, prints a reminder to change them). If any environment was created
+  that way and the passwords were never changed, the bcrypt hashes in the leaked dumps
+  belong to those trivially guessable passwords. Raises the urgency of section 3.
+- **The 40 "skipped" real-database tests were never being run.** Against a real MySQL
+  (`MH_TEST_DB=1`) 37 pass and **3 fail**:
+  `test_placeholder_anomaly_needs_confident_baseline_and_is_capped_at_warning`,
+  `test_pre_existing_placeholder_critical_is_retired_with_reason`,
+  `test_acknowledged_alert_resolves_on_recovery`. They pre-date these changes. The
+  evaluator gained a gated healthy-streak mechanism in the same-day audit commits after
+  the test file was last touched, so they are probably stale, but that is **unverified**;
+  the acknowledged-alert one matches the evaluator's documented design, so check it.
 
 ## 3. `db/backups/*.sql` -- already untracked, still in history
 

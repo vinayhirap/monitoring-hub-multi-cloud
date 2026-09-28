@@ -328,7 +328,14 @@ run_migration apply_gcp_direct_metrics_fetch.py \
     "Phase 3 of removing VictoriaMetrics: direct GCP Cloud Monitoring fetch + compute_instance numeric-ID resource-matching fix"
 
 echo "--- db/migrations/*.sql tracking (migrate.py) ---"
-sudo -u "$REAL_USER" "$VENV_DIR/bin/python3" migrate.py baseline --all-except-rollbacks
+# Was `migrate.py baseline --all-except-rollbacks`, which recorded EVERY migration
+# as applied without running it. On a fresh box that left 24 tables (incidents,
+# reports, role_bindings, revoked_sessions, ...) and columns such as
+# users.token_version missing, so the seeded admin could not log in (HTTP 500).
+# `bootstrap` baselines only the three migrations the base schema + apply_*.py
+# scripts already reflect and APPLIES the rest.
+sudo -u "$REAL_USER" "$VENV_DIR/bin/python3" migrate.py bootstrap || \
+    echo "WARNING: migrate.py bootstrap failed -- run 'python3 migrate.py status' and apply the pending migrations by hand before using this install"
 
 echo "=== [9/10] Build frontend ==="
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -

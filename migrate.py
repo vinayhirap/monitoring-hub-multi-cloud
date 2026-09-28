@@ -273,6 +273,43 @@ def cmd_apply(conn, filename):
         cursor.close()
 
 
+# Migrations whose effects a FRESH install ALREADY has by the time this runs,
+# because the base schema (db_schema_only.sql) and the root apply_*.py scripts
+# created them first. They cannot simply be applied: 002/003 use
+# `ADD COLUMN IF NOT EXISTS`, which is MariaDB-only syntax and a syntax error on
+# MySQL 8, and 009 re-adds a column apply_multi_cloud_migration.py already added
+# ("Duplicate column name 'provider'"). Everything ELSE must be applied.
+#
+# Verified by rehearsal on a real MySQL 8.0 fresh install (base schema + seeded
+# users + every setup.sh run_migration step, then each migration applied on its
+# own): 60 of 63 apply cleanly and exactly these three do not.
+BOOTSTRAP_COVERED = [
+    "002_resources_region_instance_state.sql",
+    "003_metric_catalog_full.sql",
+    "009_multi_cloud_provider_columns.sql",
+]
+
+
+def cmd_bootstrap(conn):
+    """Bring a FRESH database's migration state right: baseline only the
+    migrations BOOTSTRAP_COVERED says are already reflected, then APPLY the rest.
+
+    Replaces `baseline --all-except-rollbacks` in setup.sh/deploy.sh. That
+    recorded every migration as applied WITHOUT running it, on the assumption that
+    the base schema + apply_*.py scripts already produced an equivalent database.
+    They do not: 24 tables (incidents, reports, role_bindings, revoked_sessions,
+    metric_baseline, ...) and columns such as users.token_version simply never
+    existed, so on a fresh install the seeded admin could not log in (HTTP 500,
+    "Unknown column 'token_version'"). Safe to re-run: baseline skips recorded
+    files and apply only touches what is still pending."""
+    existing = set(list_migration_files())
+    covered = [f for f in BOOTSTRAP_COVERED if f in existing]
+    print(f"Baselining {len(covered)} migration(s) already reflected by the base schema / apply scripts:")
+    cmd_baseline(conn, covered)
+    print()
+    cmd_apply_all_pending(conn, skip_confirm=True)
+
+
 def cmd_apply_all_pending(conn, skip_confirm: bool = False):
     ensure_tracking_table(conn)
     applied = get_applied(conn)
@@ -320,6 +357,9 @@ def main():
              "instead of listing filenames by hand.",
     )
 
+    sub.add_parser("bootstrap", help="Fresh-install only: baseline the migrations the base schema already "
+                   "reflects, then apply everything else (see cmd_bootstrap).")
+
     p_apply = sub.add_parser("apply")
     p_apply.add_argument("file", nargs="?")
     p_apply.add_argument("--all-pending", action="store_true")
@@ -352,6 +392,8 @@ def main():
                 print("Specify filenames, or use --all-except-rollbacks", file=sys.stderr)
                 sys.exit(1)
             cmd_baseline(conn, targets)
+        elif command == "bootstrap":
+            cmd_bootstrap(conn)
         elif command == "apply":
             if args.all_pending:
                 cmd_apply_all_pending(conn, skip_confirm=args.yes)

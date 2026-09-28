@@ -375,18 +375,24 @@ run_migration apply_gcp_direct_metrics_fetch.py \
 echo "--- db/migrations/*.sql tracking (migrate.py) ---"
 # The curated run_migration list above handles code+schema patches that
 # ship as root-level apply_*.py scripts. db/migrations/*.sql is a SEPARATE,
-# smaller set of raw numbered SQL files with no tracking of its own --
-# that gap is exactly how 014_user_email_column.sql shipped in the repo
-# but was never applied to a production DB (see docs/incidents/2026-08-26-mumbai-missing-metrics-rca.md
-# for the incident). On a fresh box, the schema import + migrations above
-# already bring the DB to equivalent state, so we baseline (record as
-# applied, without re-running raw SQL that could conflict with what the
-# apply_*.py scripts above already created) rather than apply. Any FILE
-# added to db/migrations/ AFTER this deploy will show as genuinely pending
-# and get picked up automatically by update.sh's `migrate.py apply
-# --all-pending` -- no more hand-editing this script's migration list for
-# schema-only changes.
-sudo -u "$REAL_USER" "$VENV_DIR/bin/python3" migrate.py baseline --all-except-rollbacks
+# smaller set of raw numbered SQL files -- that gap is exactly how
+# 014_user_email_column.sql shipped in the repo but was never applied to a
+# production DB (see docs/incidents/2026-08-26-mumbai-missing-metrics-rca.md
+# for the incident). It used to be assumed that on a fresh box the schema import
+# + apply_*.py scripts "already bring the DB to equivalent state", so every
+# migration was merely recorded as applied. That assumption is false: the
+# apply_*.py scripts only cover migrations up to ~015, so everything from 020
+# onward (incidents, reports, RBAC v2, session hardening, ...) never ran. Any
+# FILE added to db/migrations/ later is picked up by update.sh's
+# `migrate.py apply --all-pending`.
+# Was `migrate.py baseline --all-except-rollbacks`, which recorded EVERY migration
+# as applied without running it. On a fresh box that left 24 tables (incidents,
+# reports, role_bindings, revoked_sessions, ...) and columns such as
+# users.token_version missing, so the seeded admin could not log in (HTTP 500).
+# `bootstrap` baselines only the three migrations the base schema + apply_*.py
+# scripts already reflect and APPLIES the rest.
+sudo -u "$REAL_USER" "$VENV_DIR/bin/python3" migrate.py bootstrap || \
+    echo "WARNING: migrate.py bootstrap failed -- run 'python3 migrate.py status' and apply the pending migrations by hand before using this install"
 
 echo "=== [10/11] Build frontend ==="
 if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]; then

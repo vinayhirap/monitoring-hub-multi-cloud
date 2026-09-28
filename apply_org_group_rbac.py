@@ -1128,6 +1128,27 @@ PATCHES = [
 # Preflight / apply / validate — same pattern as apply_phase1_authorization_service.py
 # ─────────────────────────────────────────────────────────────────────────
 
+def code_phase_already_landed():
+    """True when this script's CODE half has already been applied and is now
+    tracked in the repo.
+
+    AUDIT FIX: this script is run by setup.sh, deploy.sh and update.sh on every
+    run. Its code half (NEW_FILES / FULL_REWRITES / PATCHES) is a one-time
+    historical change whose results are now committed. But FULL_REWRITES only
+    checks that ONE anchor line still exists in authorization.py, then REPLACES
+    THE WHOLE FILE with the embedded Phase-2 snapshot -- silently discarding
+    every later fix to the account-scoping core: the fail-closed JSON parsing
+    in _parse_json_list, two of the three try/finally connection-release blocks
+    (pool exhaustion -> 500s on login), and the created_at column the groups
+    query selects. Verified by running the installer chain against a fresh
+    schema: authorization.py came out 49 lines added / 88 removed.
+
+    groups.py is created ONLY by this script's code half, so once it (and the
+    013 migration) exist in the tree the code half has provably already run --
+    skip it and leave the database half, which is idempotent, to do its job."""
+    return all((REPO_ROOT / rel).exists() for rel, _content in NEW_FILES)
+
+
 def preflight():
     print("=== Pre-flight: checking prerequisites and anchors ===")
     problems = []
@@ -1416,11 +1437,18 @@ def main():
     args = parser.parse_args()
 
     try:
-        preflight()
-        changed = apply_all(args.dry_run)
-        if not args.dry_run:
-            validate_python_syntax(changed)
-            print(f"\n=== Code step done. {len(changed)} file(s) touched. ===")
+        if code_phase_already_landed():
+            print("=== Code step skipped: app/api/admin/groups.py and the 013 migration "
+                  "already exist, so the code half of this script has already been "
+                  "applied and is tracked in git. NOT rewriting authorization.py / "
+                  "patching main.py (that would revert later fixes). ===")
+            changed = []
+        else:
+            preflight()
+            changed = apply_all(args.dry_run)
+            if not args.dry_run:
+                validate_python_syntax(changed)
+                print(f"\n=== Code step done. {len(changed)} file(s) touched. ===")
 
         if not args.skip_db:
             run_db_migration(args.dry_run, args.skip_db_backup)
