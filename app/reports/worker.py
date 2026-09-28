@@ -93,7 +93,9 @@ def _mark_complete(job_id: int, meta: dict, scope_label: str) -> None:
              meta["bucket"], meta["key"], meta.get("version_id"), meta["sha256"],
              meta["size_bytes"], job[6], expires_at),
         )
-        cur.execute("UPDATE report_jobs SET status='COMPLETE' WHERE id=%s", (job_id,))
+        # Clear any error text left by an earlier failed attempt -- a
+        # COMPLETE job should not keep reporting a stale failure.
+        cur.execute("UPDATE report_jobs SET status='COMPLETE', error_message=NULL WHERE id=%s", (job_id,))
 
 
 def _mark_failed(job_id: int, error: str, attempts: int, max_attempts: int) -> None:

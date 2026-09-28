@@ -199,3 +199,32 @@ def test_alert_and_incident_queries_are_capped():
     joined = " ".join(q for q, _ in cursors[0].executed)
     assert f"LIMIT {mod._MAX_QUERY_ROWS}" in joined
     assert f"LIMIT {mod._MAX_QUERY_INCIDENTS}" in joined
+
+
+# ── follow-up: stale error text on jobs that recovered via retry ───────
+
+def test_job_status_clears_stale_error_on_complete_job():
+    row = {"id": 1, "account_id": 5, "status": "COMPLETE",
+           "error_message": "1054 (42S22): Unknown column 'name' in 'field list'"}
+    mod = _load_reports([(contains("FROM report_jobs WHERE id"), [row])])
+    out = mod.get_job_status(1, current_user={"username": "u", "role": "editor"})
+    assert out["error_message"] is None
+
+
+def test_job_status_redacts_error_on_requeued_job():
+    row = {"id": 2, "account_id": 5, "status": "QUEUED", "error_message": "raw /opt/app/x.py trace"}
+    mod = _load_reports([(contains("FROM report_jobs WHERE id"), [row])])
+    out = mod.get_job_status(2, current_user={"username": "u", "role": "editor"})
+    assert "trace" not in out["error_message"]
+
+
+def test_mark_complete_clears_error_message():
+    cursors = []
+    script = [(contains("SELECT report_type, scope_type"),
+               [("WEEKLY", "ACCOUNT", "1", 1, None, None, "u")]),
+              (contains("INSERT INTO reports"), []),
+              (contains("UPDATE report_jobs SET status='COMPLETE'"), [])]
+    mod = _load_worker(script, cursors)
+    mod._mark_complete(1, {"bucket": "b", "key": "k", "sha256": "h", "size_bytes": 1}, "label")
+    sqls = [q for q, _ in cursors[0].executed]
+    assert any("status='COMPLETE'" in q and "error_message=NULL" in q for q in sqls)

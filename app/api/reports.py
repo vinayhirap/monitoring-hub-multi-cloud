@@ -178,8 +178,16 @@ def get_job_status(job_id: int, current_user: dict = Depends(require_permission(
     # returned to a client regardless of who's asking. The full text is
     # already in the server logs (worker.py logs it with a traceback);
     # this endpoint only needs to tell the caller their job failed.
-    if job.get("status") == "FAILED" and job.get("error_message"):
-        job["error_message"] = "Report generation failed -- contact an administrator for details."
+    # FOLLOW-UP (b21): the redaction used to run only for status=FAILED,
+    # but a job that failed once and then succeeded on a retry ends up
+    # COMPLETE with its earlier raw exception text still in error_message
+    # (found on prod: job 1, COMPLETE, attempts=2, "Unknown column 'name'").
+    # Redact whenever any raw text is present, whatever the status.
+    if job.get("error_message"):
+        if job.get("status") == "COMPLETE":
+            job["error_message"] = None
+        else:
+            job["error_message"] = "Report generation failed -- contact an administrator for details."
     return job
 
 
