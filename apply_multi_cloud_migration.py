@@ -44,7 +44,16 @@ import mysql.connector
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
 DB_PORT = int(os.getenv("DB_PORT", 3307))
 DB_USER = os.getenv("DB_USER", "root")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "root123")
+# AUDIT FIX: this used to fall back to a guessable hardcoded default password
+# (the same anti-pattern app/db.py's _require_db_password() removed).
+# setup.sh writes .env (with DB_PASSWORD) before any run_migration step and
+# load_dotenv() above reads it, so every supported invocation already has a
+# real password; this only changes what happens when it's genuinely unset:
+# fail loudly instead of trying to authenticate as a well-known password.
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+if not DB_PASSWORD:
+    print("DB_PASSWORD is not set -- there is no default. Set it in .env.", file=sys.stderr)
+    sys.exit(1)
 DB_NAME = os.getenv("DB_NAME", "monitoring_hub")
 
 # Verified 2026-08-22 against the real local DB (`SHOW TABLES` /

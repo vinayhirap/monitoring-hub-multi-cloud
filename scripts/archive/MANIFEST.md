@@ -177,3 +177,64 @@ inbound references anywhere.
   UserManagement.jsx. Confirmed fully applied, same double-check as
   above -- no `GROUP_LEVEL_ROLE` or role-sync UPDATE remains anywhere
   in the current tree, zero external references.
+
+## Third pass -- 2026-09-28 (audit chat 39/39, R01)
+
+Criterion for THIS pass (different from the two above, which required zero
+references): a script is archived when it is **not executed anywhere** --
+no `run_migration`/shell call in setup.sh, update.sh, deploy/deploy.sh,
+deploy/update.sh; no Python import, subprocess or runpy; no glob -- and is
+mentioned only in comments/docstrings (including inside other archived
+scripts). This is the "scripts that reference each other" cluster the first
+pass deliberately left; each was traced. 21 root `apply_*.py` scripts ARE
+executed by the install/deploy/update scripts and stay at the root: those
+scripts still say new migrations ship as root-level `apply_*.py`, so moving
+them means editing all four shell scripts in one reviewed change.
+
+"Applied" evidence is mechanical: the code each script embeds is looked up in
+the current tree. A partial match means the code was applied and has since
+evolved, not that it is unapplied. Nothing here is deleted -- `git mv` keeps
+history. Do not re-run these against the current tree.
+
+### Moved
+
+- `apply_add_cwagent_disk_threshold.py` (was `apply_add_cwagent_disk_threshold.py` at repo root; added 2026-09-09) -- inserted collector functions present in tree
+- `apply_add_cwagent_mem_threshold.py` (was `apply_add_cwagent_mem_threshold.py` at repo root; added 2026-09-09) -- `_collect_ec2_cwagent_mem` present (rest superseded by the later mem-dimension fix)
+- `apply_add_extended_service_discovery.py` (was `apply_add_extended_service_discovery.py` at repo root; added 2026-09-10) -- 6/6 inserted code blocks still present in the tree
+- `apply_add_warning_threshold_line.py` (was `apply_add_warning_threshold_line.py` at repo root; added 2026-09-10) -- applied (frontend); rm of its own .bak only
+- `apply_check_thresholds_local_metrics.py` (was `apply_check_thresholds_local_metrics.py` at repo root; added 2026-09-08) -- 5/6 inserted code blocks still present in the tree
+- `apply_cleanup_disk_mount_noise.py` (was `apply_cleanup_disk_mount_noise.py` at repo root; added 2026-09-10) -- one-time DB data cleanup (disk_mounts.py filter is in place). DESTRUCTIVE if re-run: DELETEs from 5 tables by a lossy heuristic
+- `apply_dashboard_charts_metric_history.py` (was `apply_dashboard_charts_metric_history.py` at repo root; added 2026-09-08) -- 15/23 inserted code blocks still present in the tree
+- `apply_final_cleanup.py` (was `apply_final_cleanup.py` at repo root; added 2026-09-08) -- 7/12 inserted code blocks still present in the tree
+- `apply_fix_alb_healthy_hosts.py` (was `apply_fix_alb_healthy_hosts.py` at repo root; added 2026-09-09) -- 12/20 inserted code blocks still present in the tree
+- `apply_fix_alb_healthy_hosts_history.py` (was `apply_fix_alb_healthy_hosts_history.py` at repo root; added 2026-09-09) -- 5/5 inserted code blocks still present in the tree
+- `apply_fix_cwagent_mem_dimensions.py` (was `apply_fix_cwagent_mem_dimensions.py` at repo root; added 2026-09-09) -- 2 of 3 inserted functions present
+- `apply_fix_getthreshold_scope.py` (was `apply_fix_getthreshold_scope.py` at repo root; added 2026-09-09) -- `getThreshold` defined in ServiceDetail.jsx
+- `apply_fix_nlb_ghost_thresholds.py` (was `apply_fix_nlb_ghost_thresholds.py` at repo root; added 2026-09-10) -- 6/6 inserted code blocks still present in the tree
+- `apply_fix_stale_alerts_for_stopped_instances.py` (was `apply_fix_stale_alerts_for_stopped_instances.py` at repo root; added 2026-09-09) -- `_auto_resolve_stale_alerts` present in alert_evaluator.py (code evolved since)
+- `apply_fix_stale_cutoff_too_aggressive.py` (was `apply_fix_stale_cutoff_too_aggressive.py` at repo root; added 2026-09-09) -- 1/1 inserted code blocks still present in the tree
+- `apply_fix_threshold_resource_type_everywhere.py` (was `apply_fix_threshold_resource_type_everywhere.py` at repo root; added 2026-09-09) -- 8/9 inserted code blocks still present in the tree
+- `apply_hide_no_data_metrics.py` (was `apply_hide_no_data_metrics.py` at repo root; added 2026-09-09) -- 12/19 inserted code blocks still present in the tree
+- `apply_list_view_snapshots_metrics.py` (was `apply_list_view_snapshots_metrics.py` at repo root; added 2026-09-08) -- 7/14 inserted code blocks still present in the tree
+- `apply_metrics_to_monitor_cleanup.py` (was `apply_metrics_to_monitor_cleanup.py` at repo root; added 2026-09-09) -- 8/9 inserted code blocks still present in the tree
+- `apply_multicloud_full_build.py` (was `apply_multicloud_full_build.py` at repo root; added 2026-08-23) -- UNVERIFIED whether ever run; wholly superseded (earliest script). DANGEROUS: overwrites 18 files from 2026-08-23 snapshots -- guarded on archive
+- `apply_simplify_s3_charts.py` (was `apply_simplify_s3_charts.py` at repo root; added 2026-09-10) -- applied (frontend); rm of its own .bak only
+- `fix_azure_extended_resource_discovery.py` (was `fix_azure_extended_resource_discovery.py` at repo root; added 2026-09-06) -- 10/10 inserted code blocks still present in the tree
+- `fix_azure_gcp_alert_evaluation_gap.py` (was `fix_azure_gcp_alert_evaluation_gap.py` at repo root; added 2026-09-06) -- inserted sync functions present in tree
+- `fix_gcp_extended_service_detection.py` (was `fix_gcp_extended_service_detection.py` at repo root; added 2026-09-06) -- 8/8 inserted code blocks still present in the tree
+- `fix_onboarding_autodetect_parity.py` (was `fix_onboarding_autodetect_parity.py` at repo root; added 2026-09-06) -- 12/12 inserted code blocks still present in the tree
+- `010_multi_cloud_credentials.sql` (was at repo root) -- reference copy (its own header says "do not run directly"); DDL now covered by tracked migration 071 and live `apply_multi_cloud_credentials.py`.
+
+### Safety guard added on archive
+
+`apply_multicloud_full_build.py` embeds whole-file snapshots (base64) and used
+to OVERWRITE 18 files by default (only `--dry-run` was opt-in). Those files have
+since been changed by up to 23 commits each, including security fixes, so running
+it silently reverts them. It now refuses to write unless
+`--i-understand-this-overwrites-current-files` is passed; `--dry-run` is still safe.
+
+### Deleted (not archived)
+
+- `emoji-to-icons-update/` (9 files) -- byte-identical to the real `frontend/src` files
+  at commit `5685bd8` (the commit that added them); the real files have since evolved.
+  Fully recoverable from git history.

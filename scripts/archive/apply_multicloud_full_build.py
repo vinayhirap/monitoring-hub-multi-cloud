@@ -1937,7 +1937,25 @@ def apply_migration(root: Path, dry_run: bool):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--i-understand-this-overwrites-current-files",
+                        action="store_true", dest="force_overwrite")
     args = parser.parse_args()
+
+    # SAFETY GUARD (added when this script was archived): it embeds whole-file
+    # snapshots from 2026-08-23 (base64) and OVERWRITES the 18 files it lists,
+    # plus rewrites .gitignore. Every one of them has since changed -- accounts.py
+    # by 19 commits, api.js by 23 -- including security fixes (account-scope
+    # checks, connection-leak fixes, session-expiry handling). Running it on
+    # today's tree silently reverts all of that; the per-file .bak copies it
+    # writes are the only way back. It used to write by default (only --dry-run
+    # was opt-in); it now refuses unless the overwrite is explicitly acknowledged.
+    if not args.dry_run and not args.force_overwrite:
+        print("REFUSING TO RUN: this archived script overwrites 18 current source files "
+              "with 2026-08-23 snapshots, reverting months of fixes (incl. security fixes).\n"
+              "  Preview safely:  python apply_multicloud_full_build.py --dry-run\n"
+              "  Really run it:   add --i-understand-this-overwrites-current-files\n"
+              "You almost certainly do not want to. See scripts/archive/MANIFEST.md.")
+        sys.exit(2)
 
     root = Path.cwd()
     if not (root / "app").exists() or not (root / "frontend").exists():

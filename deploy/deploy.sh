@@ -326,8 +326,6 @@ run_migration() {
 
 run_migration apply_ensure_metric_catalog_base_table.py \
     "FOUNDATIONAL: create metric_catalog base table if this is a truly fresh DB (no-op otherwise) -- must run before everything below, which only ever ALTERs it"
-run_migration apply_ensure_thresholds_modern_columns.py \
-    "FOUNDATIONAL: ensure thresholds has its modern columns (aws_account_id/resource_type/metric_id/warning_value/critical_value/comparison/evaluation_period/enabled) if this is a truly fresh DB (no-op otherwise) -- must run before migration 020, which ALTERs thresholds assuming enabled already exists"
 run_migration apply_multi_cloud_migration.py \
     "009: aws_accounts/resources/metric_catalog provider columns"
 run_migration apply_multi_cloud_credentials.py \
@@ -379,7 +377,7 @@ echo "--- db/migrations/*.sql tracking (migrate.py) ---"
 # ship as root-level apply_*.py scripts. db/migrations/*.sql is a SEPARATE,
 # smaller set of raw numbered SQL files with no tracking of its own --
 # that gap is exactly how 014_user_email_column.sql shipped in the repo
-# but was never applied to a production DB (see monitoring_hub_mumbai_rca.md
+# but was never applied to a production DB (see docs/incidents/2026-08-26-mumbai-missing-metrics-rca.md
 # for the incident). On a fresh box, the schema import + migrations above
 # already bring the DB to equivalent state, so we baseline (record as
 # applied, without re-running raw SQL that could conflict with what the

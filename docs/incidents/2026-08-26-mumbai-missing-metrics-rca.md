@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-26
 **System:** monitoring-hub (AWS resource monitoring platform)
-**Affected environment:** AuroGov Mumbai deployment, account `924922671984`
+**Affected environment:** AuroGov Mumbai deployment, account `<account-id>`
 **Status:** Resolved — all migrations applied, dashboard populating
 
 ---
@@ -90,7 +90,7 @@ mysql -umonitor -p monitoring_hub -e "ALTER TABLE resources MODIFY COLUMN resour
 ```bash
 set -a; source .env; set +a
 /opt/monitoring-hub/venv/bin/python3 -c "from app.collector.discovery.runner import run_discovery; run_discovery()"
-mysql -umonitor -p monitoring_hub -e "SELECT resource_type, COUNT(*) FROM resources r JOIN aws_accounts a ON a.id=r.aws_account_id WHERE a.account_id='924922671984' GROUP BY resource_type;"
+mysql -umonitor -p monitoring_hub -e "SELECT resource_type, COUNT(*) FROM resources r JOIN aws_accounts a ON a.id=r.aws_account_id WHERE a.account_id='<account-id>' GROUP BY resource_type;"
 ```
 Result: 2 ELB rows appeared, matching the 2 real ALBs in the account.
 
@@ -211,7 +211,7 @@ the template for any similar script going forward.
 mysql -umonitor -p monitoring_hub -e "ALTER TABLE resources MODIFY COLUMN resource_id VARCHAR(512) NOT NULL;"
 set -a; source .env; set +a
 /opt/monitoring-hub/venv/bin/python3 -c "from app.collector.discovery.runner import run_discovery; run_discovery()"
-mysql -umonitor -p monitoring_hub -e "SELECT resource_type, COUNT(*) FROM resources r JOIN aws_accounts a ON a.id=r.aws_account_id WHERE a.account_id='924922671984' GROUP BY resource_type;"
+mysql -umonitor -p monitoring_hub -e "SELECT resource_type, COUNT(*) FROM resources r JOIN aws_accounts a ON a.id=r.aws_account_id WHERE a.account_id='<account-id>' GROUP BY resource_type;"
 
 # --- Issue 1: confirm and fix aws_account_id type mismatch ---
 mysql -umonitor -p monitoring_hub -e "DESCRIBE aws_accounts;" | grep -E "^id"
@@ -241,7 +241,7 @@ tracking.
 ## 4. Verification checklist
 
 - [x] `apply_fresh_schema_migrations.py --dry-run` → "Nothing to do"
-- [x] `resources` table shows 2 ELB rows for account `924922671984`
+- [x] `resources` table shows 2 ELB rows for account `<account-id>`
       (matches 2 real ALBs)
 - [x] `metrics` table: 786 → 64 rows after dedup, unique key
       `uniq_metrics_resource_metric` present

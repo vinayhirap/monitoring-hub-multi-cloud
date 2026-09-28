@@ -59,3 +59,22 @@ grant_*_scope.json
 # already had to clean up once for session cookies/passwords. Never commit.
 config/credential.key
 *.patch
+
+# --- added by audit r01: guard the CLASSES of leak that actually happened ---
+# db/backups/ alone was added only AFTER two mysqldump files (admin/viewer/editor
+# password hashes, account ids, audit rows) had already been committed; a dump
+# written anywhere else would still have been picked up by `git add .`.
+# Env variants (staging/local/dev ...) -- the two committed templates stay tracked.
+.env.*
+!.env.example
+!.env.production.example
+# Private keys and cloud service-account credentials.
+*.pem
+*.key
+*service-account*.json
+*service_account*.json
+# Database dumps/backups, wherever they are written.
+*.dump
+*.sql.gz
+*_dump.sql
+*backup*.sql

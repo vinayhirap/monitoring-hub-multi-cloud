@@ -127,6 +127,29 @@ def table_exists(table):
     return int(out.strip()) > 0
 
 
+def is_rbac_v2_roles_table():
+    """True if the table named `roles` is the LIVE RBAC v2 table.
+
+    AUDIT FIX: `roles` is in DEAD_TABLES because a LEGACY table of that name
+    was superseded by users.role. But db/migrations/040_rbac_v2_bindings.sql
+    later REUSED the name for the RBAC v2 roles table (role_key, role_rank,
+    is_builtin -- read by app/auth/rbac.py and app/api/admin/*, and referenced
+    by FKs from role_permissions_v2/role_bindings). Because the v2 table is
+    seeded with builtin rows, this script's "non-empty => don't drop" guard
+    happened to refuse to touch it -- but then it exited 1 with a "needs manual
+    review" WARNING on EVERY setup/deploy/update on every box running RBAC v2
+    (a permanent false alarm), and the only thing standing between an empty v2
+    table and DROP TABLE was MySQL's FK protection. The v2 table is identifiable
+    by its role_key column, which the legacy table never had; the legacy table
+    is still handled exactly as before (dropped if empty, blocked if not)."""
+    out = run_sql(
+        "SELECT COUNT(*) FROM information_schema.COLUMNS "
+        f"WHERE TABLE_SCHEMA = '{DB_NAME}' AND TABLE_NAME = 'roles' "
+        "AND COLUMN_NAME = 'role_key'"
+    )
+    return int(out.strip()) > 0
+
+
 def row_count(table):
     out = run_sql(f"SELECT COUNT(*) FROM `{table}`")
     return int(out.strip())
@@ -141,10 +164,14 @@ def main():
     present = []
     for t in DEAD_TABLES:
         if table_exists(t):
+            if t == "roles" and is_rbac_v2_roles_table():
+                print("  roles: this is the live RBAC v2 table (has role_key), "
+                      "not the legacy dead one -- leaving it alone")
+                continue
             present.append((t, row_count(t)))
 
     if not present:
-        print("None of the 10 dead tables exist -- nothing to do "
+        print(f"None of the {len(DEAD_TABLES)} dead tables exist -- nothing to do "
               "(expected on a fresh install, or a box this already ran on).")
         return
 
