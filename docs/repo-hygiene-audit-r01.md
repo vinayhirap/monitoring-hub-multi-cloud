@@ -101,18 +101,22 @@ embeds is searched for in today's tree -- a partial match means applied-then-evo
   account-scoping module. Both scripts now skip their code half once `groups.py` and
   migration 013 exist in the tree. Check dev/prod for a past run:
   `git status --short app/` and `git diff --stat app/auth/authorization.py` should be empty.
-- **Fresh installs seed `admin/admin123`, `editor/editor123`, `viewer/viewer123`**
-  (`setup.sh` step 7, prints a reminder to change them). If any environment was created
-  that way and the passwords were never changed, the bcrypt hashes in the leaked dumps
-  belong to those trivially guessable passwords. Raises the urgency of section 3.
-- **The 40 "skipped" real-database tests were never being run.** Against a real MySQL
-  (`MH_TEST_DB=1`) 37 pass and **3 fail**:
-  `test_placeholder_anomaly_needs_confident_baseline_and_is_capped_at_warning`,
-  `test_pre_existing_placeholder_critical_is_retired_with_reason`,
-  `test_acknowledged_alert_resolves_on_recovery`. They pre-date these changes. The
-  evaluator gained a gated healthy-streak mechanism in the same-day audit commits after
-  the test file was last touched, so they are probably stale, but that is **unverified**;
-  the acknowledged-alert one matches the evaluator's documented design, so check it.
+- **Fresh installs used to seed `admin/admin123`, `editor/editor123`, `viewer/viewer123`
+  (fixed).** `setup.sh` step 7 and `deploy/deploy.sh` created those three accounts with
+  published passwords on every fresh install and printed "change these". Each install now
+  generates its own 20-character random passwords (`secrets.token_urlsafe(15)`, bcrypt cost
+  12) and shows them once in the final banner; they are never written to a file or log.
+  Existing databases are untouched. If any environment was built the old way and the
+  passwords were never changed, the bcrypt hashes in the leaked dumps belong to those
+  trivially guessable passwords -- rotate them.
+- **The 40 "skipped" real-database tests were never being run (now run and green).**
+  Against a real MySQL (`MH_TEST_DB=1`) 37 passed and 3 failed. All three were stale, not
+  product bugs: the evaluator only counts a breach/healthy cycle when a row was last touched
+  at least `MIN_CYCLE_SECONDS` (240 s) ago, so the extra evaluation on the 2-minute critical
+  tick is not an extra cycle. The tests called `run_eval()` back to back, or built an alert
+  seen one minute ago, so no evaluation ever counted. They now use a `DB.age()` helper to
+  simulate time passing between cycles. Mutation-checked: disabling recovery, or requiring
+  99 sustained anomaly cycles, makes the right tests fail. All 40 pass.
 
 ## 3. `db/backups/*.sql` -- already untracked, still in history
 

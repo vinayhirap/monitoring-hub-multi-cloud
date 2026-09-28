@@ -239,24 +239,36 @@ echo "=== [7/10] Base schema (fresh DB only) ==="
 # (see step 8) — those run unconditionally afterwards regardless of
 # whether this base import ran, so an existing (non-fresh) DB still ends
 # up fully migrated. It's UTF-16 with CRLF line endings, needs converting.
+SEEDED_LOGINS=""
 TABLE_COUNT=$(mysql -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" -e "SHOW TABLES;" 2>/dev/null | wc -l)
 if [ "$TABLE_COUNT" -lt 2 ]; then
     iconv -f utf-16 -t utf-8 "$REPO_DIR/db_schema_only.sql" | sed 's/\r$//' > /tmp/schema_correct.sql
     mysql -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" < /tmp/schema_correct.sql
     rm -f /tmp/schema_correct.sql
 
-    sudo -u "$REAL_USER" "$VENV_DIR/bin/python3" - <<PYEOF
-import bcrypt, mysql.connector
-users = [("admin", "admin123", "admin"), ("editor", "editor123", "editor"), ("viewer", "viewer123", "viewer")]
+    # AUDIT FIX: this used to seed admin/admin123, editor/editor123 and
+    # viewer/viewer123 on every fresh install, printing "change these" at the end.
+    # Those are the first passwords anyone tries, and this repo is public. Each
+    # install now gets its own random passwords (secrets.token_urlsafe(15), 20
+    # characters). They are captured here and shown ONCE in the final banner; they
+    # are never written to a file or a log.
+    SEEDED_LOGINS=$(sudo -u "$REAL_USER" "$VENV_DIR/bin/python3" - <<PYEOF
+import secrets, bcrypt, mysql.connector
+users = [("admin", "admin"), ("editor", "editor"), ("viewer", "viewer")]
 conn = mysql.connector.connect(host="127.0.0.1", port=3306, user="${DB_USER}", password="${DB_PASS}", database="${DB_NAME}")
 cur = conn.cursor()
-for username, pw, role in users:
-    h = bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
+lines = []
+for username, role in users:
+    pw = secrets.token_urlsafe(15)
+    h = bcrypt.hashpw(pw.encode(), bcrypt.gensalt(rounds=12)).decode()
     cur.execute("INSERT INTO users (username, password, role, active) VALUES (%s,%s,%s,1)", (username, h, role))
+    lines.append(username + " / " + pw)
 conn.commit()
 cur.close(); conn.close()
-print("Seeded users: admin/admin123, editor/editor123, viewer/viewer123")
+print("\n".join(lines))
 PYEOF
+)
+    echo "Seeded users admin, editor, viewer with random passwords (shown once at the end of this run)."
 else
     echo "DB already has tables (TABLE_COUNT=${TABLE_COUNT}) — skipping base schema"
     echo "import and user seeding. Migrations in step 8 still run against it."
@@ -402,8 +414,9 @@ fi
 echo ""
 echo "=== Setup complete ==="
 echo "App:      http://${PUBLIC_IP}/"
-if [ "$TABLE_COUNT" -lt 2 ] 2>/dev/null || [ "$WIPE_DB" = true ]; then
-    echo "Logins:   admin/admin123, editor/editor123, viewer/viewer123  <- change these"
+if [ -n "$SEEDED_LOGINS" ]; then
+    echo "Logins (generated for THIS install -- shown once, store them now, then change them in the UI):"
+    echo "$SEEDED_LOGINS" | sed 's/^/   /'
 else
     echo "Logins:   existing users preserved (DB was not wiped)"
 fi

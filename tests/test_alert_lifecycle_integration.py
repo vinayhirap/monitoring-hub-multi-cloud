@@ -83,6 +83,19 @@ class DB:
         self.conn.commit()
         return self.cur.lastrowid
 
+    def age(self, minutes=5):
+        """Simulate `minutes` passing between evaluator cycles.
+
+        The evaluator only counts a breach/healthy cycle when the row was last
+        touched at least MIN_CYCLE_SECONDS (240s) ago, so that the extra
+        evaluation on the 2-minute critical tick is never an extra "cycle"
+        (evaluation_period semantics stay unchanged). Calling run_eval() several
+        times in a row therefore counts as ONE cycle at most, and an alert seen a
+        minute ago cannot advance at all. Tests that mean "N cycles later" must
+        age the rows in between."""
+        for table in ("alerts", "alert_pending"):
+            self.x(f"UPDATE {table} SET last_seen_at = last_seen_at - INTERVAL %s MINUTE", (minutes,))
+
     # -- builders --------------------------------------------------------
     def account(self, aid, name, provider="aws"):
         self.x("INSERT INTO aws_accounts (id, provider, account_name, account_id, role_arn, status) "
@@ -194,6 +207,7 @@ def test_placeholder_anomaly_needs_confident_baseline_and_is_capped_at_warning(d
     db.baseline(1, "i-net", "networkin", mean=2_000_000, std=500_000, n=40)
     db.metric(r, "networkin", 30_000_000)                  # far outside normal
     for _ in range(3):                                      # ANOMALY_MIN_CYCLES sustained cycles
+        db.age()                                            # a real cycle apart (see DB.age)
         run_eval()
     a = db.one("SELECT * FROM alerts WHERE resource_id='i-net'")
     assert a and a["severity"] == "WARNING"                # never CRITICAL for volume
@@ -215,6 +229,7 @@ def test_pre_existing_placeholder_critical_is_retired_with_reason(db):
     db.metric(r, "networkin", 900_000)
     aid = db.alert(1, "i-old", "networkin", "CRITICAL")
     for _ in range(3):
+        db.age()                                            # a real cycle apart (see DB.age)
         run_eval()
     a = db.get(aid)
     assert a["status"] == "resolved" and a["resolution_reason"] == "placeholder_threshold"
@@ -338,7 +353,9 @@ def test_acknowledged_alert_resolves_on_recovery(db):
     r = db.resource(1, "ec2", "i-aaa")
     db.threshold(1, "ec2", "cpuutilization", 70, 90, unit="Percent")
     db.metric(r, "cpuutilization", 10)
-    aid = db.alert(1, "i-aaa", "cpuutilization", "CRITICAL", status="acknowledged")
+    # last evaluated a full cycle ago (>240s), otherwise this evaluation is not a new
+    # cycle and the healthy streak correctly does not advance (see DB.age)
+    aid = db.alert(1, "i-aaa", "cpuutilization", "CRITICAL", status="acknowledged", seen_min_ago=6)
     run_eval()
     a = db.get(aid)
     assert a["status"] == "resolved" and a["resolution_reason"] == "recovered"
