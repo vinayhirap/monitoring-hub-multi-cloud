@@ -40,6 +40,17 @@ def _install_stub(alert_row, in_degree=0, cloud_events=None, config_changes=None
             elif normalized.startswith("SELECT AVG(mean_value) AS typical_value"):
                 # _check_flapping()'s baseline lookup.
                 self._pending = [flapping_baseline] if flapping_baseline else []
+            elif normalized.startswith("SELECT acc.id AS account_id"):
+                # _gather_deployment_signal()'s resource -> account lookup.
+                self._pending = [{"account_id": 7}]
+            elif normalized.startswith("SELECT message, detail, created_at FROM op_events"):
+                # _gather_deployment_signal()'s op_events lookup -- no
+                # recent deployment in these tests' windows.
+                self._pending = []
+            elif normalized.startswith("SELECT llm_summary, llm_summary_source_hash"):
+                # explain_alert()'s LLM-polish cache check -- nothing cached,
+                # so the deterministic template these tests verify is used.
+                self._pending = []
             else:
                 raise AssertionError(f"unexpected query: {normalized!r}")
 

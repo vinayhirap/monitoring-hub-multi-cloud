@@ -54,7 +54,12 @@ def test_allows_requests_under_the_limit():
 
     for _ in range(5):
         mod.check_rate_limit("test-key", max_attempts=5, window_seconds=300)
-    # no exception raised for the first 5 -- if we get here, they all passed
+    # No exception for the first 5 -- but "didn't raise" alone would also be
+    # true of a limiter that never counted anything (e.g. an empty function),
+    # so also prove the attempts were really recorded against the right key
+    # with a real expiry window; otherwise this test guards nothing.
+    assert fake.store == {"ratelimit:test-key": 5}
+    assert fake.expiries == {"ratelimit:test-key": 300}
 
 
 def test_blocks_the_request_that_exceeds_the_limit():

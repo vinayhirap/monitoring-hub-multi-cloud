@@ -34,25 +34,60 @@ live, ad-hoc, throughout a full VictoriaMetrics-removal effort:
 
 ## What's covered, and what isn't
 
-Covered: the resource-matching and metric-name-mapping logic in the
-direct-fetch collectors (`app/providers/azure/metrics_collector.py`,
-`app/providers/gcp/metrics_collector.py`) and the local-metrics helpers
-in `app/aws/collector_direct.py` and `app/aws/describe_polling.py`.
-This is deliberate, not arbitrary: it's the exact category of logic a
-real VM-removal session found broken or subtly wrong multiple times
-(GCP's compute_instance numeric-ID bug, a resource_id-vs-name mismatch
-across three different collectors, and a regression in Phase 5's own
-patch that silently reintroduced a billed CloudWatch call). It's also
-the easiest category to test well, since it's mostly pure functions
-once the DB/SDK boundary is stubbed.
+Originally this suite covered only the direct-fetch collectors
+(`app/providers/{azure,gcp}/metrics_collector.py`, the local-metrics
+helpers in `app/aws/collector_direct.py`, `app/aws/describe_polling.py`).
+It has since grown well beyond that -- alert lifecycle, threshold tuning,
+RBAC v2, rate limiting, session security, reports scoping, the WebSocket
+allowlist, and more. Coverage is still uneven: at the last audit 57 of the
+109 modules under `app/` were loaded directly by a test via `load_module()`,
+and these had no test referencing them at all: `app/aws/resource_discovery.py`,
+`app/collector/{baseline_stl,discovery_ec2,ec2_cpu_collector,integrity_check}.py`,
+`app/llm/{aws_docs,rca_report,rca_report_pdf}.py`, `app/nlquery/parser.py`,
+`app/providers/registry.py`. Route bodies are mostly tested through their
+helpers rather than end-to-end (there is no FastAPI `TestClient` fixture).
+Before assuming a change is covered, check with:
 
-NOT covered: FastAPI routes (`app/api/*.py`), auth/permissions,
-frontend, discovery beyond what the collector tests touch, and anything
-requiring a real database transaction or a live cloud API response.
-Extending coverage into those areas is real, separate work -- adding
-route-level tests in particular would benefit from FastAPI's own
-`TestClient` and probably a proper test database fixture, neither of
-which exist yet.
+```
+grep -rl 'module_name' tests/
+```
+
+### Real-database tests are skipped by default
+
+`tests/test_alert_lifecycle_integration.py` runs against a real MySQL and is
+skipped unless `MH_TEST_DB=1` is set (see its docstring for the schema
+fixture it loads). A plain `pytest` run therefore reports those as
+*skipped*, not passed -- they exercise real SQL and are the only tests that
+can catch a query that is valid Python but invalid for the actual schema.
+Run them before shipping any change to alert SQL.
+
+### Static guard tests (ratchets)
+
+Three tests parse the source with `ast`/regex instead of running it, to
+guard recurring bug classes that stub-based tests cannot see:
+
+| Test file | Guards |
+|---|---|
+| `test_permission_catalog_drift.py` | every `require_permission("x")` code exists in a migration's permission catalog |
+| `test_connection_hygiene_ratchet.py` | no function opens `get_connection()` without a `finally`/`with` release |
+| `test_tenant_isolation.py` | every route taking an account/alert/resource id shows a scope check |
+
+They are **ratchets**: each holds a small, commented allowlist of known
+exceptions. A NEW violation fails the test; *fixing* an allowlisted one
+also fails it until you delete the entry, so the lists can only shrink.
+When one fails, fix the code -- only extend an allowlist for a case that is
+genuinely intentional, and write the reason next to the entry.
+
+## Keeping stubs honest
+
+These tests match SQL by prefix (`normalized.startswith("SELECT ...")`) and
+raise on any query they don't recognise. That strictness is a feature -- it
+is what notices when production code changes -- but it means that when a
+query is changed, the corresponding test stub must be updated in the same
+commit. At the last audit 29 of 154 tests had silently gone red because
+account-scoping columns had been added to queries without touching the
+stubs; a red suite that nobody trusts is worth nothing. Run `pytest` before
+pushing.
 
 ## Adding a new test
 
