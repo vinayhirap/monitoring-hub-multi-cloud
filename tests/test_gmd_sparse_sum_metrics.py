@@ -194,3 +194,61 @@ def test_sum_zero_fill_survives_chunking_across_more_than_500_queries():
     assert count == n
     assert len(written) == n
     assert all(v == 0.0 for (_rid, _name, v) in written)
+
+
+# ── Regression: legacy 2-tuple id_map callers (extended.py) ─────────────
+# 2026-09-28: the Sum zero-fill change made _execute_gmd unpack THREE values
+# from every id_map entry. app/collector/metrics/extended.py imports the same
+# _execute_gmd and builds its OWN id_map with two-element (resource_db_id,
+# db_name) entries, so every extended-tier service collection (S3, SNS, SQS,
+# EventBridge, WAF, NAT, logs, ...) raised "not enough values to unpack" and
+# was swallowed by collect_extended_for_account's per-service except.
+# Extended metrics stopped being written from the deploy onward. The original
+# fix was verified only against runner.py's own callers.
+
+def test_execute_gmd_still_accepts_legacy_two_element_id_map_entries():
+    written, history = [], []
+    mod = _load_runner(written, history)
+    id_map = {"q0": (42, "numberofmessagespublished")}          # no stat
+    cw = FakeCloudWatch({"q0": [(5.0, "2026-09-28T06:00:00Z")]})
+    assert mod._execute_gmd(cw, [{"Id": "q0", "MetricStat": {}}], id_map) == 1
+    assert written == [(42, "numberofmessagespublished", 5.0)]
+
+
+def test_legacy_two_element_entry_with_no_datapoint_is_never_zero_filled():
+    """Without a known statistic there is no basis to fabricate a 0 -- the
+    pre-fix behaviour (skip, leave last value) is preserved exactly."""
+    written, history = [], []
+    mod = _load_runner(written, history)
+    id_map = {"q0": (42, "numberofmessagespublished")}
+    cw = FakeCloudWatch({})
+    assert mod._execute_gmd(cw, [{"Id": "q0", "MetricStat": {}}], id_map) == 0
+    assert written == [] and history == []
+
+
+def test_extended_collector_runs_end_to_end_through_the_real_execute_gmd():
+    """The seam that broke in production: extended.py -> runner._execute_gmd.
+    Uses the REAL extended.py, REAL runner.py, REAL polling_model.py and only
+    fakes CloudWatch, so an id_map shape change on either side fails here."""
+    written, history = [], []
+    runner = _load_runner(written, history)
+    sys.modules["app.collector.metrics.runner"] = runner
+    install_stub("app.aws.metric_catalog_data", CURATED=load_module("app/aws/metric_catalog_data.py").CURATED)
+    real_td = load_module("app/threshold_defaults.py")
+    sys.modules["app.threshold_defaults"] = real_td
+    ext = load_module("app/collector/metrics/extended.py")
+
+    service = "sns" if "sns" in ext.EXTENDED_METRICS else next(iter(ext.EXTENDED_METRICS))
+    resources = [{"id": 7, "resource_id": "arn:aws:sns:ap-south-1:1:topic", "resource_type": service,
+                  "name": "topic", "region": "ap-south-1", "tags": "{}"}]
+    enabled = {(service, d[0]) for d in ext.EXTENDED_METRICS[service]}
+
+    class AnyDataCW:
+        def get_metric_data(self, MetricDataQueries, **kw):
+            return {"MetricDataResults": [
+                {"Id": q["Id"], "Values": [1.0], "Timestamps": ["2026-09-28T06:00:00Z"]}
+                for q in MetricDataQueries]}
+
+    n = ext._collect_extended_service(AnyDataCW(), resources, service, enabled, minutes=16)
+    assert n > 0 and written, "extended collection wrote nothing -- id_map/_execute_gmd contract broken"
+    assert all(rid == 7 for (rid, _name, _val) in written)

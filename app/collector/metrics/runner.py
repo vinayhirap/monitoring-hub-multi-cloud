@@ -256,7 +256,18 @@ def _execute_gmd(cw, queries, id_map, minutes=5):
         api_usage.record("aws", _CURRENT_TIER, calls=pages, units=_billed_units(chunk))
 
         for qid, (timestamps, values) in results.items():
-            resource_db_id, db_name, stat = id_map.get(qid, (None, None, None))
+            # id_map entries are (resource_db_id, db_name, stat). stat is
+            # OPTIONAL: app/collector/metrics/extended.py builds its own
+            # id_map with two-element (resource_db_id, db_name) entries and
+            # calls this same function. Requiring three values made every
+            # extended-tier collection raise (2026-09-25 deploy -> 2026-09-28
+            # hotfix). An entry without a stat keeps the original behaviour:
+            # a missing datapoint is skipped, never zero-filled.
+            entry = id_map.get(qid)
+            if not entry:
+                continue
+            resource_db_id, db_name = entry[0], entry[1]
+            stat = entry[2] if len(entry) > 2 else None
             if resource_db_id is None:
                 continue
 
