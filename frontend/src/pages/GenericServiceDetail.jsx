@@ -237,6 +237,20 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeRange]);
 
+  // 2026-09-29: same missing-auto-refresh gap fixed in ServiceDetail.jsx's
+  // EC2/EBS/RDS/ELB/Lambda path, found auditing the whole app for it --
+  // load() above only re-runs on expand, a timeRange change, or a deep-
+  // link; nothing re-runs it just from time passing. This page covers
+  // every AWS extended-tier service (~30) plus every Azure and GCP
+  // service, so the gap was actually wider here than the one first
+  // found on EC2. 15s matches ServiceDetail.jsx's own row-list and
+  // chart-refresh cadence for consistency across the app.
+  useEffect(() => {
+    if (!expanded) return;
+    const t = setInterval(() => load(), 15000);
+    return () => clearInterval(t);
+  }, [expanded, load]);
+
   // Deep-link support: Alerts.jsx links here with ?resource=<id> for any
   // service, not just the 7 bespoke ones -- auto-expand and scroll to
   // this row instead of leaving the user to find it in a long list.

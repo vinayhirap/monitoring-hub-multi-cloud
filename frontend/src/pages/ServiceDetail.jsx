@@ -337,6 +337,36 @@ export default function ServiceDetail() {
       .finally(() => { if (metricsReqRef.current === myReq) setMLoading(false); });
   }, [timeRange, service, account, id]);
 
+  // 2026-09-29: the effect above only re-fetches when timeRange/service/
+  // account/id CHANGE -- nothing about it re-runs just from time passing,
+  // so once a resource's charts loaded they stayed frozen at whatever
+  // "now" was at select time for as long as the panel stayed open, while
+  // the topbar's "LIVE" badge and this row's own 15s-polled list-view
+  // cpu_utilization kept moving. Confirmed live: CloudOps's own chart
+  // panel stopped advancing past its select-time window while the AWS
+  // Console (always a fresh live query) and even this page's own table
+  // cell for the same instance kept updating. A silent no-op re-fetch,
+  // not a value/timestamp/stat bug -- the data backing it was already
+  // proven correct by the cross-account verification earlier this
+  // session; this only affects whether the browser ever asks for more
+  // of it. Matches loadRows' own 15s interval above for consistency
+  // (same cadence the row list already uses), reuses the SAME
+  // metricsReqRef race-guard fetchMetrics's effect above already relies
+  // on so a slow response from an old poll can never clobber a newer
+  // selection or timeRange change.
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (!selectedRef.current) return;
+      const row    = selectedRef.current;
+      const region = row.region || account?.default_region || "ap-south-2";
+      const myReq  = ++metricsReqRef.current;
+      fetchMetrics(service, row, region, timeRange, id)
+        .then(data => { if (metricsReqRef.current === myReq) setMetrics(data); })
+        .catch(console.error);
+    }, 15000);
+    return () => clearInterval(t);
+  }, [timeRange, service, account, id]);
+
   async function selectRow(row) {
     // S3 storage metrics (BucketSizeBytes / NumberOfObjects) are published by
     // CloudWatch once a DAY, up to ~2 days late, so the default 6H window is
