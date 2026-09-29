@@ -34,3 +34,13 @@ def test_bytes_use_relative_tolerance():
 def test_last_point_picks_newest_valid():
     s = [{"t": "2026-09-29T13:55:00+00:00", "v": 1.0}, {"t": "2026-09-29T14:00:00Z", "v": 2.5}]
     assert _last_point(s)[0] == 2.5 and _last_point([]) is None
+
+
+def test_bucket_window_is_exactly_one_period_from_ts():
+    from tools.verify_cloudwatch_parity import bucket_window, _queries, _spec
+    s, e = bucket_window(T, 300)
+    assert s == T and e - s == timedelta(seconds=300)
+    q = _queries(_spec("CWAgent", "LogicalDisk % Free Space", [], 60, invert=True), "q")
+    assert [x["Id"] for x in q] == ["qraw", "q"] and q[1]["Expression"] == "100 - qraw"
+    assert q[0]["ReturnData"] is False
+    assert len(_queries(_spec("AWS/EC2", "CPUUtilization", [], 300), "q")) == 1

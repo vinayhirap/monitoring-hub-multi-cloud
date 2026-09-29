@@ -3,15 +3,19 @@
 tools/verify_cloudwatch_parity.py -- read-only check that what CloudOps shows
 for an EC2 instance matches what CloudWatch itself reports.
 
-For each metric it compares three layers, latest datapoint in each:
+For each metric it compares:
 
-  CW   live GetMetricData, same account credentials, same dimensions and
-       the same Windows "100 - free%" inversion the collector uses
-  DB   the `metrics` last-value cache (drives alerts and the list view) and
-       the newest `metric_history` row (drives the CPU/Network charts)
-  API  what get_ec2_metric_series() returns, i.e. exactly the JSON the
-       frontend chart receives (mem/disk are live CloudWatch; cpu/network
-       come from metric_history)
+  collector  CloudWatch's value for the SAME time bucket as the newest
+             metric_history row (queried as [ts, ts+period), same account
+             credentials, dimensions and Windows "100 - free%" inversion the
+             collector uses) vs what the collector stored
+  api        what get_ec2_metric_series() returns, i.e. the JSON the frontend
+             chart receives, vs its source: metric_history for cpu/network,
+             live CloudWatch (newest datapoint) for mem/disk
+
+Comparing "latest CloudWatch" to a stored sample is misleading because
+CloudWatch anchors buckets to the request start time, so the two land on
+different 5-minute samples (bursty network can differ 20x with no bug).
 
 The frontend then only does two things to that JSON: network_in/out are
 divided by 1024 (label "KB", bytes per 5-min period, NOT per second) and
@@ -105,6 +109,41 @@ def _cw_latest(cw, queries, minutes):
             return out
 
 
+def _spec(namespace, metric, dims, period, invert=False):
+    return {"ns": namespace, "metric": metric, "dims": dims,
+            "period": period, "invert": invert}
+
+
+def _queries(spec, qid):
+    stat = {"Metric": {"Namespace": spec["ns"], "MetricName": spec["metric"],
+                       "Dimensions": spec["dims"]},
+            "Period": spec["period"], "Stat": "Average"}
+    if spec["invert"]:      # Windows free% -> used%, same as the collector
+        return [{"Id": qid + "raw", "MetricStat": stat, "ReturnData": False},
+                {"Id": qid, "Expression": f"100 - {qid}raw", "ReturnData": True}]
+    return [{"Id": qid, "MetricStat": stat, "ReturnData": True}]
+
+
+def bucket_window(ts, period):
+    """(start, end) that makes GetMetricData return exactly ONE bucket that
+    starts at `ts`. CloudWatch anchors buckets to the request StartTime, so a
+    'latest 30 min' query and the collector's own query land on different
+    5-minute buckets; comparing those proves nothing on bursty metrics
+    (network). Asking for [ts, ts+period) returns the very bucket the
+    collector stored."""
+    return ts, ts + timedelta(seconds=period)
+
+
+def _cw_at(cw, spec, ts):
+    start, end = bucket_window(ts, spec["period"])
+    resp = cw.get_metric_data(MetricDataQueries=_queries(spec, "q"),
+                              StartTime=start, EndTime=end)
+    for r in resp.get("MetricDataResults", []):
+        if r["Id"] == "q" and r.get("Values"):
+            return float(r["Values"][0]), _parse_ts(r["Timestamps"][0])
+    return None
+
+
 def _db_lookup(cur, account_id, instance_id):
     cur.execute("SELECT id FROM resources WHERE resource_type='ec2' "
                 "AND resource_id=%s AND aws_account_id=%s LIMIT 1",
@@ -134,17 +173,13 @@ def check_instance(account, instance_id, region):
     cw = session.client("cloudwatch", region_name=region, config=STANDARD_RETRY)
     ec2_dim = [{"Name": "InstanceId", "Value": instance_id}]
 
-    # --- CloudWatch, live -------------------------------------------------
-    q5, q1, labels = [], [], {}          # labels: qid -> (db_metric, api_key, kind)
-    for i, (cw_name, db_name, api_key) in enumerate([
-            ("CPUUtilization", "cpuutilization", "cpu"),
-            ("NetworkIn", "networkin", "network_in"),
-            ("NetworkOut", "networkout", "network_out")]):
-        qid = f"ec2m{i}"
-        q5.append({"Id": qid, "MetricStat": {
-            "Metric": {"Namespace": "AWS/EC2", "MetricName": cw_name, "Dimensions": ec2_dim},
-            "Period": 300, "Stat": "Average"}, "ReturnData": True})
-        labels[qid] = (db_name, api_key, "percent" if api_key == "cpu" else "bytes")
+    # label -> (db_metric, api_key, kind, spec, is_live_in_api)
+    labels = []
+    for cw_name, db_name, api_key in [("CPUUtilization", "cpuutilization", "cpu"),
+                                      ("NetworkIn", "networkin", "network_in"),
+                                      ("NetworkOut", "networkout", "network_out")]:
+        labels.append((db_name, api_key, "percent" if api_key == "cpu" else "bytes",
+                       _spec("AWS/EC2", cw_name, ec2_dim, 300), False))
 
     mem_name = "mem_used_percent"
     mem_dims = _ec2_cwagent_dimensions(cw, mem_name, instance_id)
@@ -152,45 +187,37 @@ def check_instance(account, instance_id, region):
         mem_name = "Memory % Committed Bytes In Use"
         mem_dims = _ec2_cwagent_dimensions(cw, mem_name, instance_id)
     if mem_dims:
-        q1.append({"Id": "agmem", "MetricStat": {
-            "Metric": {"Namespace": "CWAgent", "MetricName": mem_name, "Dimensions": mem_dims},
-            "Period": 60, "Stat": "Average"}, "ReturnData": True})
-        labels["agmem"] = ("mem_used_percent", "mem_utilization", "percent")
+        labels.append(("mem_used_percent", "mem_utilization", "percent",
+                       _spec("CWAgent", mem_name, mem_dims, 60), True))
+    for dims, path, db_name, cw_metric, invert in all_cwagent_disk_dims(cw, instance_id):
+        labels.append((db_name, ("disk", path), "percent",
+                       _spec("CWAgent", cw_metric, dims, 60, invert), True))
 
-    mounts = all_cwagent_disk_dims(cw, instance_id)
-    for n, (dims, path, db_name, cw_metric, invert) in enumerate(mounts):
-        qid = f"agdisk{n}"
-        stat = {"Metric": {"Namespace": "CWAgent", "MetricName": cw_metric, "Dimensions": dims},
-                "Period": 60, "Stat": "Average"}
-        if invert:
-            q1.append({"Id": qid + "raw", "MetricStat": stat, "ReturnData": False})
-            q1.append({"Id": qid, "Expression": f"100 - {qid}raw", "ReturnData": True})
-        else:
-            q1.append({"Id": qid, "MetricStat": stat, "ReturnData": True})
-        labels[qid] = (db_name, ("disk", path), "percent")
-
-    cw_vals = _cw_latest(cw, q5, 30)
-    if q1:
-        cw_vals.update(_cw_latest(cw, q1, 20))
-
-    # --- DB + API ---------------------------------------------------------
     api = get_ec2_metric_series(instance_id, region=region, hours=1, account=account)
     conn = get_connection()
     cur = conn.cursor(dictionary=True)
     try:
         rid = _db_lookup(cur, account["id"], instance_id)
         rows = []
-        for qid, (db_name, api_key, kind) in labels.items():
-            if isinstance(api_key, tuple):          # ("disk", path)
+        for db_name, api_key, kind, spec, live_api in labels:
+            if isinstance(api_key, tuple):
                 series = (api.get("disk_used_percent_by_mount") or {}).get(api_key[1], [])
-                api_label = f"api.disk[{api_key[1]}]"
             else:
-                series, api_label = api.get(api_key, []), f"api.{api_key}"
-            cw_v = cw_vals.get(qid)
-            dbm = _db_last(cur, "metrics", rid, db_name) if rid else None
+                series = api.get(api_key, [])
             dbh = _db_last(cur, "metric_history", rid, db_name) if rid else None
             apv = _last_point(series)
-            rows.append((db_name, kind, cw_v, dbm, dbh, api_label, apv))
+            # (1) collector parity: CloudWatch's value for the SAME bucket the DB stored
+            cw_same = _cw_at(cw, spec, dbh[1]) if dbh else None
+            # (2) API parity: live-CW metrics (mem/disk) vs newest CW now; the
+            #     5-min metrics are served from metric_history, so API vs history.
+            if live_api:
+                q = _queries(spec, "n")
+                cw_now = _cw_latest(cw, q, 20).get("n")
+                api_ref = cw_now
+            else:
+                api_ref = dbh
+            rows.append({"name": db_name, "kind": kind, "cw_same": cw_same, "dbh": dbh,
+                         "api": apv, "api_ref": api_ref, "live": live_api})
     finally:
         cur.close()
         conn.close()
@@ -206,21 +233,22 @@ def _fmt(p):
 
 def report(instance_id, rows, cwagent):
     print(f"\n=== {instance_id}  (cwagent_installed per API: {cwagent}) ===")
-    print(f"{'metric':<26}{'CloudWatch':>22}{'DB metrics':>22}{'DB history':>22}"
-          f"{'API/frontend':>22}  verdict (CW vs DB / hist / API)")
+    print(f"{'metric':<26}{'CW same bucket':>22}{'DB history':>22}{'API/frontend':>22}"
+          f"  collector / api")
     bad = 0
-    for db_name, kind, cw_v, dbm, dbh, api_label, apv in rows:
-        verdicts = [classify(cw_v, x, kind) for x in (dbm, dbh, apv)]
-        if any(v in ("DIFF", "MISSING") for v in verdicts):
-            # history/metrics are legitimately absent for metrics they do not
-            # store (e.g. cpu has no mem history); only flag when CW has data.
-            if cw_v is not None:
-                bad += 1
-        print(f"{db_name:<26}{_fmt(cw_v)}{_fmt(dbm)}{_fmt(dbh)}{_fmt(apv)}  "
-              f"{' / '.join(verdicts)}")
-        if db_name in ("networkin", "networkout") and apv:
-            print(f"{'':<26}  UI shows {apv[0] / 1024:.1f} KB per 5-min period "
-                  f"(= {apv[0] / 1024 / 300:.3f} KB/s)")
+    for r in rows:
+        collector = classify(r["cw_same"], r["dbh"], r["kind"])
+        api = classify(r["api_ref"], r["api"], r["kind"])
+        # Nothing stored yet is not a mismatch; CW having data the DB lacks is.
+        if r["cw_same"] is None and r["dbh"] is None:
+            collector = "NO-DATA"
+        if collector in ("DIFF", "MISSING") or api in ("DIFF", "MISSING"):
+            bad += 1
+        print(f"{r['name']:<26}{_fmt(r['cw_same'])}{_fmt(r['dbh'])}{_fmt(r['api'])}"
+              f"  {collector} / {api}")
+        if r["name"] in ("networkin", "networkout") and r["api"]:
+            print(f"{'':<26}  UI shows {r['api'][0] / 1024:.1f} KB per 5-min period "
+                  f"(= {r['api'][0] / 1024 / 300:.3f} KB/s)")
     return bad
 
 
