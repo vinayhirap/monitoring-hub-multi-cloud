@@ -97,6 +97,10 @@ MIN_COVERAGE_FRACTION = 0.5
 # whole point) -- this only catches an implausible 4x-or-more drop.
 MIN_STDDEV_RATIO = 0.25
 
+# Wall-clock cap per run (2026-09-29): a full pass took ~30 min and starved
+# the scheduler loop. Unprocessed series are simply picked up next run.
+STL_MAX_SECONDS = 900
+
 # Only bother running STL on (resource, metric) pairs that actually
 # have variance worth decomposing -- skip anything sigma_clip already
 # wrote with stddev 0 (flat-line, no seasonal shape possible) or that
@@ -229,11 +233,19 @@ def upgrade_baselines_with_stl() -> int:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     upgraded = 0
+    _deadline = __import__("time").time() + STL_MAX_SECONDS
     try:
         cursor.execute(_CANDIDATES_SQL)
         candidates = cursor.fetchall()
+        # Shuffle so a time-capped run covers a different slice each day
+        # instead of always re-fitting the same first series.
+        __import__("random").shuffle(candidates)
 
         for c in candidates:
+            if __import__("time").time() > _deadline:
+                logger.warning(f"[baseline_stl] time budget {STL_MAX_SECONDS}s reached, "
+                               f"committing partial upgrade ({upgraded} buckets)")
+                break
             account_id, resource_id, metric_name = c["aws_account_id"], c["resource_id"], c["metric_name"]
             try:
                 series = _load_series(cursor, account_id, resource_id, metric_name)

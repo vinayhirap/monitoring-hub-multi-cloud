@@ -105,6 +105,9 @@ LOW_INTERVAL       = 900     # 15 min — EC2 Disk, Lambda Invocations
 EXTENDED_INTERVAL  = 3600    # 60 min — extended-tier services except SLOW_EXTENDED_SERVICES
 SLOW_EXTENDED_INTERVAL = 86400  # 24 h  — S3/CloudWatch Logs/Backup/CloudFront/WAFv2 (see extended.py)
 DISCOVERY_INTERVAL = 900     # 15 min — aligned with low tier
+STL_INTERVAL       = 86400   # 24 h  — STL baseline upgrade is CPU-heavy (~30 min single-threaded
+                             #         on prod, 2026-09-29 incident); daily is plenty for a
+                             #         168-bucket weekly baseline.
 
 
 def _get_active_accounts():
@@ -206,8 +209,11 @@ def run_once(tier="standard"):
         # ordering makes it impossible for this pass to leave a bucket
         # worse than sigma-clip alone would have.
         try:
-            from app.collector.baseline_stl import upgrade_baselines_with_stl
-            upgrade_baselines_with_stl()
+            if _stl_due():
+                from app.collector.baseline_stl import upgrade_baselines_with_stl
+                upgrade_baselines_with_stl()
+                from app.collector.op_log import log_event as _le
+                _le("baseline_stl_completed", "STL baseline upgrade completed", severity="INFO")
         except Exception as e:
             log_event("baseline_stl_upgrade_failed",
                       f"upgrade_baselines_with_stl failed (non-fatal, sigma-clipped "
@@ -337,6 +343,48 @@ def run_once(tier="standard"):
             log_event("cspm_check_failed",
                       f"run_security_checks failed (non-fatal): {e}", severity="WARNING")
 
+def _stl_due() -> bool:
+    """True if the STL baseline upgrade hasn't completed in the last
+    STL_INTERVAL seconds. Persisted via op_events so a restart does NOT
+    re-trigger a ~30 min STL run (2026-09-29: three restarts in 40 min
+    each started a fresh STL pass, starving the critical tier and
+    discovery). Fails OPEN to 'not due' on query error -- skipping one
+    optional upgrade is safer than blocking the loop."""
+    try:
+        conn = get_connection(); cur = conn.cursor()
+        try:
+            cur.execute("SELECT MAX(created_at) FROM op_events "
+                        "WHERE event_type = 'baseline_stl_completed'")
+            row = cur.fetchone()
+            last = row[0] if row else None
+        finally:
+            cur.close(); conn.close()
+        if last is None:
+            return True
+        return (time.time() - last.timestamp()) >= STL_INTERVAL
+    except Exception as e:
+        logger.warning(f"[scheduler] _stl_due check failed, skipping STL this cycle: {e}")
+        return False
+
+
+def _discovery_loop(leader_event):
+    """Discovery on its own thread/timer, independent of the tier loop.
+    2026-09-29: discovery sat at the tail of run_loop, so a long low tier
+    starved it and last_seen_at went stale -> Services pages empty (the
+    45-min freshness filter in live_data.py). Stops on leadership loss."""
+    while not _stop_event.is_set():
+        if leader_event is not None and not leader_event.is_set():
+            logger.warning("[discovery] leadership lost -- stopping discovery thread")
+            return
+        t0 = time.time()
+        try:
+            logger.info("[discovery] starting")
+            run_discovery_once()
+        except Exception as e:
+            logger.error(f"Discovery error: {e}")
+        _stop_event.wait(timeout=max(1, DISCOVERY_INTERVAL - (time.time() - t0)))
+
+
 def run_discovery_once():
     from app.collector.discovery.runner import run_discovery
     run_discovery()
@@ -461,11 +509,13 @@ def run_loop(leader_event=None):
     last_low        = seed["low"]
     last_extended   = seed["extended"]
     last_slow_extended = seed["slow_extended"]
-    last_discovery  = 0
     cycle           = 0
 
     logger.info("Tiered scheduler started "
                 "(critical=2min, standard=5min, low=15min, extended=60min, slow_extended=24h)")
+
+    threading.Thread(target=_discovery_loop, args=(leader_event,),
+                     name="discovery-loop", daemon=True).start()
 
     while not _stop_event.is_set():
         if leader_event is not None and not leader_event.is_set():
@@ -605,15 +655,6 @@ def run_loop(leader_event=None):
                     refresh_ollama_model()
                 except Exception as e:
                     logger.error(f"Ollama model refresh error (non-fatal): {e}")
-
-            _require_leader(leader_event)
-            if now - last_discovery >= DISCOVERY_INTERVAL:
-                logger.info(f"[Cycle {cycle}] discovery")
-                try:
-                    run_discovery_once()
-                    last_discovery = now
-                except Exception as e:
-                    logger.error(f"Discovery error: {e}")
 
         except _LeadershipLost:
             logger.warning("[scheduler] leadership lost mid-cycle -- stopping this loop "
