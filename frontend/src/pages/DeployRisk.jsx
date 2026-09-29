@@ -63,7 +63,7 @@ export default function DeployRisk() {
             <code>POST /api/webhooks/deploy</code> to start tracking this — see the backend's DEPLOY_WEBHOOK_TOKEN setting.
           </div>
         ) : (
-          <table className="dr-table">
+          <div className="tbl-scroll"><table className="dr-table">
             <thead>
               <tr>
                 <th>Deployment</th>
@@ -101,7 +101,7 @@ export default function DeployRisk() {
                 </Fragment>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>

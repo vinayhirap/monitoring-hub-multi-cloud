@@ -150,7 +150,7 @@ export default function SecurityFindings() {
         ) : findings.length === 0 ? (
           <div className="sec-empty">No {status === "all" ? "" : status} findings — nice work, or checks haven't run yet (they need extra IAM permissions on the monitoring role, see the deployment notes).</div>
         ) : (
-          <table className="sec-table">
+          <div className="tbl-scroll"><table className="sec-table">
             <thead>
               <tr>
                 <th>Severity</th>
@@ -190,7 +190,7 @@ export default function SecurityFindings() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>

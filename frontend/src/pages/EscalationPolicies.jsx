@@ -136,7 +136,7 @@ export default function EscalationPolicies() {
         {policies.length === 0 ? (
           <div className="ep-empty">No escalation policies configured yet — add one above.</div>
         ) : (
-          <table className="ep-table">
+          <div className="tbl-scroll"><table className="ep-table">
             <thead>
               <tr>
                 <th>Account</th>
@@ -168,7 +168,7 @@ export default function EscalationPolicies() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>

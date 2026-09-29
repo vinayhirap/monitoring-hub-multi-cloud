@@ -3,6 +3,8 @@ import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useWebSocket } from "../hooks/useWebSocket";
+import { useAlertSync } from "../hooks/useAlertSync";
+import { metricLabel, formatMetricValue } from "../utils/metricLabels";
 import "./Alerts.css";
 import { useTimezone, formatInTz } from "../contexts/TimezoneContext";
 import { InfoIcon, DownloadIcon } from "../components/icons";
@@ -254,9 +256,12 @@ export default function Alerts() {
 
   useEffect(() => {
     loadAlerts();
-    const t = setInterval(loadAlerts, 10000);
+    const t = setInterval(loadAlerts, 10000);   // safety net (alerts going stale change no row)
     return () => clearInterval(t);
   }, [loadAlerts]);
+
+  // Refetch in the same tick as the Overview, Services tiles and sidebar badge.
+  useAlertSync(loadAlerts);
 
   // WebSocket push. The list is server-defined per tab, so every event just
   // triggers a reload instead of splicing a partial message into the rows
@@ -525,9 +530,9 @@ export default function Alerts() {
                       </td>
 
                       <td className="mono small">
-                        <span className="alert-val" title={String(a.current_value ?? "")}>{fmt(a.current_value)}</span>
+                        <span className="alert-val" title={String(a.current_value ?? "")}>{formatMetricValue(a.metric_name, a.current_value)}</span>
                         <span className="alert-sep"> / </span>
-                        <span className="alert-thr" title={String(a.threshold ?? "")}>{fmt(a.threshold)}</span>
+                        <span className="alert-thr" title={String(a.threshold ?? "")}>{formatMetricValue(a.metric_name, a.threshold)}</span>
                       </td>
 
                       <td className="alert-resource">
@@ -558,7 +563,7 @@ export default function Alerts() {
                         {a.stale && (
                           <div
                             className="alert-stale-flag"
-                            title="No fresh metric data for this resource in a while — the resource may have been decommissioned, or the collector/VictoriaMetrics pipeline may be down for it. This alert has NOT been auto-resolved; verify before dismissing."
+                            title="No fresh metric data for this resource in a while — the resource may have been decommissioned, or the metrics collector may be failing for it. This alert has NOT been auto-resolved; verify before dismissing."
                             style={{ color: "#c98a2b", fontSize: 11, marginTop: 2 }}
                           >
                             ⚠ stale — no data {timeSince(a.last_seen_at)}
@@ -751,53 +756,6 @@ function StatusBadge({ status, detail }) {
   }[status] || "st-badge st-active";
   const label = { firing: "ACTIVE", stale: "NO DATA", suppressed: "MUTED" }[status] || status.toUpperCase();
   return <span className={cls} title={detail || undefined}>{label}</span>;
-}
-
-// Compact, unit-agnostic number formatting. Raw values like 712199220386 or
-// 0.03 were shown as "712199220386" / "0.0"; the exact value is in the tooltip.
-function fmt(v) {
-  if (v == null) return "—";
-  const n = parseFloat(v);
-  if (isNaN(n)) return String(v);
-  const abs = Math.abs(n);
-  if (abs >= 1e12) return (n / 1e12).toFixed(2) + "T";
-  if (abs >= 1e9)  return (n / 1e9).toFixed(2) + "G";
-  if (abs >= 1e6)  return (n / 1e6).toFixed(2) + "M";
-  if (abs >= 1e4)  return (n / 1e3).toFixed(1) + "K";
-  if (abs !== 0 && abs < 0.1) return n.toPrecision(2);
-  return n % 1 === 0 ? String(n) : n.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-}
-
-const METRIC_LABELS = {
-  cpuutilization:    "CPU %",
-  networkin:         "Net In",
-  networkout:        "Net Out",
-  diskreadbytes:     "Disk Read",
-  diskwritebytes:    "Disk Write",
-  volumequeuelength: "Queue Len",
-  burstbalance:      "Burst Bal",
-  dbconnections:     "DB Conns",
-  freestorage:       "Free Storage",
-  readiops:          "Read IOPS",
-  writeiops:         "Write IOPS",
-  readlatency:       "Read Latency",
-  writelatency:      "Write Latency",
-  freeablememory:    "Free Mem",
-  errors5xx:         "5xx Errors",
-  errors4xx:         "4xx Errors",
-  responselatency:   "Latency",
-  healthyhosts:      "Healthy Hosts",
-  unhealthyhosts:    "Unhealthy Hosts",
-  requestcount:      "Requests",
-  memutilization:    "Mem %",
-  invocations:       "Invocations",
-  errors:            "Errors",
-  duration:          "Duration",
-  throttles:         "Throttles",
-};
-
-function metricLabel(name) {
-  return METRIC_LABELS[(name || "").toLowerCase()] || name;
 }
 
 function timeSince(iso) {

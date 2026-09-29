@@ -1,4 +1,4 @@
-.slo-page { max-width: 1200px; }
+.slo-page { max-width: var(--page-max); }
 
 .slo-page .c-header {
   display: flex; justify-content: space-between; align-items: center;

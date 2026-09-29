@@ -155,7 +155,7 @@ export default function Slos() {
         {slos.length === 0 ? (
           <div className="slo-empty">No SLOs defined yet — add one above to start tracking an error budget.</div>
         ) : (
-          <table className="slo-table">
+          <div className="tbl-scroll"><table className="slo-table">
             <thead>
               <tr>
                 <th>Name</th>
@@ -187,7 +187,7 @@ export default function Slos() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>

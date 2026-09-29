@@ -61,6 +61,7 @@ export const getAlerts = () => apiFetch("/api/alerts/open");
 // /counts endpoint docstring for why this must never be derived from
 // a paginated row list on the client.
 export const getAlertCounts = () => apiFetch("/api/alerts/counts");
+export const getAlertsVersion = () => apiFetch("/api/alerts/version");
 export const acknowledgeAlert = (id) => apiFetch(`/api/alerts/${id}/ack`,     { method: "PATCH" });
 export const resolveAlert     = (id) => apiFetch(`/api/alerts/${id}/resolve`,  { method: "PATCH" });
 export const muteAlert        = (id) => apiFetch(`/api/alerts/${id}/mute`,     { method: "PATCH" });

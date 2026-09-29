@@ -1,10 +1,11 @@
 // src/components/Layout.jsx
 import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import AlertToast from "./AlertToast";
 import { useTimezone, TIMEZONE_OPTIONS } from "../contexts/TimezoneContext";
 import { getAlertCounts } from "../api/api";
+import { useAlertSync } from "../hooks/useAlertSync";
 import "./Layout.css";
 
 // Role-based nav visibility:
@@ -67,28 +68,29 @@ export default function Layout() {
     return () => clearInterval(t);
   }, []);
 
+  // Sidebar alert badge. The fetch lives inside the effect (as before) and is
+  // exposed through a ref so useAlertSync can trigger the same refresh.
+  const refreshBadgeRef = useRef(() => {});
   useEffect(() => {
     async function fetchCount() {
       try {
-        // Uncapped, authoritative count -- see app/api/alerts.py's
-        // /counts endpoint. Previously this counted the (LIMIT-capped)
-        // /api/alerts/open row list client-side, which silently
-        // undercounts once real active alerts exceed that cap.
-        // Routed through api.js's getAlertCounts()/apiFetch rather than
-        // a bare fetch() -- this poll runs every 30s for as long as the
-        // user is on any page, so it's the one most likely to still be
-        // ticking when a session expires; apiFetch's 401 handling is
-        // what actually bounces to /login and clears the stale cache
-        // (see AuthContext/api.js) instead of this silently no-op-ing
-        // forever against a dead session.
+        // Uncapped, authoritative count -- see app/api/alerts.py's /counts
+        // endpoint (the old client-side count of the LIMIT-capped
+        // /api/alerts/open list undercounted). Routed through apiFetch via
+        // getAlertCounts() so a 401 bounces to /login instead of failing
+        // silently forever against a dead session.
         const data = await getAlertCounts();
         setAlertCount(data.active ?? 0);
       } catch {}
     }
+    refreshBadgeRef.current = fetchCount;
     fetchCount();
-    const t = setInterval(fetchCount, 30000);
+    const t = setInterval(fetchCount, 15000);   // safety net; changes arrive via useAlertSync
     return () => clearInterval(t);
   }, []);
+
+  // same-tick refresh with every other page when alert state changes
+  useAlertSync(() => refreshBadgeRef.current());
 
   function handleLogout() {
     logout();

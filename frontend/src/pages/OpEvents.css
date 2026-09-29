@@ -1,4 +1,4 @@
-.opevents-page { max-width: 1100px; }
+.opevents-page { max-width: var(--page-max); }
 
 /* Header — same .c-header/.hl/.sub/.c-header-actions/.c-btn language as
    Compliance.jsx, so this reads as the same product rather than a

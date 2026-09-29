@@ -1,4 +1,4 @@
-.topo-page { max-width: 1400px; }
+.topo-page { max-width: var(--page-max); }
 
 .topo-page .c-header {
   display: flex; justify-content: space-between; align-items: center;

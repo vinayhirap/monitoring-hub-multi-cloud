@@ -214,7 +214,7 @@ export default function AccountDetail() {
 
           {/* Table */}
           <div className="inst-table-wrap">
-            <table className="inst-table">
+            <div className="tbl-scroll"><table className="inst-table">
               <thead>
                 <tr>
                   <th>NAME / ID</th>
@@ -256,7 +256,7 @@ export default function AccountDetail() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           </div>
         </div>
 

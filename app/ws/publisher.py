@@ -81,3 +81,11 @@ def publish_alert_resolved(alert_id: int | None, account_id: int | None, bulk: b
         "id": alert_id,
         "account_id": account_id,
     })
+
+
+def publish_alerts_changed():
+    """Generic "the alert picture changed" ping (ack, resolve, mute, new alert,
+    false-positive mark...). Carries no data: clients refetch. Every page
+    listens for it via frontend/src/hooks/useAlertSync.js so they all update at
+    the same moment."""
+    publish("alerts", {"type": "alerts_changed"})

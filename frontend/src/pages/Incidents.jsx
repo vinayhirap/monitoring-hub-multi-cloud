@@ -10,6 +10,7 @@
 // original topology/op-events/escalation pages were rebuilt once
 // already after shipping with raw, unthemed Tailwind classes).
 import { useState, useEffect, useCallback } from "react";
+import { metricLabel } from "../utils/metricLabels";
 import { useParams, useNavigate } from "react-router-dom";
 import { getIncidents, getIncidentDetail, getResourceHealth } from "../api/api";
 import { useTimezone } from "../contexts/TimezoneContext";
@@ -79,7 +80,7 @@ function IncidentRow({ incident, ianaName, accountId }) {
             <>
               <div className="inc-detail-section">
                 <h4>Member alerts</h4>
-                <table className="inc-alert-table">
+                <div className="tbl-scroll"><table className="inc-alert-table">
                   <thead>
                     <tr><th>Resource</th><th>Metric</th><th>Value</th><th>Severity</th><th>Status</th></tr>
                   </thead>
@@ -87,14 +88,14 @@ function IncidentRow({ incident, ianaName, accountId }) {
                     {detail.alerts.map(a => (
                       <tr key={a.id}>
                         <td>{a.resource_id}</td>
-                        <td>{a.metric_name}</td>
+                        <td title={a.metric_name}>{metricLabel(a.metric_name)}</td>
                         <td>{a.value}</td>
                         <td><SeverityBadge sev={a.severity} /></td>
                         <td>{a.status}</td>
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </table></div>
               </div>
               {detail.rca && (
                 <div className="inc-detail-section">

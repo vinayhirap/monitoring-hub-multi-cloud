@@ -71,7 +71,9 @@ router = APIRouter(prefix="/api/live", tags=["Live Data"])
 
 # Cache: 30s for near-real-time updates
 _accounts_cache: dict = {"data": None, "ts": 0}
-CACHE_TTL = 60   # seconds — near-real-time
+CACHE_TTL = 60   # seconds -- SLOW resource data only; alert fields are computed fresh
+from app.alert_cache import FingerprintCache as _FingerprintCache
+_ec2_health_cache = _FingerprintCache()
 
 
 def invalidate_accounts_cache():
@@ -219,35 +221,76 @@ def _get_active_alert_counts_by_account() -> dict:
     """
     THE account-level alert numbers for the Overview banner/account cards:
     {aws_account_id: {"critical": N, "warning": N, "critical_resources": N,
-    "warning_resources": N, "stale": N, "acknowledged": N, "suppressed": N}}.
+    "warning_resources": N, "stale": N, "acknowledged": N, "suppressed": N,
+    "services": {...}}}.
 
-    2026-09-20: rebuilt on app/alert_rules.py -- the same state machine every
-    other screen uses. "critical"/"warning" are ALERT ROWS in the FIRING state
-    (fresh, not acknowledged, not muted, not in a maintenance window), so the
-    banner equals the Alerts page's Critical tab and the sum of the Services
-    tiles by construction. It used to count DISTINCT RESOURCES over raw
-    status='active' (28/6 on screen vs 29 on the Alerts page), and counted
-    stale alerts as live. *_resources keep the distinct-resource view for
-    callers that genuinely need a resource count (HealthRing sizing).
+    Reads the SAME shared, fingerprint-validated rollup the Alerts page,
+    /alerts/summary and the Services tiles read (app/alert_cache.py), so it can
+    never be older than they are -- see that module for the two-worker
+    staleness this replaces. "critical"/"warning" are ALERT ROWS in the FIRING
+    state; *_resources are distinct resources.
     """
     try:
-        from app import alert_rules
-        conn   = get_connection()
-        cursor = conn.cursor(dictionary=True)
-        try:
-            rows = alert_rules.fetch_open_alert_rows(cursor, None)
-        finally:
-            cursor.close()
-            conn.close()
+        from app.alert_cache import get_alert_rollup
         out = {}
-        for acct, v in alert_rules.rollup(rows)["accounts"].items():
+        for acct, v in get_alert_rollup()["accounts"].items():
             out[acct] = {k: v[k] for k in (
                 "critical", "warning", "critical_resources", "warning_resources",
-                "stale", "acknowledged", "suppressed")}
+                "stale", "acknowledged", "suppressed", "services")}
         return out
     except Exception as e:
         logger.error(f"Active alert count fetch error: {e}")
         return {}
+
+
+def _get_active_services_by_account() -> dict:
+    """{aws_account_id: {service_key, ...}} = the tiles on each account's
+    Services page: services with >= 1 ENABLED metric for the account AND >= 1
+    resource (AWS: seen within _AWS_STALE_AFTER_MINUTES). Slow-changing, so it is
+    cached with the rest of the per-account resource data (60 s)."""
+    try:
+        return _get_active_services_by_account_unsafe()
+    except Exception as e:
+        # Never take the whole Overview down for the ring's denominator: the
+        # ring then falls back to the services that are actually alerting.
+        logger.error(f"Active services fetch error: {e}")
+        return {}
+
+
+def _get_active_services_by_account_unsafe() -> dict:
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute("""
+                SELECT ams.aws_account_id, mc.service
+                FROM account_metric_selections ams
+                JOIN metric_catalog mc ON mc.id = ams.metric_id
+                WHERE ams.enabled = 1 AND mc.metric_name IS NOT NULL AND mc.metric_name <> ''
+                GROUP BY ams.aws_account_id, mc.service
+            """)
+            enabled = cur.fetchall()
+            cur.execute(f"""
+                SELECT r.aws_account_id, r.resource_type, r.resource_id
+                FROM resources r
+                JOIN aws_accounts acc ON acc.id = r.aws_account_id AND acc.status = 'active'
+                WHERE (COALESCE(acc.provider, 'aws') <> 'aws'
+                       OR r.last_seen_at > NOW() - INTERVAL {_AWS_STALE_AFTER_MINUTES} MINUTE)
+            """)
+            present = cur.fetchall()
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+    have = {}
+    for r in present:
+        have.setdefault(r["aws_account_id"], set()).add(
+            normalize_service_key(r["resource_type"], r["resource_id"] or ""))
+    out = {}
+    for r in enabled:
+        if r["service"] in have.get(r["aws_account_id"], ()):
+            out.setdefault(r["aws_account_id"], set()).add(r["service"])
+    return out
 
 
 # Metrics that genuinely mean an EC2 instance is slow, degraded, or down --
@@ -466,34 +509,21 @@ def _get_ec2_instance_health_by_account() -> dict:
 def live_accounts(current_user: dict = Depends(require_permission("resources.view"))):
     global _accounts_cache
 
-    # SECURITY/CORRECTNESS (audit b16): _accounts_cache is a single
-    # module-level dict shared by every request this worker process
-    # serves, regardless of which user made them -- it holds no
-    # per-user or per-scope key. Previously the account list was
-    # scope-filtered to the CURRENT caller BEFORE being processed and
-    # cached, so whichever user's request happened to populate the
-    # cache determined what every OTHER user saw for the next
-    # CACHE_TTL seconds: a narrowly-scoped viewer populating it first
-    # would silently hide accounts an admin (or a differently-scoped
-    # user) requesting moments later is fully entitled to see -- the
-    # cached data itself never grew back to the full set until the
-    # next miss. The cache-hit path already re-filtered by the current
-    # caller's OWN scope, so this was never a cross-account leak (no
-    # one could ever see an account outside their own access), but it
-    # could and did wrongly HIDE accounts a real, differently-scoped
-    # caller should have seen. Fixed by always caching every active
-    # account's fully-processed data, unfiltered, and applying the
-    # caller's scope filter fresh on every request -- cache hit or
-    # miss -- rather than baking one caller's scope into the cached
-    # payload itself.
+    # Two layers, on purpose (2026-09-29):
+    #   1. SLOW, per-account resource data (AWS describe calls, resource counts,
+    #      which services have tiles) -- cached CACHE_TTL seconds, unfiltered
+    #      (audit b16: the cache must never bake in one caller's scope).
+    #   2. ALERT-DERIVED fields (status pill, counts, health ring) -- computed
+    #      fresh on EVERY request from the shared rollup in app/alert_cache.py,
+    #      which is validated against the alerts table on each call. They used
+    #      to be cached together with layer 1 for 60 s, per worker, so this page
+    #      showed an older alert picture than the Alerts page for up to minutes.
     now = time.time()
     if _accounts_cache["data"] is not None and now - _accounts_cache["ts"] < CACHE_TTL:
-        full_result = _accounts_cache["data"]
+        base_accounts = _accounts_cache["data"]
     else:
         accounts = _get_db_accounts()
-
-        alert_counts_by_account = _get_active_alert_counts_by_account()
-        ec2_health_by_account   = _get_ec2_instance_health_by_account()
+        active_services = _get_active_services_by_account()
 
         def process_account(acc):
             region  = acc.get("default_region")
@@ -501,42 +531,6 @@ def live_accounts(current_user: dict = Depends(require_permission("resources.vie
             running = summary.get("ec2_running", 0)
             total   = summary.get("ec2_total",   0)
             avg_cpu = summary.get("ec2_avg_cpu", 0)
-
-            counts        = alert_counts_by_account.get(acc["id"], {"critical": 0, "warning": 0,
-                                                                 "critical_resources": 0, "warning_resources": 0,
-                                                                 "stale": 0, "acknowledged": 0, "suppressed": 0})
-            acct_critical = counts["critical"]
-            acct_warning  = counts["warning"]
-
-            # EC2-scoped rollup for the HealthRing only -- see
-            # _get_ec2_instance_health_by_account()'s docstring. Deliberately
-            # separate from acct_critical/acct_warning above, which stay
-            # account-wide (all resource types) and keep driving `health`,
-            # the status pill, and the CRITICAL/WARNING tiles exactly as
-            # before -- only the ring's own numbers change here.
-            ec2_health          = ec2_health_by_account.get(acc["id"], {"critical": 0, "warning": 0})
-            ec2_critical_ring   = ec2_health["critical"]
-            ec2_warning_ring    = ec2_health["warning"]
-
-            # Real active alerts (any resource type) are authoritative.
-            # avg_cpu is only a fallback heuristic for the rare case where
-            # nothing has alerted yet at all — it must never override an
-            # actual open alert, critical or warning.
-            if acct_critical > 0:
-                health = "critical"
-            elif acct_warning > 0:
-                health = "warning"
-            elif avg_cpu > 80:
-                health = "critical"
-            elif avg_cpu > 60:
-                health = "warning"
-            else:
-                health = "healthy"
-
-            # HealthRing sizing needs a RESOURCE count, not an alert-row count
-            unhealthy_resources = counts.get("critical_resources", 0) + counts.get("warning_resources", 0)
-            unhealthy_count = min(unhealthy_resources, running) if running else unhealthy_resources
-            healthy_count   = max(running - unhealthy_count, 0)
 
             services = []
             if summary.get("ec2_total", 0) > 0:
@@ -565,7 +559,6 @@ def live_accounts(current_user: dict = Depends(require_permission("resources.vie
                 "account_name":     acc["account_name"],
                 "account_id":       acc["account_id"],
                 "region":           region,
-                "status":           health,
                 "environment":      acc.get("environment", "PROD"),
                 "owner_team":       acc.get("owner_team", acc.get("team", "")),
                 "ec2_total":        total,
@@ -578,39 +571,76 @@ def live_accounts(current_user: dict = Depends(require_permission("resources.vie
                 "elb_total":        summary.get("elb_total",    0),
                 "ecs_total":        summary.get("ecs_total",    0),
                 "avg_cpu":          avg_cpu,
-                # Was hardcoded to 0 before this fix, regardless of reality.
-                "alerts":           acct_critical + acct_warning,
-                "critical_alerts":  acct_critical,
-                "warning_alerts":   acct_warning,
-                "stale_alerts":        counts.get("stale", 0),
-                "acknowledged_alerts": counts.get("acknowledged", 0),
-                "suppressed_alerts":   counts.get("suppressed", 0),
-                # EC2-scoped counts for the HealthRing wedge colouring --
-                # see _get_ec2_instance_health_by_account(). Intentionally
-                # separate from critical_alerts/warning_alerts above.
-                "ec2_critical_instances": ec2_critical_ring,
-                "ec2_warning_instances":  ec2_warning_ring,
                 "instance_count":   total,
-                "healthy_resources":   healthy_count,
-                "unhealthy_resources": unhealthy_count,
                 "services":         services,
+                "active_services":  sorted(active_services.get(acc["id"], ())),
                 "created_at":       acc.get("created_at"),
                 "last_synced_at":   acc.get("last_synced_at"),
             })
 
-        full_result = []
+        base_accounts = []
         with ThreadPoolExecutor(max_workers=min(len(accounts), 8) or 1) as ex:
             futures = {ex.submit(process_account, acc): acc for acc in accounts}
             for f in as_completed(futures):
                 try:
-                    full_result.append(f.result())
+                    base_accounts.append(f.result())
                 except Exception as e:
                     logger.error(f"Account processing error: {e}")
 
-        status_order = {"critical": 0, "warning": 1, "healthy": 2}
-        full_result.sort(key=lambda a: status_order.get(a.get("status", "healthy"), 9))
+        _accounts_cache = {"data": base_accounts, "ts": now}
 
-        _accounts_cache = {"data": full_result, "ts": now}
+    # ── fresh alert overlay (every request) ──────────────────────
+    alert_counts_by_account = _get_active_alert_counts_by_account()
+    ec2_health_by_account   = _ec2_health_cache.get(_get_ec2_instance_health_by_account)
+    empty = {"critical": 0, "warning": 0, "critical_resources": 0, "warning_resources": 0,
+             "stale": 0, "acknowledged": 0, "suppressed": 0, "services": {}}
+
+    full_result = []
+    for base in base_accounts:
+        counts        = alert_counts_by_account.get(base["id"], empty)
+        acct_critical = counts["critical"]
+        acct_warning  = counts["warning"]
+        ec2_health    = ec2_health_by_account.get(base["id"], {"critical": 0, "warning": 0})
+        running       = base.get("ec2_running", 0)
+        avg_cpu       = base.get("avg_cpu", 0)
+
+        # Real active alerts (any resource type) are authoritative; avg_cpu is
+        # only a fallback heuristic when nothing has alerted at all.
+        if acct_critical > 0:
+            health = "critical"
+        elif acct_warning > 0:
+            health = "warning"
+        elif avg_cpu > 80:
+            health = "critical"
+        elif avg_cpu > 60:
+            health = "warning"
+        else:
+            health = "healthy"
+
+        unhealthy_resources = counts.get("critical_resources", 0) + counts.get("warning_resources", 0)
+        unhealthy_count = min(unhealthy_resources, running) if running else unhealthy_resources
+
+        row = dict(base)
+        row.update({
+            "status":              health,
+            "alerts":              acct_critical + acct_warning,
+            "critical_alerts":     acct_critical,
+            "warning_alerts":      acct_warning,
+            "stale_alerts":        counts.get("stale", 0),
+            "acknowledged_alerts": counts.get("acknowledged", 0),
+            "suppressed_alerts":   counts.get("suppressed", 0),
+            # legacy EC2-only wedge counts, kept for API compatibility
+            "ec2_critical_instances": ec2_health["critical"],
+            "ec2_warning_instances":  ec2_health["warning"],
+            "healthy_resources":   max(running - unhealthy_count, 0),
+            "unhealthy_resources": unhealthy_count,
+            # HealthRing: SERVICES (Services-page tiles), coloured by firing alerts
+            "health_ring": _alert_rules.service_ring(base.get("active_services", ()), counts.get("services", {})),
+        })
+        full_result.append(row)
+
+    status_order = {"critical": 0, "warning": 1, "healthy": 2}
+    full_result.sort(key=lambda a: status_order.get(a.get("status", "healthy"), 9))
 
     accessible = get_accessible_account_ids(current_user)
     if accessible is not None:

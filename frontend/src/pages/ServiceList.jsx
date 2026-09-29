@@ -1,7 +1,8 @@
 // monitoring-hub/frontend/src/pages/ServiceList.jsx
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getAlertSummary, getAccountMetrics, getResourceCounts } from "../api/api";
+import { useAlertSync } from "../hooks/useAlertSync";
 import { CloudServiceIcon, AzureBrandLogo, GoogleCloudBrandLogo, officialPerService } from "../components/cloud-icons";
 import { LinkIcon } from "../components/icons";
 import { sectionMeta } from "../components/MetricSelector";
@@ -80,6 +81,7 @@ export default function ServiceList() {
   // directory distinction Settings -> Metrics already uses everywhere
   // else in this app.
   const [collapsedSection, setCollapsedSection] = useState(() => new Set(["directory"]));
+  const reloadAlertsRef = useRef(() => {});
 
   useEffect(() => {
     let cancelled = false;
@@ -91,14 +93,18 @@ export default function ServiceList() {
     const loadAlertSummary = () => getAlertSummary(id)
       .then(d => { if (!cancelled) setAlertSummary(d?.accounts?.[String(id)] ?? null); })
       .catch(() => {});
+    reloadAlertsRef.current = loadAlertSummary;
     loadAlertSummary();
-    const alertTimer = setInterval(loadAlertSummary, 30000);
+    const alertTimer = setInterval(loadAlertSummary, 15000);   // safety net; useAlertSync is the real trigger
     getAccountMetrics(id)
       .then(g => { if (!cancelled) setGroups(Array.isArray(g) ? g : []); })
       .catch(console.error)
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; clearInterval(alertTimer); };
   }, [id]);
+
+  // Same-tick refresh with the Overview, the Alerts page and the sidebar badge.
+  useAlertSync(() => reloadAlertsRef.current());
 
   const provider = account?.provider || "aws";
 
@@ -195,7 +201,7 @@ export default function ServiceList() {
   }
 
   return (
-    <div style={{ maxWidth: 1100 }}>
+    <div style={{ maxWidth: "var(--page-max)" }}>
       <div className="breadcrumb">
         <span className="bc-link" onClick={() => navigate("/overview")}>ALL ACCOUNTS</span>
         <span className="bc-sep">›</span>

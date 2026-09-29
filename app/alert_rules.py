@@ -337,3 +337,43 @@ def rollup(rows):
         r["total"] = r["critical"] + r["warning"] + r["info"]
         out_resources[key] = r
     return {"accounts": out_accounts, "resources": out_resources}
+
+
+# ── Health ring (Overview account cards) ─────────────────────────────
+def service_ring(active_services, services_rollup):
+    """Health-ring numbers for ONE account, in units of SERVICES -- the same
+    units as the tiles on the account's Services page (a service with >= 1
+    enabled metric and >= 1 resource).
+
+    A service is CRITICAL if any of its alert rows is firing at CRITICAL,
+    otherwise WARNING if any is firing at WARNING, otherwise healthy. INFO,
+    stale, acknowledged and muted alerts never colour it (same rule as the
+    banner and the Services tiles: only `firing` counts). A service that has a
+    firing alert but is not in `active_services` (e.g. its resource fell out of
+    the discovery-recency window) is added, so an alert can never be hidden by
+    the ring.
+
+    active_services: iterable of service keys (normalize_service_key space)
+    services_rollup: rollup(...)["accounts"][acct]["services"]
+    Returns {"unit","total","critical","warning","healthy",
+             "critical_services","warning_services"}.
+    """
+    services = set(active_services or ())
+    crit, warn = [], []
+    for key, v in (services_rollup or {}).items():
+        if v.get("critical", 0) > 0:
+            crit.append(key)
+        elif v.get("warning", 0) > 0:
+            warn.append(key)
+    services.update(crit)
+    services.update(warn)
+    total = len(services)
+    return {
+        "unit": "service",
+        "total": total,
+        "critical": len(crit),
+        "warning": len(warn),
+        "healthy": total - len(crit) - len(warn),
+        "critical_services": sorted(crit),
+        "warning_services": sorted(warn),
+    }

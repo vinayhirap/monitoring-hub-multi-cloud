@@ -599,8 +599,8 @@ function NotImplState({ service, rawService, meta, region, accountId }) {
 }
 
 function ServiceTable({ service, rows, loading, selected, onSelect, allRows, alertLookup = () => null }) {
-  if (loading) return <table className="inst-table"><tbody><tr><td colSpan={9} className="tbl-empty">Loading…</td></tr></tbody></table>;
-  if (rows.length === 0) return <table className="inst-table"><tbody><tr><td colSpan={9} className="tbl-empty">No resources found.</td></tr></tbody></table>;
+  if (loading) return <div className="tbl-scroll"><table className="inst-table"><tbody><tr><td colSpan={9} className="tbl-empty">Loading…</td></tr></tbody></table></div>;
+  if (rows.length === 0) return <div className="tbl-scroll"><table className="inst-table"><tbody><tr><td colSpan={9} className="tbl-empty">No resources found.</td></tr></tbody></table></div>;
   switch (service) {
     case "EC2":    return <EC2Table    rows={rows} selected={selected} onSelect={onSelect} allRows={allRows} alertLookup={alertLookup} />;
     case "EBS":    return <EBSTable    rows={rows} selected={selected} onSelect={onSelect} allRows={allRows} alertLookup={alertLookup} />;
@@ -615,7 +615,7 @@ function ServiceTable({ service, rows, loading, selected, onSelect, allRows, ale
 
 function EC2Table({ rows, selected, onSelect, alertLookup = () => null }) {
   return (
-    <table className="inst-table">
+    <div className="tbl-scroll"><table className="inst-table">
       <thead>
         <tr>
           <th>NAME / ID</th><th>TYPE</th><th>STATE</th><th>ZONE</th>
@@ -647,13 +647,13 @@ function EC2Table({ rows, selected, onSelect, alertLookup = () => null }) {
           </tr>
         );
       })}</tbody>
-    </table>
+    </table></div>
   );
 }
 
 function EBSTable({ rows, selected, onSelect, alertLookup = () => null }) {
   return (
-    <table className="inst-table">
+    <div className="tbl-scroll"><table className="inst-table">
       <thead>
         <tr>
           <th>NAME / ID</th><th>TYPE</th><th>SIZE</th><th>STATE</th>
@@ -691,13 +691,13 @@ function EBSTable({ rows, selected, onSelect, alertLookup = () => null }) {
           </td>
         </tr>
       ))}</tbody>
-    </table>
+    </table></div>
   );
 }
 
 function RDSTable({ rows, selected, onSelect, alertLookup = () => null }) {
   return (
-    <table className="inst-table">
+    <div className="tbl-scroll"><table className="inst-table">
       <thead><tr><th>IDENTIFIER</th><th>ENGINE</th><th>CLASS</th><th>STATUS</th><th>MULTI-AZ</th><th>STORAGE</th><th>ENDPOINT</th></tr></thead>
       <tbody>{rows.map(r => (
         <tr key={r.db_instance_id || r.identifier} className={`inst-row ${selected?.db_instance_id === r.db_instance_id ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
@@ -710,13 +710,13 @@ function RDSTable({ rows, selected, onSelect, alertLookup = () => null }) {
           <td className="mono small truncate">{r.endpoint || "—"}</td>
         </tr>
       ))}</tbody>
-    </table>
+    </table></div>
   );
 }
 
 function LambdaTable({ rows, selected, onSelect, alertLookup = () => null }) {
   return (
-    <table className="inst-table">
+    <div className="tbl-scroll"><table className="inst-table">
       <thead><tr><th>FUNCTION NAME</th><th>RUNTIME</th><th>MEMORY</th><th>TIMEOUT</th><th>LAST MODIFIED</th><th>SIZE</th></tr></thead>
       <tbody>{rows.map((r, idx) => (
         <tr key={r.function_name || `lambda-${idx}`} className={`inst-row ${selected?.function_name === r.function_name ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
@@ -728,13 +728,13 @@ function LambdaTable({ rows, selected, onSelect, alertLookup = () => null }) {
           <td className="mono small">{r.code_size ? fmtBytes(r.code_size) : "—"}</td>
         </tr>
       ))}</tbody>
-    </table>
+    </table></div>
   );
 }
 
 function S3Table({ rows, selected, onSelect, alertLookup = () => null }) {
   return (
-    <table className="inst-table">
+    <div className="tbl-scroll"><table className="inst-table">
       <thead><tr><th>BUCKET NAME</th><th>REGION</th><th>CREATED</th><th>VERSIONING</th><th>ACCESS</th></tr></thead>
       <tbody>{rows.map(r => (
         <tr key={r.bucket_name || r.name} className={`inst-row ${selected?.bucket_name === r.bucket_name ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
@@ -745,13 +745,13 @@ function S3Table({ rows, selected, onSelect, alertLookup = () => null }) {
           <td><StatusChip status={r.public_access === false ? "private" : r.public_access === true ? "public" : "—"} colorMap={{ private: "green", public: "red" }} /></td>
         </tr>
       ))}</tbody>
-    </table>
+    </table></div>
   );
 }
 
 function ELBTable({ rows, selected, onSelect, alertLookup = () => null }) {
   return (
-    <table className="inst-table">
+    <div className="tbl-scroll"><table className="inst-table">
       <thead><tr><th>NAME</th><th>TYPE</th><th>SCHEME</th><th>STATE</th><th>DNS NAME</th><th>AZs</th><th>CREATED</th></tr></thead>
       <tbody>{rows.map(r => (
         <tr key={r.load_balancer_arn || r.name} className={`inst-row ${selected?.load_balancer_arn === r.load_balancer_arn ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
@@ -764,7 +764,7 @@ function ELBTable({ rows, selected, onSelect, alertLookup = () => null }) {
           <td className="mono small">{r.created_time ? shortDate(r.created_time) : "—"}</td>
         </tr>
       ))}</tbody>
-    </table>
+    </table></div>
   );
 }
 
@@ -779,15 +779,15 @@ function ECSTable({ rows, selected, onSelect, alertLookup = () => null }) {
   );
   if (allServices.length === 0) {
     return (
-      <table className="inst-table">
+      <div className="tbl-scroll"><table className="inst-table">
         <tbody><tr><td colSpan={8} className="tbl-empty">
           {rows.length > 0 ? `${rows.length} cluster(s) found but no services running.` : "No ECS clusters found."}
         </td></tr></tbody>
-      </table>
+      </table></div>
     );
   }
   return (
-    <table className="inst-table">
+    <div className="tbl-scroll"><table className="inst-table">
       <thead>
         <tr>
           <th>SERVICE NAME</th><th>CLUSTER</th><th>STATUS</th><th>LAUNCH</th>
@@ -830,7 +830,7 @@ function ECSTable({ rows, selected, onSelect, alertLookup = () => null }) {
           </tr>
         ))}
       </tbody>
-    </table>
+    </table></div>
   );
 }
 
@@ -1460,8 +1460,8 @@ function detailStats(service, row) {
     ];
     case "ECS": return [
       { label: "Status",   value: row.status        || "—", color: row.status === "ACTIVE" ? "green" : "yellow" },
-      { label: "CPU %",    value: `${(row.cpu_utilization || 0).toFixed(1)}%`, color: (row.cpu_utilization || 0) > 75 ? "red" : "green" },
-      { label: "Mem %",    value: `${(row.mem_utilization || 0).toFixed(1)}%`, color: (row.mem_utilization || 0) > 75 ? "red" : "green" },
+      { label: "CPU Utilization", value: `${(row.cpu_utilization || 0).toFixed(1)}%`, color: (row.cpu_utilization || 0) > 75 ? "red" : "green" },
+      { label: "Memory Utilization", value: `${(row.mem_utilization || 0).toFixed(1)}%`, color: (row.mem_utilization || 0) > 75 ? "red" : "green" },
       { label: "Running",  value: `${row.running_count ?? "—"} / ${row.desired_count ?? "—"}` },
     ];
     default: return [];

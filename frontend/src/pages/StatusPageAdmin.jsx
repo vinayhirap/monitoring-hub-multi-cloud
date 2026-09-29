@@ -102,7 +102,7 @@ export default function StatusPageAdmin() {
         {components.length === 0 ? (
           <div className="spa-empty">No components configured yet — the public page will show nothing until you add at least one.</div>
         ) : (
-          <table className="spa-table">
+          <div className="tbl-scroll"><table className="spa-table">
             <thead>
               <tr>
                 <th>Public name</th>
@@ -132,7 +132,7 @@ export default function StatusPageAdmin() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>

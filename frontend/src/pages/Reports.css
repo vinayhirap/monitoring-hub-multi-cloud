@@ -4,7 +4,7 @@
    one file for the whole app), var(--*) tokens throughout rather than
    one-off hex fallbacks, .c-btn/.c-btn-primary for buttons. */
 
-.reports-page { max-width: 1200px; }
+.reports-page { max-width: var(--page-max); }
 
 .reports-card {
   background: var(--bg-card); border: 1px solid var(--border);

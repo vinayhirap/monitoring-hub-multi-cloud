@@ -1,6 +1,6 @@
 /*monitoring-hub/frontend/src/pages/Settings.css */
 
-.settings-page { max-width: 1000px; display: flex; flex-direction: column; gap: 20px; }
+.settings-page { max-width: var(--page-max-form); display: flex; flex-direction: column; gap: 20px; }
 .page-header {
   margin-bottom: var(--space-5);
   padding-bottom: var(--space-4);

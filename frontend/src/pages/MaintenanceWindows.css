@@ -1,4 +1,4 @@
-.mw-page { max-width: 1250px; }
+.mw-page { max-width: var(--page-max); }
 
 .mw-page .c-header {
   display: flex; justify-content: space-between; align-items: center;

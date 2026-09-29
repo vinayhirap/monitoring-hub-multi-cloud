@@ -4,6 +4,7 @@
 // status/resource-type/time-window/free-text), not an embedding
 // model -- explainable, zero heavy dependency, instant.
 import { useState } from "react";
+import { metricLabel } from "../utils/metricLabels";
 import { useNavigate } from "react-router-dom";
 import { searchAlerts } from "../api/api";
 import { SearchIcon, AlertOctagonIcon } from "../components/icons";
@@ -75,7 +76,7 @@ export default function Search() {
           {result.results.length === 0 ? (
             <div className="srch-empty">No matching alerts found.</div>
           ) : (
-            <table className="srch-table">
+            <div className="tbl-scroll"><table className="srch-table">
               <thead>
                 <tr>
                   <th>Severity</th>
@@ -110,14 +111,14 @@ export default function Search() {
                   >
                     <td><SevBadge sev={a.severity} /></td>
                     <td>{a.resource_name || a.aws_resource_id}</td>
-                    <td className="mono">{a.metric_name}</td>
+                    <td className="mono" title={a.metric_name}>{metricLabel(a.metric_name)}</td>
                     <td>{a.account_name}</td>
                     <td className="mono">{new Date(a.created_at).toLocaleString("en-US", { timeZone: ianaName })}</td>
                     <td>{a.status}</td>
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           )}
         </div>
       )}

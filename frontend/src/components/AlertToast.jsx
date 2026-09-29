@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { AlertOctagonIcon, AlertTriangleIcon, XIcon } from "./icons";
+import { metricLabel, formatMetricValue } from "../utils/metricLabels";
 import "./AlertToast.css";
 
 const SOUND_URL = "https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg";
@@ -92,7 +93,7 @@ function ToastItem({ toast, onClose }) {
           {toast.severity} ALERT
         </div>
         <div style={{ fontSize: 13, color: "#dce6f5", marginBottom: 2 }}>
-          {toast.metric} — <strong>{toast.value}%</strong> (threshold: {toast.threshold}%)
+          {metricLabel(toast.metric)} — <strong>{formatMetricValue(toast.metric, toast.value)}</strong> (threshold: {formatMetricValue(toast.metric, toast.threshold)})
         </div>
         <div style={{ fontSize: 11, color: "#4a5f80" }}>
           {toast.account_name || `Account #${toast.account_id}`}

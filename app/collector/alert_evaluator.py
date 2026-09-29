@@ -642,7 +642,11 @@ def _evaluate_alerts_body(conn, cursor, p1_only=False):
             except Exception as e:
                 logger.warning(f"Alert publish failed: {e}")
 
-    if stats["resolved"] or stats["reopened"]:
+    # New alerts must invalidate too (2026-09-29): previously only resolves did,
+    # so a NEW alert reached the Alerts page but the Overview kept serving its
+    # cached snapshot. (The alert readers are also fingerprint-validated now, so
+    # this is belt and braces for this worker's own caches.)
+    if stats["new"] or stats["resolved"] or stats["reopened"]:
         invalidate_accounts_cache()
         _invalidate_cache()
 

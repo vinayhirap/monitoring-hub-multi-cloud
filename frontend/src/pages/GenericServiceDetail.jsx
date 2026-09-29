@@ -558,7 +558,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
         </div>
       ) : (
         <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", overflow: "hidden" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <div className="tbl-scroll"><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
                 <th style={{ padding: "10px 14px", width: 20 }}></th>
@@ -585,7 +585,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
                 />
               ))}
             </tbody>
-          </table>
+          </table></div>
         </div>
       )}
     </div>

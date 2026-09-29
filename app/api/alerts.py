@@ -13,6 +13,7 @@ from app.api.live_data import invalidate_accounts_cache
 from app.auth.authorization import get_accessible_account_ids
 from app.audit import write_audit
 from app import alert_rules
+from app.alert_cache import FingerprintCache, get_alert_rollup, invalidate_rollup, alerts_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +27,12 @@ _CACHE_TTL = 15  # seconds — short enough for near-realtime, avoids hammering 
 # cache/entry, invalidated in lockstep with _alerts_cache by
 # _invalidate_cache(), so a badge can never read a count from before the
 # write that changed it while the row list already reflects it.
-_counts_cache: dict = {"data": None, "ts": 0}
-# Canonical per-account/service/resource rollup (see app/alert_rules.py)
-_rollup_cache: dict = {"data": None, "ts": 0}
-_ROLLUP_TTL = 10
+# 2026-09-29: fingerprint-validated (app/alert_cache.py) -- a change written by
+# ANY uvicorn worker is visible to every worker on the next request instead of
+# after the TTL. The canonical rollup lives in app/alert_cache.py and is shared
+# with live_data.py so the Overview can never read an older snapshot than the
+# Alerts page.
+_counts_fp = FingerprintCache()
 
 # An active alert whose last_seen_at hasn't been touched in this long has
 # stopped getting fresh metric data -- surfaced to the UI as "stale / no
@@ -129,10 +132,15 @@ def _require_alert_access(alert_id: int, current_user: dict) -> int:
 def _invalidate_cache():
     _alerts_cache["data"] = None
     _alerts_cache["ts"]   = 0
-    _counts_cache["data"] = None
-    _counts_cache["ts"]   = 0
-    _rollup_cache["data"] = None
-    _rollup_cache["ts"]   = 0
+    _counts_fp.clear()
+    invalidate_rollup()
+    # Tell every open browser (all workers, via Redis) that alert state changed
+    # so every page refetches at the same moment instead of on its own timer.
+    try:
+        from app.ws.publisher import publish_alerts_changed
+        publish_alerts_changed()
+    except Exception:
+        pass
 
 
 # ── scope helper ───────────────────────────────────────────────
@@ -358,31 +366,23 @@ def alert_counts(account_id: Optional[int] = Query(None),
                  current_user: dict = Depends(require_permission("alerts.view"))):
     """Tab-badge counts. Exactly the tab definitions in _tab_where(); pass
     account_id so the badges match a list filtered to that account."""
-    now = time.time()
-    if _counts_cache["data"] is None or now - _counts_cache["ts"] >= _CACHE_TTL:
-        _counts_cache["data"] = _fetch_counts_from_db()
-        _counts_cache["ts"]   = now
-    return _aggregate_counts_for_user(_counts_cache["data"], current_user, account_id)
+    return _aggregate_counts_for_user(_counts_fp.get(_fetch_counts_from_db), current_user, account_id)
+
+
+@router.get("/version")
+def alerts_version(current_user: dict = Depends(require_permission("alerts.view"))):
+    """Tiny change token for the browser: it changes whenever the set or state
+    of OPEN alerts changes (any worker, any writer). Every page watches this one
+    value (frontend/src/hooks/useAlertSync.js) and refetches its alert-derived
+    data at the same moment, instead of each page polling on its own timer.
+    Reveals nothing beyond a hash of aggregate counts."""
+    import hashlib
+    fp = repr(alerts_fingerprint()).encode()
+    return {"version": hashlib.sha1(fp).hexdigest()[:12]}
 
 
 # ── canonical rollup (Overview / Services / resource badges) ────
-def get_alert_rollup() -> dict:
-    """Unscoped rollup, cached ~10s and invalidated on every alert write.
-    Callers filter per request by the caller's accessible accounts."""
-    now = time.time()
-    if _rollup_cache["data"] is not None and now - _rollup_cache["ts"] < _ROLLUP_TTL:
-        return _rollup_cache["data"]
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    try:
-        rows = alert_rules.fetch_open_alert_rows(cursor, None)
-    finally:
-        cursor.close()
-        conn.close()
-    data = alert_rules.rollup(rows)
-    _rollup_cache["data"] = data
-    _rollup_cache["ts"] = now
-    return data
+# get_alert_rollup() is imported from app/alert_cache.py (shared with live_data.py).
 
 
 _EMPTY_BUCKET = {"critical": 0, "warning": 0, "info": 0, "stale": 0, "acknowledged": 0,

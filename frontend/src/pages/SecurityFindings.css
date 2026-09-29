@@ -1,4 +1,4 @@
-.sec-page { max-width: 1200px; }
+.sec-page { max-width: var(--page-max); }
 
 .sec-page .c-header {
   display: flex; justify-content: space-between; align-items: center;

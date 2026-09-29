@@ -121,7 +121,7 @@ export default function MaintenanceWindows() {
         {windows.length === 0 ? (
           <div className="mw-empty">No maintenance windows scheduled — add one above before starting planned work.</div>
         ) : (
-          <table className="mw-table">
+          <div className="tbl-scroll"><table className="mw-table">
             <thead>
               <tr>
                 <th>Resource</th>
@@ -158,7 +158,7 @@ export default function MaintenanceWindows() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>

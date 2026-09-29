@@ -1,4 +1,4 @@
-.spa-page { max-width: 1150px; }
+.spa-page { max-width: var(--page-max); }
 
 .spa-page .c-header {
   display: flex; justify-content: space-between; align-items: flex-end;

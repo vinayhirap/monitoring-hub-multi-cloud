@@ -309,7 +309,7 @@ export default function Reports() {
         {reports.length === 0 ? (
           <div className="reports-empty">No reports generated yet.</div>
         ) : (
-          <table className="reports-table">
+          <div className="tbl-scroll"><table className="reports-table">
             <thead>
               <tr>
                 <th>Type</th><th>Scope</th><th>Period</th><th>Generated</th><th>Size</th><th>Expires</th><th></th>
@@ -344,7 +344,7 @@ export default function Reports() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>

@@ -1,5 +1,5 @@
 /* monitoring-hub/frontend/src/pages/Alerts.css */
-.alerts-page { max-width: 1200px; }
+.alerts-page { max-width: var(--page-max); }
 
 .alerts-header {
   display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-5);
@@ -129,7 +129,7 @@
 .res-deeplink:hover { color: #38d9ff; }
 
 /* ── Console links column ── */
-.console-links { display: flex; gap: 5px; align-items: center; flex-wrap: nowrap; }
+.console-links { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; max-width: 210px; }
 
 .btn-console-detail {
   font-size: 10px; font-weight: 600; border-radius: 4px;
@@ -149,7 +149,7 @@
 .btn-console-aws:hover { background: rgba(255,153,0,0.15); }
 
 /* ── Action buttons ── */
-.alert-actions { display: flex; gap: 6px; }
+.alert-actions { display: flex; gap: 6px; flex-wrap: wrap; max-width: 250px; }
 .btn-ack, .btn-resolve {
   font-size: 10px; font-weight: 700; border-radius: 4px;
   padding: 4px 10px; cursor: pointer; transition: all 0.15s; border: 1px solid;
@@ -243,3 +243,21 @@
 }
 .explain-rca-report-link:hover { color: var(--accent, #2bb3ac); border-color: var(--accent, #2bb3ac); }
 
+
+
+/* ── Row actions can never fall off the right edge (2026-09-29) ───────────
+   The Console and Action cells were single non-wrapping button rows inside a
+   1200px page, so on a normal monitor the last button ("Not genuine?") sat past
+   the edge and needed a horizontal scroll to reach. The cells now wrap onto a
+   second line, the page is fluid (see --page-max), and if a narrow window still
+   overflows the table, the Action column stays pinned to the right edge. */
+.alerts-table td, .alerts-table th { min-width: 0; }
+.alert-resource { overflow-wrap: anywhere; max-width: 280px; }
+.alert-metric   { overflow-wrap: anywhere; }
+.alerts-table thead th:last-child,
+.alerts-table tbody tr.alert-row td:last-child {
+  position: sticky; right: 0; z-index: 1;
+  background: var(--bg-card, #0e1829);
+  box-shadow: -10px 0 10px -10px rgba(0,0,0,0.55);
+}
+.alerts-table thead th:last-child { background: #0a1322; z-index: 2; }

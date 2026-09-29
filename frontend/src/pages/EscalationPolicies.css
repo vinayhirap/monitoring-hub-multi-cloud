@@ -1,4 +1,4 @@
-.escpol-page { max-width: 1100px; }
+.escpol-page { max-width: var(--page-max); }
 
 .escpol-page .c-header {
   display: flex; justify-content: space-between; align-items: center;

@@ -1,5 +1,5 @@
 /* monitoring-hub/frontend/src/pages/AccountDetail.css */
-.detail-page { max-width: 1400px; }
+.detail-page { max-width: var(--page-max); }
 
 /* Breadcrumb */
 .breadcrumb { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; font-size: 11px; font-family: var(--font-mono); }

@@ -1,7 +1,7 @@
 // monitoring-hub/frontend/src/pages/Overview.jsx
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { useWebSocket } from "../hooks/useWebSocket";
+import { useAlertSync } from "../hooks/useAlertSync";
 import { getLiveAccounts, getFleetSummary, deleteAccount } from "../api/api";
 import { AlertOctagonIcon, ZapIcon } from "../components/icons";
 import "./Overview.css";
@@ -32,6 +32,25 @@ function aggregateStatus(regions) {
   if (regions.some(r => r.status === "critical")) return "critical";
   if (regions.some(r => r.status === "warning"))  return "warning";
   return "healthy";
+}
+
+/** Sum the per-region service rings of one account (see health_ring in
+ *  app/api/live_data.py). Falls back to an empty ring for a cached payload from
+ *  before the field existed; the next fetch replaces it within seconds. */
+function aggregateRing(regions) {
+  const out = { total: 0, healthy: 0, warning: 0, critical: 0,
+                critical_services: [], warning_services: [] };
+  for (const r of regions) {
+    const h = r.health_ring;
+    if (!h) continue;
+    out.total    += h.total    || 0;
+    out.healthy  += h.healthy  || 0;
+    out.warning  += h.warning  || 0;
+    out.critical += h.critical || 0;
+    out.critical_services.push(...(h.critical_services || []));
+    out.warning_services.push(...(h.warning_services  || []));
+  }
+  return out;
 }
 
 function aggregateStats(regions) {
@@ -106,7 +125,6 @@ export default function Overview() {
   }, []);
 
   const deletedIds = useRef(new Set());
-  const { lastMessage: alertMsg } = useWebSocket("alerts");
 
   // Alert counts are NOT fetched independently here anymore -- see the
   // criticalAlerts/warningAlerts comment below for why (they used to
@@ -149,7 +167,8 @@ export default function Overview() {
 
   useEffect(() => {
     loadAll();
-    const t = setInterval(loadAll, 60000);
+    // safety net only: alert changes arrive instantly through useAlertSync below
+    const t = setInterval(loadAll, 15000);
     return () => clearInterval(t);
   }, [loadAll]);
 
@@ -159,10 +178,12 @@ export default function Overview() {
   // up to 60s for the next poll, so the banner/tiles/ring update in
   // near-real-time without reintroducing a second, independently
   // filtered count of their own.
-  useEffect(() => {
-    if (!alertMsg || alertMsg.type !== "new_alert") return;
-    loadAll();
-  }, [alertMsg, loadAll]);
+  // ANY alert change (new, resolved, acknowledged, muted, false-positive...)
+  // refetches in the same tick as the Alerts page, the sidebar badge, the
+  // Services tiles and every resource badge (hooks/useAlertSync.js). It used to
+  // react to "new_alert" only, and the server cached this payload for 60 s per
+  // worker, so the Overview trailed the Alerts page by minutes.
+  useAlertSync(loadAll);
 
   async function handleDelete(e, acc) {
     e.stopPropagation();
@@ -415,10 +436,13 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick, onDelete }
   // critical S3 alert with zero relationship to any EC2 instance
   // should never paint an EC2 wedge red. See _get_ec2_instance_health_
   // by_account() in app/api/live_data.py for how this is computed.
-  const total         = stats.ec2_running || 0;
-  const criticalCount = Math.min(stats.ec2_critical_instances || 0, total);
-  const warningCount  = Math.min(stats.ec2_warning_instances  || 0, Math.max(0, total - criticalCount));
-  const healthyCount  = Math.max(0, total - criticalCount - warningCount);
+  // 2026-09-29: the ring is in units of SERVICES -- the same tiles as this
+  // account's Services page -- coloured by firing alerts (worst severity wins).
+  // e.g. 10 services, one with a critical and one with a warning alert -> 80%
+  // green, 10% amber, 10% red. Any resource type counts (EBS, S3, WAF, ELB...),
+  // not just running EC2 instances, which is why an account full of warnings
+  // used to show an all-green ring.
+  const ring = aggregateRing(group.regions);
 
   return (
     <div className={`account-card ac-${status} ${expanded ? "ac-expanded" : ""}`}>
@@ -477,12 +501,7 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick, onDelete }
         )}
 
         <div className="acc-body">
-          <HealthRing
-            total={total}
-            healthy={healthyCount}
-            warning={warningCount}
-            critical={criticalCount}
-          />
+          <HealthRing ring={ring} />
           <div className="acc-chips">
             <ResChip icon="🖥"  label="EC2"    value={stats.ec2_total}    sub={`${stats.ec2_running} running`} />
             <ResChip icon="💾"  label="EBS"    value={stats.ebs_total}    />
@@ -606,30 +625,37 @@ function MiniChip({ label, value, sub }) {
 
 // ─── Shared sub-components (unchanged from original) ─────────────────────────
 
-function HealthRing({ total, healthy, warning, critical }) {
+function HealthRing({ ring }) {
   const r    = 28;
   const circ = 2 * Math.PI * r;
   const sw   = 7;
   const [tooltip, setTooltip] = useState(null);
 
+  const total    = ring?.total    || 0;
+  const critical = ring?.critical || 0;
+  const warning  = ring?.warning  || 0;
+  const healthy  = Math.max(0, total - critical - warning);
+
+  const names = (keys) => Array.from(new Set(keys || [])).map(k => String(k).toUpperCase()).join(", ");
+
   if (total === 0) {
     return (
-      <div className="h-ring-wrap">
+      <div className="h-ring-wrap" title="No monitored services yet">
         <svg width="70" height="70" viewBox="0 0 70 70">
           <circle cx="35" cy="35" r={r} fill="none" stroke="rgba(99,130,190,0.12)" strokeWidth={sw} />
         </svg>
         <div className="h-ring-label">
           <div className="h-ring-num" style={{ color: "var(--text-muted)" }}>0</div>
-          <div className="h-ring-sub">running</div>
+          <div className="h-ring-sub">services</div>
         </div>
       </div>
     );
   }
 
   const rawSegs = [
-    { count: healthy,  color: "#22c55e", label: "Healthy"  },
-    { count: warning,  color: "#f59e0b", label: "Warning"  },
-    { count: critical, color: "#ef4444", label: "Critical" },
+    { count: healthy,  color: "#22c55e", label: "Healthy",  detail: null },
+    { count: warning,  color: "#f59e0b", label: "Warning",  detail: names(ring.warning_services)  },
+    { count: critical, color: "#ef4444", label: "Critical", detail: names(ring.critical_services) },
   ].filter(s => s.count > 0);
 
   let offsetAngle = 0;
@@ -652,23 +678,24 @@ function HealthRing({ total, healthy, warning, critical }) {
         strokeLinecap="butt"
         transform={`rotate(${rotate} 35 35)`}
         style={{ cursor: "pointer" }}
-        onMouseEnter={() => setTooltip({ label: seg.label, count: seg.count, color: seg.color })}
+        onMouseEnter={() => setTooltip({ label: seg.label, count: seg.count, color: seg.color, detail: seg.detail })}
         onMouseLeave={() => setTooltip(null)}
       />
     );
   });
 
   const centreColor = critical > 0 ? "#ef4444" : warning > 0 ? "#f59e0b" : "#22c55e";
+  const summary = `${total} service${total !== 1 ? "s" : ""}: ${healthy} healthy, ${warning} warning, ${critical} critical`;
 
   return (
-    <div className="h-ring-wrap" style={{ position: "relative" }}>
+    <div className="h-ring-wrap" style={{ position: "relative" }} role="img" aria-label={summary} title={summary}>
       <svg width="70" height="70" viewBox="0 0 70 70">
         <circle cx="35" cy="35" r={r} fill="none" stroke="rgba(99,130,190,0.08)" strokeWidth={sw} />
         {paths}
       </svg>
       <div className="h-ring-label">
         <div className="h-ring-num" style={{ color: centreColor }}>{total}</div>
-        <div className="h-ring-sub">running</div>
+        <div className="h-ring-sub">services</div>
       </div>
       {tooltip && (
         <div style={{
@@ -680,7 +707,8 @@ function HealthRing({ total, healthy, warning, critical }) {
           color: tooltip.color, pointerEvents: "none", zIndex: 10,
           marginBottom: 4, boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
         }}>
-          {tooltip.label}: {tooltip.count} instance{tooltip.count !== 1 ? "s" : ""}
+          {tooltip.label}: {tooltip.count} service{tooltip.count !== 1 ? "s" : ""}
+          {tooltip.detail ? ` (${tooltip.detail})` : ""}
         </div>
       )}
     </div>

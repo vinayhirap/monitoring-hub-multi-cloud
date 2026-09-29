@@ -1,4 +1,4 @@
-.dr-page { max-width: 1200px; }
+.dr-page { max-width: var(--page-max); }
 
 .dr-page .c-header {
   display: flex; justify-content: space-between; align-items: flex-end;

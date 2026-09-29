@@ -130,7 +130,7 @@ export default function SyntheticChecks() {
         {checks.length === 0 ? (
           <div className="syn-empty">No synthetic checks configured yet — add one above to start probing an endpoint.</div>
         ) : (
-          <table className="syn-table">
+          <div className="tbl-scroll"><table className="syn-table">
             <thead>
               <tr>
                 <th>Name</th>
@@ -166,7 +166,7 @@ export default function SyntheticChecks() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>

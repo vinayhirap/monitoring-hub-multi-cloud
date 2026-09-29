@@ -110,3 +110,14 @@ input, select, textarea { font-family: var(--font-sans); }
   from { transform: translateX(120%); opacity: 0; }
   to   { transform: translateX(0);    opacity: 1; }
 }
+
+/* ── Layout fixes shared by every page (2026-09-29) ─────────────────────
+   1. Page containers were pinned to 1000-1250px, leaving a large empty band on
+      wide screens while wide tables scrolled sideways. They now fill the
+      content area up to --page-max.
+   2. Every table sits in .tbl-scroll: a wide row scrolls INSIDE its card
+      instead of being clipped by an `overflow: hidden` parent or pushing the
+      whole page sideways. */
+:root { --page-max: 1760px; --page-max-form: 1200px; }
+.tbl-scroll { width: 100%; max-width: 100%; overflow-x: auto; }
+.tbl-scroll > table { min-width: 100%; }
