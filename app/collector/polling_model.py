@@ -224,6 +224,89 @@ AWS_EXTENDED_UNSUPPORTED = {("dynamodb", "UserErrors")}
 
 AWS_SLOW_EXTENDED_SERVICES = {"s3", "logs", "backup", "cloudfront", "wafv2"}
 
+# 2026-09-29: same bug class as CoreMetric.period_sec above, found while
+# auditing every currently-onboarded service/metric for it. extended.py's
+# _collect_extended_service() queries EVERY extended-tier metric with a
+# single hardcoded Period=300, regardless of that metric's actual
+# CloudWatch publish cadence. That's SAFE for the large majority --
+# most AWS services publish at 1-min resolution, and querying coarser
+# than native (5-min buckets over 1-min data) is normal, safe
+# aggregation, not the bug direction (see period_sec's docstring in
+# app/collector/polling_model.py for which direction actually breaks:
+# querying FINER than native shifts the reported timestamp). The
+# AWS_SLOW_EXTENDED_SERVICES services above are mostly event-driven Sum
+# metrics (publish on real events, not a fixed schedule -- see
+# extended.py's own 2026-09-12-audit comment), so period-mismatch
+# doesn't apply to them the same way either.
+#
+# What DOES hit the exact same bug class as EC2/EBS: a genuinely
+# daily-native GAUGE metric queried at Period=300 -- confirmed three of
+# these exist in the current catalog: S3's storage snapshot metrics
+# (BucketSizeBytes/NumberOfObjects, AWS-confirmed daily-only publish
+# per that same 2026-09-12 audit), ACM's DaysToExpiry, and KMS's
+# SecondsUntilKeyMaterialExpiration (both computed daily countdown
+# values, not periodic samples -- the second found by
+# test_extended_period_matches_native_resolution.py's catalog-wide
+# enforcement check, not by manual review, which is exactly the
+# guarantee that test exists to provide).
+#
+# THE ENFORCEMENT CONTRACT this map exists for: every (service, metric)
+# in AWS_EXTENDED_TIER_OVERRIDES mapped to "slow_extended" tier, OR
+# every service in AWS_SLOW_EXTENDED_SERVICES with no per-metric
+# override, is a candidate for genuinely-coarse-native publishing and
+# MUST be reviewed and given an explicit entry here (86400 if truly
+# daily-native, or the metric's real native period if something else)
+# rather than silently inheriting extended.py's default 300 --
+# test_extended_period_matches_native_resolution.py enforces this: it
+# fails loudly if a future addition to either of those two places has
+# no matching entry here, so this can't quietly reintroduce the bug
+# the way it did undetected the first time. A metric that is NOT
+# genuinely coarser than 5 minutes should NOT be added here even if
+# its tier happens to be slow_extended/low/etc -- tier is about how
+# OFTEN we poll, not the metric's own native resolution; the two are
+# independent (S3's request metrics prove this: AWS_EXTENDED_TIER_
+# OVERRIDES bumps them to "low" tier for polling frequency, but they
+# stay 1-min-native, so they correctly have NO entry here).
+AWS_EXTENDED_PERIOD_OVERRIDES = {
+    ("s3", "BucketSizeBytes"):            86400,
+    ("s3", "NumberOfObjects"):            86400,
+    ("certificatemanager", "DaysToExpiry"): 86400,
+    ("kms", "SecondsUntilKeyMaterialExpiration"): 86400,
+}
+_EXTENDED_DEFAULT_PERIOD_SEC = 300
+
+# Companion classification to the map above: every remaining metric
+# belonging to a slow_extended-tier service, reviewed 2026-09-29 and
+# confirmed ACTIVITY-DRIVEN rather than schedule-driven -- it only
+# publishes when a real event/request/job happens, so there is no
+# fixed native-resolution schedule for a query Period to mismatch
+# against in the first place (unlike EC2's CPU, which the hypervisor
+# reports every 5 min regardless of load, or S3/ACM's genuinely
+# daily-SCHEDULED gauges above). This is true even for the Average-
+# stat entries here (CloudFront's *ErrorRate/OriginLatency/
+# CacheHitRate) -- a rate or latency with zero underlying requests in
+# a period isn't "zero", it's genuinely undefined, so these only
+# publish alongside real traffic too, same as the Sum-stat counters.
+# Deliberately NOT given a period override: 300 (coarser aggregation
+# of whatever activity-driven points exist in a window) is the correct
+# choice for these, not a workaround.
+AWS_EXTENDED_ACTIVITY_DRIVEN_METRICS = {
+    ("s3", "AllRequests"), ("s3", "4xxErrors"), ("s3", "5xxErrors"),
+    ("s3", "FirstByteLatency"), ("s3", "TotalRequestLatency"),
+    ("logs", "IncomingBytes"), ("logs", "IncomingLogEvents"), ("logs", "DeliveryErrors"),
+    ("backup", "NumberOfBackupJobsFailed"), ("backup", "NumberOfBackupJobsCompleted"),
+    ("backup", "NumberOfRestoreJobsFailed"),
+    ("cloudfront", "Requests"), ("cloudfront", "BytesDownloaded"), ("cloudfront", "BytesUploaded"),
+    ("cloudfront", "4xxErrorRate"), ("cloudfront", "5xxErrorRate"), ("cloudfront", "TotalErrorRate"),
+    ("cloudfront", "OriginLatency"), ("cloudfront", "CacheHitRate"),
+    ("wafv2", "AllowedRequests"), ("wafv2", "BlockedRequests"),
+    ("wafv2", "CountedRequests"), ("wafv2", "PassedRequests"),
+}
+
+
+def aws_extended_period_sec(service, cw_metric_name):
+    return AWS_EXTENDED_PERIOD_OVERRIDES.get((service, cw_metric_name), _EXTENDED_DEFAULT_PERIOD_SEC)
+
 
 def aws_extended_tier(service, cw_metric_name):
     tier = AWS_EXTENDED_TIER_OVERRIDES.get((service, cw_metric_name))

@@ -283,6 +283,14 @@ def _search_query(qid, service_key, cw_name, resource, namespace):
     dimension (DynamoDB Operation, MSK Broker ID), reduced to one series
     for the resource. None if the key value isn't safe to embed."""
     reducer, schema_dims, key_dim, stat = polling_model.AWS_SEARCH_METRICS[(service_key, cw_name)]
+    # 300 here is safe, unlike the bare Period=300 fixed above in the main
+    # query-builder loop: AWS_SEARCH_METRICS only covers dynamodb/msk, both
+    # genuinely 1-min-native, so 300 is coarsening real data, not
+    # mismatching a coarser native rate. Confirmed 2026-09-29 during the
+    # full catalog audit that added AWS_EXTENDED_PERIOD_OVERRIDES -- if a
+    # future SEARCH-expression metric is ever added for one of the
+    # genuinely-coarse services (s3/certificatemanager), this hardcode
+    # would need the same per-metric treatment.
     dims = _build_dimensions(resource, cw_name) or []
     key_value = next((d["Value"] for d in dims if d["Name"] == key_dim), None)
     if not key_value or not _SAFE_SEARCH_VALUE.match(key_value):
@@ -370,7 +378,11 @@ def _collect_extended_service(cw, resources, service_key, enabled_keys, minutes=
                         "MetricName": cw_name,
                         "Dimensions": dims,
                     },
-                    "Period": 300,
+                    # Must match the metric's real publish cadence, not a
+                    # blanket 300 -- see AWS_EXTENDED_PERIOD_OVERRIDES'
+                    # docstring in polling_model.py for the enforcement
+                    # contract this exists to guarantee.
+                    "Period": polling_model.aws_extended_period_sec(service_key, cw_name),
                     "Stat":   stat,
                 },
                 "ReturnData": True,
