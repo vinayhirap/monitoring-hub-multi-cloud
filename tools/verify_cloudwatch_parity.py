@@ -250,8 +250,10 @@ def report(instance_id, rows, cwagent):
         print(f"{r['name']:<26}{_fmt(r['cw_same'])}{_fmt(r['dbh'])}{_fmt(r['api'])}"
               f"  {collector} / {api}")
         if r["name"] in ("networkin", "networkout") and r["api"]:
-            print(f"{'':<26}  UI shows {r['api'][0] / 1024:.1f} KB per 5-min period "
-                  f"(= {r['api'][0] / 1024 / 300:.3f} KB/s)")
+            # Average of a 5-min basic-monitoring point = mean bytes per MINUTE
+            # (SampleCount 5, Sum = bytes in the 5 min), so KB/s = value/60/1024.
+            print(f"{'':<26}  stored {r['api'][0] / 1024:.1f} KB/min (mean of the 5 "
+                  f"one-minute samples) = {r['api'][0] / 1024 / 60:.3f} KB/s")
     return bad
 
 

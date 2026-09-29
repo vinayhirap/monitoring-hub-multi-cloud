@@ -238,14 +238,59 @@ def _get_metric_data_all_pages(cw, chunk, start, end):
             return merged, pages
 
 
-def _execute_gmd(cw, queries, id_map, minutes=5):
+# SETTLED, 5-MINUTE-ALIGNED WINDOWS for EC2/EBS basic-monitoring metrics
+# (2026-09-29, found on prod comparing metric_history with CloudWatch for
+# i-06e979f9d79014edf).
+#
+# Basic monitoring publishes one datapoint per 5 minutes, aggregated from
+# 5 one-minute samples (SampleCount 5, Sum = bytes in the 5 min, Average =
+# mean bytes per MINUTE). The datapoint for the window that is still open
+# is visible early with SampleCount 1..4 and its Average changes as the
+# window fills (seen live: the 16:50 window at SampleCount 1 while its
+# final value was ~14x different). The old request used end = now with
+# start = now - lookback, which caused two defects:
+#   1. CloudWatch anchors buckets to the request StartTime, so the same
+#      datapoint was stored under a different timestamp on every run
+#      (16:24 and 16:25 both held the 16:25 value). metric_history's
+#      UNIQUE key includes the timestamp, so INSERT IGNORE could not
+#      dedupe them.
+#   2. The newest, still-filling window was stored as if final, and
+#      INSERT IGNORE then froze that partial value forever; it is also
+#      what the `metrics` last-value cache (and so the alert evaluator)
+#      read.
+# For metrics whose Period is 300 the window END is therefore floored to a
+# 300 s boundary after a settle grace, so the newest window in the response
+# has ended and its samples have arrived, and every stored timestamp is a
+# canonical :00/:05/:10... boundary that INSERT IGNORE dedupes exactly.
+# Cost: the newest reading is up to ~5-8 minutes old instead of a partial
+# in-progress value. RDS/ELB/Lambda (Period 60) and CWAgent are unchanged.
+SETTLE_GRACE_SECONDS = 180
+NATIVE_5MIN_PERIOD = 300
+
+
+def _align_window_end(now, period_sec, grace=SETTLE_GRACE_SECONDS):
+    """Latest `period_sec` boundary that is at least `grace` seconds old."""
+    epoch = int((now - timedelta(seconds=grace)).timestamp())
+    return datetime.fromtimestamp(epoch - epoch % period_sec, tz=timezone.utc)
+
+
+def _execute_gmd(cw, queries, id_map, minutes=5, align_period=None):
     """Execute GetMetricData for `queries` (chunked, all pages), write
-    results (latest value + full history). Returns series-with-data count."""
+    results (latest value + full history). Returns series-with-data count.
+
+    align_period: when set (EC2/EBS, Period 300), the window end is floored
+    to that boundary after SETTLE_GRACE_SECONDS -- see the block above."""
     if not queries:
         return 0
 
-    end   = datetime.now(timezone.utc)
+    now   = datetime.now(timezone.utc)
+    end   = _align_window_end(now, align_period) if align_period else now
     start = end - timedelta(minutes=minutes)
+    # A Sum zero-fill row stands for the LAST bucket of the window; with an
+    # aligned end that bucket starts one period earlier. (Using `end` would
+    # claim the not-yet-published next bucket and INSERT IGNORE would then
+    # block its real value.)
+    zero_ts = end - timedelta(seconds=align_period) if align_period else end
     count = 0
     latest_rows = []
     history_rows = []
@@ -306,7 +351,7 @@ def _execute_gmd(cw, queries, id_map, minutes=5):
                 # timestamp, exactly as if CloudWatch had reported it.
                 if stat == "Sum":
                     latest_rows.append((resource_db_id, db_name, 0.0))
-                    history_rows.append((resource_db_id, db_name, 0.0, end))
+                    history_rows.append((resource_db_id, db_name, 0.0, zero_ts))
                     count += 1
                 continue
 
@@ -329,11 +374,16 @@ def _run_gmd(cw, resources, metric_defs, minutes=5, chunk_size=GMD_MAX_QUERIES):
     if not queries:
         return 0
 
+    # Align only when EVERY definition in the batch is a 5-minute-native
+    # metric (EC2/EBS basic monitoring); mixed or 1-minute batches keep the
+    # old end=now behaviour.
+    align = NATIVE_5MIN_PERIOD if {d[4] for d in metric_defs} == {NATIVE_5MIN_PERIOD} else None
+
     total = 0
     for i in range(0, len(queries), chunk_size):
         chunk     = queries[i:i + chunk_size]
         chunk_map = {q["Id"]: id_map[q["Id"]] for q in chunk}
-        total    += _execute_gmd(cw, chunk, chunk_map, minutes)
+        total    += _execute_gmd(cw, chunk, chunk_map, minutes, align_period=align)
     return total
 
 
