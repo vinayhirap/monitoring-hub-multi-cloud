@@ -41,21 +41,44 @@ TIER_SECONDS = {
 # applied by runner.py before a definition is queried for a resource.
 CoreMetric = namedtuple(
     "CoreMetric",
-    "resource_type cw_name db_name stat namespace tier lookback_min gate",
+    "resource_type cw_name db_name stat namespace tier lookback_min gate period_sec",
+    defaults=(60,),
 )
+# period_sec is the GetMetricData query Period, in seconds, and MUST match
+# the metric's actual native CloudWatch publish cadence -- not the poll
+# interval, not the lookback window. This used to be hardcoded to 60 for
+# EVERY core metric in runner.py's _build_queries(), regardless of source.
+# For a genuinely 1-min metric (RDS/ELB/Lambda -- the default above) that's
+# correct. For EC2/EBS on AWS's standard 5-min basic-monitoring cadence,
+# querying at Period=60 doesn't lose the value (CloudWatch still returns
+# it), but it shifts the Timestamp CloudWatch reports for that value away
+# from the metric's true 5-min publish boundary -- a deterministic few-
+# minute offset between metric_history.metric_timestamp and when the point
+# was actually published. Confirmed live on prod 2026-09-29 (U4RAD-JUMP,
+# i-0424cb66e22e05a21): three consecutive CPUUtilization values matched
+# exactly between the app's cache and a Period=300 CloudWatch query, but
+# every app timestamp was 3 minutes later than CloudWatch's real one.
+# EC2 detailed monitoring (1-min) would make period_sec=60 correct for
+# that instance too, but nothing here currently detects per-instance
+# monitoring type, so basic (300) is the safe default for the whole
+# resource_type -- see _log_monitoring_mode_mismatch() in runner.py, which
+# already audits every instance's actual monitoring type and would need
+# extending if per-instance overrides are ever added.
 
 AWS_CORE_METRICS = [
     # EC2 -- basic monitoring publishes 5-min points, visible 5-10 min late.
-    CoreMetric("ec2", "CPUUtilization",   "cpuutilization",   "Average", "AWS/EC2", "standard", 15, None),
-    CoreMetric("ec2", "NetworkIn",        "networkin",        "Average", "AWS/EC2", "standard", 15, None),
-    CoreMetric("ec2", "NetworkOut",       "networkout",       "Average", "AWS/EC2", "standard", 15, None),
-    CoreMetric("ec2", "CPUCreditBalance", "cpucreditbalance", "Average", "AWS/EC2", "low",      25, "tclass"),
+    CoreMetric("ec2", "CPUUtilization",   "cpuutilization",   "Average", "AWS/EC2", "standard", 15, None, 300),
+    CoreMetric("ec2", "NetworkIn",        "networkin",        "Average", "AWS/EC2", "standard", 15, None, 300),
+    CoreMetric("ec2", "NetworkOut",       "networkout",       "Average", "AWS/EC2", "standard", 15, None, 300),
+    CoreMetric("ec2", "CPUCreditBalance", "cpucreditbalance", "Average", "AWS/EC2", "low",      25, "tclass", 300),
     # EBS -- ops/bytes as Sum (AWS-documented statistic; IOPS = Sum / 60).
-    CoreMetric("ebs", "VolumeQueueLength", "volumequeuelength", "Average", "AWS/EBS", "standard", 15, None),
-    CoreMetric("ebs", "VolumeReadOps",     "volumereadops",     "Sum",     "AWS/EBS", "low",      25, None),
-    CoreMetric("ebs", "VolumeWriteOps",    "volumewriteops",    "Sum",     "AWS/EBS", "low",      25, None),
-    CoreMetric("ebs", "VolumeReadBytes",   "volumereadbytes",   "Sum",     "AWS/EBS", "low",      25, None),
-    CoreMetric("ebs", "VolumeWriteBytes",  "volumewritebytes",  "Sum",     "AWS/EBS", "low",      25, None),
+    # All standard EBS CloudWatch metrics publish on the same 5-min basic
+    # cadence as EC2 -- there is no EBS "detailed monitoring" option.
+    CoreMetric("ebs", "VolumeQueueLength", "volumequeuelength", "Average", "AWS/EBS", "standard", 15, None, 300),
+    CoreMetric("ebs", "VolumeReadOps",     "volumereadops",     "Sum",     "AWS/EBS", "low",      25, None, 300),
+    CoreMetric("ebs", "VolumeWriteOps",    "volumewriteops",    "Sum",     "AWS/EBS", "low",      25, None, 300),
+    CoreMetric("ebs", "VolumeReadBytes",   "volumereadbytes",   "Sum",     "AWS/EBS", "low",      25, None, 300),
+    CoreMetric("ebs", "VolumeWriteBytes",  "volumewritebytes",  "Sum",     "AWS/EBS", "low",      25, None, 300),
     # RDS -- 1-min source.
     CoreMetric("rds", "CPUUtilization",      "cpuutilization", "Average", "AWS/RDS", "critical", 6,  None),
     CoreMetric("rds", "DatabaseConnections", "dbconnections",  "Average", "AWS/RDS", "critical", 6,  None),

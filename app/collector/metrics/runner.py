@@ -82,7 +82,7 @@ CORE_METRICS = polling_model.AWS_CORE_METRICS
 
 
 def _legacy(resource_type, tier):
-    return [(m.cw_name, m.db_name, m.stat, m.namespace) for m in CORE_METRICS
+    return [(m.cw_name, m.db_name, m.stat, m.namespace, m.period_sec) for m in CORE_METRICS
             if m.resource_type == resource_type and m.tier == tier]
 
 
@@ -168,7 +168,7 @@ def _build_queries(resources, metric_defs):
         if not dim_val:
             continue
 
-        for cw_name, db_name, stat, namespace in metric_defs:
+        for cw_name, db_name, stat, namespace, period_sec in metric_defs:
             qid = f"q{len(queries)}"
             queries.append({
                 "Id": qid,
@@ -178,7 +178,11 @@ def _build_queries(resources, metric_defs):
                         "MetricName": cw_name,
                         "Dimensions": [{"Name": dim_name, "Value": dim_val}],
                     },
-                    "Period": 60,
+                    # Must match the metric's actual publish cadence, not a
+                    # blanket 60s -- see period_sec's docstring in
+                    # polling_model.py for why a mismatch here silently
+                    # shifts metric_timestamp instead of losing data.
+                    "Period": period_sec,
                     "Stat":   stat,
                 },
                 "ReturnData": True,
@@ -428,7 +432,7 @@ def _collect_core(cw, resources, resource_type, tier):
     groups = {}
     for m in defs:
         groups.setdefault((m.lookback_min, m.gate), []).append(
-            (m.cw_name, m.db_name, m.stat, m.namespace))
+            (m.cw_name, m.db_name, m.stat, m.namespace, m.period_sec))
     total = 0
     for (lookback, gate), metric_defs in groups.items():
         gated = [r for r in resources if _passes_gate(r, gate)]

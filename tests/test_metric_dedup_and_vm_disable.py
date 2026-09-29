@@ -103,7 +103,7 @@ def _load_runner_and_record_tasks(tier):
 
     def _record_run_gmd(cw, resources, metric_defs, minutes=5, **k):
         for r in resources:
-            for cw_name, _db, _stat, _ns in metric_defs:
+            for cw_name, _db, _stat, _ns, _period_sec in metric_defs:
                 fired.add((r["resource_type"], cw_name))
         return 0
     mod._run_gmd = _record_run_gmd
