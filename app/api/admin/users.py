@@ -6,6 +6,7 @@ from app.auth import authorization as authz
 from app.auth.security import hash_password
 from app.email import mailer
 import datetime
+from app.utils.time_json import to_utc_iso
 import hashlib
 import json
 import re
@@ -32,7 +33,7 @@ def _token_hash(token: str) -> str:
 
 def _serialize(obj):
     if isinstance(obj, (datetime.datetime, datetime.date)):
-        return obj.isoformat()
+        return to_utc_iso(obj)
     if isinstance(obj, dict):
         return {k: _serialize(v) for k, v in obj.items()}
     if isinstance(obj, list):

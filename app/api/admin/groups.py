@@ -43,6 +43,7 @@ from app.auth.permissions import require_permission
 from app.auth import authorization as authz
 from app.api.admin.users import _user_manageable_by
 import datetime
+from app.utils.time_json import to_utc_iso
 import json
 import logging
 
@@ -53,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 def _serialize(obj):
     if isinstance(obj, (datetime.datetime, datetime.date)):
-        return obj.isoformat()
+        return to_utc_iso(obj)
     if isinstance(obj, dict):
         return {k: _serialize(v) for k, v in obj.items()}
     if isinstance(obj, list):

@@ -49,6 +49,7 @@ import json
 import logging
 import re
 import urllib.parse
+from app.utils.time_json import to_utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -489,7 +490,7 @@ def _write_console_open_audit(requested_by, target_account_id, service, resource
             "service": service,
             "resource_id": resource_id,
             "scope": "resource" if resource_id else "service",
-            "at": datetime.datetime.utcnow().isoformat(),
+            "at": to_utc_iso(datetime.datetime.utcnow()),
         },
     )
 

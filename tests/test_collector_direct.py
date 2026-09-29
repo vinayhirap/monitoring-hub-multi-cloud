@@ -85,6 +85,17 @@ def _stub_and_load(conn):
     # to exist so the import resolves. CONCURRENT_CLIENT_RETRY was added
     # alongside it (S3 connection-pool fix) for the same reason.
     install_stub("app.aws.boto_config", STANDARD_RETRY=None, CONCURRENT_CLIENT_RETRY=None)
+    # Same class of gap again: collector_direct.py now imports to_utc_iso
+    # from this submodule at module level too (2026-09-29 naive-datetime
+    # timezone fix). A plain `from app.utils.time_json import ...` here
+    # would hit the exact same "'app' is not a package" error the
+    # comments above describe -- the fake app stub has no real
+    # filesystem __path__ for an unstubbed submodule. Load the REAL file
+    # in isolation instead (sys.modules lookup by the full dotted name
+    # short-circuits needing a real parent package at all) so this test
+    # exercises the actual conversion logic, not a fake standing in for it.
+    import sys as _sys
+    _sys.modules["app.utils.time_json"] = load_module("app/utils/time_json.py")
     return load_module("app/aws/collector_direct.py")
 
 
@@ -102,9 +113,15 @@ def test_chart_range_resolves_ec2_by_resource_id():
     result = mod._metric_history_query_range("ec2", "i-abc", "cpuutilization",
                                               datetime(2026, 9, 8, 9), datetime(2026, 9, 8, 11),
                                               account_id=7)
+    # 2026-09-29: metric_timestamp comes out of MySQL naive, and every
+    # value this app ever wrote there is a genuine UTC wall-clock
+    # reading -- so the API's "t" field must carry an explicit "Z", or a
+    # browser's Date parser reinterprets it as the viewer's LOCAL time
+    # instead (see app/utils/time_json.py's docstring for the live prod
+    # bug this caused). Confirms the fix, not just documents it.
     assert result == [
-        {"t": "2026-09-08T10:00:00", "v": 42.5},
-        {"t": "2026-09-08T10:05:00", "v": 55.0},
+        {"t": "2026-09-08T10:00:00Z", "v": 42.5},
+        {"t": "2026-09-08T10:05:00Z", "v": 55.0},
     ]
 
 
@@ -119,7 +136,7 @@ def test_chart_range_resolves_elb_by_name_not_resource_id():
     result = mod._metric_history_query_range("elb", "my-app-lb", "requestcount",
                                               datetime(2026, 9, 8, 9), datetime(2026, 9, 8, 11),
                                               match_field="name", account_id=7)
-    assert result == [{"t": "2026-09-08T10:00:00", "v": 1200.0}]
+    assert result == [{"t": "2026-09-08T10:00:00Z", "v": 1200.0}]
 
 
 def test_chart_range_no_match_returns_empty_not_error():

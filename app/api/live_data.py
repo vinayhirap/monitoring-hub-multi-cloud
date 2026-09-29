@@ -58,6 +58,7 @@ from app.db import get_connection
 from app import alert_rules as _alert_rules
 from app.alert_visibility import hidden_metrics_sql
 from app.threshold_defaults import normalize_service_key
+from app.utils.time_json import to_utc_iso
 import datetime
 import time
 import json
@@ -98,7 +99,7 @@ def _serialize(obj):
     if isinstance(obj, list):
         return [_serialize(i) for i in obj]
     if isinstance(obj, (datetime.datetime, datetime.date)):
-        return obj.isoformat()
+        return to_utc_iso(obj)
     return obj
 
 

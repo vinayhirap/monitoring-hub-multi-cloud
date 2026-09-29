@@ -7,6 +7,7 @@ Every action in the system writes here automatically.
 from fastapi import APIRouter, Query, Depends
 from app.db import get_connection
 from app.auth.permissions import require_permission
+from app.utils.time_json import to_utc_iso
 import datetime
 import json
 
@@ -31,7 +32,7 @@ def _serialize_row(row: dict) -> dict:
     out = {}
     for k, v in row.items():
         if isinstance(v, (datetime.datetime, datetime.date)):
-            out[k] = v.isoformat()
+            out[k] = to_utc_iso(v)
         elif k == "payload":
             out[k] = _parse_payload(v)
         else:

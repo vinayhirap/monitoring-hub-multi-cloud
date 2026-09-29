@@ -27,6 +27,7 @@ from fastapi import APIRouter, Body, HTTPException, Depends
 from app.db import get_connection
 from app.auth.permissions import require_permission, has_permission
 from app.auth.deps import get_current_user
+from app.utils.time_json import to_utc_iso
 from app.auth.authorization import get_accessible_account_ids
 
 logger = logging.getLogger(__name__)
@@ -317,22 +318,28 @@ def _build_public_status_page() -> dict:
                     recent_events.append({
                         "component": c["name"],
                         "status": "outage" if row["severity"] == "CRITICAL" else "degraded",
-                        # +"Z" is load-bearing, not decorative: triggered_at/
-                        # resolved_at come out of MySQL as naive datetimes
-                        # (this DB's NOW() is confirmed plain UTC with no
-                        # offset -- see the audit that added this fix), and
-                        # str(naive_datetime) produces "2026-09-16 06:46:33"
-                        # with no timezone marker at all. Browsers parse a
-                        # timestamp with no 'Z'/offset as LOCAL time per the
-                        # ES2015+ Date-parsing spec -- so without this, every
-                        # viewer's browser silently mis-parsed a UTC instant
-                        # as if it were already their own local time, no
-                        # matter what timezone selector they had (see
-                        # StatusPagePublic.jsx's now-fixed toLocaleString()
-                        # calls, and TimezoneContext.jsx's formatInTz, which
-                        # both assume a real, unambiguous instant on input).
-                        "started_at": str(row["triggered_at"]) + "Z",
-                        "resolved_at": (str(row["resolved_at"]) + "Z") if row["resolved_at"] else None,
+                        # to_utc_iso() is load-bearing, not decorative:
+                        # triggered_at/resolved_at come out of MySQL as naive
+                        # datetimes (this DB's NOW() is confirmed plain UTC
+                        # with no offset -- see the audit that added this
+                        # fix), and str(naive_datetime) produces
+                        # "2026-09-16 06:46:33" with no timezone marker at
+                        # all. Browsers parse a timestamp with no 'Z'/offset
+                        # as LOCAL time per the ES2015+ Date-parsing spec --
+                        # so without this, every viewer's browser silently
+                        # mis-parsed a UTC instant as if it were already
+                        # their own local time, no matter what timezone
+                        # selector they had (see StatusPagePublic.jsx's
+                        # now-fixed toLocaleString() calls, and
+                        # TimezoneContext.jsx's formatInTz, which both
+                        # assume a real, unambiguous instant on input). This
+                        # used to be a local str(dt) + "Z" here -- moved
+                        # onto app.utils.time_json.to_utc_iso so every other
+                        # naive-datetime API response gets the same fix
+                        # instead of each caller re-deriving it (13 other
+                        # call sites were found still missing it entirely).
+                        "started_at": to_utc_iso(row["triggered_at"]),
+                        "resolved_at": to_utc_iso(row["resolved_at"]),
                     })
 
         recent_events.sort(key=lambda e: e["started_at"], reverse=True)
@@ -342,9 +349,9 @@ def _build_public_status_page() -> dict:
             "components": components,
             "recent_events": recent_events[:MAX_RECENT_EVENTS],
             # Same "no offset = browser treats it as local time" issue as
-            # started_at/resolved_at above -- isoformat() alone omits the
-            # 'Z' even though datetime.utcnow() genuinely is UTC.
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            # started_at/resolved_at above -- now using the same shared
+            # to_utc_iso() helper instead of a local isoformat()+"Z".
+            "generated_at": to_utc_iso(datetime.utcnow()),
         }
     finally:
         cursor.close(); conn.close()

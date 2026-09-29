@@ -17,6 +17,7 @@ from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
 from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type, normalize_service_key
 import datetime
+from app.utils.time_json import to_utc_iso
 import json
 import logging
 import yaml
@@ -47,7 +48,7 @@ def _require_account_access(account_id: int, current_user: dict) -> None:
 
 def _ser(obj):
     if isinstance(obj, (datetime.datetime, datetime.date)):
-        return obj.isoformat()
+        return to_utc_iso(obj)
     if isinstance(obj, dict):
         return {k: _ser(v) for k, v in obj.items()}
     if isinstance(obj, list):

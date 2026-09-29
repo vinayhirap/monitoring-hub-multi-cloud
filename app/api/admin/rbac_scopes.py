@@ -22,6 +22,7 @@ from app.auth.permissions import require_permission
 from app.audit import write_audit as _write_audit
 import json
 import datetime
+from app.utils.time_json import to_utc_iso
 
 router = APIRouter(prefix="/api/rbac", tags=["RBAC Administration"])
 
@@ -31,7 +32,7 @@ _LIST_FIELDS = ("regions", "services", "resource_groups", "resource_ids")
 
 def _serialize(obj):
     if isinstance(obj, (datetime.datetime, datetime.date)):
-        return obj.isoformat()
+        return to_utc_iso(obj)
     if isinstance(obj, dict):
         return {k: _serialize(v) for k, v in obj.items()}
     if isinstance(obj, list):

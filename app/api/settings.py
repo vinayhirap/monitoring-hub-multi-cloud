@@ -5,6 +5,7 @@ from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
 from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type, resolve_db_metric_name
 import datetime, json, logging, math
+from app.utils.time_json import to_utc_iso
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
@@ -246,7 +247,7 @@ def _has_data_for_threshold_row(service, resource_type, db_metric_name, has_data
 
 
 def _ser(obj):
-    if isinstance(obj, (datetime.datetime, datetime.date)): return obj.isoformat()
+    if isinstance(obj, (datetime.datetime, datetime.date)): return to_utc_iso(obj)
     if isinstance(obj, dict):  return {k: _ser(v) for k, v in obj.items()}
     if isinstance(obj, list):  return [_ser(i) for i in obj]
     return obj

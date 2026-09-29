@@ -33,6 +33,7 @@ from datetime import datetime, timedelta, timezone
 # vm_client fully retired from THIS file (apply_final_cleanup.py): vm_query_all went in Phase 4b, vm_query's only use (StatusCheckFailed) is fixed by describe_polling.py now also writing locally. vm_client.py itself is NOT retired overall -- see that script's docstring for its one remaining legitimate use (ALB target-group health, external-Grafana-compatible, in app/aws/describe_polling.py).
 from app.db import get_connection
 from app.aws.boto_config import STANDARD_RETRY, CONCURRENT_CLIENT_RETRY
+from app.utils.time_json import to_utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +163,7 @@ def _metric_history_query_range(resource_type, identifier, db_metric_name,
             cur.close()
             conn.close()
         return [
-            {"t": r["metric_timestamp"].isoformat(), "v": round(float(r["metric_value"]), 2)}
+            {"t": to_utc_iso(r["metric_timestamp"]), "v": round(float(r["metric_value"]), 2)}
             for r in rows if r["metric_value"] is not None
         ]
     except Exception as e:

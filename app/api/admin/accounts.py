@@ -5,6 +5,7 @@ from app.auth.deps import get_current_user
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
 import datetime
+from app.utils.time_json import to_utc_iso
 import json
 import logging
 import re
@@ -25,7 +26,7 @@ _VALID_AZURE_REGION_RE = re.compile(r"^[a-z0-9]+$")
 
 def _serialize(obj):
     if isinstance(obj, (datetime.datetime, datetime.date)):
-        return obj.isoformat()
+        return to_utc_iso(obj)
     if isinstance(obj, dict):
         return {k: _serialize(v) for k, v in obj.items()}
     if isinstance(obj, list):

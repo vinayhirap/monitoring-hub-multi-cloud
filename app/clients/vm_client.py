@@ -4,6 +4,7 @@ import json
 import datetime
 import logging
 import requests
+from app.utils.time_json import to_utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ def vm_query_range(promql: str, start: int, end: int, step: str = "60s") -> list
         return sorted(
             [
                 {
-                    "t": datetime.datetime.utcfromtimestamp(p[0]).isoformat(),
+                    "t": to_utc_iso(datetime.datetime.utcfromtimestamp(p[0])),
                     "v": round(float(p[1]), 2),
                 }
                 for p in points
