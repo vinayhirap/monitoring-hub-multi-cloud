@@ -28,8 +28,13 @@ Read-only: only CloudWatch Get/List calls and SELECTs. Never writes.
 Exit code 0 when nothing is DIFF or MISSING, 1 otherwise (STALE is a warning).
 """
 import argparse
+import os
 import sys
 from datetime import datetime, timedelta, timezone
+
+# Running `python3 tools/x.py` puts tools/ (not the repo root) on sys.path,
+# so `import app` would fail. Add the repo root explicitly.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     from dotenv import load_dotenv
