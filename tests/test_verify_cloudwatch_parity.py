@@ -44,3 +44,18 @@ def test_bucket_window_is_exactly_one_period_from_ts():
     assert [x["Id"] for x in q] == ["qraw", "q"] and q[1]["Expression"] == "100 - qraw"
     assert q[0]["ReturnData"] is False
     assert len(_queries(_spec("AWS/EC2", "CPUUtilization", [], 300), "q")) == 1
+
+
+def test_db_last_offset_is_parameterised():
+    from tools.verify_cloudwatch_parity import _db_last
+    seen = []
+
+    class C:
+        def execute(self, sql, params):
+            seen.append((" ".join(sql.split()), params))
+        def fetchone(self):
+            return {"metric_value": 1.0, "metric_timestamp": T}
+
+    assert _db_last(C(), "metric_history", 5, "cpuutilization", back=2)[0] == 1.0
+    sql, params = seen[0]
+    assert "OFFSET %s" in sql and params == (5, "cpuutilization", 2)

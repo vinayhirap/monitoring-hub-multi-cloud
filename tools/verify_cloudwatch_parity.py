@@ -152,17 +152,19 @@ def _db_lookup(cur, account_id, instance_id):
     return row["id"] if row else None
 
 
-def _db_last(cur, table, rid, metric):
+def _db_last(cur, table, rid, metric, back=0):
+    """Newest row (back=0) or the back-th newest (back=2 -> two rows older)."""
     cur.execute(f"SELECT metric_value, metric_timestamp FROM {table} "
                 "WHERE resource_id=%s AND metric_name=%s "
-                "ORDER BY metric_timestamp DESC LIMIT 1", (rid, metric))
+                "ORDER BY metric_timestamp DESC LIMIT 1 OFFSET %s",
+                (rid, metric, int(back)))
     row = cur.fetchone()
     if not row or row["metric_value"] is None:
         return None
     return float(row["metric_value"]), _parse_ts(row["metric_timestamp"])
 
 
-def check_instance(account, instance_id, region):
+def check_instance(account, instance_id, region, back=0):
     from app.aws.sts import get_boto3_session
     from app.aws.collector_direct import (get_ec2_metric_series,
                                           _ec2_cwagent_dimensions, STANDARD_RETRY)
@@ -204,7 +206,8 @@ def check_instance(account, instance_id, region):
                 series = (api.get("disk_used_percent_by_mount") or {}).get(api_key[1], [])
             else:
                 series = api.get(api_key, [])
-            dbh = _db_last(cur, "metric_history", rid, db_name) if rid else None
+            dbh_new = _db_last(cur, "metric_history", rid, db_name) if rid else None
+            dbh = _db_last(cur, "metric_history", rid, db_name, back) if rid else None
             apv = _last_point(series)
             # (1) collector parity: CloudWatch's value for the SAME bucket the DB stored
             cw_same = _cw_at(cw, spec, dbh[1]) if dbh else None
@@ -215,7 +218,7 @@ def check_instance(account, instance_id, region):
                 cw_now = _cw_latest(cw, q, 20).get("n")
                 api_ref = cw_now
             else:
-                api_ref = dbh
+                api_ref = dbh_new     # API serves the NEWEST history row
             rows.append({"name": db_name, "kind": kind, "cw_same": cw_same, "dbh": dbh,
                          "api": apv, "api_ref": api_ref, "live": live_api})
     finally:
@@ -259,6 +262,11 @@ def main():
     g.add_argument("--instance-id")
     g.add_argument("--all-running", action="store_true")
     ap.add_argument("--limit", type=int, default=25)
+    ap.add_argument("--back", type=int, default=0,
+                    help="compare the N-th newest stored bucket instead of the newest. "
+                         "The newest bucket can still be filling in CloudWatch when the "
+                         "collector reads it (and history is INSERT IGNORE, so it is never "
+                         "corrected); --back 2 compares settled buckets.")
     args = ap.parse_args()
 
     from app.db import get_connection
@@ -288,7 +296,7 @@ def main():
     total_bad = 0
     for iid, region in targets:
         try:
-            rows, cwagent = check_instance(account, iid, region)
+            rows, cwagent = check_instance(account, iid, region, args.back)
         except Exception as e:                      # keep going across instances
             print(f"\n=== {iid} ===\n  ERROR: {e}")
             total_bad += 1
