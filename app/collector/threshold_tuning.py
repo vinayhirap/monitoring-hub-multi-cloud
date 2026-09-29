@@ -132,7 +132,7 @@ should self-correct continuously.
 """
 import logging
 from app.db import get_connection
-from app.threshold_defaults import resolve_db_metric_name
+from app.threshold_defaults import resolve_db_metric_name, is_capacity_percent_metric
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +282,8 @@ def count_likely_flapping_alerts(aws_account_ids=None) -> int:
             ) b ON b.aws_account_id = a.aws_account_id
                AND b.resource_id = a.resource_id AND b.metric_name = a.metric_name
             WHERE {alert_rules.firing_where()} AND b.total_samples >= %s{where_clause}
+              AND a.metric_name <> 'mem_used_percent'
+              AND LEFT(a.metric_name, 17) <> 'disk_used_percent'
               AND (
                   (t.comparison IN ('>', '>=')
                     AND b.typical_value <= t.warning_value
@@ -326,6 +328,11 @@ def auto_tune_static_thresholds() -> int:
         static_thresholds = cursor.fetchall()
 
         for th in static_thresholds:
+            # Never auto-switch disk/mem used-% to dynamic: one genuinely
+            # full instance would flip the whole account and make every
+            # healthy disk flap (see threshold_defaults.CAPACITY_PERCENT_METRICS).
+            if is_capacity_percent_metric(th.get("metric_name")):
+                continue
             try:
                 result = _tune_one(cursor, th)
                 if result is None:

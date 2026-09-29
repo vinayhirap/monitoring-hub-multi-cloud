@@ -370,3 +370,64 @@ def test_count_likely_flapping_alerts_scopes_to_accounts():
     assert result == 1
     assert "aws_account_id IN (%s,%s)" in captured["sql"]
     assert 7 in captured["params"] and 9 in captured["params"]
+
+
+# ── Capacity-percent metrics (2026-09-29 prod incident) ─────────────
+# One instance at ~83% disk made the tuner flip account 10's whole
+# disk_used_percent row to dynamic, and every 65%-full disk then flapped
+# ~65x in 4 days against a razor-thin baseline band.
+
+def test_is_capacity_percent_metric():
+    from app.threshold_defaults import is_capacity_percent_metric as f
+    assert f("disk_used_percent") and f("mem_used_percent")
+    assert f("disk_used_percent__data") and f("DISK_USED_PERCENT")
+    assert not f("CPUUtilization") and not f("disk_used_percent_x")
+    assert not f("") and not f(None)
+
+
+def test_tuner_never_switches_disk_or_mem_used_percent():
+    # Exactly the prod shape: i-0424 confidently ABOVE the 80 warning line
+    # (mean ~83) with a chronic 6h+ alert -- chronic_mean would fire for
+    # any other metric.
+    rows = [_threshold_row(id=506, aws_account_id=10, metric_name="disk_used_percent",
+                           warning_value=80, critical_value=90),
+            _threshold_row(id=268, aws_account_id=7, metric_name="mem_used_percent",
+                           warning_value=80, critical_value=90),
+            _threshold_row(id=270, aws_account_id=7, metric_name="disk_used_percent__data",
+                           warning_value=80, critical_value=90)]
+    baselines = [_baseline("i-0424", 83.0, stddev=0.22), _baseline("i-0c0d", 65.0, stddev=0.002)]
+    updates = _install_stub(rows, baselines, chronic_alert_resource_ids={"i-0424"})
+    mod = load_module("app/collector/threshold_tuning.py")
+
+    assert mod.auto_tune_static_thresholds() == 0
+    assert updates == []
+
+
+def test_tuner_still_switches_non_capacity_metric_in_same_situation():
+    # Guard must be narrow: the identical baseline on a normal metric still tunes.
+    rows = [_threshold_row(id=1, metric_name="NetworkIn", warning_value=80, critical_value=90)]
+    baselines = [_baseline("i-0424", 83.0, stddev=0.22), _baseline("i-0c0d", 65.0, stddev=0.002)]
+    updates = _install_stub(rows, baselines, chronic_alert_resource_ids={"i-0424"})
+    mod = load_module("app/collector/threshold_tuning.py")
+
+    assert mod.auto_tune_static_thresholds() == 1
+    assert updates[0][0] == 1
+
+
+def test_flapping_count_query_excludes_capacity_metrics():
+    seen = []
+
+    class _Cursor(FakeCursor):
+        def execute(self, sql, params=None):
+            seen.append(" ".join(sql.split()))
+            self._pending = [{"flapping_count": 0}]
+
+    class _Conn(FakeConn):
+        def cursor(self, dictionary=True):
+            return _Cursor([])
+
+    install_stub("app.db", get_connection=lambda: _Conn([]))
+    mod = load_module("app/collector/threshold_tuning.py")
+    mod.count_likely_flapping_alerts()
+    assert "a.metric_name <> 'mem_used_percent'" in seen[0]
+    assert "LEFT(a.metric_name, 17) <> 'disk_used_percent'" in seen[0]

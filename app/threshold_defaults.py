@@ -261,6 +261,28 @@ def is_placeholder_threshold(warning, critical, comparison):
         return False
 
 
+# CAPACITY-PERCENT metrics (disk/memory *used* %) must never run in dynamic mode.
+# Found live in prod 2026-09-29: the tuner switched account 10's
+# disk_used_percent row to dynamic because ONE instance (i-0424...,
+# ~83% full) sat above the 80 static line, and that account-wide flip
+# then made every other disk flap: a slowly growing disk trails its own
+# hour-of-day baseline, and a bucket with stddev ~0.002 gives a band only
+# ~0.004 wide, so a healthy 65.2% disk "breached" a 65.04% line, resolved
+# a few cycles later, and re-alerted, ~65 times in 4 days per instance.
+# For these metrics the absolute level IS the signal (a disk at 65% is
+# fine and at 83% is not, whatever its history says), so they alert on
+# the static line only.
+CAPACITY_PERCENT_METRICS = ("mem_used_percent", "disk_used_percent")
+
+
+def is_capacity_percent_metric(metric_name):
+    """True for mem_used_percent, disk_used_percent and the per-mount
+    disk_used_percent__<slug> variants (app/collector/disk_mounts.py)."""
+    name = (metric_name or "").lower()
+    return any(name == base or name.startswith(base + "__")
+               for base in CAPACITY_PERCENT_METRICS)
+
+
 # Used when a metric_name has no explicit entry above (e.g. a "directory"
 # metric discovered live via ListMetrics that isn't in the curated catalog).
 FALLBACK_THRESHOLD = (1000000, 5000000, ">")

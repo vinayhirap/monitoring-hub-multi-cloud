@@ -181,3 +181,54 @@ def test_dynamic_bounds_low_direction_comparison():
     )
     assert critical == 40.0 - 3.0 * 5.0
     assert warning == 40.0 - (3.0 * 0.66) * 5.0
+
+
+# ── 3. capacity-percent metrics ignore use_dynamic (2026-09-29) ─────
+
+def _eval_row(metric_name, value):
+    """Run _evaluate_row for a reading of `value` with use_dynamic=1 and a
+    razor-thin baseline bucket (mean 65.04, stddev 0.002 -- the prod shape).
+    Returns (recorded SQL list, publishes). The script has NO entries for the
+    breach-path writes, so a wrongly-dynamic evaluation (band ~65.044 ->
+    65.2 "breaches") fails loudly with an unexpected-query AssertionError."""
+    mod = _load_alert_evaluator()
+    seen = []
+    bucket = [{"mean_value": 65.04, "stddev_value": 0.002, "sample_count": 100}]
+
+    class _Cur(FakeCursor):
+        def execute(self, sql, params=None):
+            seen.append(" ".join(sql.split()))
+            super().execute(sql, params)
+
+    cur = _Cur([
+        (contains("FROM metric_baseline"), bucket),
+        (contains("DELETE FROM alert_pending"), []),
+        (contains("FROM alerts"), []),
+    ])
+    row = {"aws_resource_id": "i-0c0d", "metric_name": metric_name, "metric_value": value,
+           "aws_account_id": 10, "cadence": "core", "evaluation_period": 5, "tags": None,
+           "warning_value": 80.0, "critical_value": 90.0, "comparison": ">",
+           "use_dynamic": 1, "dynamic_k": 3.0, "unit": "Percent"}
+    stats = {"new": 0, "resolved": 0, "already_open": 0, "pending_touched": 0,
+             "reopened": 0, "failed": 0}
+    mod._evaluate_row(cur, row, {}, stats)
+    return seen
+
+
+def test_capacity_metric_ignores_use_dynamic_and_uses_static_line():
+    for name in ("disk_used_percent", "disk_used_percent__data", "mem_used_percent"):
+        seen = _eval_row(name, 65.2)   # healthy vs static 80
+        assert not any("FROM metric_baseline" in q for q in seen), name
+
+
+def test_non_capacity_metric_still_uses_dynamic_bounds():
+    # Guard must be narrow: same row on CPUUtilization still consults the baseline.
+    mod_seen = None
+    try:
+        mod_seen = _eval_row("CPUUtilization", 65.2)
+    except AssertionError as e:
+        # 65.2 breaches the tight dynamic band, so it proceeds to breach-path
+        # writes the script doesn't answer -- which proves dynamic was used.
+        assert "FROM alerts" in str(e) or "alert_pending" in str(e) or "INSERT" in str(e) or "UPDATE" in str(e)
+        return
+    assert any("FROM metric_baseline" in q for q in mod_seen)

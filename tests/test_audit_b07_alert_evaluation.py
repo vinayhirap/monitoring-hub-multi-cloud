@@ -312,7 +312,7 @@ def test_tuning_row_failure_does_not_abort_others():
 
 # ── settings.py ─────────────────────────────────────────────────────
 
-def _load_settings(perms_seen=None):
+def _load_settings(perms_seen=None, threshold_metric_name=None):
     perms_seen = perms_seen if perms_seen is not None else []
     executed = []
 
@@ -326,6 +326,8 @@ def _load_settings(perms_seen=None):
                 self._pending = [{"id": params[0]}] if params[0] != 404 else []
             elif n.startswith("SELECT aws_account_id FROM thresholds"):
                 self._pending = [{"aws_account_id": 7}]
+            elif n.startswith("SELECT mc.metric_name FROM thresholds"):
+                self._pending = [{"metric_name": threshold_metric_name}] if threshold_metric_name else []
             else:
                 self._pending = []
 
@@ -398,3 +400,20 @@ def test_check_endpoint_requires_configure_permission():
     _load_settings(perms)
     # route decorators run in declaration order; /check is the last route
     assert perms[-1] == "alerts.configure"
+
+
+def test_dynamic_toggle_refused_for_capacity_metric():
+    from fastapi import HTTPException
+    mod, executed = _load_settings(threshold_metric_name="disk_used_percent")
+    with pytest.raises(HTTPException) as e:
+        mod.toggle_dynamic_threshold(threshold_id=506, payload={"use_dynamic": 1, "dynamic_k": 3.0},
+                                     current_user=_USER)
+    assert e.value.status_code == 400
+    assert not any(n.startswith("UPDATE thresholds SET use_dynamic") for n, _ in executed)
+
+
+def test_dynamic_toggle_allowed_for_normal_metric_and_turning_off_always_allowed():
+    mod, executed = _load_settings(threshold_metric_name="CPUUtilization")
+    assert mod.toggle_dynamic_threshold(threshold_id=1, payload={"use_dynamic": 1}, current_user=_USER)["use_dynamic"] is True
+    mod, executed = _load_settings(threshold_metric_name="disk_used_percent")
+    assert mod.toggle_dynamic_threshold(threshold_id=506, payload={"use_dynamic": 0}, current_user=_USER)["use_dynamic"] is False

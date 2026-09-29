@@ -250,8 +250,8 @@ export default function AccountDetail() {
                     <td>
                       <CpuCell cpu={inst.cpu_utilization} state={inst.state} />
                     </td>
-                    <td className="mono small">{inst.state === "running" ? `${inst.network_in_kb} KB/s` : "—"}</td>
-                    <td className="mono small">{inst.state === "running" ? `${inst.network_out_kb} KB/s` : "—"}</td>
+                    <td className="mono small">{inst.state === "running" ? `${inst.network_in_kb} KB/5m` : "—"}</td>
+                    <td className="mono small">{inst.state === "running" ? `${inst.network_out_kb} KB/5m` : "—"}</td>
                     <td className="mono small">{inst.uptime_days}d</td>
                   </tr>
                 ))}

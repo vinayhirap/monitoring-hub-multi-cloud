@@ -3,7 +3,7 @@ from fastapi import APIRouter, Body, Query, Depends, HTTPException
 from app.db import get_db_cursor
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
-from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type, resolve_db_metric_name
+from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type, resolve_db_metric_name, is_capacity_percent_metric
 import datetime, json, logging, math
 from app.utils.time_json import to_utc_iso
 
@@ -386,6 +386,23 @@ def toggle_dynamic_threshold(threshold_id: int, payload: dict = Body(...), curre
         raise HTTPException(status_code=400, detail=f"dynamic_k must be > 0 and <= {_MAX_DYNAMIC_K}")
 
     with get_db_cursor() as (_conn, cur):
+        if use_dynamic:
+            # Capacity-percent metrics (disk/mem used %) are always evaluated
+            # against the static line, so a dynamic flag on them would be a
+            # silent no-op that misleads the UI -- refuse it instead.
+            cur.execute(
+                "SELECT mc.metric_name FROM thresholds t "
+                "JOIN metric_catalog mc ON mc.id = t.metric_id WHERE t.id=%s",
+                (threshold_id,),
+            )
+            _row = cur.fetchone()
+            _name = (_row.get("metric_name") if isinstance(_row, dict) else (_row[0] if _row else None))
+            if is_capacity_percent_metric(_name):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{_name} is a capacity metric and always uses its static "
+                           f"warning/critical values; dynamic thresholds are not supported for it",
+                )
         cur.execute(
             "UPDATE thresholds SET use_dynamic=%s, dynamic_k=%s WHERE id=%s",
             (use_dynamic, dynamic_k, threshold_id),
