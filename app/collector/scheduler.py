@@ -96,6 +96,9 @@ from datetime import datetime
 from app.db import get_connection
 
 _stop_event = threading.Event()
+# Serializes recompute_health_scores(): the standard tier (post-eval) and the
+# low-tier thread both call it; concurrent runs caused MySQL 1213 deadlocks.
+_health_lock = threading.Lock()
 logger      = logging.getLogger(__name__)
 
 # ── Intervals (seconds) ───────────────────────────────────────
@@ -275,7 +278,8 @@ def run_once(tier="standard"):
                       f"correlate_alerts_into_incidents failed (non-fatal): {e}", severity="WARNING")
         try:
             from app.collector.health_score import recompute_health_scores
-            recompute_health_scores()
+            with _health_lock:
+                recompute_health_scores()
         except Exception as e:
             log_event("health_score_failed",
                       f"recompute_health_scores failed (non-fatal): {e}", severity="WARNING")
@@ -314,7 +318,8 @@ def run_once(tier="standard"):
         # never outlive the alert that caused it by up to 15 minutes.
         try:
             from app.collector.health_score import recompute_health_scores
-            recompute_health_scores()
+            with _health_lock:
+                recompute_health_scores()
         except Exception as e:
             log_event("health_score_failed",
                       f"recompute_health_scores (post-evaluation) failed (non-fatal): {e}", severity="WARNING")
@@ -383,6 +388,30 @@ def _discovery_loop(leader_event):
         except Exception as e:
             logger.error(f"Discovery error: {e}")
         _stop_event.wait(timeout=max(1, DISCOVERY_INTERVAL - (time.time() - t0)))
+
+
+def _low_tier_loop(leader_event, last_low):
+    """Low tier on its own thread. 2026-09-29: it ran inline in run_loop, so
+    a slow step (STL, IsolationForest, LLM summaries) froze the 2-min critical
+    and 5-min standard tiers -> stale alerts. Now those tick independently."""
+    while not _stop_event.is_set():
+        if leader_event is not None and not leader_event.is_set():
+            logger.warning("[low-tier] leadership lost -- stopping low-tier thread")
+            return
+        wait = LOW_INTERVAL - (time.time() - last_low)
+        if wait > 0:
+            _stop_event.wait(timeout=min(wait, 30))
+            continue
+        t0 = time.time()
+        logger.info("[low-tier] starting")
+        try:
+            run_once("low")
+            _mark_tier_completed("low")
+            logger.info(f"[low-tier] done in {time.time() - t0:.0f}s")
+        except Exception as e:
+            logger.error(f"Low tier error: {e}")
+        finally:
+            last_low = t0  # attempted counts as run (audit B14)
 
 
 def run_discovery_once():
@@ -516,6 +545,8 @@ def run_loop(leader_event=None):
 
     threading.Thread(target=_discovery_loop, args=(leader_event,),
                      name="discovery-loop", daemon=True).start()
+    threading.Thread(target=_low_tier_loop, args=(leader_event, last_low),
+                     name="low-tier-loop", daemon=True).start()
 
     while not _stop_event.is_set():
         if leader_event is not None and not leader_event.is_set():
@@ -588,24 +619,6 @@ def run_loop(leader_event=None):
                     # often. It now retries at its normal cadence. Only a
                     # SUCCESS is persisted via _mark_tier_completed().
                     last_standard = now
-
-            _require_leader(leader_event)
-            # ── Low tier + discovery (15 min) ─────────────────────
-            if now - last_low >= LOW_INTERVAL:
-                logger.info(f"[Cycle {cycle}] low tier")
-                try:
-                    run_once("low")
-                    _mark_tier_completed("low")
-                except Exception as e:
-                    logger.error(f"Low tier error: {e}")
-                finally:
-                    # Attempted counts as run (audit B14): a tier that keeps
-                    # failing (e.g. evaluate_alerts raising AFTER collection
-                    # succeeded) used to be retried on every 2-min tick,
-                    # repeating its billed GetMetricData calls ~2.5x-30x too
-                    # often. It now retries at its normal cadence. Only a
-                    # SUCCESS is persisted via _mark_tier_completed().
-                    last_low = now
 
             _require_leader(leader_event)
             # ── Extended tier (60 min) ─────────────────────────────

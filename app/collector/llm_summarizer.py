@@ -24,6 +24,7 @@ run -- it catches up gradually over successive cycles instead.
 """
 import logging
 import os
+import time
 
 from app.db import get_connection
 from app.llm.summarizer import is_enabled, polish_summary, source_hash
@@ -31,6 +32,8 @@ from app.llm.summarizer import is_enabled, polish_summary, source_hash
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BATCH_LIMIT = 50
+_DEFAULT_BUDGET_SECONDS = 90   # total wall-clock cap per cycle
+_MAX_CONSECUTIVE_FALLBACKS = 2  # LLM down/slow -> stop the batch early
 
 
 def refresh_llm_summaries() -> int:
@@ -41,6 +44,10 @@ def refresh_llm_summaries() -> int:
         return 0
 
     batch_limit = int(os.getenv("LLM_SUMMARY_BATCH_LIMIT", _DEFAULT_BATCH_LIMIT))
+
+    budget = float(os.getenv("LLM_SUMMARY_BUDGET_SECONDS", _DEFAULT_BUDGET_SECONDS))
+    started = time.monotonic()
+    fallbacks = 0
 
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -82,6 +89,14 @@ def refresh_llm_summaries() -> int:
         from app.collector.rca import explain_alert
 
         for row in candidates:
+            if time.monotonic() - started >= budget:
+                logger.warning(f"[llm_summarizer] {budget:.0f}s budget reached, "
+                               f"deferring remaining alerts to next cycle")
+                break
+            if fallbacks >= _MAX_CONSECUTIVE_FALLBACKS:
+                logger.warning("[llm_summarizer] LLM unresponsive "
+                               f"({fallbacks} fallbacks in a row), ending batch early")
+                break
             alert_id = row["id"]
             try:
                 explanation = explain_alert(alert_id)
@@ -101,6 +116,7 @@ def refresh_llm_summaries() -> int:
                     "related_alert_count": explanation.get("related_alert_count"),
                 }
                 polished = polish_summary(facts, deterministic_summary)
+                fallbacks = fallbacks + 1 if polished == deterministic_summary else 0
 
                 # If polish_summary fell back to the deterministic text
                 # unchanged (disabled mid-run, transient API failure),
