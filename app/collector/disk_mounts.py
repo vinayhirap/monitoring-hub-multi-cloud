@@ -192,6 +192,14 @@ def all_cwagent_disk_dims(cw, instance_id):
             logger.warning(f"CWAgent disk mount lookup (Windows) [{instance_id}]: {e}")
             found = []
 
+    # Deterministic order: with the same path published under >1 device/fstype
+    # the surviving series must not depend on ListMetrics' response order.
+    found.sort(key=lambda t: (
+        {d["Name"]: d["Value"] for d in t[0]["Dimensions"]}.get("path")
+        or {d["Name"]: d["Value"] for d in t[0]["Dimensions"]}.get("instance") or "",
+        {d["Name"]: d["Value"] for d in t[0]["Dimensions"]}.get("device") or "",
+        {d["Name"]: d["Value"] for d in t[0]["Dimensions"]}.get("fstype") or ""))
+
     out = []
     seen_paths = set()
     skipped = []
@@ -214,8 +222,20 @@ def all_cwagent_disk_dims(cw, instance_id):
                 continue
             path = dims["instance"]
         else:
-            # Linux dimensions the mount under `path`.
-            path = dims.get("path") or "/"
+            # Linux dimensions the mount under `path`. CloudWatch/CWAgent ALSO
+            # publishes a bare-{InstanceId} rollup of disk_used_percent that
+            # has NO `path` and is NOT the root filesystem. Defaulting it to
+            # "/" (the old behaviour) made it compete with the real "/" mount;
+            # whichever ListMetrics returned first won, and the collector
+            # (hourly-cached), the chart API and every restart could each pick
+            # a different one. Confirmed live 2026-09-29: i-046fecd2... real
+            # "/" = 84.94% but the collector stored the rollup's 70.95%
+            # (a real >80 warning was invisible to alerting); i-0a3aca62...
+            # real "/" = 54.92% while the chart showed the rollup's 77.97%.
+            # Same shape as the Windows rollup skipped above.
+            if "path" not in dims:
+                continue
+            path = dims["path"]
         if path in seen_paths:
             continue  # CWAgent can report the same path under >1 device/fstype combo
         seen_paths.add(path)
