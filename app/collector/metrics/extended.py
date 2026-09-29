@@ -354,7 +354,10 @@ def _collect_extended_service(cw, resources, service_key, enabled_keys, minutes=
                 q = _search_query(qid, service_key, cw_name, r, namespace)
                 if q:
                     queries.append(q)
-                    id_map[qid] = (r["id"], db_name)
+                    # stat carried through so _execute_gmd's Sum zero-fill
+                    # (2026-09-25) applies here too -- see the id_map note
+                    # on the non-SEARCH branch below for the full reasoning.
+                    id_map[qid] = (r["id"], db_name, stat)
                 continue
             dims = _build_dimensions(r, cw_name)
             if not dims:
@@ -372,7 +375,19 @@ def _collect_extended_service(cw, resources, service_key, enabled_keys, minutes=
                 },
                 "ReturnData": True,
             })
-            id_map[qid] = (r["id"], db_name)
+            # 2026-09-29: this used to be a bare (resource_id, db_name)
+            # 2-tuple -- _execute_gmd's Sum zero-fill (2026-09-25, see its
+            # docstring in runner.py) only fires when a stat is present, so
+            # extended-tier Sum-count metrics (SQS/Kinesis
+            # NumberOf*/IncomingRecords, EventBridge Invocations, ...) kept
+            # the pre-fix "no datapoint -> skip, leave stale" behaviour even
+            # after the core-tier fix shipped. A 2026-09-12 live audit
+            # (see SLOW_EXTENDED_SERVICES' docstring above) confirmed SQS
+            # and Kinesis genuinely go quiet, not just under-polled -- which
+            # is exactly the case this fix is for: a metric that is
+            # correctly zero right now must read as zero, not as whatever
+            # nonzero value it last had before going quiet.
+            id_map[qid] = (r["id"], db_name, stat)
 
     if not queries:
         return 0

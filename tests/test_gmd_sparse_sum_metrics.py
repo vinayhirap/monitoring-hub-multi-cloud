@@ -226,17 +226,23 @@ def test_legacy_two_element_entry_with_no_datapoint_is_never_zero_filled():
     assert written == [] and history == []
 
 
-def test_extended_collector_runs_end_to_end_through_the_real_execute_gmd():
-    """The seam that broke in production: extended.py -> runner._execute_gmd.
-    Uses the REAL extended.py, REAL runner.py, REAL polling_model.py and only
-    fakes CloudWatch, so an id_map shape change on either side fails here."""
-    written, history = [], []
+def _load_extended(written, history):
+    """Real extended.py + real runner.py + real polling_model.py, only
+    CloudWatch is faked. Used by every test below this point."""
     runner = _load_runner(written, history)
     sys.modules["app.collector.metrics.runner"] = runner
     install_stub("app.aws.metric_catalog_data", CURATED=load_module("app/aws/metric_catalog_data.py").CURATED)
-    real_td = load_module("app/threshold_defaults.py")
-    sys.modules["app.threshold_defaults"] = real_td
-    ext = load_module("app/collector/metrics/extended.py")
+    sys.modules["app.threshold_defaults"] = load_module("app/threshold_defaults.py")
+    return load_module("app/collector/metrics/extended.py")
+
+
+def test_extended_collector_runs_end_to_end_through_the_real_execute_gmd():
+    """The seam that broke in production (2026-09-25 -> 2026-09-28 hotfix):
+    extended.py -> runner._execute_gmd. Uses the REAL extended.py, REAL
+    runner.py, REAL polling_model.py and only fakes CloudWatch, so an
+    id_map shape change on either side fails here."""
+    written, history = [], []
+    ext = _load_extended(written, history)
 
     service = "sns" if "sns" in ext.EXTENDED_METRICS else next(iter(ext.EXTENDED_METRICS))
     resources = [{"id": 7, "resource_id": "arn:aws:sns:ap-south-1:1:topic", "resource_type": service,
@@ -252,3 +258,75 @@ def test_extended_collector_runs_end_to_end_through_the_real_execute_gmd():
     n = ext._collect_extended_service(AnyDataCW(), resources, service, enabled, minutes=16)
     assert n > 0 and written, "extended collection wrote nothing -- id_map/_execute_gmd contract broken"
     assert all(rid == 7 for (rid, _name, _val) in written)
+
+
+def test_extended_sum_metric_with_no_datapoint_is_zero_filled():
+    """2026-09-29 follow-up: extended.py's OWN id_map used to be a bare
+    2-tuple, so it fell back to _execute_gmd's no-stat path and never
+    zero-filled -- SQS/Kinesis/SNS Sum-count metrics kept the pre-fix
+    'skip, leave stale' behaviour even after the core-tier fix shipped.
+    Uses a real Sum-stat, non-SEARCH extended metric (SNS
+    NumberOfMessagesPublished) with a plain per-resource dimension."""
+    written, history = [], []
+    ext = _load_extended(written, history)
+    assert "sns" in ext.EXTENDED_METRICS
+    sns_stats = {db: stat for (_cw, db, stat, _ns) in ext.EXTENDED_METRICS["sns"]}
+    assert sns_stats.get("numberofmessagespublished") == "Sum"
+
+    resources = [{"id": 7, "resource_id": "arn:aws:sns:ap-south-1:1:topic", "resource_type": "sns",
+                  "name": "topic", "region": "ap-south-1", "tags": "{}"}]
+    enabled = {("sns", "NumberOfMessagesPublished")}
+
+    class NoDataCW:
+        def get_metric_data(self, MetricDataQueries, **kw):
+            return {"MetricDataResults": [{"Id": q["Id"], "Values": [], "Timestamps": []}
+                                          for q in MetricDataQueries]}
+
+    n = ext._collect_extended_service(NoDataCW(), resources, "sns", enabled, minutes=16)
+    assert n == 1
+    assert written == [(7, "numberofmessagespublished", 0.0)]
+
+
+def test_extended_search_query_sum_metric_with_no_datapoint_is_also_zero_filled():
+    """The SEARCH-expression branch (DynamoDB per-operation metrics, MSK
+    per-broker metrics) builds id_map separately from the plain-dimension
+    branch -- both needed the fix, not just one."""
+    written, history = [], []
+    ext = _load_extended(written, history)
+    assert ("dynamodb", "ThrottledRequests") in ext.polling_model.AWS_SEARCH_METRICS
+    ddb_stats = {db: stat for (_cw, db, stat, _ns) in ext.EXTENDED_METRICS["dynamodb"]}
+    assert ddb_stats.get("throttledrequests") == "Sum"
+
+    resources = [{"id": 3, "resource_id": "table-1", "resource_type": "dynamodb",
+                  "name": "table-1", "region": "ap-south-1", "tags": "{}"}]
+    enabled = {("dynamodb", "ThrottledRequests")}
+
+    class NoDataCW:
+        def get_metric_data(self, MetricDataQueries, **kw):
+            return {"MetricDataResults": [{"Id": q["Id"], "Values": [], "Timestamps": []}
+                                          for q in MetricDataQueries]}
+
+    n = ext._collect_extended_service(NoDataCW(), resources, "dynamodb", enabled, minutes=16)
+    assert n == 1
+    assert written == [(3, "throttledrequests", 0.0)]
+
+
+def test_extended_average_metric_with_no_datapoint_stays_unfilled():
+    """Contrast case: an Average/gauge extended metric must NOT be swept
+    into the zero-fill just because it now carries a stat."""
+    written, history = [], []
+    ext = _load_extended(written, history)
+    ddb_stats = {db: stat for (_cw, db, stat, _ns) in ext.EXTENDED_METRICS["dynamodb"]}
+    assert ddb_stats.get("successfulrequestlatency") == "Average"
+
+    resources = [{"id": 3, "resource_id": "table-1", "resource_type": "dynamodb",
+                  "name": "table-1", "region": "ap-south-1", "tags": "{}"}]
+    enabled = {("dynamodb", "SuccessfulRequestLatency")}
+
+    class NoDataCW:
+        def get_metric_data(self, MetricDataQueries, **kw):
+            return {"MetricDataResults": [{"Id": q["Id"], "Values": [], "Timestamps": []}
+                                          for q in MetricDataQueries]}
+
+    n = ext._collect_extended_service(NoDataCW(), resources, "dynamodb", enabled, minutes=16)
+    assert n == 0 and written == []
