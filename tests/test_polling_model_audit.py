@@ -92,7 +92,7 @@ def _load_runner():
     writes = {"latest": [], "history": []}
     install_stub("app.collector.metrics_writer",
                  write_metrics_batch=lambda rows: writes["latest"].extend(rows),
-                 write_metric_history_batch=lambda rows: writes["history"].extend(rows))
+                 write_metric_history_batch=lambda rows, **kw: writes["history"].extend(rows))
     install_stub("app.collector.disk_mounts", all_cwagent_disk_dims=lambda cw, iid: [],
                  ensure_disk_mount_metric_registered=lambda *a, **k: None)
     pm, au = install_polling_modules()
@@ -214,7 +214,7 @@ def test_azure_aggregation_regions_and_null_latest():
     written = {"m": [], "h": []}
     install_stub("app.collector.metrics_writer",
                  write_metrics_batch=lambda r: written["m"].extend(r),
-                 write_metric_history_batch=lambda r: written["h"].extend(r))
+                 write_metric_history_batch=lambda r, **kw: written["h"].extend(r))
     install_stub("app.credentials", load_credential=lambda a: "s")
     install_stub("azure.identity", ClientSecretCredential=lambda **k: object())
     calls = []
@@ -278,7 +278,7 @@ def test_azure_aggregation_regions_and_null_latest():
 def test_azure_directory_metrics_pass_tier_filter():
     install_stub("app.credentials", load_credential=lambda a: "s")
     install_stub("app.collector.metrics_writer", write_metrics_batch=lambda r: None,
-                 write_metric_history_batch=lambda r: None)
+                 write_metric_history_batch=lambda r, **kw: None)
     install_stub("app.db", get_connection=lambda: None)
     mod = load_module("app/providers/azure/metrics_collector.py")
 
@@ -300,7 +300,7 @@ def test_azure_directory_metrics_pass_tier_filter():
 def test_gcp_aligner_choice():
     install_stub("app.credentials", load_credential=lambda a: "{}")
     install_stub("app.collector.metrics_writer", write_metrics_batch=lambda r: None,
-                 write_metric_history_batch=lambda r: None)
+                 write_metric_history_batch=lambda r, **kw: None)
     install_stub("app.db", get_connection=lambda: None)
     install_stub("app.providers.gcp.metrics_extended", EXTENDED_RESOLVERS={})
     mod = load_module("app/providers/gcp/metrics_collector.py")

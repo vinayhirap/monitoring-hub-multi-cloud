@@ -131,7 +131,7 @@ def _load_extended_module():
     install_stub("app.collector.disk_mounts", all_cwagent_disk_dims=lambda cw, iid: [],
                  ensure_disk_mount_metric_registered=lambda *a, **k: None)
     install_stub("app.collector.metrics_writer", write_metrics_batch=lambda rows: None,
-                 write_metric_history_batch=lambda rows: None)
+                 write_metric_history_batch=lambda rows, **kw: None)
     install_stub("app.collector.api_usage", record=lambda *a, **k: None)
 
     sys.modules["app.utils.time_json"] = load_module("app/utils/time_json.py")

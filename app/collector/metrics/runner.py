@@ -271,7 +271,7 @@ NATIVE_5MIN_PERIOD = 300
 # HTTPCode_* Sum was stored at ~half its final value and frozen), so the tile
 # and chart disagreed with CloudWatch. 1-min metrics are visible ~1-2 min late.
 NATIVE_1MIN_PERIOD = 60
-SETTLE_GRACE_1MIN_SECONDS = 120
+SETTLE_GRACE_1MIN_SECONDS = 180  # ALB publishes 1-min points up to ~3 min late
 
 
 def _grace_for(period_sec):

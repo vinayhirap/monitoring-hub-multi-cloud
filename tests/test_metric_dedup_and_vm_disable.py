@@ -165,7 +165,7 @@ def test_describe_polling_vm_push_is_a_noop_by_default():
     install_stub("app.aws.collector_direct", get_session=MagicMock())
     install_stub("app.collector.metrics_writer",
                  write_metrics_batch=lambda rows: None,
-                 write_metric_history_batch=lambda rows: None)
+                 write_metric_history_batch=lambda rows, **kw: None)
     mod = load_module("app/aws/describe_polling.py")
 
     assert mod._VM_PUSH_ENABLED is False
@@ -205,7 +205,7 @@ def test_azure_enabled_metrics_applies_category_filter_when_given():
     install_stub("app.credentials", load_credential=lambda a: "secret")
     install_stub("app.collector.metrics_writer",
                  write_metrics_batch=lambda rows: None,
-                 write_metric_history_batch=lambda rows: None)
+                 write_metric_history_batch=lambda rows, **kw: None)
     install_stub("app.db", get_connection=lambda: None)
     mod = load_module("app/providers/azure/metrics_collector.py")
 
@@ -229,7 +229,7 @@ def test_gcp_enabled_metrics_applies_category_filter_when_given():
     install_stub("app.credentials", load_credential=lambda a: "{}")
     install_stub("app.collector.metrics_writer",
                  write_metrics_batch=lambda rows: None,
-                 write_metric_history_batch=lambda rows: None)
+                 write_metric_history_batch=lambda rows, **kw: None)
     install_stub("app.providers.gcp.metrics_extended", EXTENDED_RESOLVERS={})
     install_stub("app.db", get_connection=lambda: None)
     mod = load_module("app/providers/gcp/metrics_collector.py")

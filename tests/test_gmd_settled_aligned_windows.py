@@ -121,7 +121,7 @@ def test_one_minute_windows_end_on_settled_minute_boundary():
     mod = _mod()
     now = datetime(2026, 9, 30, 10, 42, 47, tzinfo=timezone.utc)
     end = mod._align_window_end(now, 60, mod._grace_for(60))
-    assert end == datetime(2026, 9, 30, 10, 40, 0, tzinfo=timezone.utc)
+    assert end == datetime(2026, 9, 30, 10, 39, 0, tzinfo=timezone.utc)
     assert (now - end).total_seconds() >= mod.SETTLE_GRACE_1MIN_SECONDS
 
 
