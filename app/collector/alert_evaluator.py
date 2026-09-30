@@ -60,16 +60,29 @@ logger = logging.getLogger(__name__)
 # this too.
 CYCLE_MINUTES = 5
 
-# Evaluations now also run on the 2-min critical tick for P1 metrics
-# (scheduler.py). A breach/healthy counter only advances when at least this
-# long has passed since the row was last touched, so an extra evaluation is
-# never an extra "cycle": evaluation_period semantics are unchanged, only
-# the FIRST detection gets faster. MySQL assigns SET columns left to right,
-# so the counter expressions must precede last_seen_at in every UPDATE.
+# Evaluations also run on the 2-min critical tick for P1 metrics (scheduler.py). A
+# breach/healthy counter must only advance when at least this long has passed since the
+# last COUNTED cycle, so an extra evaluation is never an extra "cycle": evaluation_period
+# semantics are unchanged, only the FIRST detection gets faster.
+#
+# THE CLOCK IS cycle_at, NOT last_seen_at (fixed 2026-09-30, migration 074). This used to
+# compare against last_seen_at, which every evaluation overwrites -- including the ones that
+# did not advance the counter. Anything evaluated every 2 minutes therefore never saw a gap
+# of 240 s, its counter never moved, and an open P1 alert (ELB 5xx, RDS CPU...) could never
+# auto-resolve. cycle_at is only moved when a cycle is actually counted (or on a breach /
+# creation), so it measures what the gate is meant to measure.
+#
+# ORDER MATTERS: MySQL assigns SET columns left to right, so in every UPDATE the counter
+# (healthy_streak / breach_cycles) must be assigned BEFORE cycle_at -- otherwise the gate
+# would read the freshly-assigned cycle_at (= now) and never open.
 MIN_CYCLE_SECONDS = 240
-_GATED_STREAK_SQL = (f"IF(COALESCE(last_seen_at, triggered_at) <= "
-                     f"DATE_SUB(UTC_TIMESTAMP(), INTERVAL {MIN_CYCLE_SECONDS} SECOND), "
-                     f"healthy_streak + 1, healthy_streak)")
+_CYCLE_DUE_SQL = (f"COALESCE(cycle_at, triggered_at) <= "
+                  f"DATE_SUB(UTC_TIMESTAMP(), INTERVAL {MIN_CYCLE_SECONDS} SECOND)")
+_GATED_STREAK_SQL = f"IF({_CYCLE_DUE_SQL}, healthy_streak + 1, healthy_streak)"
+_GATED_CYCLE_AT_SQL = f"IF({_CYCLE_DUE_SQL}, UTC_TIMESTAMP(), cycle_at)"
+# alert_pending has first_breach_at where alerts have triggered_at
+_PENDING_CYCLE_DUE_SQL = (f"COALESCE(cycle_at, first_breach_at) <= "
+                          f"DATE_SUB(UTC_TIMESTAMP(), INTERVAL {MIN_CYCLE_SECONDS} SECOND)")
 
 # alerts.environment / alert_pending.environment are VARCHAR(50) after
 # db/migrations/059 (were VARCHAR(10): an "Environment=development" tag
@@ -450,12 +463,12 @@ def _touch_pending(cursor, aws_account_id, resource_id, metric_name, severity, e
     cursor.execute(f"""
         INSERT INTO alert_pending
             (aws_account_id, resource_id, metric_name, severity, environment,
-             first_breach_at, last_seen_at, breach_cycles,
+             first_breach_at, last_seen_at, breach_cycles, cycle_at,
              current_value, threshold_value)
-        VALUES (%s, %s, %s, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 1, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 1, UTC_TIMESTAMP(), %s, %s)
         ON DUPLICATE KEY UPDATE
-            breach_cycles   = IF(last_seen_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {MIN_CYCLE_SECONDS} SECOND),
-                                 breach_cycles + 1, breach_cycles),
+            breach_cycles   = IF({_PENDING_CYCLE_DUE_SQL}, breach_cycles + 1, breach_cycles),
+            cycle_at        = IF({_PENDING_CYCLE_DUE_SQL}, UTC_TIMESTAMP(), cycle_at),
             last_seen_at    = UTC_TIMESTAMP(),
             current_value   = VALUES(current_value),
             threshold_value = VALUES(threshold_value),
@@ -737,6 +750,7 @@ def _evaluate_row(cursor, row, silenced_map, stats):
                 cursor.execute(f"""
                     UPDATE alerts SET current_value = %s,
                                       healthy_streak = {_GATED_STREAK_SQL},
+                                      cycle_at = {_GATED_CYCLE_AT_SQL},
                                       last_seen_at = UTC_TIMESTAMP()
                     WHERE id = %s
                 """, (metric_value, existing["id"]))
@@ -746,6 +760,7 @@ def _evaluate_row(cursor, row, silenced_map, stats):
                     SET current_value  = %s,
                         threshold      = %s,
                         healthy_streak = {_GATED_STREAK_SQL},
+                        cycle_at       = {_GATED_CYCLE_AT_SQL},
                         last_seen_at   = UTC_TIMESTAMP()
                     WHERE id = %s
                 """, (metric_value, resolve_threshold_value, existing["id"]))
@@ -782,7 +797,8 @@ def _evaluate_row(cursor, row, silenced_map, stats):
 
     if existing:
         update_fields = ["current_value = %s", "threshold = %s",
-                          "last_seen_at = UTC_TIMESTAMP()", "healthy_streak = 0"]
+                          "last_seen_at = UTC_TIMESTAMP()", "healthy_streak = 0",
+                          "cycle_at = UTC_TIMESTAMP()"]
         params = [metric_value, threshold_value]
         if existing["severity"] == "CRITICAL" and severity != "CRITICAL":
             # DE-ESCALATION (2026-09-21). An open CRITICAL whose reading no
@@ -829,9 +845,9 @@ def _evaluate_row(cursor, row, silenced_map, stats):
     cursor.execute("""
         INSERT INTO alerts
             (aws_account_id, resource_id, metric_name, severity,
-             environment, group_key, status, triggered_at, last_seen_at,
+             environment, group_key, status, triggered_at, last_seen_at, cycle_at,
              healthy_streak, current_value, threshold, silenced, silenced_reason)
-        VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, UTC_TIMESTAMP(), 0, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0, %s, %s, %s, %s)
     """, (
         aws_account_id, aws_resource_id, metric_name, promoted_severity, environment,
         group_key, pending["first_breach_at"], metric_value, threshold_value,

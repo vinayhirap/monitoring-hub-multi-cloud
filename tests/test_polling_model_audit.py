@@ -317,12 +317,17 @@ def test_gcp_aligner_choice():
 # ── alert evaluator + api usage + describe ───────────────────────────
 
 def test_evaluator_counters_are_time_gated():
+    import re
     src = open("app/collector/alert_evaluator.py").read()
-    assert "breach_cycles   = IF(last_seen_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {MIN_CYCLE_SECONDS} SECOND)" in src
+    # the gate measures time since the last COUNTED cycle (cycle_at), never last_seen_at, which
+    # every evaluation overwrites (that made 2-minute-tick alerts unable to resolve: 2026-09-30)
+    assert "breach_cycles   = IF({_PENDING_CYCLE_DUE_SQL}, breach_cycles + 1, breach_cycles)" in src
     assert src.count("healthy_streak = {_GATED_STREAK_SQL}") == 2
-    # counters must be assigned BEFORE last_seen_at (MySQL left-to-right SET)
+    assert len(re.findall(r"cycle_at\s+= \{_GATED_CYCLE_AT_SQL\}", src)) == 2
+    # counters must be assigned BEFORE cycle_at, and cycle_at before last_seen_at (MySQL left-to-right SET)
     for chunk in src.split("healthy_streak = {_GATED_STREAK_SQL}")[1:]:
-        assert "last_seen_at" in chunk[:120]
+        assert "cycle_at" in chunk[:120] and chunk.index("cycle_at") < chunk.index("last_seen_at")
+    assert src.index("breach_cycles   = IF({_PENDING_CYCLE_DUE_SQL}") < src.index("cycle_at        = IF({_PENDING_CYCLE_DUE_SQL}")
     assert "def evaluate_alerts(p1_only=False)" in src
 
 
