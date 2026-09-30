@@ -27,7 +27,7 @@
   display: flex;
   gap: 20px;
   align-items: flex-start;
-  max-width: 1100px;
+  max-width: var(--page-max);
 }
 
 /* ── main form ── */

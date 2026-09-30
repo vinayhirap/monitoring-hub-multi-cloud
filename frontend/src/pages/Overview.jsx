@@ -348,14 +348,14 @@ export default function Overview() {
               </span>
             </>
           )}
-          <span style={{ color: "var(--text-muted)", fontSize: 13 }}>
-            — firing alerts (same numbers as the Alerts page)
-            {otherAlerts > 0 && (
-              <span title="Not counted above: stale (no fresh data), acknowledged, or muted/in maintenance">
-                {" "}· {otherAlerts} not counted ({alertTotals.stale} stale, {alertTotals.acknowledged} ack, {alertTotals.suppressed} muted)
-              </span>
-            )}
-          </span>
+          {otherAlerts > 0 && (
+            <span
+              style={{ color: "var(--text-muted)", fontSize: 13 }}
+              title="Not counted above: stale (no fresh data), acknowledged, or muted/in maintenance"
+            >
+              · {otherAlerts} not counted ({alertTotals.stale} stale, {alertTotals.acknowledged} ack, {alertTotals.suppressed} muted)
+            </span>
+          )}
           <button onClick={() => navigate("/alerts")} className="as-btn">View Alerts →</button>
         </div>
       )}

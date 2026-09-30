@@ -249,21 +249,10 @@
    The Console and Action cells were single non-wrapping button rows inside a
    1200px page, so on a normal monitor the last button ("Not genuine?") sat past
    the edge and needed a horizontal scroll to reach. The cells now wrap onto a
-   second line, the page is fluid (see --page-max), and if a narrow window still
-   overflows the table, the Action column stays pinned to the right edge. */
+   second line and the page is fluid (see --page-max). If a very narrow window
+   still overflows, the table scrolls inside its own container. (A pinned Action
+   column was tried and removed: it needs a solid background, the table has none,
+   so it always looked like a differently-coloured strip.) */
 .alerts-table td, .alerts-table th { min-width: 0; }
 .alert-resource { overflow-wrap: anywhere; max-width: 280px; }
 .alert-metric   { overflow-wrap: anywhere; }
-/* Pinned Action column: needs an OPAQUE background so scrolled content does not
-   show through, but it must match the theme and keep the row's severity tint. */
-.alerts-table { --cell-bg: #0e1829; --head-bg: #0a1322; }
-[data-theme="light"] .alerts-table { --cell-bg: #ffffff; --head-bg: #f0f4fa; }
-.alerts-table thead th:last-child,
-.alerts-table tbody tr.alert-row td:last-child {
-  position: sticky; right: 0; z-index: 1;
-  background-color: var(--cell-bg);
-  box-shadow: -10px 0 10px -10px rgba(0,0,0,0.35);
-}
-.alerts-table thead th:last-child { background-color: var(--head-bg); z-index: 2; }
-.alerts-table tr.sev-row-critical td:last-child { background-image: linear-gradient(rgba(239,68,68,0.05), rgba(239,68,68,0.05)); }
-.alerts-table tr.sev-row-warning  td:last-child { background-image: linear-gradient(rgba(245,158,11,0.04), rgba(245,158,11,0.04)); }

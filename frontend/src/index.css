@@ -118,6 +118,6 @@ input, select, textarea { font-family: var(--font-sans); }
    2. Every table sits in .tbl-scroll: a wide row scrolls INSIDE its card
       instead of being clipped by an `overflow: hidden` parent or pushing the
       whole page sideways. */
-:root { --page-max: 1760px; --page-max-form: 1200px; }
+:root { --page-max: 1760px; }
 .tbl-scroll { width: 100%; max-width: 100%; overflow-x: auto; }
 .tbl-scroll > table { min-width: 100%; }

@@ -1,6 +1,6 @@
 /*monitoring-hub/frontend/src/pages/Settings.css */
 
-.settings-page { max-width: var(--page-max-form); display: flex; flex-direction: column; gap: 20px; }
+.settings-page { max-width: var(--page-max); display: flex; flex-direction: column; gap: 20px; }
 .page-header {
   margin-bottom: var(--space-5);
   padding-bottom: var(--space-4);
@@ -71,7 +71,7 @@
 }
 
 /* Thresholds */
-.thresholds-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 20px 22px; }
+.thresholds-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; padding: 20px 22px; }
 .threshold-item { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
 .threshold-item.disabled { opacity: .6; }
 .thresh-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; gap: 8px; }
