@@ -62,7 +62,7 @@ def _runner_with_writes(history):
     import sys as _s
     mod = _mod()
     mod.write_metrics_batch = lambda rows: None
-    mod.write_metric_history_batch = lambda rows: history.extend(rows)
+    mod.write_metric_history_batch = lambda rows, **kw: history.extend(rows)
     return mod
 
 
@@ -100,7 +100,7 @@ def test_sum_zero_fill_row_uses_the_last_bucket_start_not_the_next_bucket():
     assert hist[0][3].minute % 5 == 0
 
 
-def test_run_gmd_aligns_only_all_300s_batches():
+def test_run_gmd_aligns_only_single_period_batches():
     seen = []
     mod = _mod()
     mod._execute_gmd = lambda cw, q, m, minutes=5, align_period=None: seen.append(align_period) or 0
@@ -112,4 +112,26 @@ def test_run_gmd_aligns_only_all_300s_batches():
     mod._run_gmd(None, res_ec2, ec2, minutes=15)
     mod._run_gmd(None, res_rds, rds, minutes=6)
     mod._run_gmd(None, res_ec2, mixed, minutes=15)
-    assert seen == [300, None, None]
+    # 1-min batches (RDS/ELB/Lambda) now align to 60 too; only MIXED batches keep end=now
+    assert seen == [300, 60, None]
+
+
+def test_one_minute_windows_end_on_settled_minute_boundary():
+    """ALB/RDS/Lambda (Period 60): the still-filling newest minute must not be requested."""
+    mod = _mod()
+    now = datetime(2026, 9, 30, 10, 42, 47, tzinfo=timezone.utc)
+    end = mod._align_window_end(now, 60, mod._grace_for(60))
+    assert end == datetime(2026, 9, 30, 10, 40, 0, tzinfo=timezone.utc)
+    assert (now - end).total_seconds() >= mod.SETTLE_GRACE_1MIN_SECONDS
+
+
+def test_history_rows_are_written_with_overwrite():
+    """A bucket first stored while filling must be corrected by a later poll."""
+    calls = []
+    mod = _mod()
+    mod.write_metrics_batch = lambda rows: None
+    mod.write_metric_history_batch = lambda rows, **kw: calls.append(kw)
+    cw = _CW()
+    mod._execute_gmd(cw, [{"Id": "q0", "MetricStat": {}}], {"q0": (1, "requestcount", "Sum")},
+                     minutes=6, align_period=60)
+    assert calls == [{"overwrite": True}]

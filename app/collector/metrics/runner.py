@@ -266,6 +266,16 @@ def _get_metric_data_all_pages(cw, chunk, start, end):
 # in-progress value. RDS/ELB/Lambda (Period 60) and CWAgent are unchanged.
 SETTLE_GRACE_SECONDS = 180
 NATIVE_5MIN_PERIOD = 300
+# 1-minute sources (ALB, RDS, Lambda) have the SAME defect: with end = now the
+# newest minute is still filling (ActiveConnectionCount / NewConnectionCount /
+# HTTPCode_* Sum was stored at ~half its final value and frozen), so the tile
+# and chart disagreed with CloudWatch. 1-min metrics are visible ~1-2 min late.
+NATIVE_1MIN_PERIOD = 60
+SETTLE_GRACE_1MIN_SECONDS = 120
+
+
+def _grace_for(period_sec):
+    return SETTLE_GRACE_1MIN_SECONDS if period_sec == NATIVE_1MIN_PERIOD else SETTLE_GRACE_SECONDS
 
 
 def _align_window_end(now, period_sec, grace=SETTLE_GRACE_SECONDS):
@@ -284,7 +294,7 @@ def _execute_gmd(cw, queries, id_map, minutes=5, align_period=None):
         return 0
 
     now   = datetime.now(timezone.utc)
-    end   = _align_window_end(now, align_period) if align_period else now
+    end   = _align_window_end(now, align_period, _grace_for(align_period)) if align_period else now
     start = end - timedelta(minutes=minutes)
     # A Sum zero-fill row stands for the LAST bucket of the window; with an
     # aligned end that bucket starts one period earlier. (Using `end` would
@@ -363,7 +373,9 @@ def _execute_gmd(cw, queries, id_map, minutes=5, align_period=None):
     if latest_rows:
         write_metrics_batch(latest_rows)
     if history_rows:
-        write_metric_history_batch(history_rows)
+        # overwrite: a bucket first stored while still filling (or as a Sum
+        # zero-fill) must be corrected by the settled value on a later poll.
+        write_metric_history_batch(history_rows, overwrite=True)
 
     return count
 
@@ -377,7 +389,8 @@ def _run_gmd(cw, resources, metric_defs, minutes=5, chunk_size=GMD_MAX_QUERIES):
     # Align only when EVERY definition in the batch is a 5-minute-native
     # metric (EC2/EBS basic monitoring); mixed or 1-minute batches keep the
     # old end=now behaviour.
-    align = NATIVE_5MIN_PERIOD if {d[4] for d in metric_defs} == {NATIVE_5MIN_PERIOD} else None
+    _periods = {d[4] for d in metric_defs}
+    align = next(iter(_periods)) if len(_periods) == 1 and _periods <= {NATIVE_5MIN_PERIOD, NATIVE_1MIN_PERIOD} else None
 
     total = 0
     for i in range(0, len(queries), chunk_size):

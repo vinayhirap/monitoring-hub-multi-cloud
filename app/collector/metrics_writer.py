@@ -191,7 +191,7 @@ def _write_metrics_batch_locked(datapoints):
     )
 
 
-def write_metric_history_batch(datapoints: list):
+def write_metric_history_batch(datapoints: list, overwrite: bool = False):
     """
     Inserts raw time-series datapoints into metric_history -- the local
     replacement for VictoriaMetrics' range-query/graphing role, now that
@@ -217,16 +217,25 @@ def write_metric_history_batch(datapoints: list):
     while a real DB error (connection loss, etc.) still raises via
     non-duplicate-key error codes and is still caught below.
 
+    overwrite (2026-09-30, CloudOps vs CloudWatch parity): when True a
+    re-seen (resource, metric, timestamp) REPLACES the stored value instead
+    of being ignored. Used by the AWS GetMetricData collector, whose
+    overlapping look-back windows re-fetch buckets that were first stored
+    while still filling (or as a Sum zero-fill before the datapoint was
+    published); INSERT IGNORE froze that first, partial value forever and
+    made CloudOps disagree with CloudWatch. Default stays IGNORE so the
+    Azure/GCP/describe writers are unchanged.
+
     datapoints: list of (resource_db_id, metric_name, value, timestamp) tuples.
     """
     if not datapoints:
         return
 
     with _write_slot():
-        _write_metric_history_batch_locked(datapoints)
+        _write_metric_history_batch_locked(datapoints, overwrite)
 
 
-def _write_metric_history_batch_locked(datapoints):
+def _write_metric_history_batch_locked(datapoints, overwrite=False):
     rows = _sorted_for_locking(
         [
             (r_id, name, round(float(val), 6), ts)
@@ -237,12 +246,22 @@ def _write_metric_history_batch_locked(datapoints):
         key=lambda r: (r[0], r[1], r[3]),
     )
 
-    def _execute(cursor):
-        cursor.executemany("""
+    if overwrite:
+        _sql = """
+            INSERT INTO metric_history
+                (resource_id, metric_name, metric_value, metric_timestamp)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE metric_value = VALUES(metric_value)
+        """
+    else:
+        _sql = """
             INSERT IGNORE INTO metric_history
                 (resource_id, metric_name, metric_value, metric_timestamp)
             VALUES (%s, %s, %s, %s)
-        """, rows)
+        """
+
+    def _execute(cursor):
+        cursor.executemany(_sql, rows)
 
     _run_batch_with_retry(
         _execute,

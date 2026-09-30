@@ -1330,7 +1330,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
                 <MetricChart title="HTTPCode_Target_4XX_Count"       data={metrics?.errors_4xx         || []} color="#f59e0b" unit=""  warningThreshold={getThreshold("elb", "HTTPCode_Target_4XX_Count")?.warning} criticalThreshold={getThreshold("elb", "HTTPCode_Target_4XX_Count")?.critical} timeRange={rangLabel} emptyReason={targetGapReason} />
                 <MetricChart title="HTTPCode_ELB_5XX_Count"          data={metrics?.errors_elb_5xx     || []} color="#f472b6" unit=""  warningThreshold={getThreshold("elb", "HTTPCode_ELB_5XX_Count")?.warning} criticalThreshold={getThreshold("elb", "HTTPCode_ELB_5XX_Count")?.critical}  timeRange={rangLabel} />
                 <div className="chart-full">
-                  <MetricChart title="TargetResponseTime" data={metrics?.latency           || []} color="#fbbf24" unit="s" warningThreshold={getThreshold("elb", "TargetResponseTime")?.warning} criticalThreshold={getThreshold("elb", "TargetResponseTime")?.critical} timeRange={rangLabel} emptyReason={targetGapReason} />
+                  <MetricChart title="TargetResponseTime" data={metrics?.latency           || []} color="#fbbf24" unit="s" valueFormatter={fmtSeconds} warningThreshold={getThreshold("elb", "TargetResponseTime")?.warning} criticalThreshold={getThreshold("elb", "TargetResponseTime")?.critical} timeRange={rangLabel} emptyReason={targetGapReason} />
                 </div>
                 <MetricChart title="HealthyHostCount"             data={metrics?.healthy_hosts      || []} color="#22c55e" unit=""  timeRange={rangLabel} />
                 <MetricChart title="UnHealthyHostCount"           data={metrics?.unhealthy_hosts    || []} color="#ef4444" unit=""  warningThreshold={getThreshold("elb", "UnHealthyHostCount")?.warning} criticalThreshold={getThreshold("elb", "UnHealthyHostCount")?.critical} timeRange={rangLabel} />
@@ -1490,6 +1490,7 @@ function perSecond(series) {
   if (!Array.isArray(series)) return series; // keep null (hide card) / undefined as-is
   return series.map(d => ({ ...d, v: d.v / EBS_SUM_PERIOD_SECS }));
 }
+function fmtSeconds(v) { if (v == null) return "—"; if (Math.abs(v) < 1) return `${Number((v * 1000).toFixed(0))} ms`; return `${Number(v.toFixed(2))} s`; }
 function fmtIops(v) { return `${Number(v.toFixed(1))} IOPS`; }
 function fmtBytesRate(v) {
   const units = ["B/s", "KiB/s", "MiB/s", "GiB/s"];

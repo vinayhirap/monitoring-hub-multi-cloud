@@ -33,7 +33,7 @@ def _load_runner():
     install_stub(
         "app.collector.metrics_writer",
         write_metrics_batch=lambda rows: None,
-        write_metric_history_batch=lambda rows: None,
+        write_metric_history_batch=lambda rows, **kw: None,
     )
     install_stub(
         "app.collector.disk_mounts",
