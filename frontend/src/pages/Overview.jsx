@@ -251,7 +251,6 @@ export default function Overview() {
   }, { critical: 0, warning: 0, stale: 0, acknowledged: 0, suppressed: 0 });
   const criticalAlerts = alertTotals.critical;
   const warningAlerts  = alertTotals.warning;
-  const otherAlerts    = alertTotals.stale + alertTotals.acknowledged + alertTotals.suppressed;
 
   const filteredGroups = grouped.filter(g => {
     const s = aggregateStatus(g.regions);
@@ -304,7 +303,7 @@ export default function Overview() {
             {fleet && (fleet.critical_resource_count > 0 || fleet.capacity_risk_count > 0) && (
               <SummaryTile
                 icon={<AlertOctagonIcon size={18} />}
-                label="Need Attention"
+                label="Resources Need Attention"
                 value={fleet.critical_resource_count}
                 color={fleet.critical_resource_count > 0 ? "red" : "default"}
                 pulse={fleet.critical_resource_count > 0}
@@ -314,7 +313,7 @@ export default function Overview() {
               />
             )}
             {/* Flapping-alert count (2026-09-14) -- deliberately a
-                SEPARATE tile from "Need Attention," not folded into
+                SEPARATE tile from "Resources Need Attention," not folded into
                 its sub-line: this number is expected to trend toward
                 zero on its own as app/collector/threshold_tuning.py's
                 background auto-tuning converts these thresholds to
@@ -322,7 +321,7 @@ export default function Overview() {
                 per-threshold detail) -- it's a "the system is already
                 handling this" signal, not a "something needs fixing"
                 one, so it gets its own neutral-colored tile rather
-                than sharing the red "Need Attention" tile's urgency. */}
+                than sharing the red "Resources Need Attention" tile's urgency. */}
             {fleet && fleet.likely_flapping_count > 0 && (
               <SummaryTile
                 icon={<ZapIcon size={18} />}
@@ -342,8 +341,6 @@ export default function Overview() {
         <AlertStrip
           critical={criticalAlerts}
           warning={warningAlerts}
-          other={otherAlerts}
-          totals={alertTotals}
           onViewAlerts={() => navigate("/alerts")}
         />
       )}
@@ -770,7 +767,7 @@ function SkeletonAccountCard() {
 
 /** Firing-alert banner. Tone follows the worst severity present: red with a dot when anything is
  *  CRITICAL, amber (no dot) when there are only warnings, so a banner is never red without a critical. */
-function AlertStrip({ critical, warning, other, totals, onViewAlerts }) {
+function AlertStrip({ critical, warning, onViewAlerts }) {
   const hasCritical = critical > 0;
   return (
     <div className={`alert-strip${hasCritical ? "" : " alert-strip-warn"}`}>
@@ -787,14 +784,6 @@ function AlertStrip({ critical, warning, other, totals, onViewAlerts }) {
             {warning} WARNING
           </span>
         </>
-      )}
-      {other > 0 && (
-        <span
-          style={{ color: "var(--text-muted)", fontSize: 13 }}
-          title="Not counted above: stale (no fresh data), acknowledged, or muted/in maintenance"
-        >
-          · {other} not counted ({totals.stale} stale, {totals.acknowledged} ack, {totals.suppressed} muted)
-        </span>
       )}
       <button onClick={onViewAlerts} className="as-btn">View Alerts →</button>
     </div>
@@ -825,7 +814,7 @@ function SummaryTile({ icon, label, value, color, pulse, sub, onClick, hint }) {
   );
 }
 
-/** Slide-over listing exactly what the "Need Attention" tile counts. */
+/** Slide-over listing exactly what the "Resources Need Attention" tile counts. */
 function AttentionPanel({ onClose }) {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
@@ -851,10 +840,10 @@ function AttentionPanel({ onClose }) {
 
   return (
     <div className="att-overlay" onClick={onClose}>
-      <aside className="att-panel" role="dialog" aria-label="Resources needing attention" onClick={e => e.stopPropagation()}>
+      <aside className="att-panel" role="dialog" aria-label="Resources need attention" onClick={e => e.stopPropagation()}>
         <div className="att-head">
           <div>
-            <h2>Need Attention</h2>
+            <h2>Resources Need Attention</h2>
             <p>Resources with a health score below 70, and resources trending toward a capacity limit.</p>
           </div>
           <button className="att-close" onClick={onClose} aria-label="Close"><XIcon size={14} /></button>

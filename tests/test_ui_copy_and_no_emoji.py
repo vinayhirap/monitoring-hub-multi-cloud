@@ -63,3 +63,13 @@ def test_overview_banner_red_dot_only_with_critical_alerts():
     assert "{hasCritical && <span style={{ color: \"var(--text-muted)\", marginRight: 8 }}>·</span>}" in body
     css = open("frontend/src/pages/Overview.css", encoding="utf-8").read()
     assert ".alert-strip.alert-strip-warn" in css
+
+
+def test_overview_banner_has_no_explanatory_text_and_tile_is_renamed():
+    src = open("frontend/src/pages/Overview.jsx", encoding="utf-8").read()
+    i = src.index("function AlertStrip(")
+    body = src[i:src.index("\n}\n", i)]
+    assert "not counted" not in body and "Not counted above" not in src     # no explanatory text in the banner
+    assert "otherAlerts" not in src
+    assert 'label="Resources Need Attention"' in src and "<h2>Resources Need Attention</h2>" in src
+    assert 'label="Need Attention"' not in src

@@ -1,112 +1,51 @@
 // src/utils/metricLabels.js
 // ONE place that turns a stored metric name into what a person should read.
-// Stored names are the collector's internal keys (lower-case CloudWatch names,
-// CWAgent snake_case names, per-mount suffixes...). They were shown raw in some
-// places and abbreviated ("CPU %", "Net In", "Mem %") in others.
 //
-// The CloudWatch metric is literally named CPUUtilization, so its label is
-// "CPU Utilization" -- "CPU %" put the unit in the name.
+// The labels are GENERATED from the seed metric catalogues (app/aws|azure|gcp/metric_catalog_data.py) by
+// scripts/generate_metric_labels.py -> metricLabels.generated.js, so a metric added to a catalogue gets a
+// proper name (or a failing test) instead of a raw key reaching the UI. Do not hand-type labels here.
+import { GENERATED_METRIC_LABELS, GENERATED_PERCENT_METRICS } from "./metricLabels.generated.js";
 
-const LABELS = {
-  // EC2
-  cpuutilization:        "CPU Utilization",
-  cpucreditbalance:      "CPU Credit Balance",
-  networkin:             "Network In",
-  networkout:            "Network Out",
-  diskreadbytes:         "Disk Read Bytes",
-  diskwritebytes:        "Disk Write Bytes",
-  statuscheckfailed:     "Status Check Failed",
-  statuscheckfailed_instance: "Instance Status Check Failed",
-  statuscheckfailed_system:   "System Status Check Failed",
-  mem_used_percent:      "Memory Used %",
-  disk_used_percent:     "Disk Used %",
-  memutilization:        "Memory Utilization",
-  // EBS
-  volumereadops:         "Volume Read Ops",
-  volumewriteops:        "Volume Write Ops",
-  volumereadbytes:       "Volume Read Bytes",
-  volumewritebytes:      "Volume Write Bytes",
-  volumequeuelength:     "Volume Queue Length",
-  burstbalance:          "Burst Balance",
-  // RDS
-  dbconnections:         "DB Connections",
-  freestorage:           "Free Storage Space",
-  freeablememory:        "Freeable Memory",
-  readiops:              "Read IOPS",
-  writeiops:             "Write IOPS",
-  readlatency:           "Read Latency",
-  writelatency:          "Write Latency",
-  diskqueuedepth:        "Disk Queue Depth",
-  replicalag:            "Replica Lag",
-  swapusage:             "Swap Usage",
-  // ELB
-  requestcount:          "Request Count",
-  errors5xx:             "Target 5xx Errors",
-  errors4xx:             "4xx Errors",
-  httpcode_target_5xx_count: "Target 5xx Count",
-  httpcode_target_4xx_count: "Target 4xx Count",
-  httpcode_elb_5xx_count:    "ELB 5xx Count",
-  responselatency:       "Target Response Time",
-  healthyhosts:          "Healthy Hosts",
-  unhealthyhosts:        "Unhealthy Hosts",
-  healthyhosts_describe:   "Healthy Hosts",
-  unhealthyhosts_describe: "Unhealthy Hosts",
-  activeconnectioncount:   "Active Connections",
-  newconnectioncount:      "New Connections",
-  rejectedconnectioncount: "Rejected Connections",
-  targetconnectionerrorcount: "Target Connection Errors",
-  // Lambda
-  invocations:           "Invocations",
-  errors:                "Errors",
-  duration:              "Duration",
-  throttles:             "Throttles",
-  concurrentexecutions:  "Concurrent Executions",
-  iteratorage:           "Iterator Age",
-  // WAF
-  allowedrequests:       "Allowed Requests",
-  blockedrequests:       "Blocked Requests",
-  // internal
-  multivariate_anomaly:  "Multivariate Anomaly",
-  synthetic_uptime:      "Synthetic Uptime",
-};
+const PERCENT = new Set(GENERATED_PERCENT_METRICS);
+// per-mount disk series published by the CloudWatch agent: disk_used_percent__var_lib_mysql
+const MOUNT = /^(disk_used_percent)__(.+)$/;
 
-const SMALL = new Set(["of", "in", "on", "per", "and"]);
-const ACRONYMS = { cpu: "CPU", ebs: "EBS", rds: "RDS", elb: "ELB", alb: "ALB", nlb: "NLB",
-                   waf: "WAF", iops: "IOPS", io: "I/O", db: "DB", http: "HTTP", ssl: "SSL",
-                   tls: "TLS", api: "API", sqs: "SQS", sns: "SNS", dns: "DNS", vpn: "VPN" };
+const ACRONYMS = { cpu: "CPU", io: "I/O", iops: "IOPS", http: "HTTP", https: "HTTPS", db: "DB", dns: "DNS",
+                   api: "API", ip: "IP", id: "ID", vm: "VM", os: "OS", sql: "SQL", url: "URL" };
+const LOWER = new Set(["per", "of", "to", "and", "for", "by", "from"]);
+const TOKEN = /[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+[0-9]*|[0-9]+[A-Z]*(?![a-z])|[0-9]+[a-z]*/g;
 
-function titleCase(str) {
-  return str.split(/[\s_]+/).filter(Boolean).map((w, i) => {
-    const lw = w.toLowerCase();
-    if (ACRONYMS[lw]) return ACRONYMS[lw];
-    if (i > 0 && SMALL.has(lw)) return lw;
-    return lw.charAt(0).toUpperCase() + lw.slice(1);
+// Only for names that are in NO catalogue (e.g. metrics discovered at runtime): split on separators and
+// camel case and title-case the words. Names stored lower-case with no separators cannot be split.
+function fallbackLabel(raw) {
+  const words = [];
+  raw.replace(/[/_.-]/g, " ").split(/\s+/).filter(Boolean).forEach((part) => {
+    (part.match(TOKEN) || [part]).forEach((tok) => words.push(tok));
+  });
+  return words.map((tok, i) => {
+    const low = tok.toLowerCase();
+    if (ACRONYMS[low]) return ACRONYMS[low];
+    if (/^[0-9]+[A-Za-z]*$/.test(tok)) return low;
+    if (i > 0 && LOWER.has(low)) return low;
+    return tok.charAt(0).toUpperCase() + tok.slice(1).toLowerCase();
   }).join(" ");
 }
 
-/** "disk_used_percent__var_lib_mysql" -> "Disk Used % (/var/lib/mysql)" */
+/** "disk_used_percent" -> "Disk Utilization";  "disk_used_percent__var_lib" -> "Disk Utilization (/var/lib)" */
 export function metricLabel(name) {
   if (!name) return "";
   const raw = String(name);
   const lower = raw.toLowerCase();
-  if (LABELS[lower]) return LABELS[lower];
-
-  const m = lower.match(/^(disk_used_percent)__(.+)$/);
-  if (m) return `${LABELS[m[1]]} (/${m[2].replace(/_/g, "/")})`;
-
-  // CamelCase CloudWatch names (extended tier stores them as-is, e.g. VolumeWriteOps)
-  if (/[a-z][A-Z]/.test(raw) && !raw.includes("_")) {
-    const spaced = raw.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
-    return titleCase(spaced);
-  }
-  return titleCase(raw);
+  if (GENERATED_METRIC_LABELS[lower]) return GENERATED_METRIC_LABELS[lower];
+  const m = lower.match(MOUNT);
+  if (m) return `${GENERATED_METRIC_LABELS[m[1]]} (/${m[2].replace(/_/g, "/")})`;
+  return fallbackLabel(raw);
 }
 
-const PERCENT = /^(cpuutilization|memutilization|mem_used_percent|disk_used_percent(__.+)?|burstbalance)$/;
-
-/** "%" for metrics whose value is a percentage, otherwise "". */
+/** "%" for metrics whose catalogue unit is Percent (and per-mount disk series), otherwise "". */
 export function metricUnit(name) {
-  return PERCENT.test(String(name || "").toLowerCase()) ? "%" : "";
+  const n = String(name || "").toLowerCase();
+  return PERCENT.has(n) || MOUNT.test(n) ? "%" : "";
 }
 
 /** Compact, unit-aware number: 95.13 -> "95.13%" for CPU, 12100 -> "12.1K" for ops. */
