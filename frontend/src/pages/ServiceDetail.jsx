@@ -1232,8 +1232,8 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
               </div>
             )}
             {service === "EC2" && <>
-              <MetricChart title="NetworkIn"  data={metrics.network_in?.map(d => ({ ...d, v: d.v / 60 }))}  color="#22c55e" unit="B/s" valueFormatter={fmtBytesRate} yTickFormatter={fmtCompactBytes} timeRange={rangLabel} />
-              <MetricChart title="NetworkOut" data={metrics.network_out?.map(d => ({ ...d, v: d.v / 60 }))} color="#7c6ee0" unit="B/s" valueFormatter={fmtBytesRate} yTickFormatter={fmtCompactBytes} timeRange={rangLabel} />
+              <MetricChart title="NetworkIn (Bytes)"  data={metrics.network_in}  color="#22c55e" unit="B" valueFormatter={fmtCwNumber} yTickFormatter={fmtCwAxis} timeRange={rangLabel} />
+              <MetricChart title="NetworkOut (Bytes)" data={metrics.network_out} color="#7c6ee0" unit="B" valueFormatter={fmtCwNumber} yTickFormatter={fmtCwAxis} timeRange={rangLabel} />
               {/* Disk Read/Write are instance-store metrics that modern
                   EBS-backed instances never publish — removed outright
                   rather than shown as permanently-empty boxes. Memory
@@ -1242,8 +1242,10 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
                   data") when it isn't installed/reporting for this
                   instance — see cwagent_installed in get_ec2_metric_series. */}
               {metrics.cwagent_installed && <>
-                <MetricChart title="mem_used_percent"  data={metrics.mem_utilization}   color="#7c6ee0" unit="%" warningThreshold={getThreshold("ec2", "mem_used_percent")?.warning} criticalThreshold={getThreshold("ec2", "mem_used_percent")?.critical} timeRange={rangLabel} />
-                <MetricChart title="disk_used_percent" data={metrics.disk_used_percent} color="#fbbf24" unit="%" warningThreshold={getThreshold("ec2", "disk_used_percent")?.warning} criticalThreshold={getThreshold("ec2", "disk_used_percent")?.critical} timeRange={rangLabel} />
+                <MetricChart title={metrics.mem_metric_label || "mem_used_percent"}  data={metrics.mem_utilization}   color="#7c6ee0" unit="%" warningThreshold={getThreshold("ec2", "mem_used_percent")?.warning} criticalThreshold={getThreshold("ec2", "mem_used_percent")?.critical} timeRange={rangLabel} />
+                {metrics.disk_inverted
+                  ? <MetricChart title={metrics.disk_metric_label || "LogicalDisk % Free Space"} data={(metrics.disk_used_percent || []).map(d => ({ ...d, v: Math.round((100 - d.v) * 1e6) / 1e6 }))} color="#fbbf24" unit="%" timeRange={rangLabel} />
+                  : <MetricChart title="disk_used_percent" data={metrics.disk_used_percent} color="#fbbf24" unit="%" warningThreshold={getThreshold("ec2", "disk_used_percent")?.warning} criticalThreshold={getThreshold("ec2", "disk_used_percent")?.critical} timeRange={rangLabel} />}
               </>}
             </>}
 
@@ -1490,6 +1492,12 @@ function perSecond(series) {
   if (!Array.isArray(series)) return series; // keep null (hide card) / undefined as-is
   return series.map(d => ({ ...d, v: d.v / EBS_SUM_PERIOD_SECS }));
 }
+function fmtCwAxis(v) {
+  const units = ["", "k", "M", "G"]; let i = 0;
+  while (Math.abs(v) >= 1000 && i < units.length - 1) { v /= 1000; i++; }
+  return `${Number(v.toFixed(2))}${units[i]}`;
+}
+function fmtCwNumber(v) { return v == null ? "—" : `${Number(v.toFixed(1)).toLocaleString("en-US")} B`; }
 function fmtSeconds(v) { if (v == null) return "—"; if (Math.abs(v) < 1) return `${Number((v * 1000).toFixed(0))} ms`; return `${Number(v.toFixed(2))} s`; }
 function fmtIops(v) { return `${Number(v.toFixed(1))} IOPS`; }
 function fmtBytesRate(v) {

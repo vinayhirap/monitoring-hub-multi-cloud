@@ -1560,12 +1560,17 @@ def _get_ec2_metric_series_raw(instance_id, region=None, hours=6, account=None) 
         mem_utilization        = []
         disk_used_percent      = []
         disk_used_percent_by_mount = {}  # path -> series, ALL mounts (new -- see app/collector/disk_mounts.py)
+        # Real CloudWatch metric names, so the UI can label/plot exactly what
+        # the CloudWatch console shows (Windows: "LogicalDisk % Free Space" and
+        # "Memory % Committed Bytes In Use"; Linux: disk_used_percent/mem_used_percent).
+        mem_cw_metric_name  = "mem_used_percent"
+        disk_cw_label       = "disk_used_percent"
+        disk_inverted       = False
         if cwagent_installed:
             try:
                 cw        = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
                 cw_period = max(period, 60)  # CWAgent's own default reporting interval
 
-                mem_cw_metric_name = "mem_used_percent"
                 mem_dims = _ec2_cwagent_dimensions(cw, mem_cw_metric_name, instance_id)
                 if mem_dims is None:
                     # Linux name found nothing -- try Windows' equivalent
@@ -1579,6 +1584,9 @@ def _get_ec2_metric_series_raw(instance_id, region=None, hours=6, account=None) 
                     mem_cw_metric_name = "Memory % Committed Bytes In Use"
                     mem_dims = _ec2_cwagent_dimensions(cw, mem_cw_metric_name, instance_id)
                 mounts = all_cwagent_disk_dims(cw, instance_id)  # [(dims, path, metric_name, cw_metric_name, invert), ...] -- every mount
+                if mounts:
+                    _root = next((m for m in mounts if m[1] in ("/", "C:")), mounts[0])
+                    disk_cw_label, disk_inverted = _root[3], bool(_root[4])
 
                 queries = []
                 if mem_dims:
@@ -1630,6 +1638,9 @@ def _get_ec2_metric_series_raw(instance_id, region=None, hours=6, account=None) 
             "mem_utilization":           mem_utilization,
             "disk_used_percent":         disk_used_percent,
             "disk_used_percent_by_mount": disk_used_percent_by_mount,
+            "mem_metric_label":          mem_cw_metric_name,
+            "disk_metric_label":         disk_cw_label,
+            "disk_inverted":             disk_inverted,
             "period_hours":              hours,
             "period_secs":               period,
         }
