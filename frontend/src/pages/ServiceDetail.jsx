@@ -1232,8 +1232,8 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
               </div>
             )}
             {service === "EC2" && <>
-              <MetricChart title="NetworkIn"  data={metrics.network_in?.map(d => ({ ...d, v: d.v / 1024 / 60 }))}  color="#22c55e" unit="KB/s" timeRange={rangLabel} />
-              <MetricChart title="NetworkOut" data={metrics.network_out?.map(d => ({ ...d, v: d.v / 1024 / 60 }))} color="#7c6ee0" unit="KB/s" timeRange={rangLabel} />
+              <MetricChart title="NetworkIn"  data={metrics.network_in?.map(d => ({ ...d, v: d.v / 60 }))}  color="#22c55e" unit="B/s" valueFormatter={fmtBytesRate} yTickFormatter={fmtCompactBytes} timeRange={rangLabel} />
+              <MetricChart title="NetworkOut" data={metrics.network_out?.map(d => ({ ...d, v: d.v / 60 }))} color="#7c6ee0" unit="B/s" valueFormatter={fmtBytesRate} yTickFormatter={fmtCompactBytes} timeRange={rangLabel} />
               {/* Disk Read/Write are instance-store metrics that modern
                   EBS-backed instances never publish — removed outright
                   rather than shown as permanently-empty boxes. Memory
