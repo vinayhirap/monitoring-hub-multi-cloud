@@ -49,3 +49,17 @@ def test_alert_tabs_are_ordered_attention_first_then_lifecycle_then_history():
 def test_the_decorative_live_pill_and_meta_subtitle_are_gone_from_the_alerts_page():
     alerts = open("frontend/src/pages/Alerts.jsx", encoding="utf-8").read()
     assert "live-pill" not in alerts and "counts here match the Overview banner" not in alerts
+
+
+def test_overview_banner_red_dot_only_with_critical_alerts():
+    """The Overview alert banner showed a red dot (and a stray separator) even with zero critical
+    alerts. The dot must be conditional on critical > 0 and a warnings-only banner is amber."""
+    src = open("frontend/src/pages/Overview.jsx", encoding="utf-8").read()
+    i = src.index("function AlertStrip(")
+    body = src[i:src.index("\n}\n", i)]
+    assert "{hasCritical && <span className=\"as-dot critical\" />}" in body
+    assert body.count("as-dot") == 1                      # no unconditional dot anywhere in the banner
+    assert "alert-strip-warn" in body
+    assert "{hasCritical && <span style={{ color: \"var(--text-muted)\", marginRight: 8 }}>·</span>}" in body
+    css = open("frontend/src/pages/Overview.css", encoding="utf-8").read()
+    assert ".alert-strip.alert-strip-warn" in css

@@ -339,31 +339,13 @@ export default function Overview() {
       </div>
 
       {(criticalAlerts > 0 || warningAlerts > 0) && (
-        <div className="alert-strip">
-          <span className="as-dot critical" />
-          {criticalAlerts > 0 && (
-            <span style={{ fontWeight: 700, color: "var(--red)", marginRight: 8 }}>
-              {criticalAlerts} CRITICAL
-            </span>
-          )}
-          {warningAlerts > 0 && (
-            <>
-              <span style={{ color: "var(--text-muted)", marginRight: 8 }}>·</span>
-              <span style={{ fontWeight: 600, color: "var(--yellow)", marginRight: 8 }}>
-                {warningAlerts} WARNING
-              </span>
-            </>
-          )}
-          {otherAlerts > 0 && (
-            <span
-              style={{ color: "var(--text-muted)", fontSize: 13 }}
-              title="Not counted above: stale (no fresh data), acknowledged, or muted/in maintenance"
-            >
-              · {otherAlerts} not counted ({alertTotals.stale} stale, {alertTotals.acknowledged} ack, {alertTotals.suppressed} muted)
-            </span>
-          )}
-          <button onClick={() => navigate("/alerts")} className="as-btn">View Alerts →</button>
-        </div>
+        <AlertStrip
+          critical={criticalAlerts}
+          warning={warningAlerts}
+          other={otherAlerts}
+          totals={alertTotals}
+          onViewAlerts={() => navigate("/alerts")}
+        />
       )}
 
       <div className="ov-section-bar">
@@ -782,6 +764,39 @@ function SkeletonAccountCard() {
           <div className="sk-block" style={{ width: "100%", height: 26 }} />
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Firing-alert banner. Tone follows the worst severity present: red with a dot when anything is
+ *  CRITICAL, amber (no dot) when there are only warnings, so a banner is never red without a critical. */
+function AlertStrip({ critical, warning, other, totals, onViewAlerts }) {
+  const hasCritical = critical > 0;
+  return (
+    <div className={`alert-strip${hasCritical ? "" : " alert-strip-warn"}`}>
+      {hasCritical && <span className="as-dot critical" />}
+      {hasCritical && (
+        <span style={{ fontWeight: 700, color: "var(--red)", marginRight: 8 }}>
+          {critical} CRITICAL
+        </span>
+      )}
+      {warning > 0 && (
+        <>
+          {hasCritical && <span style={{ color: "var(--text-muted)", marginRight: 8 }}>·</span>}
+          <span style={{ fontWeight: 600, color: "var(--yellow)", marginRight: 8 }}>
+            {warning} WARNING
+          </span>
+        </>
+      )}
+      {other > 0 && (
+        <span
+          style={{ color: "var(--text-muted)", fontSize: 13 }}
+          title="Not counted above: stale (no fresh data), acknowledged, or muted/in maintenance"
+        >
+          · {other} not counted ({totals.stale} stale, {totals.acknowledged} ack, {totals.suppressed} muted)
+        </span>
+      )}
+      <button onClick={onViewAlerts} className="as-btn">View Alerts →</button>
     </div>
   );
 }
