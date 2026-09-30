@@ -33,7 +33,7 @@ from app.alert_rules import (
 )
 from app.threshold_defaults import (
     is_placeholder_threshold, AWS_METRIC_NAME_TO_DB_NAME, normalize_service_key,
-    is_capacity_percent_metric, anomaly_floor,
+    is_capacity_percent_metric, alert_floor,
 )
 
 # 2026-09-15 fix: this background evaluator resolves alerts directly via SQL
@@ -293,9 +293,9 @@ def _anomaly_only_bound(cursor, aws_account_id, aws_resource_id, metric_name, k)
     line = mean + max(k, 3.0) * stddev
     if mean > 0:
         line = max(line, mean * ANOMALY_MIN_RATIO)
-    # absolute size floor (threshold_defaults.ANOMALY_MIN_ABSOLUTE): an idle volume's tiny baseline must not
-    # turn a few dozen operations into an alert
-    return max(line, anomaly_floor(metric_name))
+    # absolute size floor (threshold_defaults.ALERT_MIN_ABSOLUTE): an idle resource's tiny baseline must not
+    # turn a trivial reading into an alert
+    return max(line, alert_floor(metric_name))
 
 
 def _required_cycles(evaluation_period_minutes):
@@ -764,6 +764,22 @@ def _evaluate_row(cursor, row, silenced_map, stats):
 
     is_critical = compare(metric_value, critical_value, comparison) and severity_cap is None
     is_warning  = compare(metric_value, warning_value,  comparison)
+
+    # SIZE FLOOR (threshold_defaults.ALERT_MIN_ABSOLUTE), every mode: a reading at or below the floor is never a
+    # breach, whatever the configured / adaptive / anomaly line says. Severity still follows the configured lines;
+    # the threshold recorded on the alert is lifted to the floor so "12 / 1" cannot show for a floor of 10.
+    floor = alert_floor(metric_name)
+    if floor and comparison in (">", ">=") and metric_value is not None:
+        try:
+            if float(metric_value) <= floor:
+                is_critical = is_warning = False
+        except (TypeError, ValueError):
+            pass
+        if warning_value is not None:
+            warning_value = max(float(warning_value), floor)
+        if critical_value is not None:
+            critical_value = max(float(critical_value), floor)
+
     is_breaching = is_critical or is_warning
 
     cursor.execute("""

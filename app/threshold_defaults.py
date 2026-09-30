@@ -251,23 +251,32 @@ DEFAULT_THRESHOLDS = {
 # and is sustainedly far outside its OWN normal range, never above WARNING,
 # and never on cold start. The moment someone edits either number in
 # Settings the row stops matching and becomes an ordinary static threshold.
-# ANOMALY-ONLY SIZE FLOOR (2026-09-30). The anomaly line is mean + 3 sigma (and at least 1.5 x mean), which
-# for a near-idle volume is a near-zero number: 57 operations in 5 minutes (0.2 per second) raised a WARNING
-# against a "threshold" of 26. A reading is only worth an alert if it is also big in absolute terms, so the
-# line is never lower than this floor. Units are the STORED units: EBS volume metrics are Sum over one
-# 5-minute period. Roughly 3 operations/second and 170 KB/second: a volume below that is effectively idle.
-# Busy volumes are unaffected (their mean + 3 sigma is far above the floor). Adjust here.
-ANOMALY_MIN_ABSOLUTE = {
+# ALERT SIZE FLOOR (2026-09-30). A reading is only worth an alert if it is also big in ABSOLUTE terms.
+# Anomaly-only and adaptive lines are built from each resource's own baseline, so for a near-idle resource
+# they are near-zero numbers: 57 operations in 5 minutes (0.2 per second) raised an EBS WARNING against a
+# "threshold" of 26; 19.5 KB/minute on a jump server raised a Network Out WARNING against 18.4 KB; two
+# blocked WAF requests raised one against a static 1. The floor applies in EVERY threshold mode (static,
+# adaptive, anomaly-only) to metrics compared with ">" / ">=": a reading at or below it is never a breach.
+# Severity still comes from the configured lines, and the threshold SHOWN on an alert is lifted to the floor.
+# Units are the STORED units:
+#   EBS volume ops / bytes   Sum over one 5-minute period       (1,000 ops ~ 3.3 IOPS; 50 MB ~ 170 KB/s)
+#   EC2 network in / out     Average bytes per MINUTE            (1 MB/min ~ 17 KB/s)
+#   WAF blocked requests     requests per collection period
+# Busy resources are unaffected (their own lines are far above the floor). Adjust here.
+ALERT_MIN_ABSOLUTE = {
     "volumereadops": 1000.0,
     "volumewriteops": 1000.0,
     "volumereadbytes": 50_000_000.0,
     "volumewritebytes": 50_000_000.0,
+    "networkin": 1_000_000.0,
+    "networkout": 1_000_000.0,
+    "blockedrequests": 10.0,
 }
 
 
-def anomaly_floor(metric_name):
-    """Smallest absolute value an anomaly-only alert may fire at for this stored metric name (0 = none)."""
-    return ANOMALY_MIN_ABSOLUTE.get((metric_name or "").lower(), 0.0)
+def alert_floor(metric_name):
+    """Smallest absolute value at which this stored metric may raise an alert (0 = no floor)."""
+    return ALERT_MIN_ABSOLUTE.get((metric_name or "").lower(), 0.0)
 
 
 PLACEHOLDER_THRESHOLD = (1000000.0, 5000000.0, ">")

@@ -3,7 +3,7 @@
 
 1. ANOMALY-ONLY SIZE FLOOR. An idle EBS volume has a near-zero baseline, so the anomaly line (mean + 3 sigma)
    was ~26 operations and 57 operations in 5 minutes (0.2/s) raised a WARNING. The line is now never lower than
-   threshold_defaults.ANOMALY_MIN_ABSOLUTE (1,000 operations / 50 MB per 5-minute period).
+   threshold_defaults.ALERT_MIN_ABSOLUTE (1,000 operations / 50 MB per 5-minute period).
 2. IDLE LOAD BALANCERS. ELB TargetResponseTime is only published for periods with requests, so an idle load
    balancer's alert sat in `stale` (NO DATA) for the full 72 h. If RequestCount was OBSERVED at zero for the
    whole window, the alert now closes as `no_traffic`.
@@ -17,18 +17,21 @@ sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
 import app.alert_rules  # noqa: F401,E402
 import app.aws.metric_catalog_data  # noqa: F401,E402
 import app.collector.polling_model  # noqa: F401,E402
-from app.threshold_defaults import anomaly_floor, ANOMALY_MIN_ABSOLUTE  # noqa: E402
+from app.threshold_defaults import alert_floor, ALERT_MIN_ABSOLUTE  # noqa: E402
 from tests.conftest import FakeCursor  # noqa: E402
 from tests.test_baseline_and_dynamic_bounds import _load_alert_evaluator, _baseline_cursor  # noqa: E402
 
 
 # ── 1. size floor ────────────────────────────────────────────────────
 
-def test_floor_table_covers_the_four_ebs_volume_metrics_and_nothing_else():
-    assert set(ANOMALY_MIN_ABSOLUTE) == {"volumereadops", "volumewriteops", "volumereadbytes", "volumewritebytes"}
-    assert anomaly_floor("VolumeReadOps") == 1000.0                 # PascalCase family (extended tier) too
-    assert anomaly_floor("volumewritebytes") == 50_000_000.0
-    assert anomaly_floor("requestcount") == 0.0 and anomaly_floor(None) == 0.0
+def test_floor_table_holds_exactly_the_agreed_metrics_and_units():
+    assert ALERT_MIN_ABSOLUTE == {
+        "volumereadops": 1000.0, "volumewriteops": 1000.0,
+        "volumereadbytes": 50_000_000.0, "volumewritebytes": 50_000_000.0,
+        "networkin": 1_000_000.0, "networkout": 1_000_000.0, "blockedrequests": 10.0}
+    assert alert_floor("VolumeReadOps") == 1000.0                 # PascalCase family (extended tier) too
+    assert alert_floor("NetworkOut") == 1_000_000.0 and alert_floor("BlockedRequests") == 10.0
+    assert alert_floor("requestcount") == 0.0 and alert_floor("allowedrequests") == 0.0 and alert_floor(None) == 0.0
 
 
 def test_idle_volume_line_is_the_floor_not_a_near_zero_number():
