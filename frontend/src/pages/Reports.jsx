@@ -22,7 +22,7 @@ import {
   listReports, reportDownloadUrl, emailReport,
   listReportScopeResources, listReportScopeIncidents,
 } from "../api/api";
-import { ReportIcon, DownloadIcon } from "../components/icons";
+import { ReportIcon, DownloadIcon, ListIcon, EditIcon } from "../components/icons";
 import "./Reports.css";
 
 const REPORT_TYPES = ["WEEKLY", "MONTHLY", "QUARTERLY", "CUSTOM"];
@@ -235,7 +235,7 @@ export default function Reports() {
                       title={manualScopeId ? "Pick from list instead" : "Enter ID manually"}
                       onClick={(e) => { e.currentTarget.blur(); setManualScopeId(!manualScopeId); setScopeId(""); }}
                     >
-                      {manualScopeId ? "☰" : "✎"}
+                      {manualScopeId ? <ListIcon size={14} /> : <EditIcon size={14} />}
                     </button>
                   )}
                 </div>
@@ -263,7 +263,7 @@ export default function Reports() {
                       title={manualScopeId ? "Pick from list instead" : "Not in the list? Enter the ID manually"}
                       onClick={(e) => { e.currentTarget.blur(); setManualScopeId(!manualScopeId); setScopeId(""); }}
                     >
-                      {manualScopeId ? "☰" : "✎"}
+                      {manualScopeId ? <ListIcon size={14} /> : <EditIcon size={14} />}
                     </button>
                   )}
                 </div>

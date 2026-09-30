@@ -4,6 +4,7 @@ import "./MetricSelector.css";
 
 import { CloudServiceIcon } from "./cloud-icons";
 
+import { SearchIcon } from "./icons";
 const PROVIDER_LABEL = { aws: "AWS", gcp: "GCP", azure: "Azure" };
 // Exported so ServiceList.jsx's Services page can group its tiles into
 // the same Core/Extended/Directory sections, with the same labels/hints,
@@ -161,7 +162,7 @@ export default function MetricSelector({ catalog, selectedIds, onChange, onDisco
           <span className="ms-count-sub"> · {totalGroups} service{totalGroups === 1 ? "" : "s"} shown</span>
         </span>
         <div className="ms-actions">
-          <button type="button" className="ms-btn-ghost" onClick={applyDefaults}>✓ Apply recommended</button>
+          <button type="button" className="ms-btn-ghost" onClick={applyDefaults}>Apply recommended</button>
           <button type="button" className="ms-btn-ghost ms-btn-danger" onClick={clearAll}>Clear all</button>
         </div>
       </div>
@@ -169,7 +170,7 @@ export default function MetricSelector({ catalog, selectedIds, onChange, onDisco
       <div className="ms-list">
         {totalGroups === 0 && (
           <div className="ms-empty">
-            <div className="ms-empty-icon">⌕</div>
+            <div className="ms-empty-icon"><SearchIcon size={22} /></div>
             No metrics match {search ? `"${search}"` : "this filter"}.
           </div>
         )}

@@ -380,7 +380,7 @@ export default function Settings() {
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn-check" onClick={runCheck} disabled={checking || !accountId}>
-              {checking ? "⏳ Checking…" : "▶ Check Now"}
+              {checking ? "Checking…" : "Check Now"}
             </button>
             {/* Backend requires alerts.clear, granted to admin only
                 (db/migrations/049_close_require_role_bypass.sql) -- this

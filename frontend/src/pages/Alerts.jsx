@@ -5,11 +5,21 @@ import { useAuth } from "../auth/AuthContext";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useAlertSync } from "../hooks/useAlertSync";
 import { metricLabel, formatMetricValue } from "../utils/metricLabels";
+import { severityHeaders } from "../utils/alertGroups";
 import "./Alerts.css";
 import { useTimezone, formatInTz } from "../contexts/TimezoneContext";
-import { InfoIcon, DownloadIcon } from "../components/icons";
+import { InfoIcon, DownloadIcon, BellIcon, BellOffIcon, AlertTriangleIcon, BarChartIcon, CloudIcon, CheckIcon, EyeIcon, RefreshCwIcon } from "../components/icons";
 import { rcaReportUrl } from "../api/api";
 import { clearAllCached } from "../utils/dataCache";
+
+
+// Tab order: what needs a person first, then the lifecycle states, then history.
+// Groups are separated by a thin divider in the tab bar.
+const TAB_GROUPS = [
+  [["active", "Active"], ["critical", "Critical"], ["attention", "Alerts Needs Attention"], ["tuning", "Auto-tuning"]],
+  [["stale", "Stale"], ["acknowledged", "Acknowledged"], ["suppressed", "Muted / Maint."]],
+  [["resolved", "Resolved"], ["all", "All"]],
+];
 
 const BASE = "";
 
@@ -414,6 +424,7 @@ export default function Alerts() {
   // happen to be loaded.
   const accountOptions = (counts?.accounts ?? []).map(a => [a.id, a.name]);
   const filtered = alerts;
+  const sevHeaders = severityHeaders(filtered, tab);
   const displayCounts = counts ?? { all: 0, active: 0, stale: 0, critical: 0, attention: 0, tuning: 0, acknowledged: 0, resolved: 0, suppressed: 0 };
 
   return (
@@ -421,7 +432,6 @@ export default function Alerts() {
       <div className="alerts-header">
         <div>
           <h1>Active <span className="accent">Alerts</span></h1>
-          <p className="alerts-sub">Live alerts across all accounts — counts here match the Overview banner and every resource badge</p>
         </div>
         <div className="alerts-header-right">
           <button
@@ -433,43 +443,37 @@ export default function Alerts() {
             title={soundOn ? "Mute alert sound" : "Enable alert sound"}
             style={{ fontSize: 14, padding: "6px 10px" }}
           >
-            {soundOn ? "🔔" : "🔕"}
+            {soundOn ? <BellIcon size={16} /> : <BellOffIcon size={16} />}
           </button>
-          <button className="btn-refresh" onClick={loadAlerts}>↻ Refresh</button>
-          <div className="live-pill"><span className="live-dot" />LIVE</div>
+          <button className="btn-refresh" onClick={loadAlerts}><RefreshCwIcon size={13} className="ico-inline" />Refresh</button>
         </div>
       </div>
 
       {(tab === "attention" || tab === "tuning") && (
         <div className={`alerts-explain ${tab === "tuning" ? "alerts-explain-tune" : "alerts-explain-attn"}`}>
           {tab === "attention"
-            ? "Firing alerts on resources whose health score is below 70 — the same resources the Overview “Need Attention” tile counts. These are the ones to look at first."
+            ? "Firing alerts on resources whose health score is below 70 — the same resources the Overview “Need Attention” tile counts. Start here."
             : "Firing alerts on resources whose normal range already crosses the static threshold, so they are probably noise, not an incident. The system is switching these to adaptive thresholds on its own — the same alerts the Overview “Flapping (Self-Tuning)” tile counts."}
         </div>
       )}
 
       <div className="alerts-tabs">
-        {[
-          ["all",          "All"],
-          ["active",       "Active"],
-          ["stale",        "Stale"],
-          ["critical",     "Critical"],
-          ["attention",    "Needs attention"],
-          ["tuning",       "Auto-tuning"],
-          ["acknowledged", "Acknowledged"],
-          ["suppressed",   "Muted / Maint."],
-          ["resolved",     "Resolved"],
-        ].map(([key, label]) => (
-          <button
-            key={key}
-            className={`atab ${tab === key ? "atab-active" : ""}`}
-            onClick={() => setTab(key)}
-          >
-            {label}
-            <span className={`atab-count ${tab === key ? "atab-count-active" : ""}`}>
-              {displayCounts[key]}
-            </span>
-          </button>
+        {TAB_GROUPS.map((group, gi) => (
+          <Fragment key={gi}>
+            {gi > 0 && <span className="atab-sep" aria-hidden="true" />}
+            {group.map(([key, label]) => (
+              <button
+                key={key}
+                className={`atab ${tab === key ? "atab-active" : ""}`}
+                onClick={() => setTab(key)}
+              >
+                {label}
+                <span className={`atab-count ${tab === key ? "atab-count-active" : ""}`}>
+                  {displayCounts[key]}
+                </span>
+              </button>
+            ))}
+          </Fragment>
         ))}
         <select
           className="alerts-account-filter"
@@ -493,7 +497,7 @@ export default function Alerts() {
         <div className="alerts-loading">Loading alerts…</div>
       ) : error ? (
         <div className="alerts-error">
-          ⚠ {error} <button onClick={loadAlerts}>Retry</button>
+          <AlertTriangleIcon size={14} className="ico-inline" />{error} <button onClick={loadAlerts}>Retry</button>
         </div>
       ) : (
         <div className="alerts-table-wrap">
@@ -528,6 +532,14 @@ export default function Alerts() {
 
                   return (
                     <Fragment key={a.id ?? idx}>
+                    {sevHeaders[idx] && (
+                      <tr className={`sev-group-row sev-group-${sevHeaders[idx].sev.toLowerCase()}`}>
+                        <td colSpan={canAct ? 8 : 7}>
+                          <span className="sev-group-label">{sevHeaders[idx].label}</span>
+                          <span className="sev-group-count">{sevHeaders[idx].count}</span>
+                        </td>
+                      </tr>
+                    )}
                     <tr className={`alert-row sev-row-${sev.toLowerCase()}`}>
 
                       <td><SevBadge sev={sev} /></td>
@@ -541,7 +553,7 @@ export default function Alerts() {
                           <div className="alert-tags">
                             {a.needs_attention && (
                               <span className="alert-tag alert-tag-attn" title="This resource's health score is below 70. It is counted in the Overview 'Need Attention' tile.">
-                                Needs attention
+                                Needs Attention
                               </span>
                             )}
                             {a.auto_tuning && (
@@ -590,7 +602,7 @@ export default function Alerts() {
                             title="No fresh metric data for this resource in a while — the resource may have been decommissioned, or the metrics collector may be failing for it. This alert has NOT been auto-resolved; verify before dismissing."
                             style={{ color: "#c98a2b", fontSize: 11, marginTop: 2 }}
                           >
-                            ⚠ stale — no data {timeSince(a.last_seen_at)}
+                            <AlertTriangleIcon size={12} className="ico-inline" />Stale: no data {timeSince(a.last_seen_at)}
                           </div>
                         )}
                       </td>
@@ -603,7 +615,7 @@ export default function Alerts() {
                               onClick={e => { e.stopPropagation(); navigate(route); }}
                               title="Open resource detail with CloudWatch charts"
                             >
-                              📊 Metrics
+                              <BarChartIcon size={12} className="ico-inline" />Metrics
                             </button>
                           )}
                           {canOpenAws && (
@@ -613,7 +625,7 @@ export default function Alerts() {
                               onClick={e => { e.stopPropagation(); openConsole(a.id); }}
                               title="Open in cloud console (correct account)"
                             >
-                              {isOpeningAws ? "☁ Opening…" : "☁ Console"}
+                              {isOpeningAws ? "Opening…" : <><CloudIcon size={12} className="ico-inline" />Console</>}
                             </button>
                           )}
                           {/* Deep RCA (2026-09-14): plain-English probable-
@@ -687,7 +699,7 @@ export default function Alerts() {
                                 : "This alert isn't a real issue (helps the system self-tune)"}
                               onClick={e => { e.stopPropagation(); handleMarkFalsePositive(a.id, !a.marked_false_positive); }}
                             >
-                              {a.marked_false_positive ? "✓ Not genuine" : "Not genuine?"}
+                              {a.marked_false_positive ? <><CheckIcon size={12} className="ico-inline" />Not genuine</> : "Not genuine?"}
                             </button>
                           </div>
                         </td>
@@ -710,8 +722,11 @@ export default function Alerts() {
                                   {explainCache[a.id].confidence} confidence
                                 </span>
                                 {explainCache[a.id].summary_source === "llm" && (
-                                  <span className="explain-ai-badge" title="This summary was polished by an LLM from the facts below -- it never adds facts not already gathered">
-                                    ✨ AI-polished
+                                  <span
+                                    className="explain-source"
+                                    title="Written by a language model from the verified facts in this analysis. It does not add facts. Confirm against the metrics before acting."
+                                  >
+                                    Generated summary
                                   </span>
                                 )}
                                 <a
@@ -747,7 +762,7 @@ export default function Alerts() {
 
           {!canAct && (
             <div style={{ padding: "8px 16px", color: "#666", fontSize: "12px" }}>
-              👁 View-only — contact an Admin or Editor to acknowledge/resolve alerts.
+              <EyeIcon size={14} className="ico-inline" />View-only access. Contact an Admin or Editor to acknowledge or resolve alerts.
             </div>
           )}
         </div>

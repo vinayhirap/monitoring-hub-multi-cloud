@@ -8,6 +8,7 @@ import { getAlertCounts } from "../api/api";
 import { useAlertSync } from "../hooks/useAlertSync";
 import "./Layout.css";
 
+import { SunIcon, MoonIcon } from "./icons";
 // Role-based nav visibility:
 // admin   → all items
 // editor  → overview, alerts, compliance, settings (NO onboarding, NO user mgmt)
@@ -203,7 +204,7 @@ export default function Layout() {
               title={dark ? "Switch to light theme" : "Switch to dark theme"}
               aria-label={dark ? "Switch to light theme" : "Switch to dark theme"}
             >
-              {dark ? "☀" : "🌙"}
+              {dark ? <SunIcon size={15} /> : <MoonIcon size={15} />}
             </button>
             <select
               className="tz-select"

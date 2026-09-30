@@ -121,3 +121,6 @@ input, select, textarea { font-family: var(--font-sans); }
 :root { --page-max: 1760px; }
 .tbl-scroll { width: 100%; max-width: 100%; overflow-x: auto; }
 .tbl-scroll > table { min-width: 100%; }
+
+/* Inline SVG icon next to text (the app uses line icons, not emoji) */
+.ico-inline { vertical-align: -2px; margin-right: 5px; flex-shrink: 0; }

@@ -7,6 +7,7 @@ import "./AccountDetail.css";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached } from "../utils/dataCache";
 
+import { CloudIcon, XIcon } from "../components/icons";
 // NOTE (2026-09-18 console-link audit): this page used to keep its own
 // local openAccountConsole() that called fetch() directly instead of
 // api.js's shared apiFetch() -- functionally similar for this
@@ -169,7 +170,7 @@ export default function AccountDetail() {
               URL) -- still requires the visitor's own AWS sign-in,
               never this app's credentials. */}
           <button className="btn-aws" onClick={() => openAccountConsole(id, "ec2")}>
-            ☁ AWS Console ↗
+            <CloudIcon size={13} className="ico-inline" />AWS Console ↗
           </button>
         </div>
       </div>
@@ -268,7 +269,7 @@ export default function AccountDetail() {
                 <div className="id-name">{selected.name || selected.instance_id}</div>
                 <div className="id-sub mono">{selected.instance_id} · {selected.instance_type} · {selected.availability_zone}</div>
               </div>
-              <button className="id-close" onClick={() => setSelected(null)}>✕</button>
+              <button className="id-close" onClick={() => setSelected(null)} aria-label="Close"><XIcon size={14} /></button>
             </div>
 
             {/* Quick stats */}
@@ -350,7 +351,7 @@ export default function AccountDetail() {
                 URL) -- still requires the visitor's own AWS sign-in,
                 never this app's credentials. */}
             <button className="btn-open-aws" onClick={() => openAccountConsole(id, "ec2", selected.instance_id)}>
-              ☁ Open in AWS ↗
+              <CloudIcon size={13} className="ico-inline" />Open in AWS ↗
             </button>
           </div>
         )}

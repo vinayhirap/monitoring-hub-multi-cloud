@@ -89,7 +89,7 @@ export default function OpEvents() {
       </div>
 
       {error && (
-        <div className="oe-error">⚠ {error} <button onClick={load}>Retry</button></div>
+        <div className="oe-error"><AlertTriangleIcon size={14} className="ico-inline" />{error} <button onClick={load}>Retry</button></div>
       )}
 
       <div className="oe-card">

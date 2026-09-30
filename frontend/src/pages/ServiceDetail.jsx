@@ -1223,7 +1223,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
             <div style={{ fontSize:12, color:"var(--text-muted)", maxWidth:280, lineHeight:1.6 }}>{noMetricsMsg}</div>
           </div>
         ) : mLoading ? (
-          <div className="id-loading">⏳ Fetching CloudWatch data…</div>
+          <div className="id-loading">Fetching CloudWatch data…</div>
         ) : metrics ? (
           <div className="charts-grid">
             {service === "EC2" && (

@@ -4,6 +4,7 @@ import MetricSelector from "../components/MetricSelector";
 import { getMetricCatalog, testAzureCredentials, testGcpCredentials, testRole } from "../api/api";
 import "./AccountOnboarding.css";
 
+import { XIcon } from "../components/icons";
 const BASE = "";
 
 const AWS_REGIONS = [
@@ -482,7 +483,7 @@ export default function AccountOnboarding() {
               <polyline points="20 6 9 17 4 12"/>
             </svg>
             <strong>{success}</strong> onboarded successfully!
-            <button onClick={() => setSuccess(null)}>✕</button>
+            <button onClick={() => setSuccess(null)} aria-label="Dismiss"><XIcon size={13} /></button>
           </div>
         )}
         {apiErr && (
@@ -493,7 +494,7 @@ export default function AccountOnboarding() {
               <line x1="12" y1="16" x2="12.01" y2="16"/>
             </svg>
             {apiErr}
-            <button onClick={() => setApiErr(null)}>✕</button>
+            <button onClick={() => setApiErr(null)} aria-label="Dismiss"><XIcon size={13} /></button>
           </div>
         )}
 

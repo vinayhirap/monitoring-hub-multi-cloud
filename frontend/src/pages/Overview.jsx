@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { useAlertSync } from "../hooks/useAlertSync";
 import { getLiveAccounts, getFleetSummary, getFleetDetail, deleteAccount } from "../api/api";
 import { metricLabel } from "../utils/metricLabels";
-import { AlertOctagonIcon, ZapIcon } from "../components/icons";
+import { AlertOctagonIcon, ZapIcon, AlertTriangleIcon, ServerIcon, HardDriveIcon, BucketIcon, XIcon, RefreshCwIcon } from "../components/icons";
 import "./Overview.css";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached } from "../utils/dataCache";
@@ -279,7 +279,7 @@ export default function Overview() {
               {revalidating && <span style={{ marginLeft: 6, opacity: 0.7 }}>· updating…</span>}
             </span>
           )}
-          <button className="btn-refresh" onClick={loadAll} title="Refresh now">↻ Refresh</button>
+          <button className="btn-refresh" onClick={loadAll} title="Refresh now"><RefreshCwIcon size={13} className="ico-inline" />Refresh</button>
         </div>
       </div>
 
@@ -501,7 +501,7 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick, onDelete }
             )}
             {acctWarning > 0 && (
               <span style={{ fontSize: 10, color: "#f59e0b", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 4, padding: "1px 6px" }}>
-                ⚠ {acctWarning} warning alert{acctWarning === 1 ? "" : "s"}
+                <AlertTriangleIcon size={12} className="ico-inline" />{acctWarning} warning alert{acctWarning === 1 ? "" : "s"}
               </span>
             )}
           </div>
@@ -510,10 +510,10 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick, onDelete }
         <div className="acc-body">
           <HealthRing ring={ring} />
           <div className="acc-chips">
-            <ResChip icon="🖥"  label="EC2"    value={stats.ec2_total}    sub={`${stats.ec2_running} running`} />
-            <ResChip icon="💾"  label="EBS"    value={stats.ebs_total}    />
-            <ResChip icon="🪣"  label="S3"     value={stats.s3_total}     />
-            <ResChip icon="λ"   label="Lambda" value={stats.lambda_total} />
+            <ResChip icon={<ServerIcon size={13} />}  label="EC2"    value={stats.ec2_total}    sub={`${stats.ec2_running} running`} />
+            <ResChip icon={<HardDriveIcon size={13} />}  label="EBS"    value={stats.ebs_total}    />
+            <ResChip icon={<BucketIcon size={13} />}  label="S3"     value={stats.s3_total}     />
+            <ResChip icon={<ZapIcon size={13} />}   label="Lambda" value={stats.lambda_total} />
           </div>
         </div>
 
@@ -593,7 +593,7 @@ function RegionRow({ regionRow, onClick, onDelete }) {
           {regionRow.region}
         </span>
         <div className="region-row-chips">
-          <MiniChip label="EC2"    value={regionRow.ec2_total}    sub={`${regionRow.ec2_running}▶`} />
+          <MiniChip label="EC2"    value={regionRow.ec2_total}    sub={`${regionRow.ec2_running} running`} />
           <MiniChip label="EBS"    value={regionRow.ebs_total}    />
           <MiniChip label="S3"     value={regionRow.s3_total}     />
           <MiniChip label="λ"      value={regionRow.lambda_total} />
@@ -605,7 +605,7 @@ function RegionRow({ regionRow, onClick, onDelete }) {
           <span className="region-alert-badge region-alert-critical">● {critical}</span>
         )}
         {warning > 0 && (
-          <span className="region-alert-badge region-alert-warning">⚠ {warning}</span>
+          <span className="region-alert-badge region-alert-warning"><AlertTriangleIcon size={11} className="ico-inline" />{warning}</span>
         )}
         <span className="region-row-goto">Services →</span>
         <button
@@ -613,7 +613,7 @@ function RegionRow({ regionRow, onClick, onDelete }) {
           onClick={onDelete}
           title="Remove region"
           aria-label="Remove region"
-        >✕</button>
+        ><XIcon size={14} /></button>
       </div>
     </div>
   );
@@ -725,7 +725,7 @@ function HealthRing({ ring }) {
 function ResChip({ icon, label, value, sub }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 4, background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 8px", fontSize: 11 }}>
-      <span style={{ fontSize: 12 }}>{icon}</span>
+      <span style={{ fontSize: 12, display: "inline-flex", alignItems: "center" }}>{icon}</span>
       <span style={{ color: "var(--text-muted)" }}>{label}</span>
       <span style={{ fontWeight: 700, fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>{value}</span>
       {sub && <span style={{ color: "var(--text-muted)", fontSize: 10 }}>· {sub}</span>}
@@ -842,7 +842,7 @@ function AttentionPanel({ onClose }) {
             <h2>Need Attention</h2>
             <p>Resources with a health score below 70, and resources trending toward a capacity limit.</p>
           </div>
-          <button className="att-close" onClick={onClose} aria-label="Close">✕</button>
+          <button className="att-close" onClick={onClose} aria-label="Close"><XIcon size={14} /></button>
         </div>
         {!data && !err && <div className="att-empty">Loading…</div>}
         {err && <div className="att-empty">Could not load the list: {err}</div>}
