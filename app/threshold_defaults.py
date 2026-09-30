@@ -251,6 +251,25 @@ DEFAULT_THRESHOLDS = {
 # and is sustainedly far outside its OWN normal range, never above WARNING,
 # and never on cold start. The moment someone edits either number in
 # Settings the row stops matching and becomes an ordinary static threshold.
+# ANOMALY-ONLY SIZE FLOOR (2026-09-30). The anomaly line is mean + 3 sigma (and at least 1.5 x mean), which
+# for a near-idle volume is a near-zero number: 57 operations in 5 minutes (0.2 per second) raised a WARNING
+# against a "threshold" of 26. A reading is only worth an alert if it is also big in absolute terms, so the
+# line is never lower than this floor. Units are the STORED units: EBS volume metrics are Sum over one
+# 5-minute period. Roughly 3 operations/second and 170 KB/second: a volume below that is effectively idle.
+# Busy volumes are unaffected (their mean + 3 sigma is far above the floor). Adjust here.
+ANOMALY_MIN_ABSOLUTE = {
+    "volumereadops": 1000.0,
+    "volumewriteops": 1000.0,
+    "volumereadbytes": 50_000_000.0,
+    "volumewritebytes": 50_000_000.0,
+}
+
+
+def anomaly_floor(metric_name):
+    """Smallest absolute value an anomaly-only alert may fire at for this stored metric name (0 = none)."""
+    return ANOMALY_MIN_ABSOLUTE.get((metric_name or "").lower(), 0.0)
+
+
 PLACEHOLDER_THRESHOLD = (1000000.0, 5000000.0, ">")
 
 

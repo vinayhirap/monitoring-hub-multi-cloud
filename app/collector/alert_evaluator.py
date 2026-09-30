@@ -33,7 +33,7 @@ from app.alert_rules import (
 )
 from app.threshold_defaults import (
     is_placeholder_threshold, AWS_METRIC_NAME_TO_DB_NAME, normalize_service_key,
-    is_capacity_percent_metric,
+    is_capacity_percent_metric, anomaly_floor,
 )
 
 # 2026-09-15 fix: this background evaluator resolves alerts directly via SQL
@@ -293,7 +293,9 @@ def _anomaly_only_bound(cursor, aws_account_id, aws_resource_id, metric_name, k)
     line = mean + max(k, 3.0) * stddev
     if mean > 0:
         line = max(line, mean * ANOMALY_MIN_RATIO)
-    return line
+    # absolute size floor (threshold_defaults.ANOMALY_MIN_ABSOLUTE): an idle volume's tiny baseline must not
+    # turn a few dozen operations into an alert
+    return max(line, anomaly_floor(metric_name))
 
 
 def _required_cycles(evaluation_period_minutes):
@@ -317,6 +319,18 @@ OPEN_STATUSES = ("active", "acknowledged")
 ORPHAN_GRACE_MINUTES = 30
 RESOURCE_GONE_HOURS = 24
 PENDING_EXPIRY_MINUTES = 30
+
+
+# REQUEST-DRIVEN METRICS THAT GO SILENT WHEN THERE IS NOTHING TO MEASURE (2026-09-30).
+# CloudWatch publishes ELB TargetResponseTime only for periods in which the load balancer handled requests,
+# so an idle load balancer stops producing readings and its alert sits in `stale` ("NO DATA") for the full
+# 72 h hard expiry although nothing is wrong that anyone could observe. If the paired traffic metric was
+# OBSERVED at zero for the whole window, the silence means "no traffic": close the alert as `no_traffic`
+# (auditable, and it re-opens by itself if the metric breaches again). If the traffic metric is missing or
+# non-zero the rule does nothing and the normal stale / 72 h behaviour applies.
+# (resource_type, stored metric name) -> stored name of the traffic metric
+NO_DATA_MEANS_IDLE = {("elb", "responselatency"): "requestcount"}
+IDLE_RESOLVE_MINUTES = 60
 
 
 def _resolve_ids(cursor, ids, reason):
@@ -355,6 +369,8 @@ def _auto_resolve_stale_alerts(cursor):
       threshold_disabled  no enabled threshold governs this metric any more
                           (disabled/deleted/de-selected) and the evaluator has
                           not confirmed the alert for ORPHAN_GRACE_MINUTES
+      no_traffic          a request-driven metric (ELB TargetResponseTime) went silent because
+                          its paired traffic metric was observed at zero for IDLE_RESOLVE_MINUTES
       no_data_expired     stale (no reading) for the cadence-class hard expiry
                           (72h core/extended, 7d slow tier) -- not a live
                           signal any more, and it re-opens on its own if the
@@ -436,6 +452,29 @@ def _auto_resolve_stale_alerts(cursor):
           AND COALESCE(a.last_seen_at, a.triggered_at)
               < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {hard_expiry_hours_sql('r', 'aa')} HOUR)
     """)
+
+    # idle request-driven metric: silence with the traffic metric observed at zero == nothing to measure
+    for (rtype, metric), traffic in NO_DATA_MEANS_IDLE.items():
+        try:
+            run("no_traffic", f"""
+              SELECT a.id FROM alerts a
+              JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
+              WHERE a.status IN {open_in}
+                AND r.resource_type = %s AND LOWER(a.metric_name) = %s
+                AND COALESCE(a.last_seen_at, a.triggered_at)
+                      < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {IDLE_RESOLVE_MINUTES} MINUTE)
+                AND EXISTS (SELECT 1 FROM metric_history h
+                            WHERE h.resource_id = r.id AND LOWER(h.metric_name) = %s
+                              AND h.metric_timestamp >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {IDLE_RESOLVE_MINUTES} MINUTE))
+                AND NOT EXISTS (SELECT 1 FROM metric_history h
+                                WHERE h.resource_id = r.id AND LOWER(h.metric_name) = %s
+                                  AND h.metric_timestamp >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {IDLE_RESOLVE_MINUTES} MINUTE)
+                                  AND h.metric_value > 0)
+            """, (rtype, metric, traffic, traffic))
+        except Exception:
+            # this rule must never take the rest of the sweep (or the evaluation cycle) down with it;
+            # the normal stale / 72 h expiry still applies
+            logger.exception("no_traffic sweep failed (non-fatal)")
 
     # unattributable legacy rows (aws_account_id NULL) can never appear in any
     # view; let them expire instead of lingering as ghosts
