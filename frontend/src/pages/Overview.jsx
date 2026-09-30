@@ -2,7 +2,8 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAlertSync } from "../hooks/useAlertSync";
-import { getLiveAccounts, getFleetSummary, deleteAccount } from "../api/api";
+import { getLiveAccounts, getFleetSummary, getFleetDetail, deleteAccount } from "../api/api";
+import { metricLabel } from "../utils/metricLabels";
 import { AlertOctagonIcon, ZapIcon } from "../components/icons";
 import "./Overview.css";
 import { useTimezone } from "../contexts/TimezoneContext";
@@ -113,6 +114,7 @@ export default function Overview() {
   // call across every account, not N per-account calls from here. See
   // GET /api/incidents/fleet-summary's own docstring.
   const [fleet, setFleet] = useState(null);
+  const [showAttention, setShowAttention] = useState(false);
   useEffect(() => {
     // Was a raw fetch() with no credentials handling -- harmless here
     // (a same-origin request still sends the session cookie by
@@ -307,6 +309,8 @@ export default function Overview() {
                 color={fleet.critical_resource_count > 0 ? "red" : "default"}
                 pulse={fleet.critical_resource_count > 0}
                 sub={fleet.capacity_risk_count > 0 ? `${fleet.capacity_risk_count} approaching capacity` : null}
+                onClick={() => setShowAttention(true)}
+                hint="See which resources"
               />
             )}
             {/* Flapping-alert count (2026-09-14) -- deliberately a
@@ -326,6 +330,8 @@ export default function Overview() {
                 value={fleet.likely_flapping_count}
                 color="default"
                 sub="Auto-tuning is adjusting these"
+                onClick={() => navigate("/alerts?tab=tuning")}
+                hint="See these alerts"
               />
             )}
           </>
@@ -409,6 +415,7 @@ export default function Overview() {
           ))}
         </div>
       )}
+      {showAttention && <AttentionPanel onClose={() => setShowAttention(false)} />}
     </div>
   );
 }
@@ -779,16 +786,98 @@ function SkeletonAccountCard() {
   );
 }
 
-function SummaryTile({ icon, label, value, color, pulse, sub }) {
+function SummaryTile({ icon, label, value, color, pulse, sub, onClick, hint }) {
+  const clickable = typeof onClick === "function";
   return (
-    <div className={`sum-tile sum-${color || "default"}`} style={{ position: "relative" }}>
+    <div
+      className={`sum-tile sum-${color || "default"}${clickable ? " sum-clickable" : ""}`}
+      style={{ position: "relative" }}
+      {...(clickable ? {
+        role: "button", tabIndex: 0, title: hint || "Click to see the list",
+        onClick,
+        onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } },
+      } : {})}
+    >
       {pulse && <span className="pulse-ring" />}
       <span className="sum-icon">{icon}</span>
       <div className="sum-body">
         <div className="sum-label">{label}</div>
         <div className="sum-value">{value}</div>
         {sub && <div className="sum-sub">{sub}</div>}
+        {clickable && <div className="sum-more">{hint || "View list"} →</div>}
       </div>
+    </div>
+  );
+}
+
+/** Slide-over listing exactly what the "Need Attention" tile counts. */
+function AttentionPanel({ onClose }) {
+  const navigate = useNavigate();
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    let dead = false;
+    getFleetDetail().then(d => { if (!dead) setData(d); }).catch(e => { if (!dead) setErr(e.message || "Could not load"); });
+    return () => { dead = true; };
+  }, []);
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+
+  const goAlerts = (resourceId) => { onClose(); navigate(`/alerts?tab=active&q=${encodeURIComponent(resourceId)}`); };
+  const reasonText = (r) => {
+    const parts = [];
+    if (r?.critical_alerts) parts.push(`${r.critical_alerts} critical`);
+    if (r?.warning_alerts) parts.push(`${r.warning_alerts} warning`);
+    return parts.join(" · ") || "low health score";
+  };
+
+  return (
+    <div className="att-overlay" onClick={onClose}>
+      <aside className="att-panel" role="dialog" aria-label="Resources needing attention" onClick={e => e.stopPropagation()}>
+        <div className="att-head">
+          <div>
+            <h2>Need Attention</h2>
+            <p>Resources with a health score below 70, and resources trending toward a capacity limit.</p>
+          </div>
+          <button className="att-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        {!data && !err && <div className="att-empty">Loading…</div>}
+        {err && <div className="att-empty">Could not load the list: {err}</div>}
+        {data && (
+          <>
+            <h3 className="att-sec">Critical health <span>{data.critical_resources.length}</span></h3>
+            {data.critical_resources.length === 0 && <div className="att-empty">None right now.</div>}
+            {data.critical_resources.map(r => (
+              <button key={`${r.aws_account_id}-${r.resource_id}`} className="att-row" onClick={() => goAlerts(r.resource_id)}>
+                <div className="att-main">
+                  <div className="att-name">{r.resource_name || r.resource_id}</div>
+                  <div className="att-sub">{(r.resource_type || "").toUpperCase()} · {r.account_name || `Account ${r.aws_account_id}`} · {reasonText(r.score_reason)}</div>
+                </div>
+                <div className="att-badge att-red">{Math.round(r.health_score)}<small>score</small></div>
+              </button>
+            ))}
+            <h3 className="att-sec">Approaching capacity <span>{data.capacity_risks.length}</span></h3>
+            {data.capacity_risks.length === 0 && <div className="att-empty">None right now.</div>}
+            {data.capacity_risks.map(r => (
+              <button key={`${r.aws_account_id}-${r.resource_id}-${r.metric_name}`} className="att-row" onClick={() => goAlerts(r.resource_id)}>
+                <div className="att-main">
+                  <div className="att-name">{r.resource_name || r.resource_id}</div>
+                  <div className="att-sub">{metricLabel(r.metric_name)} at {Number(r.current_value).toFixed(1)}%{r.account_name ? ` · ${r.account_name}` : ""} · rising {Number(r.slope_per_day).toFixed(2)}/day</div>
+                </div>
+                <div className="att-badge att-amber">{Number(r.days_to_exhaustion) >= 100 ? Math.round(r.days_to_exhaustion) : Number(r.days_to_exhaustion).toFixed(0)}<small>days left</small></div>
+              </button>
+            ))}
+            <div className="att-foot">
+              <button className="att-link" onClick={() => { onClose(); navigate("/alerts?tab=attention"); }}>
+                See the alerts on these resources →
+              </button>
+            </div>
+          </>
+        )}
+      </aside>
     </div>
   );
 }

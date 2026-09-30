@@ -256,3 +256,15 @@
 .alerts-table td, .alerts-table th { min-width: 0; }
 .alert-resource { overflow-wrap: anywhere; max-width: 280px; }
 .alert-metric   { overflow-wrap: anywhere; }
+
+
+/* ── Row tags + tab explainer for "Needs attention" / "Auto-tuning" (2026-09-30) ── */
+.alert-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.alert-tag { display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: .03em; padding: 1px 7px; border-radius: 10px; cursor: help; white-space: nowrap; }
+.alert-tag-attn { color: #ef4444; background: rgba(239,68,68,0.10); border: 1px solid rgba(239,68,68,0.35); }
+.alert-tag-tune { color: #2bb3ac; background: rgba(43,179,172,0.10); border: 1px solid rgba(43,179,172,0.35); }
+.alerts-explain { font-size: 12px; line-height: 1.55; padding: 10px 14px; border-radius: 8px; margin: 0 0 12px; }
+.alerts-explain-attn { color: #f0b4b4; background: rgba(239,68,68,0.07); border: 1px solid rgba(239,68,68,0.25); }
+.alerts-explain-tune { color: #9fdad6; background: rgba(43,179,172,0.07); border: 1px solid rgba(43,179,172,0.25); }
+[data-theme="light"] .alerts-explain-attn { color: #8a2c2c; }
+[data-theme="light"] .alerts-explain-tune { color: #0f6a65; }

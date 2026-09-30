@@ -319,8 +319,8 @@ def test_count_likely_flapping_alerts_returns_query_result():
     class _Cursor(FakeCursor):
         def execute(self, sql, params=None):
             normalized = " ".join(sql.split())
-            if normalized.startswith("SELECT COUNT(*) AS flapping_count"):
-                self._pending = [{"flapping_count": 3}]
+            if normalized.startswith("SELECT DISTINCT a.id AS alert_id"):
+                self._pending = [{"alert_id": 11}, {"alert_id": 12}, {"alert_id": 13}]
             else:
                 raise AssertionError(f"unexpected query: {normalized!r}")
 
@@ -356,7 +356,7 @@ def test_count_likely_flapping_alerts_scopes_to_accounts():
         def execute(self, sql, params=None):
             captured["sql"] = " ".join(sql.split())
             captured["params"] = params
-            self._pending = [{"flapping_count": 1}]
+            self._pending = [{"alert_id": 21}]
 
     class _Conn(FakeConn):
         def cursor(self, dictionary=True):
@@ -420,7 +420,7 @@ def test_flapping_count_query_excludes_capacity_metrics():
     class _Cursor(FakeCursor):
         def execute(self, sql, params=None):
             seen.append(" ".join(sql.split()))
-            self._pending = [{"flapping_count": 0}]
+            self._pending = [{"alert_id": 31}]
 
     class _Conn(FakeConn):
         def cursor(self, dictionary=True):

@@ -229,8 +229,12 @@ def _false_positive_mark_count(cursor, aws_account_id, resource_id, metric_name)
     return row["cnt"] if row else 0
 
 
-def count_likely_flapping_alerts(aws_account_ids=None) -> int:
+def likely_flapping_alert_ids(aws_account_ids=None) -> list:
     """
+    Ids of the currently-firing alerts this module treats as "flapping" (the
+    Overview "Flapping (Self-Tuning)" tile counts exactly these, and the Alerts
+    page "Auto-tuning" tab lists exactly these).
+
     One efficient bulk query (not N per-resource lookups) counting
     currently-active alerts whose resource is genuinely flapping --
     same definition as this module's own chronic-noise path and
@@ -258,14 +262,14 @@ def count_likely_flapping_alerts(aws_account_ids=None) -> int:
         params = []
         if aws_account_ids is not None:
             if not aws_account_ids:
-                return 0
+                return []
             placeholders = ",".join(["%s"] * len(aws_account_ids))
             where_clause = f" AND a.aws_account_id IN ({placeholders})"
             params = list(aws_account_ids)
 
         from app import alert_rules
         cursor.execute(f"""
-            SELECT COUNT(*) AS flapping_count
+            SELECT DISTINCT a.id AS alert_id
             FROM alerts a
             JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
             JOIN aws_accounts acc ON acc.id = a.aws_account_id AND acc.status = 'active'
@@ -294,11 +298,16 @@ def count_likely_flapping_alerts(aws_account_ids=None) -> int:
                     AND (b.typical_value - COALESCE(t.dynamic_k, %s) * b.typical_stddev) < t.warning_value)
               )
         """, [MIN_CONFIDENT_SAMPLES] + params + [NOISE_K, NOISE_K])
-        row = cursor.fetchone()
-        return row["flapping_count"] or 0
+        return [int(r["alert_id"]) for r in cursor.fetchall()]
     finally:
         cursor.close()
         conn.close()
+
+
+def count_likely_flapping_alerts(aws_account_ids=None) -> int:
+    """How many alerts likely_flapping_alert_ids() returns -- one definition, so
+    the tile, the tab badge and the tab's rows can never disagree."""
+    return len(likely_flapping_alert_ids(aws_account_ids))
 
 
 def auto_tune_static_thresholds() -> int:

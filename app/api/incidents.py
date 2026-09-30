@@ -101,6 +101,73 @@ def fleet_health_summary(current_user: dict = Depends(require_permission("incide
     }
 
 
+@router.get("/fleet-detail")
+def fleet_health_detail(current_user: dict = Depends(require_permission("incidents.view"))):
+    """
+    The LISTS behind the Overview "Need Attention" tile, so the numbers on the tile
+    are clickable: `critical_resources` (health score < 70 -- exactly what
+    fleet-summary's critical_resource_count counts) and `capacity_risks` (exactly
+    fleet-summary's capacity_risk_count). Scoped like fleet-summary.
+    """
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is not None and not accessible:
+        return {"critical_resources": [], "capacity_risks": []}
+
+    conn = get_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        where, params = "", []
+        if accessible is not None:
+            where = " AND h.aws_account_id IN (" + ",".join(["%s"] * len(accessible)) + ")"
+            params = list(accessible)
+        cur.execute(f"""
+            SELECT h.resource_id, h.aws_account_id, MIN(h.health_score) AS health_score,
+                   MAX(h.score_reason) AS score_reason,
+                   MAX(r.name) AS resource_name, MAX(r.resource_type) AS resource_type,
+                   MAX(acc.account_name) AS account_name
+            FROM resource_health h
+            LEFT JOIN resources r ON r.resource_id = h.resource_id AND r.aws_account_id = h.aws_account_id
+            LEFT JOIN aws_accounts acc ON acc.id = h.aws_account_id
+            WHERE h.health_score < 70{where}
+            GROUP BY h.aws_account_id, h.resource_id
+            ORDER BY health_score ASC
+            LIMIT 200
+        """, params)
+        critical = cur.fetchall()
+        for row in critical:
+            if isinstance(row.get("score_reason"), str):
+                try:
+                    row["score_reason"] = json.loads(row["score_reason"])
+                except Exception:
+                    row["score_reason"] = {}
+            row["health_score"] = float(row["health_score"]) if row["health_score"] is not None else None
+
+        from app.collector.trend import compute_capacity_forecasts
+        forecasts = compute_capacity_forecasts(aws_account_ids=accessible)
+        names = {}
+        if forecasts:
+            ids = sorted({f["resource_id"] for f in forecasts})
+            cur.execute(f"""
+                SELECT r.aws_account_id, r.resource_id, MAX(r.name) AS name, MAX(r.resource_type) AS resource_type,
+                       MAX(acc.account_name) AS account_name
+                FROM resources r LEFT JOIN aws_accounts acc ON acc.id = r.aws_account_id
+                WHERE r.resource_id IN ({",".join(["%s"] * len(ids))})
+                GROUP BY r.aws_account_id, r.resource_id
+            """, ids)
+            names = {(n["aws_account_id"], n["resource_id"]): n for n in cur.fetchall()}
+    finally:
+        cur.close()
+        conn.close()
+
+    risks = []
+    for f in forecasts:
+        n = names.get((f["aws_account_id"], f["resource_id"]), {})
+        risks.append({**f, "resource_name": n.get("name") or f["resource_id"],
+                      "resource_type": n.get("resource_type"), "account_name": n.get("account_name")})
+    risks.sort(key=lambda x: x.get("days_to_exhaustion") if x.get("days_to_exhaustion") is not None else 1e9)
+    return {"critical_resources": critical, "capacity_risks": risks}
+
+
 @router.get("/{account_id}")
 def list_incidents(
     account_id: int,

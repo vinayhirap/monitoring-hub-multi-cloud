@@ -13,7 +13,8 @@ from app.api.live_data import invalidate_accounts_cache
 from app.auth.authorization import get_accessible_account_ids
 from app.audit import write_audit
 from app import alert_rules
-from app.alert_cache import FingerprintCache, get_alert_rollup, invalidate_rollup, alerts_fingerprint
+from app.alert_cache import (FingerprintCache, get_alert_rollup, invalidate_rollup,
+                             alerts_fingerprint, get_flapping_alert_ids)
 
 logger = logging.getLogger(__name__)
 
@@ -175,8 +176,25 @@ def _fmt_ts_fields(rows):
 
 # tab -> extra WHERE fragment. These are the ONLY definitions of the tabs
 # and match /counts, the Overview banner and every badge (app/alert_rules.py).
+# "Needs attention" = a FIRING alert on a resource whose health score is below 70 (the
+# same rule as the Overview "Need Attention" tile's critical-health count).
+_ATTN_EXISTS = ("EXISTS (SELECT 1 FROM resource_health h WHERE h.aws_account_id = a.aws_account_id "
+                "AND h.resource_id = a.resource_id AND h.health_score < 70)")
+
+
+def _flap_ids_sql() -> str:
+    """Inline id list for the 'auto-tuning' predicate (ints only, from our own query)."""
+    ids = sorted(int(i) for i in get_flapping_alert_ids())
+    return ",".join(str(i) for i in ids)
+
+
 def _tab_where(tab: str) -> str:
     st = alert_rules.state_sql()
+    if tab == "attention":
+        return f" AND ({st}) = 'firing' AND {_ATTN_EXISTS}"
+    if tab == "tuning":
+        ids = _flap_ids_sql()
+        return f" AND ({st}) = 'firing' AND a.id IN ({ids})" if ids else " AND 1 = 0"
     return {
         "all":          "",
         "active":       f" AND ({st}) = 'firing'",
@@ -188,7 +206,7 @@ def _tab_where(tab: str) -> str:
     }[tab]
 
 
-_TABS = ("all", "active", "stale", "critical", "acknowledged", "resolved", "suppressed")
+_TABS = ("all", "active", "stale", "critical", "attention", "tuning", "acknowledged", "resolved", "suppressed")
 _MAX_LIMIT = 1000
 
 
@@ -250,6 +268,7 @@ def _fetch_alerts_from_db(current_user: dict, tab: str = "all", limit: int = 500
                 a.resolution_reason,
                 a.environment,
                 a.marked_false_positive,
+                ({alert_rules.state_sql()} = 'firing' AND {_ATTN_EXISTS}) AS needs_attention,
                 r.resource_type                        AS service,
                 COALESCE(r.name, a.resource_id)        AS resource_name,
                 acc.account_name,
@@ -263,6 +282,10 @@ def _fetch_alerts_from_db(current_user: dict, tab: str = "all", limit: int = 500
     finally:
         cursor.close()
         conn.close()
+    flapping = get_flapping_alert_ids()
+    for r in rows:
+        r["needs_attention"] = bool(r.get("needs_attention"))
+        r["auto_tuning"] = bool(r.get("state") == "firing" and r["id"] in flapping)
     return _fmt_ts_fields(rows), total
 
 
@@ -306,6 +329,8 @@ def _fetch_counts_from_db() -> list:
     every number matches the list a tab shows and the Overview banner.
     Kept per-account (not one grand total) so a scoped viewer is only ever
     summed over their own accounts."""
+    _ids = _flap_ids_sql()
+    _tuning_pred = f"alert_id IN ({_ids})" if _ids else "0"
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
@@ -317,9 +342,12 @@ def _fetch_counts_from_db() -> list:
                    SUM(state = 'firing' AND sev = 'CRITICAL')       AS critical_count,
                    SUM(state = 'acknowledged')                      AS acknowledged_count,
                    SUM(state = 'resolved')                          AS resolved_count,
-                   SUM(state = 'suppressed')                        AS suppressed_count
+                   SUM(state = 'suppressed')                        AS suppressed_count,
+                   SUM(state = 'firing' AND attn)                   AS attention_count,
+                   SUM(state = 'firing' AND {_tuning_pred})         AS tuning_count
             FROM (
                 SELECT acc.id AS account_id, acc.account_name AS account_name, UPPER(a.severity) AS sev,
+                       a.id AS alert_id, ({_ATTN_EXISTS}) AS attn,
                        {alert_rules.state_sql()} AS state
                 {alert_rules.alert_base_from()}
                 WHERE {alert_rules.base_where()}
@@ -336,7 +364,8 @@ def _aggregate_counts_for_user(per_account_rows: list, current_user: dict,
                                account_id: Optional[int] = None) -> dict:
     accessible = get_accessible_account_ids(current_user)
     keys = ("all_count", "active_count", "stale_count", "critical_count",
-            "acknowledged_count", "resolved_count", "suppressed_count")
+            "acknowledged_count", "resolved_count", "suppressed_count",
+            "attention_count", "tuning_count")
     totals = {k: 0 for k in keys}
     accounts = []
     for row in per_account_rows:
@@ -352,6 +381,8 @@ def _aggregate_counts_for_user(per_account_rows: list, current_user: dict,
         "active":       totals["active_count"],
         "stale":        totals["stale_count"],
         "critical":     totals["critical_count"],
+        "attention":    totals["attention_count"],
+        "tuning":       totals["tuning_count"],
         "acknowledged": totals["acknowledged_count"],
         "resolved":     totals["resolved_count"],
         "suppressed":   totals["suppressed_count"],

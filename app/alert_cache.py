@@ -118,3 +118,18 @@ def get_alert_rollup():
 
 def invalidate_rollup():
     _rollup.clear()
+
+
+
+# The flapping query aggregates the whole metric_baseline table, so it is cached:
+# recomputed when the alert set changes (fingerprint) and at least once a minute
+# (baselines move slowly). Unscoped: callers filter rows by the user's accounts.
+_flapping = FingerprintCache(ttl=60)
+
+
+def get_flapping_alert_ids():
+    from app.collector.threshold_tuning import likely_flapping_alert_ids
+    try:
+        return set(_flapping.get(lambda: likely_flapping_alert_ids(None)))
+    except Exception:
+        return set()

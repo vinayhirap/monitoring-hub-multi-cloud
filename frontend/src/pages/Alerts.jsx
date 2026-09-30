@@ -414,7 +414,7 @@ export default function Alerts() {
   // happen to be loaded.
   const accountOptions = (counts?.accounts ?? []).map(a => [a.id, a.name]);
   const filtered = alerts;
-  const displayCounts = counts ?? { all: 0, active: 0, stale: 0, critical: 0, acknowledged: 0, resolved: 0, suppressed: 0 };
+  const displayCounts = counts ?? { all: 0, active: 0, stale: 0, critical: 0, attention: 0, tuning: 0, acknowledged: 0, resolved: 0, suppressed: 0 };
 
   return (
     <div className="alerts-page">
@@ -440,12 +440,22 @@ export default function Alerts() {
         </div>
       </div>
 
+      {(tab === "attention" || tab === "tuning") && (
+        <div className={`alerts-explain ${tab === "tuning" ? "alerts-explain-tune" : "alerts-explain-attn"}`}>
+          {tab === "attention"
+            ? "Firing alerts on resources whose health score is below 70 — the same resources the Overview “Need Attention” tile counts. These are the ones to look at first."
+            : "Firing alerts on resources whose normal range already crosses the static threshold, so they are probably noise, not an incident. The system is switching these to adaptive thresholds on its own — the same alerts the Overview “Flapping (Self-Tuning)” tile counts."}
+        </div>
+      )}
+
       <div className="alerts-tabs">
         {[
           ["all",          "All"],
           ["active",       "Active"],
           ["stale",        "Stale"],
           ["critical",     "Critical"],
+          ["attention",    "Needs attention"],
+          ["tuning",       "Auto-tuning"],
           ["acknowledged", "Acknowledged"],
           ["suppressed",   "Muted / Maint."],
           ["resolved",     "Resolved"],
@@ -527,6 +537,20 @@ export default function Alerts() {
                         <div style={{fontSize:"11px", color:"#888"}}>
                           {(a.service || "").toUpperCase()}
                         </div>
+                        {(a.needs_attention || a.auto_tuning) && (
+                          <div className="alert-tags">
+                            {a.needs_attention && (
+                              <span className="alert-tag alert-tag-attn" title="This resource's health score is below 70. It is counted in the Overview 'Need Attention' tile.">
+                                Needs attention
+                              </span>
+                            )}
+                            {a.auto_tuning && (
+                              <span className="alert-tag alert-tag-tune" title="This resource's normal range already crosses the static threshold, so this is probably noise. The system is switching it to an adaptive threshold. It is counted in the Overview 'Flapping (Self-Tuning)' tile.">
+                                Auto-tuning
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
 
                       <td className="mono small">

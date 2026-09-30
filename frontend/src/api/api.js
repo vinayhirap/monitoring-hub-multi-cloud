@@ -141,6 +141,7 @@ export const getOpEvents = (params = {}) => {
 
 // ── Incidents / health / RCA (AIOps roadmap Phase 1, 2026-09-14) ─────────
 export const getFleetSummary = () => apiFetch("/api/incidents/fleet-summary");
+export const getFleetDetail  = () => apiFetch("/api/incidents/fleet-detail");
 export const getIncidents = (accountId, params = {}) => {
   const qs = new URLSearchParams(params).toString();
   return apiFetch(`/api/incidents/${accountId}${qs ? `?${qs}` : ""}`);
