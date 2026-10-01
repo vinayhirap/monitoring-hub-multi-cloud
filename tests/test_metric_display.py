@@ -101,3 +101,33 @@ def test_non_rate_metrics_ignore_cutover(monkeypatch):
     assert spec["legacy_scale"] is None
     out = md.bucketize([_at("2026-09-29T09:00:00+00:00", 42)], 3600, "Average", spec["scale"], False, None, md.period_cutover_epoch())
     assert out[0]["v"] == 42.0
+
+
+# ── EC2 NetworkIn/Out: stored Average, console shows Sum (SampleCount 5) ──
+def test_ec2_network_is_displayed_as_sum_of_the_stored_average():
+    spec = md.display_spec("aws", "ec2", "NetworkIn", "Bytes", "Average")
+    assert spec["native_stat"] == "Sum" and spec["sum_from_avg"]
+    assert spec["scale"] == 5.0 and not spec["rate"] and spec["unit"] == "Bytes"
+    assert "Sum" in md.stats_available(spec["native_stat"], spec["rate"])
+    out = md.bucketize(_s([0], [18000.0]), 300, spec["native_stat"], spec["scale"])
+    assert out[0]["v"] == 90000.0          # AWS console Sum for that period
+
+
+def test_ec2_network_hourly_bucket_sums_the_five_minute_sums():
+    spec = md.display_spec("aws", "ec2", "NetworkOut", "Bytes", "Average")
+    pts = _s(list(range(0, 60, 5)), [1000.0] * 12)          # twelve 5-min averages
+    out = md.bucketize(pts, 3600, spec["native_stat"], spec["scale"])
+    assert out[0]["v"] == 12 * 5000.0 and out[0]["n"] == 12
+
+
+def test_shape_response_ec2_network_uses_sum_but_cpu_stays_average():
+    res = {"network_in": _s([0], [18000.0]), "cpu": _s([0], [7.0])}
+    out = md.shape_response("ec2", res, 1)
+    assert out["network_in"][0]["v"] == 90000.0
+    assert out["cpu"][0]["v"] == 7.0
+
+
+def test_other_services_and_metrics_are_unaffected_by_sum_from_avg():
+    assert not md.display_spec("aws", "rds", "NetworkReceiveThroughput", "Bytes/Second", "Average")["sum_from_avg"]
+    assert not md.display_spec("aws", "ec2", "CPUUtilization", "Percent", "Average")["sum_from_avg"]
+    assert md.display_spec("aws", "ec2", "CPUUtilization", "Percent", "Average")["scale"] == 1.0

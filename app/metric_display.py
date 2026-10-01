@@ -113,6 +113,21 @@ def period_cutover_epoch():
 # EC2 console ("Network in (bytes)"). To switch them to B/s, add
 # ("ec2","NetworkIn"): ("Bytes/Second", 1.0) here -- nothing else changes.
 
+# ── Sum display for metrics the collector stores as Average ──────────────
+# The EC2 console graphs NetworkIn/NetworkOut as SUM per period. CloudOps
+# stores them as Average (polling_model.AWS_CORE_METRICS; changing that would
+# rescale the history the dynamic-baseline / anomaly alerts learned from).
+# EC2 publishes one sample per minute, so a 300 s datapoint has SampleCount 5
+# and Average = Sum / 5 (verified live 2026-10-01 with
+# scripts/check_ec2_network_stat.py: SampleCount 5 on every full period).
+# Display-only fix: shown value = stored Average x (period / 60). Threshold
+# lines get the same factor (metric_meta multiplies by spec["scale"]), so an
+# alert on "Average > X" is drawn at the matching Sum level, and the chart's
+# default statistic becomes Sum, exactly like the console. No stored data and
+# no alert evaluation change, so there is no cutover to handle.
+SUM_FROM_AVG = {("ec2", "NetworkIn"), ("ec2", "NetworkOut")}
+SECONDS_PER_SAMPLE = 60.0   # EC2 publishes one sample per minute
+
 # Frontend response key -> CloudWatch metric, per bespoke service endpoint in
 # app/api/live_data.py. Used to scale/aggregate those payloads generically.
 RESPONSE_KEYS = {
@@ -158,6 +173,8 @@ def display_spec(provider, service, metric_name, catalog_unit=None, catalog_stat
     scale = 1.0
     legacy_scale = None   # divisor for points stored BEFORE the period cutover
     rate = False
+    sum_from_avg = False
+    native = _norm(catalog_stat) or "Average"
     if (provider or "aws") == "aws":
         title = AWS_CONSOLE_TITLES.get((svc, name)) or AWS_CONSOLE_TITLES.get((service_for_display(svc), name)) or name
         rd = RATE_DISPLAY.get((service_for_display(svc), name))
@@ -168,12 +185,17 @@ def display_spec(provider, service, metric_name, catalog_unit=None, catalog_stat
             scale = 1.0 / (period * div)
             if period != RATE_LEGACY_PERIOD_SECS:
                 legacy_scale = 1.0 / (RATE_LEGACY_PERIOD_SECS * div)
+        elif (service_for_display(svc), name) in SUM_FROM_AVG:
+            period = _aws_period_seconds(service_for_display(svc), name) or 300
+            scale = max(1.0, period / SECONDS_PER_SAMPLE)
+            sum_from_avg = True
+            native = "Sum"
     else:
         title = name
     return {"title": title, "metric_name": name, "unit": unit,
             "unit_symbol": UNIT_SYMBOL.get(unit, ""), "scale": scale, "rate": rate,
-            "legacy_scale": legacy_scale,
-            "native_stat": _norm(catalog_stat) or "Average"}
+            "legacy_scale": legacy_scale, "sum_from_avg": sum_from_avg,
+            "native_stat": native}
 
 
 def stats_available(native_stat, rate=False):
@@ -361,7 +383,9 @@ def shape_response(service, result, hours, native_stats=None):
             continue
         cw = keys.get(k)
         spec = display_spec("aws", svc, cw) if cw else None
-        out[k] = bucketize(v, bsec, native_stats.get(cw) or core_native_stat(svc, cw) if cw else "Average",
+        ns = spec["native_stat"] if (spec and spec.get("sum_from_avg")) else (
+            native_stats.get(cw) or core_native_stat(svc, cw) if cw else "Average")
+        out[k] = bucketize(v, bsec, ns,
                            spec["scale"] if spec else 1.0, rate=bool(spec and spec["rate"]),
                            legacy_scale=spec["legacy_scale"] if spec else None,
                            cutover=period_cutover_epoch())

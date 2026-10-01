@@ -65,14 +65,24 @@ def main(argv):
     pts = sorted(resp.get("Datapoints", []), key=lambda d: d["Timestamp"])
     stored = _metric_history_query_range("ec2", instance_id, metric.lower(), start, end,
                                          account_id=acc.get("id"))
-    stored_by_min = {s["t"][:16]: s["v"] for s in stored}
+    stored_ts = []
+    for s_ in stored:
+        try:
+            stored_ts.append((datetime.fromisoformat(s_["t"].replace("Z", "+00:00")), s_["v"]))
+        except Exception:
+            pass
+
+    def nearest(ts):
+        # stored timestamps are collection times, not CloudWatch bucket starts
+        best = min(stored_ts, key=lambda x: abs((x[0] - ts).total_seconds()), default=None)
+        return best[1] if best and abs((best[0] - ts).total_seconds()) <= 450 else None
 
     print(f"{metric} {instance_id} region={region} (AWS = live CloudWatch, CloudOps = stored metric_history)\n")
     print(f"{'UTC time':<17}{'AWS Sum':>14}{'AWS Average':>14}{'SampleCount':>12}{'CloudOps':>14}{'Sum/CloudOps':>14}")
     ratios, counts = [], []
     for d in pts:
         key = d["Timestamp"].strftime("%Y-%m-%dT%H:%M")
-        mine = stored_by_min.get(key)
+        mine = nearest(d["Timestamp"])
         counts.append(d["SampleCount"])
         ratio = (d["Sum"] / mine) if mine else None
         if ratio:
