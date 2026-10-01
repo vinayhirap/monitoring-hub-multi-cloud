@@ -1,0 +1,31 @@
+/* src/components/shared-controls.css
+   Global .btn-primary / .btn-ghost / .tabs / .tab / .role-badge / .err-msg.
+   These were defined ONLY inside the old pages/UserManagement.css yet used by
+   Layout, Alerts, Reports, Compliance, Topology, AccountOnboarding, ServiceDetail,
+   MetricSelector... (Vite bundles CSS globally, so the leak 'worked'). They live
+   here now so the Access Control page owns only its own .ac-* styles. Rules are
+   copied verbatim from the old file. */
+.btn-primary {
+  background: var(--accent-orange); border: none; color: #fff;
+  padding: 9px 20px; border-radius: var(--radius); font-size: 13px;
+  font-weight: 600; cursor: pointer; transition: opacity .15s;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn-primary:hover { opacity: .88; }
+.btn-ghost {
+  background: transparent; border: 1px solid var(--border); color: var(--text-secondary);
+  padding: 8px 16px; border-radius: var(--radius); font-size: 13px; cursor: pointer;
+}
+.btn-ghost:hover { border-color: var(--border-bright); color: var(--text-primary); }
+.tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 0; }
+.tab {
+  padding: 10px 20px; background: transparent; border: none; border-bottom: 2px solid transparent;
+  color: var(--text-secondary); font-size: 13px; font-weight: 500; cursor: pointer; transition: all .15s;
+  margin-bottom: -1px; display: inline-flex; align-items: center; gap: 7px;
+}
+.tab:hover  { color: var(--text-primary); }
+.tab.active { color: var(--accent-orange); border-bottom-color: var(--accent-orange); background: rgba(249,115,22,0.08); border-radius: 6px 6px 0 0; box-shadow: 0 -2px 12px rgba(249,115,22,0.08) inset; }
+.role-badge { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 4px; font-family: var(--font-mono); }
+.role-badge.role-admin  { background: rgba(249,115,22,.15); color: var(--accent-orange); border: 1px solid rgba(249,115,22,.3); }
+.role-badge.role-viewer { background: rgba(59,130,246,.12); color: #60a5fa;   border: 1px solid rgba(59,130,246,.25); }
+.err-msg { font-size: 11px; color: var(--red); }

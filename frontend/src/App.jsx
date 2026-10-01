@@ -7,7 +7,7 @@ import Login             from "./pages/Login";
 import Overview          from "./pages/Overview";
 import Alerts            from "./pages/Alerts";
 import AccountDetail     from "./pages/AccountDetail";
-import UserManagement    from "./pages/UserManagement";
+import AccessControl     from "./pages/AccessControl";
 import Compliance        from "./pages/Compliance";
 import Settings          from "./pages/Settings";
 import AccountOnboarding from "./pages/AccountOnboarding";
@@ -29,7 +29,6 @@ import Search              from "./pages/Search";
 import Reports              from "./pages/Reports";
 import StatusPageAdmin     from "./pages/StatusPageAdmin";
 import StatusPagePublic    from "./pages/StatusPagePublic";
-import RbacAdmin           from "./pages/RbacAdmin";
 
 function SessionCheckingScreen() {
   // Shown only for the brief moment while AuthContext asks the backend
@@ -73,7 +72,7 @@ const ROUTE_ACCESS = {
   "overview":            { roles: ["admin","editor","viewer"] },
   "alerts":              { roles: ["admin","editor","viewer"] },
   "onboarding":          { roles: ["admin","editor"] },
-  "users":               { roles: ["admin","editor","viewer"], perm: "users.view" },
+  "access":              { roles: ["admin","editor","viewer"], perm: "users.view" },
   "compliance":          { roles: ["admin","editor","viewer"] },
   "escalation-policies": { roles: ["admin","editor","viewer"], perm: "escalation.view" },
   "synthetic-checks":    { roles: ["admin","editor","viewer"], perm: "synthetic.view" },
@@ -84,7 +83,6 @@ const ROUTE_ACCESS = {
   "status-page-admin":   { roles: ["admin","editor"],          perm: "status_page.manage" },
   "reports":             { roles: ["admin","editor","viewer"], perm: "reports.view", feature: "reports" },
   "settings":            { roles: ["admin","editor"] },
-  "rbac-admin":          { roles: ["admin"],                   perm: "roles.view" },
 };
 
 function RequireAccess({ path, children }) {
@@ -117,7 +115,10 @@ function AppRoutes() {
         <Route path="overview"                  element={<RequireAccess path="overview"><Overview /></RequireAccess>} />
         <Route path="alerts"                    element={<RequireAccess path="alerts"><Alerts /></RequireAccess>} />
         <Route path="onboarding"                element={<RequireAccess path="onboarding"><AccountOnboarding /></RequireAccess>} />
-        <Route path="users"                     element={<RequireAccess path="users"><UserManagement /></RequireAccess>} />
+        <Route path="access"                    element={<Navigate to="/access/users" replace />} />
+        <Route path="access/:tab"               element={<RequireAccess path="access"><AccessControl /></RequireAccess>} />
+        {/* Old URLs (bookmarks, emails, docs) keep working */}
+        <Route path="users"                     element={<Navigate to="/access/users" replace />} />
         <Route path="compliance"                element={<RequireAccess path="compliance"><Compliance /></RequireAccess>} />
         <Route path="op-events"                 element={<OpEvents />} />
         <Route path="escalation-policies"       element={<RequireAccess path="escalation-policies"><EscalationPolicies /></RequireAccess>} />
@@ -130,7 +131,7 @@ function AppRoutes() {
         <Route path="status-page-admin"         element={<RequireAccess path="status-page-admin"><StatusPageAdmin /></RequireAccess>} />
         <Route path="reports"                   element={<RequireAccess path="reports"><Reports /></RequireAccess>} />
         <Route path="settings"                  element={<RequireAccess path="settings"><Settings /></RequireAccess>} />
-        <Route path="rbac-admin"                element={<RequireAccess path="rbac-admin"><RbacAdmin /></RequireAccess>} />
+        <Route path="rbac-admin"                element={<Navigate to="/access/roles" replace />} />
         <Route path="accounts/:id/services"     element={<ServiceList />} />
         <Route path="accounts/:id/topology"     element={<Topology />} />
         <Route path="accounts/:id/incidents"    element={<Incidents />} />

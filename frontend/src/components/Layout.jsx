@@ -7,6 +7,7 @@ import { useTimezone, TIMEZONE_OPTIONS } from "../contexts/TimezoneContext";
 import { getAlertCounts } from "../api/api";
 import { useAlertSync } from "../hooks/useAlertSync";
 import "./Layout.css";
+import "./shared-controls.css";
 
 import { SunIcon, MoonIcon } from "./icons";
 // Role-based nav visibility:
@@ -24,7 +25,7 @@ const NAV_ITEMS = [
   { to: "/overview",   label: "Overview",           icon: OverviewIcon,   roles: ["admin","editor","viewer"] },
   { to: "/alerts",     label: "Alerts",             icon: AlertIcon,      roles: ["admin","editor","viewer"], badge: true },
   { to: "/onboarding", label: "Account Onboarding", icon: OnboardIcon,    roles: ["admin","editor"] },
-  { to: "/users",      label: "User Management",    icon: UsersIcon,      roles: ["admin","editor","viewer"], perm: "users.view" },
+  { to: "/access",     label: "Access Control",     icon: UsersIcon,      roles: ["admin","editor","viewer"], perm: "users.view" },
   { to: "/compliance", label: "Compliance",         icon: ComplianceIcon, roles: ["admin","editor","viewer"] },
   // Operational Events: nav entry temporarily hidden (2026-09-13) --
   // route/page/backend all still fully intact at /op-events, just not
@@ -45,7 +46,6 @@ const NAV_ITEMS = [
   { to: "/status-page-admin",   label: "Status Page",         icon: StatusPageIcon, roles: ["admin","editor"],          perm: "status_page.manage" },
   { to: "/reports",             label: "Reports",             icon: ReportsIcon,    roles: ["admin","editor","viewer"], perm: "reports.view", feature: "reports" },
   { to: "/settings",   label: "Settings",           icon: SettingsIcon,   roles: ["admin","editor"] },
-  { to: "/rbac-admin", label: "RBAC Administration", icon: RbacIcon,      roles: ["admin"],           perm: "roles.view" },
 ];
 
 export default function Layout() {

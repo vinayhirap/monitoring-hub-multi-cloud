@@ -3,7 +3,7 @@ import { clearAllCached } from "../utils/dataCache";
 
 const BASE = "";
 
-async function apiFetch(path, options = {}) {
+export async function apiFetch(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
     ...options,
     credentials: "include",
@@ -29,7 +29,16 @@ async function apiFetch(path, options = {}) {
     }
     throw new Error(`API ${path} \u2192 401 (session expired)`);
   }
-  if (!res.ok) throw new Error(`API ${path} \u2192 ${res.status}`);
+  if (!res.ok) {
+    // Same message as before (callers may match on it), but now also carries
+    // the HTTP status and the backend's own `detail` so screens that want to
+    // show "Cannot delete the last remaining admin" can, instead of a bare
+    // "API /api/users/3 -> 409".
+    const err = new Error(`API ${path} \u2192 ${res.status}`);
+    err.status = res.status;
+    try { const body = await res.json(); err.detail = typeof body?.detail === "string" ? body.detail : undefined; } catch { /* non-JSON body */ }
+    throw err;
+  }
   return res.json();
 }
 
@@ -247,32 +256,4 @@ export const getAlertSummary = (accountId) =>
 export const getAlertsByResource = (accountId, service) =>
   apiFetch(`/api/alerts/by-resource?account_id=${accountId}${service ? `&service=${encodeURIComponent(String(service).toLowerCase())}` : ""}`);
 
-// ── RBAC administration (roles, scopes, bindings, overrides, reviews) ──────
-// Backend: app/api/admin/roles.py, app/api/admin/rbac_scopes.py,
-// app/api/admin/bindings.py. Admin-only in the permission catalog (041) --
-// see RbacAdmin.jsx's own header for why this is a separate page rather
-// than a tab on UserManagement.jsx.
-export const getRoles            = () => apiFetch("/api/rbac/roles");
-export const createRole          = (data) => apiFetch("/api/rbac/roles", { method: "POST", body: JSON.stringify(data) });
-export const updateRole          = (id, data) => apiFetch(`/api/rbac/roles/${id}`, { method: "PATCH", body: JSON.stringify(data) });
-export const setRolePermissions  = (id, permissions) => apiFetch(`/api/rbac/roles/${id}/permissions`, { method: "PUT", body: JSON.stringify({ permissions }) });
-export const deleteRole          = (id) => apiFetch(`/api/rbac/roles/${id}`, { method: "DELETE" });
-
-export const getRbacScopes       = () => apiFetch("/api/rbac/scopes");
-export const createRbacScope     = (data) => apiFetch("/api/rbac/scopes", { method: "POST", body: JSON.stringify(data) });
-export const deleteRbacScope     = (id) => apiFetch(`/api/rbac/scopes/${id}`, { method: "DELETE" });
-export const getServiceCatalog   = (cloud) => apiFetch(`/api/rbac/service-catalog${cloud ? `?cloud=${cloud}` : ""}`);
-
-export const getBindings         = () => apiFetch("/api/rbac/bindings");
-export const createBinding       = (data) => apiFetch("/api/rbac/bindings", { method: "POST", body: JSON.stringify(data) });
-export const deleteBinding       = (id) => apiFetch(`/api/rbac/bindings/${id}`, { method: "DELETE" });
-
-export const getOverrides        = () => apiFetch("/api/rbac/overrides");
-export const createOverride      = (data) => apiFetch("/api/rbac/overrides", { method: "POST", body: JSON.stringify(data) });
-export const deleteOverride      = (id) => apiFetch(`/api/rbac/overrides/${id}`, { method: "DELETE" });
-
-export const getReviews          = (principalId) => apiFetch(`/api/rbac/reviews${principalId ? `?principal_id=${principalId}` : ""}`);
-export const createReview        = (data) => apiFetch("/api/rbac/reviews", { method: "POST", body: JSON.stringify(data) });
-
-export const getUsersLite        = () => apiFetch("/api/users");
-export const getPermissionCatalog = () => apiFetch("/api/permissions");
+// RBAC / users / groups API lives in ./access.js (used by pages/AccessControl).
