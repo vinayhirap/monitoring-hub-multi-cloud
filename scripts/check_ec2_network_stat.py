@@ -73,9 +73,10 @@ def main(argv):
             pass
 
     def nearest(ts):
-        # stored timestamps are collection times, not CloudWatch bucket starts
+        # stored points sit on the CloudWatch bucket start; 150 s = half a period, so a point
+        # that has not been collected yet shows nan instead of borrowing the previous one
         best = min(stored_ts, key=lambda x: abs((x[0] - ts).total_seconds()), default=None)
-        return best[1] if best and abs((best[0] - ts).total_seconds()) <= 450 else None
+        return best[1] if best and abs((best[0] - ts).total_seconds()) <= 150 else None
 
     print(f"{metric} {instance_id} region={region} (AWS = live CloudWatch, CloudOps = stored metric_history)\n")
     print(f"{'UTC time':<17}{'AWS Sum':>14}{'AWS Average':>14}{'SampleCount':>12}{'CloudOps':>14}{'Sum/CloudOps':>14}")

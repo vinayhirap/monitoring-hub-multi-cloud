@@ -162,7 +162,7 @@ export default function MetricChartCard({
               {stats.map(s => <option key={s} value={s}>{s}{s === nativeStat ? " (default)" : ""}</option>)}
             </select>
           </label>
-          {statNa && !singlePt && <span className="mc-na" title={`${ctx.statOverride} is not valid for this metric (it is stored as ${nativeStat}), so ${stat} is shown`}>{ctx.statOverride} n/a</span>}
+          {statNa && <span className="mc-na" title={`${ctx.statOverride} is not valid for this metric (it is stored as ${nativeStat}), so ${stat} is shown`}>{ctx.statOverride} n/a</span>}
           {periodLabel && <span className="mc-period" title="Each point aggregates this much time (chosen from the time range, like the CloudWatch console)">Period: {periodLabel}</span>}
         </div>
       )}
@@ -171,7 +171,7 @@ export default function MetricChartCard({
           <CartesianGrid stroke="rgba(99,130,190,0.08)" strokeDasharray="3 3" />
           <XAxis dataKey="t" type="number" scale="time" domain={[start, end]} allowDataOverflow tickFormatter={tickFmt}
                  ticks={xTicks} tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} />
-          <YAxis domain={yDomain} ticks={axis ? axis.ticks : undefined} tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false}
+          <YAxis domain={yDomain} ticks={axis ? axis.ticks : undefined} interval={0} tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false}
                  width={44} tickFormatter={fmtTick} />
           <Tooltip
             contentStyle={{ background: "#0b1220", border: "1px solid rgba(99,130,190,0.2)", borderRadius: 6, fontSize: 11 }}
@@ -184,6 +184,10 @@ export default function MetricChartCard({
                 dot={pts.length <= 24 ? { r: 2, fill: color } : false} activeDot={{ r: 3, fill: color }} isAnimationActive={false} />
         </LineChart>
       </ResponsiveContainer>
+      {warnLine == null && critLine == null && th?.mode === "anomaly" && (
+        <div className="mc-legend"><span title="The anomaly line needs enough baseline history for this time of the week; until then no alert can fire on this metric.">
+          No anomaly line yet (not enough baseline history)</span></div>
+      )}
       {(warnLine != null || critLine != null) && (
         <div className="mc-legend">
           {sameLine
