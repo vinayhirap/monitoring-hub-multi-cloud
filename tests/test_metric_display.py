@@ -53,3 +53,51 @@ def test_stats_offered_are_honest():
     assert "Sum" not in md.stats_available("Average")
     assert "Sum" in md.stats_available("Sum")
     assert "Sum" not in md.stats_available("Sum", rate=True)
+
+
+# ── 60 s -> 300 s period cutover (EBS rate metrics) ──────────────────────
+def _at(ts_iso, v):
+    return {"t": ts_iso, "v": v}
+
+
+def test_cutover_default_is_prod_value(monkeypatch):
+    monkeypatch.delenv("METRIC_PERIOD_CUTOVER_UTC", raising=False)
+    from datetime import datetime, timezone
+    assert md.period_cutover_epoch() == datetime(2026, 9, 29, 10, 55, tzinfo=timezone.utc).timestamp()
+
+
+def test_cutover_env_override_off_and_garbage(monkeypatch):
+    monkeypatch.setenv("METRIC_PERIOD_CUTOVER_UTC", "none")
+    assert md.period_cutover_epoch() is None
+    monkeypatch.setenv("METRIC_PERIOD_CUTOVER_UTC", "not a date")
+    assert md.period_cutover_epoch() is None          # degrades, never raises
+    monkeypatch.setenv("METRIC_PERIOD_CUTOVER_UTC", "2026-09-30T00:00:00Z")
+    assert md.period_cutover_epoch() is not None
+
+
+def test_points_before_cutover_use_60s_after_use_300s(monkeypatch):
+    monkeypatch.delenv("METRIC_PERIOD_CUTOVER_UTC", raising=False)
+    spec = md.display_spec("aws", "ebs", "VolumeReadOps", "Count", "Sum")
+    assert abs(spec["legacy_scale"] - 1 / 60) < 1e-12
+    cut = md.period_cutover_epoch()
+    # 600 ops in a 60 s window and 3000 ops in a 300 s window are the SAME 10 ops/s
+    old = md.bucketize([_at("2026-09-29T09:00:00+00:00", 600)], 3600, "Sum", spec["scale"], True, spec["legacy_scale"], cut)
+    new = md.bucketize([_at("2026-09-30T09:00:00+00:00", 3000)], 3600, "Sum", spec["scale"], True, spec["legacy_scale"], cut)
+    assert old[0]["v"] == new[0]["v"] == 10.0
+
+
+def test_bucket_spanning_cutover_is_scaled_per_point(monkeypatch):
+    monkeypatch.delenv("METRIC_PERIOD_CUTOVER_UTC", raising=False)
+    spec = md.display_spec("aws", "ebs", "VolumeWriteOps", "Count", "Sum")
+    cut = md.period_cutover_epoch()
+    pts = [_at("2026-09-29T10:50:00+00:00", 600), _at("2026-09-29T11:05:00+00:00", 3000)]
+    out = md.bucketize(pts, 7200, "Sum", spec["scale"], True, spec["legacy_scale"], cut)
+    assert len(out) == 1 and out[0]["a"] == 10.0 and out[0]["mx"] == 10.0 and out[0]["n"] == 2
+
+
+def test_non_rate_metrics_ignore_cutover(monkeypatch):
+    monkeypatch.delenv("METRIC_PERIOD_CUTOVER_UTC", raising=False)
+    spec = md.display_spec("aws", "ec2", "CPUUtilization", "Percent", "Average")
+    assert spec["legacy_scale"] is None
+    out = md.bucketize([_at("2026-09-29T09:00:00+00:00", 42)], 3600, "Average", spec["scale"], False, None, md.period_cutover_epoch())
+    assert out[0]["v"] == 42.0

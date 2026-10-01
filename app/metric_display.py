@@ -17,6 +17,7 @@ Everything below degrades to "show the metric as-is": an unknown cloud /
 service / metric never raises, it simply gets default presentation.
 """
 import math
+import os
 from datetime import datetime, timezone
 from functools import lru_cache
 
@@ -80,6 +81,34 @@ RATE_DISPLAY = {
     ("ebs", "VolumeReadBytes"): ("KiB/s", 1024.0),
     ("ebs", "VolumeWriteBytes"): ("KiB/s", 1024.0),
 }
+# ── Period cutover (EBS rate metrics) ────────────────────────────────────
+# EBS ops/bytes were collected at Period=60 until 2026-09-29 and at Period=300
+# afterwards (polling_model.AWS_CORE_METRICS). Stored points are per-period
+# TOTALS, so a point stored before the cutover must be divided by 60 and one
+# stored after by 300 -- otherwise old history reads ~5x too low for as long
+# as it stays inside the 30-day retention window.
+# The cutover is a per-server fact (dev and prod were deployed at different
+# times), so it can be overridden with METRIC_PERIOD_CUTOVER_UTC in .env
+# (ISO, UTC, e.g. 2026-09-29T10:55:00; "none" turns the legacy handling off).
+# Default = prod: last 1-minute point 10:54, first 5-minute point 10:59 UTC.
+RATE_LEGACY_PERIOD_SECS = 60
+PERIOD_CUTOVER_DEFAULT = "2026-09-29T10:55:00"
+
+
+def period_cutover_epoch():
+    """UTC epoch of the 60 s -> 300 s switch, or None (disabled / unparsable).
+    Never raises: a bad value must degrade to 'no legacy handling'."""
+    raw = os.environ.get("METRIC_PERIOD_CUTOVER_UTC")
+    raw = PERIOD_CUTOVER_DEFAULT if raw is None else raw.strip()
+    if not raw or raw.lower() in ("none", "off", "0"):
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", ""))
+        return dt.replace(tzinfo=timezone.utc).timestamp()
+    except Exception:
+        return None
+
+
 # EC2 NetworkIn/Out etc. are shown RAW (Bytes per period) exactly like the
 # EC2 console ("Network in (bytes)"). To switch them to B/s, add
 # ("ec2","NetworkIn"): ("Bytes/Second", 1.0) here -- nothing else changes.
@@ -127,6 +156,7 @@ def display_spec(provider, service, metric_name, catalog_unit=None, catalog_stat
     name = _norm(metric_name)
     unit = _norm(catalog_unit) or "None"
     scale = 1.0
+    legacy_scale = None   # divisor for points stored BEFORE the period cutover
     rate = False
     if (provider or "aws") == "aws":
         title = AWS_CONSOLE_TITLES.get((svc, name)) or AWS_CONSOLE_TITLES.get((service_for_display(svc), name)) or name
@@ -136,10 +166,13 @@ def display_spec(provider, service, metric_name, catalog_unit=None, catalog_stat
             unit, div = rd
             period = _aws_period_seconds(service_for_display(svc), name) or 300
             scale = 1.0 / (period * div)
+            if period != RATE_LEGACY_PERIOD_SECS:
+                legacy_scale = 1.0 / (RATE_LEGACY_PERIOD_SECS * div)
     else:
         title = name
     return {"title": title, "metric_name": name, "unit": unit,
             "unit_symbol": UNIT_SYMBOL.get(unit, ""), "scale": scale, "rate": rate,
+            "legacy_scale": legacy_scale,
             "native_stat": _norm(catalog_stat) or "Average"}
 
 
@@ -272,10 +305,13 @@ def core_native_stat(service, cw_name):
     return "Average"
 
 
-def bucketize(series, bucket_secs, native_stat="Average", scale=1.0, rate=False):
+def bucketize(series, bucket_secs, native_stat="Average", scale=1.0, rate=False,
+              legacy_scale=None, cutover=None):
     """[{t,v}] -> [{t, v, a, mn, mx, s, n}]. `v` is the metric's native-stat
     aggregate (so un-aware consumers see the same meaning as before).
-    Every aggregate is multiplied by `scale` (rate display). Never raises:
+    Every point is multiplied by `scale` (rate display) BEFORE aggregating; a
+    point older than `cutover` (epoch) uses `legacy_scale` instead, so a bucket
+    spanning the 60 s -> 300 s period change is still correct. Never raises:
     on any malformed input the original series is returned."""
     try:
         if not isinstance(series, list):
@@ -291,7 +327,8 @@ def bucketize(series, bucket_secs, native_stat="Average", scale=1.0, rate=False)
             if key not in buckets:
                 buckets[key] = []
                 order.append(key)
-            buckets[key].append(float(v))
+            sc = legacy_scale if (legacy_scale is not None and cutover is not None and ts < cutover) else scale
+            buckets[key].append(float(v) * sc)
         out = []
         for key in sorted(order):
             vals = buckets[key]
@@ -299,9 +336,9 @@ def bucketize(series, bucket_secs, native_stat="Average", scale=1.0, rate=False)
             a, mn, mx = s / n, min(vals), max(vals)
             native = a if rate else {"Sum": s, "Minimum": mn, "Maximum": mx}.get(native_stat, a)
             t_iso = datetime.fromtimestamp(key, tz=timezone.utc).isoformat().replace("+00:00", "Z")
-            out.append({"t": t_iso, "v": round(native * scale, 6), "a": round(a * scale, 6),
-                        "mn": round(mn * scale, 6), "mx": round(mx * scale, 6),
-                        "s": round(s * scale, 6), "n": n})
+            out.append({"t": t_iso, "v": round(native, 6), "a": round(a, 6),
+                        "mn": round(mn, 6), "mx": round(mx, 6),
+                        "s": round(s, 6), "n": n})
         return out
     except Exception:
         return series
@@ -325,7 +362,9 @@ def shape_response(service, result, hours, native_stats=None):
         cw = keys.get(k)
         spec = display_spec("aws", svc, cw) if cw else None
         out[k] = bucketize(v, bsec, native_stats.get(cw) or core_native_stat(svc, cw) if cw else "Average",
-                           spec["scale"] if spec else 1.0, rate=bool(spec and spec["rate"]))
+                           spec["scale"] if spec else 1.0, rate=bool(spec and spec["rate"]),
+                           legacy_scale=spec["legacy_scale"] if spec else None,
+                           cutover=period_cutover_epoch())
     out["bucket_secs"] = bsec
     out["effective_hours"] = hrs
     out["requested_hours"] = int(hours)

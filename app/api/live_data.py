@@ -59,7 +59,7 @@ from app import alert_rules as _alert_rules
 from app.alert_visibility import hidden_metrics_sql
 from app.threshold_defaults import normalize_service_key
 from app.utils.time_json import to_utc_iso
-from app.metric_display import effective_hours, shape_response, bucketize, bucket_seconds, display_spec
+from app.metric_display import effective_hours, shape_response, bucketize, bucket_seconds, display_spec, period_cutover_epoch
 from app.metric_meta import build_metric_meta
 import datetime
 import time
@@ -949,7 +949,8 @@ def live_generic_metrics(
             "statistic": row.get("statistic"),
             "description": row.get("description"),
             "title": spec["title"],
-            "series": bucketize(series, bsec, spec["native_stat"], spec["scale"], rate=spec["rate"]),
+            "series": bucketize(series, bsec, spec["native_stat"], spec["scale"], rate=spec["rate"],
+                               legacy_scale=spec["legacy_scale"], cutover=period_cutover_epoch()),
             "bucket_secs": bsec, "effective_hours": hours, "requested_hours": req_hours,
         }
     return result
