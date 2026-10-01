@@ -138,10 +138,17 @@ export default function MetricChartCard({
   const { ticks: xTicks, step: xStep } = timeTicks(start, end, ianaName);
   const tickFmt = makeTickFormatter(windowHours, ianaName, xStep);
   const nums = pts.map(p => p.v).filter(v => v != null);
-  const lines = [warnLine, critLine].filter(v => v != null);
+  const isPct = cwUnit === "Percent" || unit === "%";
+  const dataMax = Math.max(0, ...nums);
+  // A threshold far above anything the metric does (e.g. the 5 MB anomaly floor on
+  // a ~100 kB/5 min network chart) must not squash the real data into a flat line:
+  // it stays in the legend ("above chart") but does not stretch the axis. Percent
+  // charts keep their lines (70 / 90 % are meaningful even when load is 7 %).
+  const isFar = (v) => v != null && !isPct && dataMax > 0 && v > dataMax * 4;
+  const lines = [warnLine, critLine].filter(v => v != null && !isFar(v));
   const hi = Math.max(...nums, ...lines);
   const lo = Math.min(0, ...nums, ...lines);
-  const axis = niceAxis(hi, lo, cwUnit === "Percent" || unit === "%");
+  const axis = niceAxis(hi, lo, isPct);
   const pad = (hi - lo) * 0.06 || 1;
   const yDomain = axis ? [0, axis.max] : [lo === 0 ? 0 : lo - pad, hi + pad];
 
@@ -178,8 +185,8 @@ export default function MetricChartCard({
             labelStyle={{ color: "#7a90b8" }} labelFormatter={(ms) => fmtFullTime(ms, ianaName)}
             formatter={(value) => [fmt(value), `${shownTitle}${stat ? ` · ${stat}` : ""}`]} itemStyle={{ color }}
           />
-          {warnLine != null && !sameLine && <ReferenceLineY y={warnLine} color="#f59e0b" dash="4 4" />}
-          {critLine != null && <ReferenceLineY y={critLine} color="#ef4444" dash="2 3" />}
+          {warnLine != null && !sameLine && !isFar(warnLine) && <ReferenceLineY y={warnLine} color="#f59e0b" dash="4 4" />}
+          {critLine != null && !isFar(critLine) && <ReferenceLineY y={critLine} color="#ef4444" dash="2 3" />}
           <Line type="linear" dataKey="v" stroke={color} strokeWidth={2} connectNulls={false}
                 dot={pts.length <= 24 ? { r: 2, fill: color } : false} activeDot={{ r: 3, fill: color }} isAnimationActive={false} />
         </LineChart>
@@ -191,10 +198,10 @@ export default function MetricChartCard({
       {(warnLine != null || critLine != null) && (
         <div className="mc-legend">
           {sameLine
-            ? <span><i style={{ background: "#ef4444" }} /> Warn/Crit {th?.comparison || ""} {fmt(critLine)}</span>
+            ? <span><i style={{ background: "#ef4444" }} /> Warn/Crit {th?.comparison || ""} {fmt(critLine)}{isFar(critLine) ? " (above chart)" : ""}</span>
             : <>
-                {warnLine != null && <span><i style={{ background: "#f59e0b" }} /> Warn {th?.comparison || ""} {fmt(warnLine)}</span>}
-                {critLine != null && <span><i style={{ background: "#ef4444" }} /> Crit {th?.comparison || ""} {fmt(critLine)}</span>}
+                {warnLine != null && <span><i style={{ background: "#f59e0b" }} /> Warn {th?.comparison || ""} {fmt(warnLine)}{isFar(warnLine) ? " (above chart)" : ""}</span>}
+                {critLine != null && <span><i style={{ background: "#ef4444" }} /> Crit {th?.comparison || ""} {fmt(critLine)}{isFar(critLine) ? " (above chart)" : ""}</span>}
               </>}
         </div>
       )}

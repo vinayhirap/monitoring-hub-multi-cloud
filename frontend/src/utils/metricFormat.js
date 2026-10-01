@@ -94,18 +94,31 @@ export function timeTicks(start, end, ianaName, maxTicks = 7) {
   return { ticks, step };
 }
 
-// 0-based "nice" y axis: top = 1 / 1.2 / 1.6 / 2 / 2.4 / 3 / 4 / 5 / 6 / 8 / 10 x 10^n,
-// 4 equal intervals; Percent never exceeds 100. Returns null when the data has
-// negatives / is not finite so the caller keeps its padded auto domain.
-const NICE = [1, 1.2, 1.6, 2, 2.4, 3, 4, 5, 6, 8, 10];
+// 0-based "nice" y axis. Tick step is 1, 2, 2.5 or 5 x 10^n (so labels read
+// 0 / 2M / 4M / 6M, never 1.3M / 3.8M), at most 4 intervals (5 labels fit even
+// the short charts), and the top always sits a little ABOVE the highest value or
+// threshold line so a line is never drawn on the plot edge. Percent never goes
+// above 100. Returns null when the data has negatives / is not finite so the
+// caller keeps its padded auto domain.
+const STEPS = [1, 2, 2.5, 5];
 export function niceAxis(hi, lo, isPercent) {
   if (!Number.isFinite(hi) || !Number.isFinite(lo) || lo < 0) return null;
-  const top = hi > 0 ? hi : 1;
-  const pow = Math.pow(10, Math.floor(Math.log10(top)));
-  let max = (NICE.find(n => n * pow >= top - 1e-12) || 10) * pow;
-  if (isPercent && hi <= 100 && max > 100) max = 100;
+  const top = (hi > 0 ? hi : 1) * 1.04;
+  const p0 = Math.pow(10, Math.floor(Math.log10(top)) - 1);
+  let step = null;
+  for (let k = 0; k < 4 && step == null; k++) {
+    for (const m of STEPS) {
+      const st = m * p0 * Math.pow(10, k);
+      if (Math.ceil(top / st - 1e-9) <= 4) { step = st; break; }
+    }
+  }
+  if (step == null) return null;
   const r = (x) => Number(x.toPrecision(10));
-  return { max: r(max), ticks: [0, 1, 2, 3, 4].map(i => r(max * i / 4)) };
+  let max = step * Math.ceil(top / step - 1e-9);
+  if (isPercent && hi <= 100 && max > 100) { max = 100; step = 25; }
+  const ticks = [];
+  for (let t = 0; t <= max + step / 1000; t += step) ticks.push(r(t));
+  return { max: r(max), ticks };
 }
 
 export const fmtFullTime = (ms, ianaName) =>
