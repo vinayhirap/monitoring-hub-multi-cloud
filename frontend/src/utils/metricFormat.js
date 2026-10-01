@@ -53,17 +53,59 @@ export function fmtPeriod(secs) {
   return `${secs} s`;
 }
 
-// Axis tick label: time only for <=1D windows, date + time beyond (the old
-// HH:MM-only ticks repeated "00:15, 15:15, 06:10..." across a 1W-1Y axis).
-export function makeTickFormatter(windowHours, ianaName) {
+// Axis tick label. `stepMs` (from timeTicks) decides the shape: day-or-longer
+// steps print the date only ("Sep 17"), longer-than-36h windows with shorter
+// steps print date + time, everything else prints HH:MM.
+export function makeTickFormatter(windowHours, ianaName, stepMs) {
+  const dateOnly = stepMs && stepMs >= 86400000;
   const dateAndTime = windowHours > 36;
   return (ms) => {
     const d = new Date(ms);
-    const opts = dateAndTime
-      ? { month: "short", day: "numeric", ...(windowHours <= 24 * 10 ? { hour: "2-digit", minute: "2-digit", hour12: false } : {}), timeZone: ianaName }
-      : { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: ianaName };
+    const opts = dateOnly
+      ? { month: "short", day: "numeric", timeZone: ianaName }
+      : dateAndTime
+        ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: ianaName }
+        : { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: ianaName };
     return d.toLocaleString("en-US", opts);
   };
+}
+
+// ── Round axis ticks (so every chart in a grid lines up like the AWS console) ──
+const MIN = 60000, HR = 3600000, DAY = 86400000;
+const TIME_STEPS = [5 * MIN, 10 * MIN, 15 * MIN, 30 * MIN, HR, 2 * HR, 3 * HR, 4 * HR, 6 * HR, 12 * HR, DAY, 2 * DAY, 5 * DAY, 7 * DAY];
+
+// UTC offset (ms) of `tz` at instant `ms`; 0 on any failure (never throws).
+function tzOffsetMs(ms, tz) {
+  try {
+    const f = new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const p = Object.fromEntries(f.formatToParts(new Date(ms)).map(x => [x.type, x.value]));
+    return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - Math.floor(ms / 1000) * 1000;
+  } catch { return 0; }
+}
+
+// Ticks on round wall-clock times in the viewer's timezone: 10 min for 1H,
+// 30 min for 3H, 1 h for 6H, 4 h for 1D, 1 day for 1W, 5 days for 1M.
+export function timeTicks(start, end, ianaName, maxTicks = 7) {
+  const span = end - start;
+  const step = TIME_STEPS.find(s => span / s <= maxTicks) || TIME_STEPS[TIME_STEPS.length - 1];
+  const off = tzOffsetMs(end, ianaName);
+  const ticks = [];
+  for (let t = Math.ceil((start + off) / step) * step - off; t <= end; t += step) ticks.push(t);
+  return { ticks, step };
+}
+
+// 0-based "nice" y axis: top = 1 / 1.2 / 1.6 / 2 / 2.4 / 3 / 4 / 5 / 6 / 8 / 10 x 10^n,
+// 4 equal intervals; Percent never exceeds 100. Returns null when the data has
+// negatives / is not finite so the caller keeps its padded auto domain.
+const NICE = [1, 1.2, 1.6, 2, 2.4, 3, 4, 5, 6, 8, 10];
+export function niceAxis(hi, lo, isPercent) {
+  if (!Number.isFinite(hi) || !Number.isFinite(lo) || lo < 0) return null;
+  const top = hi > 0 ? hi : 1;
+  const pow = Math.pow(10, Math.floor(Math.log10(top)));
+  let max = (NICE.find(n => n * pow >= top - 1e-12) || 10) * pow;
+  if (isPercent && hi <= 100 && max > 100) max = 100;
+  const r = (x) => Number(x.toPrecision(10));
+  return { max: r(max), ticks: [0, 1, 2, 3, 4].map(i => r(max * i / 4)) };
 }
 
 export const fmtFullTime = (ms, ianaName) =>

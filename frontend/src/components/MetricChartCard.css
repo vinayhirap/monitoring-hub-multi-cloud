@@ -23,3 +23,5 @@ span.mc-chip { cursor: default; }
 .mc-updated { font-size: 10px; color: var(--text-muted); }
 .mc-note { font-size: 11px; color: #f59e0b; margin: 4px 0 8px; }
 .tr-btn.tr-limited { opacity: .75; }
+
+.mc-na { font-size: 9px; color: #f59e0b; border: 1px solid rgba(245,158,11,.4); border-radius: 999px; padding: 0 6px; }

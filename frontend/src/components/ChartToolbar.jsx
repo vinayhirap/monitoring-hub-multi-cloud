@@ -2,7 +2,6 @@
 // manual refresh + "updated Ns ago" + retention note. Shared by every metrics
 // panel so range/refresh behave identically for every cloud and service.
 import { useEffect, useState } from "react";
-import { fmtPeriod } from "../utils/metricFormat";
 
 export const REFRESH_OPTIONS = [
   { label: "Off", ms: 0 }, { label: "15 s", ms: 15000 }, { label: "30 s", ms: 30000 },
@@ -43,7 +42,6 @@ export default function ChartToolbar({
         <button className="mc-refresh-btn" onClick={onRefresh} disabled={loading}>{loading ? "⟳ …" : "⟳ Refresh"}</button>
         <span className="mc-updated">
           {ago != null ? `Updated ${ago < 5 ? "just now" : `${ago}s ago`}` : ""}
-          {bucketSecs ? ` · Period ${fmtPeriod(bucketSecs)}` : ""}
         </span>
       </div>
       {limited && (

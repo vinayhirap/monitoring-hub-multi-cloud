@@ -12,12 +12,12 @@
 //   * metric in alert -> coloured border + CRITICAL/WARNING badge
 //   * fixed time window (not dataMin..dataMax), date-aware ticks, gaps shown
 //     as gaps, linear lines (no invented overshoot), 0-based axis
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useContext, useState } from "react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { Maximize2Icon } from "./icons";
 import MetricZoomModal from "./MetricZoomModal";
-import { fmtMetricValue, fmtAxisValue, fmtPeriod, makeTickFormatter, fmtFullTime, STAT_FIELD } from "../utils/metricFormat";
+import { fmtMetricValue, fmtAxisValue, fmtPeriod, makeTickFormatter, timeTicks, niceAxis, fmtFullTime, STAT_FIELD } from "../utils/metricFormat";
 import "./MetricChartCard.css";
 
 // value: { meta: {metricName: entry}, windowHours, bucketSecs, statOverride }
@@ -32,8 +32,8 @@ export default function MetricChartCard({
   // forceTitle: page-supplied title that wins over the catalog title (e.g. the
   //   Windows counter name "LogicalDisk % Free Space" from the CW agent).
   // invert: show 100 - value (Windows "% Free Space" is stored as used %).
-  //   Min/Max swap, and threshold lines are dropped because thresholds are
-  //   defined on the stored used-% scale, not on the inverted one.
+  //   Min/Max swap, and the threshold lines are mirrored (100 - value, "<")
+  //   because alerts are defined on the stored used-% scale.
   forceTitle, invert = false,
 }) {
   const { ianaName } = useTimezone();
@@ -42,13 +42,12 @@ export default function MetricChartCard({
   const [zoomOpen, setZoomOpen] = useState(false);
 
   const windowHours = ctx.windowHours || 6;
-  const tickFmt = useMemo(() => makeTickFormatter(windowHours, ianaName), [windowHours, ianaName]);
 
   // data === null: backend says this metric can structurally never have data -> hide
   if (rawData === null) return null;
-  const inv = (x) => (x == null ? x : Math.round((100 - x) * 1e6) / 1e6);
+  const inv100 = (x) => (x == null ? x : Math.round((100 - x) * 1e6) / 1e6);
   const data = invert && Array.isArray(rawData)
-    ? rawData.map(d => ({ ...d, v: inv(d.v), a: inv(d.a), mn: inv(d.mx), mx: inv(d.mn) }))
+    ? rawData.map(d => ({ ...d, v: inv100(d.v), a: inv100(d.a), mn: inv100(d.mx), mx: inv100(d.mn) }))
     : rawData;
 
   const meta = ctx.meta?.[metricKey || title] || null;
@@ -59,10 +58,20 @@ export default function MetricChartCard({
   const wanted = localStat || (ctx.statOverride !== "auto" ? ctx.statOverride : null);
   const stat = wanted && stats.includes(wanted) ? wanted : (stats.includes(nativeStat) ? nativeStat : (stats[0] || null));
   const field = stat ? STAT_FIELD[stat] : "v";
+  // the page-wide dropdown asked for a statistic this metric cannot honestly offer
+  const statNa = !localStat && ctx.statOverride !== "auto" && !stats.includes(ctx.statOverride);
 
-  const th = invert ? null : (meta?.threshold || null);
-  const warnLine = invert ? null : (th ? th.warning : warningThreshold);
-  const critLine = invert ? null : (th ? th.critical : criticalThreshold);
+  // Inverted charts (Windows "% Free Space" is stored as used %): the alert is
+  // evaluated on the stored used-% scale, so each line is drawn at 100 - value
+  // and the comparison flips (used > 80  ==  free < 20).
+  const flip = { ">": "<", ">=": "<=", "<": ">", "<=": ">=" };
+  const rawTh = meta?.threshold || null;
+  const th = rawTh && invert
+    ? { ...rawTh, warning: inv100(rawTh.warning), critical: inv100(rawTh.critical), comparison: flip[rawTh.comparison] || rawTh.comparison }
+    : rawTh;
+  const warnLine = th ? th.warning : (invert ? inv100(warningThreshold) : warningThreshold);
+  const critLine = th ? th.critical : (invert ? inv100(criticalThreshold) : criticalThreshold);
+  const sameLine = warnLine != null && critLine != null && warnLine === critLine;   // anomaly-only bound
   const alert = meta?.alert && ["firing"].includes(meta.alert.state) ? meta.alert : null;
   const sevColor = alert ? SEV_COLOR[alert.severity] || SEV_COLOR.INFO : null;
 
@@ -70,7 +79,9 @@ export default function MetricChartCard({
   const fmtTick = (v) => (yTickFormatter && !cwUnit ? yTickFormatter(v) : fmtAxisValue(v, cwUnit));
 
   const bucket = ctx.bucketSecs;
-  const periodLabel = fmtPeriod(bucket || meta?.period_seconds);
+  // The period of a point can never be finer than the collection period: a 5-min
+  // metric charted on 1H still has one point per 5 min (the console says 5 min too).
+  const periodLabel = fmtPeriod(Math.max(bucket || 0, meta?.period_seconds || 0) || null);
   const pollTip = meta?.poll_label
     ? `Collected every ${meta.poll_label}` +
       (meta.period_seconds ? ` · CloudWatch period ${fmtPeriod(meta.period_seconds)}` : "") +
@@ -120,17 +131,21 @@ export default function MetricChartCard({
 
   const end = Math.max(Date.now(), lastT || 0);
   const start = end - windowHours * 3600 * 1000;
+  const { ticks: xTicks, step: xStep } = timeTicks(start, end, ianaName);
+  const tickFmt = makeTickFormatter(windowHours, ianaName, xStep);
   const nums = pts.map(p => p.v).filter(v => v != null);
   const lines = [warnLine, critLine].filter(v => v != null);
   const hi = Math.max(...nums, ...lines);
   const lo = Math.min(0, ...nums, ...lines);
+  const axis = niceAxis(hi, lo, cwUnit === "Percent" || unit === "%");
   const pad = (hi - lo) * 0.06 || 1;
+  const yDomain = axis ? [0, axis.max] : [lo === 0 ? 0 : lo - pad, hi + pad];
 
   return (
     <div id={metricAnchor(metricKey || title)} className={`chart-box mc-card ${alert ? "mc-alert" : ""}`} style={alert ? { borderColor: sevColor, boxShadow: `0 0 0 1px ${sevColor}55` } : undefined}>
       {header(
         <span className="chart-header-right">
-          <span className="chart-latest" style={{ color }}>{fmt(latest)}</span>
+          <span className="chart-latest" style={{ color }} title={`Latest ${stat || "value"}${periodLabel ? ` (${periodLabel} period)` : ""}`}>{fmt(latest)}</span>
           <button className="chart-expand-btn" onClick={() => setZoomOpen(true)} title={`Zoom ${shownTitle}`}><Maximize2Icon size={13} /></button>
         </span>
       )}
@@ -142,6 +157,7 @@ export default function MetricChartCard({
               {stats.map(s => <option key={s} value={s}>{s}{s === nativeStat ? " (default)" : ""}</option>)}
             </select>
           </label>
+          {statNa && <span className="mc-na" title={`${ctx.statOverride} is not valid for this metric (it is stored as ${nativeStat}), so ${stat} is shown`}>{ctx.statOverride} n/a</span>}
           {periodLabel && <span className="mc-period" title="Each point aggregates this much time (chosen from the time range, like the CloudWatch console)">Period: {periodLabel}</span>}
         </div>
       )}
@@ -149,15 +165,15 @@ export default function MetricChartCard({
         <LineChart data={pts} margin={{ top: 4, right: 6, left: 0, bottom: 0 }}>
           <CartesianGrid stroke="rgba(99,130,190,0.08)" strokeDasharray="3 3" />
           <XAxis dataKey="t" type="number" scale="time" domain={[start, end]} allowDataOverflow tickFormatter={tickFmt}
-                 tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} tickCount={5} />
-          <YAxis domain={[lo === 0 ? 0 : lo - pad, hi + pad]} tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false}
+                 ticks={xTicks} tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} />
+          <YAxis domain={yDomain} ticks={axis ? axis.ticks : undefined} tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false}
                  width={44} tickFormatter={fmtTick} />
           <Tooltip
             contentStyle={{ background: "#0b1220", border: "1px solid rgba(99,130,190,0.2)", borderRadius: 6, fontSize: 11 }}
             labelStyle={{ color: "#7a90b8" }} labelFormatter={(ms) => fmtFullTime(ms, ianaName)}
             formatter={(value) => [fmt(value), `${shownTitle}${stat ? ` · ${stat}` : ""}`]} itemStyle={{ color }}
           />
-          {warnLine != null && <ReferenceLineY y={warnLine} color="#f59e0b" dash="4 4" />}
+          {warnLine != null && !sameLine && <ReferenceLineY y={warnLine} color="#f59e0b" dash="4 4" />}
           {critLine != null && <ReferenceLineY y={critLine} color="#ef4444" dash="2 3" />}
           <Line type="linear" dataKey="v" stroke={color} strokeWidth={2} connectNulls={false}
                 dot={pts.length <= 24 ? { r: 2, fill: color } : false} activeDot={{ r: 3, fill: color }} isAnimationActive={false} />
@@ -165,8 +181,12 @@ export default function MetricChartCard({
       </ResponsiveContainer>
       {(warnLine != null || critLine != null) && (
         <div className="mc-legend">
-          {warnLine != null && <span><i style={{ background: "#f59e0b" }} /> Warn {th?.comparison || ""} {fmt(warnLine)}</span>}
-          {critLine != null && <span><i style={{ background: "#ef4444" }} /> Crit {th?.comparison || ""} {fmt(critLine)}</span>}
+          {sameLine
+            ? <span><i style={{ background: "#ef4444" }} /> Warn/Crit {th?.comparison || ""} {fmt(critLine)}</span>
+            : <>
+                {warnLine != null && <span><i style={{ background: "#f59e0b" }} /> Warn {th?.comparison || ""} {fmt(warnLine)}</span>}
+                {critLine != null && <span><i style={{ background: "#ef4444" }} /> Crit {th?.comparison || ""} {fmt(critLine)}</span>}
+              </>}
         </div>
       )}
       <MetricZoomModal open={zoomOpen} onClose={() => setZoomOpen(false)} title={shownTitle}

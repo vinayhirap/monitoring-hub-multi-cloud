@@ -62,9 +62,6 @@ const TIME_RANGES = [
   { label: "1D",  hours: 24 },
   { label: "1W",  hours: 168 },
   { label: "1M",  hours: 720 },
-  { label: "6M",  hours: 4320 },
-  { label: "1Y",  hours: 8760 },
-  { label: "ALL", hours: 17520 },
 ];
 
 // Cycled per metric within a resource's chart grid so a service with
