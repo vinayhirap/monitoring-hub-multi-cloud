@@ -73,6 +73,16 @@ from app.audit import write_audit as _write_audit
 # below (role=current_user["role"].upper()).
 
 
+
+def _invalidate_rbac_cache() -> None:
+    """A group edit can change access for every member of every descendant
+    group -- drop the v2 resolver cache (see rbac.invalidate_principal)."""
+    try:
+        from app.auth import rbac as _rbac
+        _rbac.invalidate_principal(None)
+    except Exception:
+        pass
+
 def _account_ids_by_cloud(conn) -> dict:
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT id, provider FROM aws_accounts")
@@ -281,11 +291,21 @@ def delete_group(group_id: int, current_user: dict = Depends(require_permission(
                 ),
             )
 
+        # Bindings / overrides / reviews target a group through a
+        # polymorphic principal_id with no FK, so they do NOT cascade --
+        # remove them in the same transaction or they'd outlive the group.
+        from app.auth import principals as _principals
+        _principals.purge_principal_grants(conn, "group", group_id)
         cursor.execute("DELETE FROM org_groups WHERE id = %s", (group_id,))  # policies + memberships cascade via FK
         conn.commit()
         cursor.close()
     finally:
         conn.close()
+    try:
+        from app.auth import rbac as _rbac
+        _rbac.invalidate_principal(None)
+    except Exception:
+        pass
 
     _write_audit(current_user["username"], "Group deleted", f"{g['name']} ({g['level']}) removed",
                  role=current_user["role"].upper())
@@ -359,6 +379,7 @@ def add_group_policy(group_id: int, payload: dict = Body(...), current_user: dic
     finally:
         conn.close()
 
+    _invalidate_rbac_cache()
     _write_audit(
         current_user["username"], "Group policy granted",
         f"{g['name']}: +{len(inserted_ids)} scope grant(s)",
@@ -389,6 +410,7 @@ def delete_group_policy(policy_id: int, current_user: dict = Depends(require_per
     finally:
         conn.close()
 
+    _invalidate_rbac_cache()
     _write_audit(current_user["username"], "Group policy revoked", f"{row['group_name']}: policy #{policy_id} removed",
                  role=current_user["role"].upper())
     return {"status": "revoked", "policy_id": policy_id}
@@ -451,6 +473,7 @@ def add_group_members(group_id: int, payload: dict = Body(...), current_user: di
     finally:
         conn.close()
 
+    _invalidate_rbac_cache()
     _write_audit(
         current_user["username"], "Group membership added",
         f"{g['name']}: +{len(added)} user(s)" + (f", {len(already)} already member" if already else ""),
@@ -481,6 +504,7 @@ def remove_group_member(group_id: int, user_id: int, current_user: dict = Depend
     if not removed:
         raise HTTPException(status_code=404, detail="User is not a member of this group")
 
+    _invalidate_rbac_cache()
     _write_audit(current_user["username"], "Group membership removed", f"{g['name']}: user #{user_id} removed",
                  role=current_user["role"].upper())
     return {"status": "removed", "group_id": group_id, "user_id": user_id}

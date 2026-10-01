@@ -60,7 +60,12 @@ def _validate_scope_payload(payload: dict) -> dict:
     if account_ref_id is not None and not isinstance(account_ref_id, int):
         raise HTTPException(status_code=400, detail="account_ref_id must be an integer account id")
 
-    clean = {"label": (payload.get("label") or "").strip() or None, "cloud": cloud, "account_ref_id": account_ref_id}
+    label = (payload.get("label") or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="label is required (it is how the scope is shown everywhere else)")
+    if len(label) > 150:
+        raise HTTPException(status_code=400, detail="label must be 150 characters or fewer")
+    clean = {"label": label, "cloud": cloud, "account_ref_id": account_ref_id}
 
     for field in _LIST_FIELDS:
         val = payload.get(field)
@@ -79,7 +84,29 @@ def _validate_scope_payload(payload: dict) -> dict:
     else:
         raise HTTPException(status_code=400, detail="tag_selector must be an object of tag -> value(s) or omitted")
 
+    # Dimensions the data layer does not enforce yet. authorization.py filters
+    # rows by cloud / account / region only; accepting a service, resource
+    # or tag restriction here would LOOK like a boundary and not be one
+    # (an over-grant on the allow side, a false sense of safety on deny).
+    unenforced = [f for f in ("services", "resource_groups", "resource_ids", "tag_selector") if clean.get(f)]
+    if unenforced:
+        raise HTTPException(
+            status_code=400,
+            detail=("Scopes currently support cloud, account and region boundaries. "
+                    f"Not yet enforced by the data layer: {', '.join(unenforced)}."),
+        )
     return clean
+
+
+def _label_taken(conn, label: str, exclude_id=None) -> bool:
+    cur = conn.cursor()
+    if exclude_id is None:
+        cur.execute("SELECT id FROM rbac_scopes WHERE LOWER(label) = LOWER(%s)", (label,))
+    else:
+        cur.execute("SELECT id FROM rbac_scopes WHERE LOWER(label) = LOWER(%s) AND id <> %s", (label, exclude_id))
+    taken = cur.fetchone() is not None
+    cur.close()
+    return taken
 
 
 def _row_out(row: dict) -> dict:
@@ -116,9 +143,12 @@ def list_scopes(current_user: dict = Depends(require_permission("rbac.scope.view
     try:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
-            "SELECT s.*, a.account_name FROM rbac_scopes s "
+            "SELECT s.*, a.account_name, "
+            "(SELECT COUNT(*) FROM role_bindings b WHERE b.scope_id = s.id) AS binding_count, "
+            "(SELECT COUNT(*) FROM permission_overrides o WHERE o.scope_id = s.id) AS override_count "
+            "FROM rbac_scopes s "
             "LEFT JOIN aws_accounts a ON a.id = s.account_ref_id "
-            "ORDER BY s.created_at DESC"
+            "ORDER BY s.is_system DESC, s.label ASC"
         )
         rows = [_row_out(r) for r in cursor.fetchall()]
         cursor.close()
@@ -143,6 +173,10 @@ def create_scope(payload: dict = Body(...), current_user: dict = Depends(require
             if clean["cloud"] and acc["provider"] != clean["cloud"]:
                 cursor.close()
                 raise HTTPException(status_code=400, detail=f"account_ref_id belongs to provider '{acc['provider']}', not '{clean['cloud']}'")
+
+        if _label_taken(conn, clean["label"]):
+            cursor.close()
+            raise HTTPException(status_code=409, detail=f"A scope named '{clean['label']}' already exists")
 
         cursor2 = conn.cursor()
         cursor2.execute(
@@ -176,12 +210,19 @@ def update_scope(scope_id: int, payload: dict = Body(...), current_user: dict = 
     conn = get_connection()
     try:
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT id FROM rbac_scopes WHERE id = %s", (scope_id,))
-        if not cursor.fetchone():
+        cursor.execute("SELECT id, is_system FROM rbac_scopes WHERE id = %s", (scope_id,))
+        existing = cursor.fetchone()
+        if not existing:
             cursor.close()
             raise HTTPException(status_code=404, detail="Scope not found")
+        if existing.get("is_system"):
+            cursor.close()
+            raise HTTPException(status_code=403, detail="The built-in Organization scope cannot be edited")
 
         clean = _validate_scope_payload(payload)
+        if _label_taken(conn, clean["label"], exclude_id=scope_id):
+            cursor.close()
+            raise HTTPException(status_code=409, detail=f"A scope named '{clean['label']}' already exists")
         cursor2 = conn.cursor()
         cursor2.execute(
             "UPDATE rbac_scopes SET label=%s, cloud=%s, account_ref_id=%s, regions=%s, services=%s, "
@@ -214,6 +255,11 @@ def delete_scope(scope_id: int, current_user: dict = Depends(require_permission(
     conn = get_connection()
     try:
         cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT is_system FROM rbac_scopes WHERE id = %s", (scope_id,))
+        srow = cursor.fetchone()
+        if srow and srow.get("is_system"):
+            cursor.close()
+            raise HTTPException(status_code=403, detail="The built-in Organization scope cannot be deleted")
         cursor.execute("SELECT COUNT(*) AS n FROM role_bindings WHERE scope_id = %s", (scope_id,))
         in_use = cursor.fetchone()["n"]
         if in_use:

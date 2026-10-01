@@ -19,14 +19,14 @@ Read-only endpoints backing:
 from fastapi import APIRouter, Depends
 from app.db import get_connection
 from app.auth.deps import get_current_user
-from app.auth.permissions import get_role_permissions, require_permission
+from app.auth.permissions import get_role_permissions, require_permission, denied_permission_codes
 
 router = APIRouter(prefix="/api/permissions", tags=["Permissions"])
 
 
 @router.get("/me")
 def my_permissions(current_user: dict = Depends(get_current_user)):
-    codes = get_role_permissions(current_user["role"])
+    codes = get_role_permissions(current_user["role"]) - denied_permission_codes(current_user)
     from app.api.reports import is_enabled as reports_enabled
     return {
         "role": current_user["role"],

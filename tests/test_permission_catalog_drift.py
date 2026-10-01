@@ -113,7 +113,7 @@ _BASELINE_UNUSED = frozenset({
     "security.suppress", "sso.manage", "sso.view", "status_page.publish",
     "status_page.view", "synthetic.run", "system.admin", "system.config.manage",
     "system.smtp.manage", "topology.view", "troubleshooting.execute",
-    "users.password.reset", "webhooks.manage", "webhooks.view",
+    "webhooks.manage", "webhooks.view",
 })
 
 

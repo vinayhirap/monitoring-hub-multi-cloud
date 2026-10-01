@@ -49,10 +49,55 @@ def get_role_permissions(role: str) -> set:
         conn.close()
 
 
+def _globally_denied(user: dict, code: str) -> bool:
+    """
+    True if an UNSCOPED deny override (scope = "everywhere") targets this
+    user (directly, or via a group they are in) for this permission.
+
+    Until this existed, permission_overrides rows were stored and listed in
+    the RBAC admin UI but nothing on the request path ever read them -- a
+    "deny" that denied nothing. An unscoped deny is the one form that is
+    safe to enforce at the route gate: it can only REMOVE access, so it
+    cannot over-grant, and it needs no per-row scope logic. (Scoped denies
+    still need row-level enforcement in each data endpoint.)
+
+    Fails open ONLY when the v2 tables are missing (a DB that hasn't run
+    migration 040 yet); any other error propagates so authorization never
+    silently degrades into "allowed".
+    """
+    try:
+        from app.auth import rbac
+    except Exception:  # pragma: no cover - module absent in some unit-test stubs
+        return False
+    try:
+        access = rbac.resolve(user)
+    except Exception as exc:
+        errno = getattr(exc, "errno", None)
+        if errno in (1146, 1054):  # table / column doesn't exist yet
+            return False
+        raise
+    return any(d.permission_code == code and d.scope is None for d in access.denials)
+
+
+def denied_permission_codes(user: dict) -> set:
+    """Every permission code an unscoped deny override removes from this user
+    (used by GET /api/permissions/me so the UI hides what the API refuses)."""
+    if user.get("role") == "admin":
+        return set()
+    try:
+        from app.auth import rbac
+        access = rbac.resolve(user)
+    except Exception:
+        return set()
+    return {d.permission_code for d in access.denials if d.scope is None}
+
+
 def has_permission(user: dict, code: str) -> bool:
     if user.get("role") == "admin":
         return True
-    return code in get_role_permissions(user.get("role"))
+    if code not in get_role_permissions(user.get("role")):
+        return False
+    return not _globally_denied(user, code)
 
 
 def require_permission(code: str):

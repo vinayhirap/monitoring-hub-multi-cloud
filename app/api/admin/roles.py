@@ -41,6 +41,7 @@ from app.auth.permissions import require_permission
 from app.auth import rbac
 from app.audit import write_audit as _write_audit
 import datetime
+import re
 from app.utils.time_json import to_utc_iso
 
 router = APIRouter(prefix="/api/rbac/roles", tags=["RBAC Administration"])
@@ -86,9 +87,17 @@ def list_roles(current_user: dict = Depends(require_permission("roles.view"))):
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT * FROM roles ORDER BY role_rank DESC, name ASC")
         roles = cursor.fetchall()
+        cursor.execute("SELECT role_id, COUNT(*) AS n FROM role_bindings GROUP BY role_id")
+        bound = {r["role_id"]: r["n"] for r in cursor.fetchall()}
+        cursor.execute("SELECT role, COUNT(*) AS n FROM users GROUP BY role")
+        base = {r["role"]: r["n"] for r in cursor.fetchall()}
         cursor.close()
         for r in roles:
             r["permissions"] = _role_permission_codes(conn, r["id"])
+            r["permission_count"] = len(r["permissions"])
+            r["binding_count"] = bound.get(r["id"], 0)
+            # builtin roles are also the users' base role
+            r["user_count"] = base.get(r["role_key"], 0) if r["is_builtin"] else 0
     finally:
         conn.close()
     return [_serialize(r) for r in roles]
@@ -103,6 +112,11 @@ def create_role(payload: dict = Body(...), current_user: dict = Depends(require_
 
     if not name or not role_key:
         raise HTTPException(status_code=400, detail="name and role_key are required")
+    if not re.match(r"^[a-z][a-z0-9_]{1,39}$", role_key):
+        raise HTTPException(status_code=400,
+                            detail="role_key must be 2-40 chars: lowercase letters, digits, underscores, starting with a letter")
+    if len(name) > 100:
+        raise HTTPException(status_code=400, detail="name must be 100 characters or fewer")
     if role_key in _BUILTIN_KEYS:
         raise HTTPException(status_code=409, detail=f"'{role_key}' is a builtin role key and cannot be reused")
     if not all(isinstance(c, str) for c in codes):
@@ -169,10 +183,16 @@ def update_role(role_id: int, payload: dict = Body(...), current_user: dict = De
         if name is not None and not name.strip():
             raise HTTPException(status_code=400, detail="name cannot be blank")
 
+        # Only touch fields that were actually sent: this used to run
+        # `description = %s` unconditionally, so a rename-only request wiped
+        # the role's description to NULL.
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE roles SET name = COALESCE(%s, name), description = %s WHERE id = %s",
-            (name.strip() if name is not None else None, description, role_id),
+            "UPDATE roles SET name = COALESCE(%s, name), "
+            "description = CASE WHEN %s THEN %s ELSE description END WHERE id = %s",
+            (name.strip() if name is not None else None,
+             1 if "description" in payload else 0,
+             (description or "").strip() or None, role_id),
         )
         conn.commit()
         cursor.close()
@@ -197,6 +217,21 @@ def set_role_permissions(role_id: int, payload: dict = Body(...), current_user: 
         role = _fetch_role(conn, role_id)
         if not role:
             raise HTTPException(status_code=404, detail="Role not found")
+        if role["role_key"] == "admin":
+            raise HTTPException(
+                status_code=403,
+                detail="The Administrator role always holds every permission and cannot be edited",
+            )
+        if current_user["role"] != "admin":
+            # permissions.manage may be delegated; what may not be delegated
+            # is handing out permissions you don't hold yourself.
+            from app.auth.permissions import has_permission
+            not_held = sorted(c for c in codes if not has_permission(current_user, c))
+            if not_held:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"You cannot grant permissions you do not hold: {', '.join(not_held)}",
+                )
 
         cursor = conn.cursor(dictionary=True)
         if codes:
@@ -244,6 +279,33 @@ def set_role_permissions(role_id: int, payload: dict = Body(...), current_user: 
                  detail=f"role '{role['role_key']}' -> {len(codes)} permission(s)",
                  role=current_user["role"].upper())
     return {"status": "updated", "id": role_id, "permissions": sorted(codes)}
+
+
+@router.post("/{role_id}/clone")
+def clone_role(role_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("roles.create"))):
+    """Create a custom role pre-filled with another role's permissions --
+    the normal way people build a 'Read-only + Reports' style role."""
+    name = (payload.get("name") or "").strip()
+    role_key = (payload.get("role_key") or "").strip().lower()
+    if not name or not role_key:
+        raise HTTPException(status_code=400, detail="name and role_key are required")
+    conn = get_connection()
+    try:
+        src = _fetch_role(conn, role_id)
+        if not src:
+            raise HTTPException(status_code=404, detail="Role not found")
+        codes = _role_permission_codes(conn, role_id)
+    finally:
+        conn.close()
+    if current_user["role"] != "admin":
+        from app.auth.permissions import has_permission
+        codes = [c for c in codes if has_permission(current_user, c)]
+    return create_role(
+        {"name": name, "role_key": role_key,
+         "description": payload.get("description") or f"Copy of {src['name']}",
+         "permissions": codes},
+        current_user=current_user,
+    )
 
 
 @router.delete("/{role_id}")

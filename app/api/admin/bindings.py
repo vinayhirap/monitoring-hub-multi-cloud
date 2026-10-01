@@ -66,6 +66,28 @@ def _principal_exists(conn, principal_type: str, principal_id: int) -> bool:
     return row is not None
 
 
+
+def _parse_expiry(value):
+    """ISO-8601 -> naive UTC datetime, or None. Rejects the past: a grant
+    created already-expired is a silent no-op that looks like it worked."""
+    if not value:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="expires_at must be an ISO 8601 timestamp")
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    if dt <= datetime.datetime.utcnow():
+        raise HTTPException(status_code=400, detail="expires_at must be in the future")
+    return dt
+
+
+_PRINCIPAL_NAME_SQL = (
+    "CASE b.principal_type WHEN 'user' THEN (SELECT username FROM users WHERE id = b.principal_id) "
+    "ELSE (SELECT name FROM org_groups WHERE id = b.principal_id) END"
+)
+
 # ─────────────────────────────────────────────────────────────────────
 # Role bindings
 # ─────────────────────────────────────────────────────────────────────
@@ -76,12 +98,19 @@ def list_bindings(principal_type: str = Query(None), principal_id: int = Query(N
     conn = get_connection()
     try:
         cursor = conn.cursor(dictionary=True)
+        # LEFT JOIN on granted_by: this used to be an inner JOIN, so a binding
+        # whose granter no longer existed silently vanished from the list
+        # while still being enforced.
         q = ("SELECT b.*, r.role_key, r.name AS role_name, s.label AS scope_label, "
-             "u.username AS granted_by_username "
+             "u.username AS granted_by_username, "
+             "CASE b.principal_type WHEN 'user' THEN (SELECT username FROM users WHERE id = b.principal_id) "
+             "ELSE (SELECT name FROM org_groups WHERE id = b.principal_id) END AS principal_name, "
+             "(SELECT MAX(ar.reviewed_at) FROM access_reviews ar WHERE ar.binding_id = b.id) AS last_reviewed_at, "
+             "(b.expires_at IS NOT NULL AND b.expires_at <= NOW()) AS expired "
              "FROM role_bindings b "
              "JOIN roles r ON r.id = b.role_id "
              "JOIN rbac_scopes s ON s.id = b.scope_id "
-             "JOIN users u ON u.id = b.granted_by")
+             "LEFT JOIN users u ON u.id = b.granted_by")
         conditions, params = [], []
         if principal_type:
             conditions.append("b.principal_type = %s")
@@ -97,6 +126,8 @@ def list_bindings(principal_type: str = Query(None), principal_id: int = Query(N
         cursor.close()
     finally:
         conn.close()
+    for r in rows:
+        r["expired"] = bool(r.get("expired"))
     return [_serialize(r) for r in rows]
 
 
@@ -152,12 +183,7 @@ def create_binding(payload: dict = Body(...), current_user: dict = Depends(requi
         if reason is None and role_row["role_rank"] >= 30:
             raise HTTPException(status_code=400, detail="A reason is required when granting an admin-rank role")
 
-        parsed_expiry = None
-        if expires_at:
-            try:
-                parsed_expiry = datetime.datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            except ValueError:
-                raise HTTPException(status_code=400, detail="expires_at must be an ISO 8601 timestamp")
+        parsed_expiry = _parse_expiry(expires_at)
 
         cursor2 = conn.cursor(dictionary=True)
         cursor2.execute(
@@ -187,6 +213,50 @@ def create_binding(payload: dict = Body(...), current_user: dict = Depends(requi
         role=current_user["role"].upper(),
     )
     return {"status": "created", "id": binding_id}
+
+
+@router.patch("/bindings/{binding_id}")
+def update_binding(binding_id: int, payload: dict = Body(...),
+                   current_user: dict = Depends(require_permission("rbac.binding.manage"))):
+    """Change a binding's expiry and/or reason without revoking and
+    re-granting it (which would lose its review history)."""
+    if "expires_at" not in payload and "reason" not in payload:
+        raise HTTPException(status_code=400, detail="nothing to update")
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT b.*, r.role_key, r.role_rank FROM role_bindings b JOIN roles r ON r.id = b.role_id "
+            "WHERE b.id = %s", (binding_id,))
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            raise HTTPException(status_code=404, detail="Binding not found")
+        sets, params = [], []
+        if "expires_at" in payload:
+            sets.append("expires_at = %s")
+            params.append(_parse_expiry(payload.get("expires_at")))
+        if "reason" in payload:
+            reason = (payload.get("reason") or "").strip() or None
+            if reason is None and row["role_rank"] >= 30:
+                cursor.close()
+                raise HTTPException(status_code=400, detail="A reason is required on an admin-rank role binding")
+            sets.append("reason = %s")
+            params.append(reason)
+        cursor2 = conn.cursor()
+        cursor2.execute(f"UPDATE role_bindings SET {', '.join(sets)} WHERE id = %s", tuple(params + [binding_id]))
+        conn.commit()
+        cursor.close()
+        cursor2.close()
+    finally:
+        conn.close()
+
+    rbac.invalidate_principal(row["principal_id"] if row["principal_type"] == "user" else None)
+    _write_audit(actor=current_user["username"], action="RBAC binding updated",
+                 detail=f"{row['principal_type']} #{row['principal_id']}: role '{row['role_key']}' "
+                        + ", ".join(k for k in ("expiry", "reason") if (k == "expiry" and "expires_at" in payload) or (k == "reason" and "reason" in payload)),
+                 role=current_user["role"].upper())
+    return {"status": "updated", "id": binding_id}
 
 
 @router.delete("/bindings/{binding_id}")
@@ -228,17 +298,23 @@ def list_overrides(current_user: dict = Depends(require_permission("rbac.overrid
     try:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
-            "SELECT o.*, p.code AS permission_code, s.label AS scope_label, u.username AS granted_by_username "
+            "SELECT o.*, p.code AS permission_code, p.label AS permission_label, s.label AS scope_label, "
+            "u.username AS granted_by_username, "
+            "CASE o.principal_type WHEN 'user' THEN (SELECT username FROM users WHERE id = o.principal_id) "
+            "ELSE (SELECT name FROM org_groups WHERE id = o.principal_id) END AS principal_name, "
+            "(o.expires_at IS NOT NULL AND o.expires_at <= NOW()) AS expired "
             "FROM permission_overrides o "
             "JOIN permissions p ON p.id = o.permission_id "
             "LEFT JOIN rbac_scopes s ON s.id = o.scope_id "
-            "JOIN users u ON u.id = o.granted_by "
+            "LEFT JOIN users u ON u.id = o.granted_by "
             "ORDER BY o.created_at DESC"
         )
         rows = cursor.fetchall()
         cursor.close()
     finally:
         conn.close()
+    for r in rows:
+        r["expired"] = bool(r.get("expired"))
     return [_serialize(r) for r in rows]
 
 
@@ -255,8 +331,16 @@ def create_override(payload: dict = Body(...), current_user: dict = Depends(requ
         raise HTTPException(status_code=400, detail="principal_type must be 'user' or 'group'")
     if not isinstance(principal_id, int) or not permission_code:
         raise HTTPException(status_code=400, detail="principal_id and permission_code are required")
-    if effect not in ("allow", "deny"):
-        raise HTTPException(status_code=400, detail="effect must be 'allow' or 'deny'")
+    # The resolver (rbac._load) only ever evaluates DENY overrides; an
+    # 'allow' row was accepted, stored, shown in the UI and never had any
+    # effect -- a control that looks like it works and doesn't. Grants go
+    # through role bindings / scope grants instead.
+    if effect != "deny":
+        raise HTTPException(
+            status_code=400,
+            detail="Only 'deny' overrides are supported. To give someone access, grant a role or scope.",
+        )
+    expires_at = _parse_expiry(payload.get("expires_at"))
     if not reason:
         raise HTTPException(status_code=400, detail="reason is required for an override -- this bypasses the normal grant path")
 
@@ -264,6 +348,20 @@ def create_override(payload: dict = Body(...), current_user: dict = Depends(requ
     try:
         if not _principal_exists(conn, principal_type, principal_id):
             raise HTTPException(status_code=404, detail=f"No {principal_type} with id {principal_id}")
+
+        if principal_type == "user":
+            chk = conn.cursor(dictionary=True)
+            chk.execute("SELECT role FROM users WHERE id = %s", (principal_id,))
+            urow = chk.fetchone()
+            chk.close()
+            if urow and urow["role"] == "admin":
+                # Admins bypass the permission table by design (lockout
+                # safety, see app.auth.permissions) -- a deny on one would
+                # be stored and silently never apply.
+                raise HTTPException(
+                    status_code=400,
+                    detail="Administrators cannot be denied a permission. Change their role instead.",
+                )
 
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT id FROM permissions WHERE code = %s", (permission_code,))
@@ -279,11 +377,25 @@ def create_override(payload: dict = Body(...), current_user: dict = Depends(requ
                 raise HTTPException(status_code=404, detail="Scope not found")
         cursor.close()
 
+        # MySQL treats NULLs as distinct in a UNIQUE key, so the table's own
+        # uq_perm_override can't stop two identical "everywhere" (scope NULL)
+        # denies -- check explicitly.
+        dup = conn.cursor()
+        dup.execute(
+            "SELECT id FROM permission_overrides WHERE principal_type = %s AND principal_id = %s "
+            "AND permission_id = %s AND effect = %s AND ((scope_id IS NULL AND %s IS NULL) OR scope_id = %s)",
+            (principal_type, principal_id, perm["id"], effect, scope_id, scope_id),
+        )
+        if dup.fetchone():
+            dup.close()
+            raise HTTPException(status_code=409, detail="An identical deny override already exists")
+        dup.close()
+
         cursor2 = conn.cursor()
         cursor2.execute(
-            "INSERT INTO permission_overrides (principal_type, principal_id, permission_id, scope_id, effect, reason, granted_by) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (principal_type, principal_id, perm["id"], scope_id, effect, reason, current_user["id"]),
+            "INSERT INTO permission_overrides (principal_type, principal_id, permission_id, scope_id, effect, reason, granted_by, expires_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (principal_type, principal_id, perm["id"], scope_id, effect, reason, current_user["id"], expires_at),
         )
         override_id = cursor2.lastrowid
         conn.commit()
@@ -327,21 +439,29 @@ def delete_override(override_id: int, current_user: dict = Depends(require_permi
 # ─────────────────────────────────────────────────────────────────────
 
 @router.get("/reviews")
-def list_reviews(principal_id: int = Query(None), current_user: dict = Depends(require_permission("rbac.review.conduct"))):
+def list_reviews(principal_id: int = Query(None), principal_type: str = Query(None),
+                 current_user: dict = Depends(require_permission("rbac.review.conduct"))):
     conn = get_connection()
     try:
         cursor = conn.cursor(dictionary=True)
+        q = ("SELECT ar.*, u.username AS reviewed_by_username, "
+             "CASE ar.principal_type WHEN 'user' THEN (SELECT username FROM users WHERE id = ar.principal_id) "
+             "ELSE (SELECT name FROM org_groups WHERE id = ar.principal_id) END AS principal_name, "
+             "(SELECT CONCAT(r.role_key, ' @ ', s.label) FROM role_bindings b "
+             " JOIN roles r ON r.id = b.role_id JOIN rbac_scopes s ON s.id = b.scope_id "
+             " WHERE b.id = ar.binding_id) AS binding_label "
+             "FROM access_reviews ar LEFT JOIN users u ON u.id = ar.reviewed_by")
+        conds, params = [], []
         if principal_id:
-            cursor.execute(
-                "SELECT ar.*, u.username AS reviewed_by_username FROM access_reviews ar "
-                "JOIN users u ON u.id = ar.reviewed_by WHERE ar.principal_id = %s ORDER BY ar.reviewed_at DESC",
-                (principal_id,),
-            )
-        else:
-            cursor.execute(
-                "SELECT ar.*, u.username AS reviewed_by_username FROM access_reviews ar "
-                "JOIN users u ON u.id = ar.reviewed_by ORDER BY ar.reviewed_at DESC LIMIT 500"
-            )
+            conds.append("ar.principal_id = %s")
+            params.append(principal_id)
+            if principal_type in ("user", "group"):
+                conds.append("ar.principal_type = %s")
+                params.append(principal_type)
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
+        q += " ORDER BY ar.reviewed_at DESC LIMIT 500"
+        cursor.execute(q, tuple(params))
         rows = cursor.fetchall()
         cursor.close()
     finally:
@@ -356,6 +476,10 @@ def record_review(payload: dict = Body(...), current_user: dict = Depends(requir
     binding_id = payload.get("binding_id")  # optional -- reviewing a specific binding
     decision = (payload.get("decision") or "").strip()
     notes = (payload.get("notes") or "").strip() or None
+    # Explicit opt-in only: recording a review never mutates access on its own
+    # (see module docstring), but a reviewer who decides "revoke" can ask for
+    # the binding to be removed in the same, audited action.
+    also_revoke = bool(payload.get("revoke_binding"))
 
     if principal_type not in ("user", "group"):
         raise HTTPException(status_code=400, detail="principal_type must be 'user' or 'group'")
@@ -363,6 +487,8 @@ def record_review(payload: dict = Body(...), current_user: dict = Depends(requir
         raise HTTPException(status_code=400, detail="principal_id is required")
     if decision not in ("retain", "revoke", "modify"):
         raise HTTPException(status_code=400, detail="decision must be 'retain', 'revoke', or 'modify'")
+    if notes and len(notes) > 500:
+        raise HTTPException(status_code=400, detail="notes must be 500 characters or fewer")
 
     conn = get_connection()
     try:
@@ -376,6 +502,10 @@ def record_review(payload: dict = Body(...), current_user: dict = Depends(requir
                 raise HTTPException(status_code=404, detail="Binding not found")
             cursor.close()
 
+        if also_revoke and (decision != "revoke" or binding_id is None):
+            raise HTTPException(status_code=400,
+                                detail="revoke_binding requires decision 'revoke' and a specific binding")
+
         cursor2 = conn.cursor()
         cursor2.execute(
             "INSERT INTO access_reviews (binding_id, principal_type, principal_id, reviewed_by, decision, notes) "
@@ -383,17 +513,28 @@ def record_review(payload: dict = Body(...), current_user: dict = Depends(requir
             (binding_id, principal_type, principal_id, current_user["id"], decision, notes),
         )
         review_id = cursor2.lastrowid
+        revoked = False
+        if also_revoke:
+            # The attestation row is kept (access_reviews.binding_id has no FK, so
+            # it simply keeps pointing at the now-removed binding as history).
+            cursor2.execute("DELETE FROM role_bindings WHERE id = %s", (binding_id,))
+            revoked = cursor2.rowcount > 0
         conn.commit()
         cursor2.close()
     finally:
         conn.close()
+    if revoked:
+        rbac.invalidate_principal(principal_id if principal_type == "user" else None)
+        _write_audit(actor=current_user["username"], action="RBAC binding revoked",
+                     detail=f"{principal_type} #{principal_id}: binding #{binding_id} revoked via access review",
+                     role=current_user["role"].upper())
 
     _write_audit(
         actor=current_user["username"], action="Access review recorded",
         detail=f"{principal_type} #{principal_id}: {decision}" + (f" -- {notes}" if notes else ""),
         role=current_user["role"].upper(),
     )
-    return {"status": "recorded", "id": review_id}
+    return {"status": "recorded", "id": review_id, "binding_revoked": revoked}
 
 
 # ─────────────────────────────────────────────────────────────────────

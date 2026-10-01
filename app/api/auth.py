@@ -113,6 +113,22 @@ from app.audit import write_audit as _write_audit
 # role-misattribution bugs fixed elsewhere alongside this change.
 
 
+
+def _stamp_last_login(user_id: int) -> None:
+    """users.last_login_at (migration 075) -- best effort: a failure here
+    (column not migrated yet, DB blip) must never fail a valid login."""
+    try:
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET last_login_at = UTC_TIMESTAMP() WHERE id = %s", (user_id,))
+            conn.commit()
+            cur.close()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
 @router.post("/login")
 def login(request: Request, response: Response, payload: dict = Body(...)):
     username = _text_field(payload, "username")
@@ -156,6 +172,7 @@ def login(request: Request, response: Response, payload: dict = Body(...)):
     record_login_success(request, username)
     if needs_rehash(user["pw"]):
         _rehash_password(user["id"], user["pw"], password)
+    _stamp_last_login(user["id"])
 
     token = create_access_token(user["id"], user["username"], user["role"],
                                  token_version=user["token_version"])

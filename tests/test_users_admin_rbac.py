@@ -77,6 +77,9 @@ def _load_users_module(script, conn_factory=FakeConn):
         send_email=lambda **kw: True,
     )
     install_stub("app.audit", write_audit=lambda **kw: None)
+    _principals = load_module("app/auth/principals.py")
+    install_stub("app.auth.principals",
+                 **{k: getattr(_principals, k) for k in dir(_principals) if not k.startswith("__")})
     return load_module("app/api/admin/users.py")
 
 
@@ -114,8 +117,8 @@ def test_update_role_blocks_demoting_the_last_admin():
     script = [
         (contains("SELECT username, role FROM users WHERE id"),
          [{"username": "solo-admin", "role": "admin"}]),
-        (contains("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'"),
-         [{"n": 1}]),
+        (contains("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'", "active = 1"),
+         [{"n": 0}]),  # no OTHER active admin
     ]
     users_mod = _load_users_module(script)
 
@@ -131,8 +134,8 @@ def test_update_role_allows_demotion_when_another_admin_remains():
     script = [
         (contains("SELECT username, role FROM users WHERE id"),
          [{"username": "second-admin", "role": "admin"}]),
-        (contains("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'"),
-         [{"n": 2}]),
+        (contains("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'", "active = 1"),
+         [{"n": 1}]),
         (contains("UPDATE users SET role"), None),
     ]
     users_mod = _load_users_module(script)
@@ -166,8 +169,8 @@ def test_delete_user_blocks_deleting_the_last_admin():
     script = [
         (contains("SELECT id, username, role FROM users WHERE id"),
          [{"id": 2, "username": "solo-admin", "role": "admin"}]),
-        (contains("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'"),
-         [{"n": 1}]),
+        (contains("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'", "active = 1"),
+         [{"n": 0}]),
     ]
     users_mod = _load_users_module(script)
 
@@ -181,9 +184,10 @@ def test_delete_user_allows_deleting_admin_when_another_remains():
     script = [
         (contains("SELECT id, username, role FROM users WHERE id"),
          [{"id": 2, "username": "second-admin", "role": "admin"}]),
-        (contains("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'"),
-         [{"n": 2}]),
-        (contains("DELETE FROM users WHERE id"), None),
+        (contains("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'", "active = 1"),
+         [{"n": 1}]),
+        (contains("UPDATE"), None),
+        (contains("DELETE FROM"), None),
     ]
     users_mod = _load_users_module(script)
 
@@ -195,7 +199,8 @@ def test_delete_user_does_not_count_admins_for_non_admin_target():
     script = [
         (contains("SELECT id, username, role FROM users WHERE id"),
          [{"id": 4, "username": "some-viewer", "role": "viewer"}]),
-        (contains("DELETE FROM users WHERE id"), None),
+        (contains("UPDATE"), None),
+        (contains("DELETE FROM"), None),
     ]
     users_mod = _load_users_module(script)
 

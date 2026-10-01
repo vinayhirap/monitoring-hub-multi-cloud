@@ -161,19 +161,61 @@ def _validate_and_insert_scopes(conn, user_id: int, scopes: list, actor: dict, a
 
 @router.get("")
 def list_users(current_user: dict = Depends(require_permission("users.view"))):
+    """
+    Enriched user list: everything the Users table needs in ONE round trip
+    (status, last sign-in, group names, direct scope grants and v2 role
+    bindings) instead of the UI issuing N follow-up calls per row.
+    """
     conn = get_connection()
     try:
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT id, username, role, created_at FROM users ORDER BY created_at ASC")
+        cursor.execute(
+            "SELECT id, username, role, email, active, created_at, last_login_at, deactivated_at "
+            "FROM users ORDER BY created_at ASC"
+        )
         rows = cursor.fetchall()
+
+        if current_user["role"] != "admin":
+            # Editor: only viewers they can actually manage.
+            rows = [r for r in rows if _user_manageable_by(current_user, r)]
+
+        ids = [r["id"] for r in rows]
+        groups_by_user, scopes_by_user, bindings_by_user = {}, {}, {}
+        if ids:
+            ph = ",".join(["%s"] * len(ids))
+            cursor.execute(
+                "SELECT ugm.user_id, g.name FROM user_group_memberships ugm "
+                "JOIN org_groups g ON g.id = ugm.group_id "
+                f"WHERE ugm.user_id IN ({ph}) ORDER BY g.name",
+                tuple(ids),
+            )
+            for r in cursor.fetchall():
+                groups_by_user.setdefault(r["user_id"], []).append(r["name"])
+
+            cursor.execute(
+                f"SELECT user_id, COUNT(*) AS n FROM access_scopes WHERE user_id IN ({ph}) GROUP BY user_id",
+                tuple(ids),
+            )
+            scopes_by_user = {r["user_id"]: r["n"] for r in cursor.fetchall()}
+
+            cursor.execute(
+                "SELECT principal_id, COUNT(*) AS n FROM role_bindings "
+                f"WHERE principal_type = 'user' AND principal_id IN ({ph}) "
+                "AND (expires_at IS NULL OR expires_at > NOW()) GROUP BY principal_id",
+                tuple(ids),
+            )
+            bindings_by_user = {r["principal_id"]: r["n"] for r in cursor.fetchall()}
         cursor.close()
 
-        if current_user["role"] == "admin":
-            return [_serialize(r) for r in rows]
-
-        # Editor: only viewers they can actually manage.
-        visible = [r for r in rows if _user_manageable_by(current_user, r)]
-        return [_serialize(r) for r in visible]
+        out = []
+        for r in rows:
+            r["active"] = bool(r["active"]) if r["active"] is not None else True
+            r["groups"] = groups_by_user.get(r["id"], [])
+            r["scope_grants"] = scopes_by_user.get(r["id"], 0)
+            r["role_bindings"] = bindings_by_user.get(r["id"], 0)
+            r["is_self"] = r["id"] == current_user["id"]
+            out.append(_serialize(r))
+        return out
     finally:
         conn.close()
 
@@ -188,6 +230,11 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
 
     if not username:
         raise HTTPException(status_code=400, detail="username required")
+    if len(username) > 100 or not re.match(r"^[A-Za-z0-9][A-Za-z0-9._@+\-]*$", username):
+        raise HTTPException(
+            status_code=400,
+            detail="username may contain letters, digits and . _ @ + - only (max 100, must start with a letter or digit)",
+        )
     if not password or len(password) < 8:
         raise HTTPException(status_code=400, detail="password min 8 characters")
     if role not in ["admin", "editor", "viewer"]:
@@ -361,9 +408,8 @@ def update_role(user_id: int, payload: dict = Body(...), current_user: dict = De
         # the very users/roles endpoints needed to fix it, with no
         # recovery path short of a direct DB write.
         if user["role"] == "admin" and new_role != "admin":
-            cursor.execute("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'")
-            admin_count = cursor.fetchone()["n"]
-            if admin_count <= 1:
+            from app.auth import principals as _principals
+            if _principals.active_admin_count(conn, exclude_user_id=user_id) < 1:
                 cursor.close()
                 raise HTTPException(
                     status_code=409,
@@ -457,6 +503,8 @@ def revoke_access_scope(scope_id: int, current_user: dict = Depends(require_perm
 
 @router.delete("/{user_id}")
 def delete_user(user_id: int, current_user: dict = Depends(require_permission("users.delete"))):
+    from app.auth import principals as _principals
+
     if current_user["id"] == user_id:
         raise HTTPException(status_code=403, detail="Cannot delete your own account")
 
@@ -469,22 +517,282 @@ def delete_user(user_id: int, current_user: dict = Depends(require_permission("u
             raise HTTPException(status_code=403, detail="You do not have access to delete this user")
 
         # SECURITY: last-admin protection -- see update_role for why.
-        if target["role"] == "admin":
-            cursor = conn.cursor(dictionary=True)
-            cursor.execute("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'")
-            admin_count = cursor.fetchone()["n"]
-            cursor.close()
-            if admin_count <= 1:
-                raise HTTPException(status_code=409, detail="Cannot delete the last remaining admin")
+        if target["role"] == "admin" and _principals.active_admin_count(conn, exclude_user_id=user_id) < 1:
+            raise HTTPException(status_code=409, detail="Cannot delete the last remaining admin")
 
+        # Atomic: (1) hand everything this user authored to the acting
+        # administrator so the eight ON DELETE RESTRICT foreign keys can't
+        # block the delete (this used to 500 for any admin who had ever
+        # created a group or granted access), (2) drop bindings /
+        # overrides / reviews that target this user (polymorphic principal,
+        # no FK to cascade), (3) delete the user.
+        try:
+            _principals.reassign_authorship(conn, user_id, current_user["id"])
+            purged = _principals.purge_principal_grants(conn, "user", user_id)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))  # access_scopes, memberships cascade via FK
+            conn.commit()
+            cursor.close()
+        except HTTPException:
+            raise
+        except Exception as e:
+            conn.rollback()
+            raise HTTPException(status_code=409, detail=f"User could not be deleted: {e}")
+    finally:
+        conn.close()
+
+    try:
+        from app.auth import rbac as _rbac
+        _rbac.invalidate_principal(None)
+    except Exception:
+        pass
+    _write_audit(actor=current_user["username"], action="User deleted",
+                 detail=f"{target['username']} removed"
+                        + (f" ({purged['bindings']} binding(s), {purged['overrides']} override(s) removed)"
+                           if purged and (purged['bindings'] or purged['overrides']) else ""),
+                 role=current_user["role"].upper())
+    return {"status": "deleted", "id": user_id, "username": target["username"]}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Lifecycle: profile edit, deactivate / activate, admin password reset,
+# and a single-call detail view for the user drawer.
+# ─────────────────────────────────────────────────────────────────────
+
+def _issue_reset_link(user_id: int, hours: int = 24) -> str:
+    """Create a hashed one-time password-set token (same table and format
+    as /forgot-password and the welcome email) and return the full link."""
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.datetime.utcnow() + datetime.timedelta(hours=hours)
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES (%s, %s, %s)",
+            (user_id, _token_hash(token), expires_at),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+    return f"{mailer.get_public_app_url()}/reset-password?token={token}"
+
+
+def _load_manageable_target(conn, user_id: int, current_user: dict) -> dict:
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT id, username, role, email, active FROM users WHERE id = %s", (user_id,)
+    )
+    target = cursor.fetchone()
+    cursor.close()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not _user_manageable_by(current_user, target):
+        raise HTTPException(status_code=403, detail="You do not have access to manage this user")
+    return target
+
+
+@router.patch("/{user_id}")
+def update_user(user_id: int, payload: dict = Body(...),
+                current_user: dict = Depends(require_permission("users.update"))):
+    """Edit profile fields. Only `email` today; role has its own endpoint
+    because it is a privilege change with its own permission and guards."""
+    if "email" not in payload:
+        raise HTTPException(status_code=400, detail="nothing to update")
+    email = (payload.get("email") or "").strip() or None
+    if email and not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
+        raise HTTPException(status_code=400, detail="email is not a valid address")
+
+    conn = get_connection()
+    try:
+        target = _load_manageable_target(conn, user_id, current_user)
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))  # access_scopes rows cascade via FK
+        cursor.execute("UPDATE users SET email = %s WHERE id = %s", (email, user_id))
         conn.commit()
         cursor.close()
     finally:
         conn.close()
 
-    _write_audit(actor=current_user["username"], action="User deleted",
-                 detail=f"{target['username']} removed",
+    _write_audit(actor=current_user["username"], action="User updated",
+                 detail=f"{target['username']}: email {'set' if email else 'cleared'}",
                  role=current_user["role"].upper())
-    return {"status": "deleted", "id": user_id, "username": target["username"]}
+    return {"status": "updated", "id": user_id, "email": email}
+
+
+@router.post("/{user_id}/deactivate")
+def deactivate_user(user_id: int, current_user: dict = Depends(require_permission("users.update"))):
+    """
+    Reversible lockout. Until now the only way to cut an account off was
+    DELETE (irreversible, loses history). deps.get_current_user() and the
+    login query already honour users.active, so this takes effect on every
+    worker within the session-state cache window; token_version is bumped
+    and this worker's cache dropped so it is immediate here.
+    """
+    from app.auth import principals as _principals
+
+    if current_user["id"] == user_id:
+        raise HTTPException(status_code=403, detail="Cannot deactivate your own account")
+
+    conn = get_connection()
+    try:
+        target = _load_manageable_target(conn, user_id, current_user)
+        if target["active"] is not None and not target["active"]:
+            raise HTTPException(status_code=409, detail="User is already deactivated")
+        if target["role"] == "admin" and _principals.active_admin_count(conn, exclude_user_id=user_id) < 1:
+            raise HTTPException(status_code=409, detail="Cannot deactivate the last active admin")
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET active = 0, deactivated_at = UTC_TIMESTAMP(), deactivated_by = %s, "
+            "token_version = token_version + 1 WHERE id = %s",
+            (current_user["id"], user_id),
+        )
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
+
+    try:
+        from app.auth.deps import forget_user_sessions
+        forget_user_sessions(user_id)
+    except Exception:
+        pass
+    _write_audit(actor=current_user["username"], action="User deactivated",
+                 detail=f"{target['username']} can no longer sign in", role=current_user["role"].upper())
+    return {"status": "deactivated", "id": user_id}
+
+
+@router.post("/{user_id}/activate")
+def activate_user(user_id: int, current_user: dict = Depends(require_permission("users.update"))):
+    conn = get_connection()
+    try:
+        target = _load_manageable_target(conn, user_id, current_user)
+        if target["active"] is None or target["active"]:
+            raise HTTPException(status_code=409, detail="User is already active")
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET active = 1, deactivated_at = NULL, deactivated_by = NULL WHERE id = %s",
+            (user_id,),
+        )
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
+
+    try:
+        from app.auth.deps import forget_user_sessions
+        forget_user_sessions(user_id)
+    except Exception:
+        pass
+    _write_audit(actor=current_user["username"], action="User activated",
+                 detail=f"{target['username']} can sign in again", role=current_user["role"].upper())
+    return {"status": "activated", "id": user_id}
+
+
+@router.post("/{user_id}/reset-password")
+def admin_reset_password(user_id: int, current_user: dict = Depends(require_permission("users.password.reset"))):
+    """
+    Admin-initiated password reset. Never sets or reveals a password: it
+    issues the same hashed, single-use, 24 h set-your-password link the
+    welcome email uses. If the user has an email and SMTP is configured
+    the link is emailed; otherwise it is returned ONCE in this response so
+    the administrator can hand it over out-of-band (and the audit trail
+    records that a link was issued either way).
+    """
+    if current_user["id"] == user_id:
+        raise HTTPException(status_code=403, detail="Use Change Password for your own account")
+
+    conn = get_connection()
+    try:
+        target = _load_manageable_target(conn, user_id, current_user)
+    finally:
+        conn.close()
+
+    link = _issue_reset_link(user_id)
+    emailed = False
+    if target.get("email") and mailer.is_configured():
+        emailed = bool(mailer.send_email(
+            to_addr=target["email"],
+            subject="Reset your CloudOps password",
+            body_text=(
+                f"Hi {target['username']},\n\n"
+                f"An administrator has requested a password reset for your CloudOps account.\n\n"
+                f"Set a new password (link valid 24 hours, single use):\n{link}\n\n"
+                f"If you weren't expecting this, contact your CloudOps administrator.\n"
+            ),
+        ))
+
+    _write_audit(actor=current_user["username"], action="Password reset issued",
+                 detail=f"{target['username']}: link {'emailed' if emailed else 'issued to administrator'}",
+                 role=current_user["role"].upper())
+    out = {"status": "issued", "id": user_id, "email_sent": emailed, "expires_in_hours": 24}
+    if not emailed:
+        out["reset_link"] = link
+    return out
+
+
+@router.get("/{user_id}/detail")
+def get_user_detail(user_id: int, current_user: dict = Depends(require_permission("users.view"))):
+    """Everything the user drawer shows, in one call: profile, groups,
+    direct scope grants, v2 role bindings, deny overrides, last review."""
+    conn = get_connection()
+    try:
+        target = _load_manageable_target(conn, user_id, current_user)
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT id, username, role, email, active, created_at, last_login_at, deactivated_at "
+            "FROM users WHERE id = %s", (user_id,))
+        profile = cursor.fetchone()
+
+        cursor.execute(
+            "SELECT g.id, g.name, g.level, ugm.assigned_at FROM user_group_memberships ugm "
+            "JOIN org_groups g ON g.id = ugm.group_id WHERE ugm.user_id = %s ORDER BY g.level, g.name",
+            (user_id,))
+        groups = cursor.fetchall()
+
+        cursor.execute(
+            "SELECT s.id, s.cloud, s.account_ref_id, a.account_name, s.regions, s.resource_types, s.created_at "
+            "FROM access_scopes s LEFT JOIN aws_accounts a ON a.id = s.account_ref_id "
+            "WHERE s.user_id = %s ORDER BY s.created_at", (user_id,))
+        scopes = cursor.fetchall()
+        for sc in scopes:
+            for f in ("regions", "resource_types"):
+                sc[f] = authz._parse_json_list(sc[f])
+
+        cursor.execute(
+            "SELECT b.id, r.role_key, r.name AS role_name, sc.label AS scope_label, b.reason, b.expires_at, "
+            "b.created_at, gu.username AS granted_by_username "
+            "FROM role_bindings b JOIN roles r ON r.id = b.role_id "
+            "JOIN rbac_scopes sc ON sc.id = b.scope_id LEFT JOIN users gu ON gu.id = b.granted_by "
+            "WHERE b.principal_type = 'user' AND b.principal_id = %s ORDER BY b.created_at DESC", (user_id,))
+        bindings = cursor.fetchall()
+
+        cursor.execute(
+            "SELECT o.id, p.code AS permission_code, o.effect, sc.label AS scope_label, o.reason, o.expires_at "
+            "FROM permission_overrides o JOIN permissions p ON p.id = o.permission_id "
+            "LEFT JOIN rbac_scopes sc ON sc.id = o.scope_id "
+            "WHERE o.principal_type = 'user' AND o.principal_id = %s ORDER BY o.created_at DESC", (user_id,))
+        overrides = cursor.fetchall()
+
+        cursor.execute(
+            "SELECT ar.decision, ar.notes, ar.reviewed_at, ru.username AS reviewed_by_username "
+            "FROM access_reviews ar LEFT JOIN users ru ON ru.id = ar.reviewed_by "
+            "WHERE ar.principal_type = 'user' AND ar.principal_id = %s ORDER BY ar.reviewed_at DESC LIMIT 1",
+            (user_id,))
+        last_review = cursor.fetchone()
+        cursor.close()
+    finally:
+        conn.close()
+
+    profile["active"] = bool(profile["active"]) if profile["active"] is not None else True
+    return _serialize({
+        "profile": profile,
+        "groups": groups,
+        "scope_grants": scopes,
+        "role_bindings": bindings,
+        "overrides": overrides,
+        "last_review": last_review,
+        "effective_scope": authz.serialize_scope(target),
+    })
