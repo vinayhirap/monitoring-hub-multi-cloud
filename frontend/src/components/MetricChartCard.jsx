@@ -125,6 +125,10 @@ export default function MetricChartCard({
     if (i > 0 && t - pts[pts.length - 1].t > gapMs) pts.push({ t: pts[pts.length - 1].t + gapMs / 2.5, v: null });
     pts.push({ t, v: raw, n: d.n });
   });
+  // every plotted point is ONE stored datapoint (range finer than the collection
+  // period): Average = Minimum = Maximum there, so the selector cannot change the
+  // chart. It starts to matter on 1W / 1M where a bucket holds several datapoints.
+  const singlePt = data.length > 0 && data.every(d => d.n === 1);
   const last = [...data].reverse().find(d => (d[field] ?? d.v) != null);
   const latest = last ? (last[field] ?? last.v) : null;
   const lastT = last ? new Date(last.t).getTime() : null;
@@ -153,11 +157,12 @@ export default function MetricChartCard({
       {stats.length > 0 && (
         <div className="mc-controls">
           <label>Statistic
-            <select value={stat} onChange={e => setLocalStat(e.target.value)} className="mc-select">
+            <select value={stat} onChange={e => setLocalStat(e.target.value)} className="mc-select" disabled={singlePt}
+                    title={singlePt ? "At this range each point is a single stored datapoint, so Average, Minimum and Maximum are identical. Use 1W or 1M to compare statistics." : undefined}>
               {stats.map(s => <option key={s} value={s}>{s}{s === nativeStat ? " (default)" : ""}</option>)}
             </select>
           </label>
-          {statNa && <span className="mc-na" title={`${ctx.statOverride} is not valid for this metric (it is stored as ${nativeStat}), so ${stat} is shown`}>{ctx.statOverride} n/a</span>}
+          {statNa && !singlePt && <span className="mc-na" title={`${ctx.statOverride} is not valid for this metric (it is stored as ${nativeStat}), so ${stat} is shown`}>{ctx.statOverride} n/a</span>}
           {periodLabel && <span className="mc-period" title="Each point aggregates this much time (chosen from the time range, like the CloudWatch console)">Period: {periodLabel}</span>}
         </div>
       )}

@@ -3,15 +3,15 @@
 // panel so range/refresh behave identically for every cloud and service.
 import { useEffect, useState } from "react";
 
-export const REFRESH_OPTIONS = [
-  { label: "Off", ms: 0 }, { label: "15 s", ms: 15000 }, { label: "30 s", ms: 30000 },
-  { label: "1 min", ms: 60000 }, { label: "5 min", ms: 300000 },
-];
-export const DEFAULT_REFRESH_MS = 30000;
+// Charts re-read CloudOps' stored data every 5 min, which is exactly how often
+// the collector writes new points (polling_model.py). Anything faster only
+// re-reads the same rows, so there is no user-facing interval selector.
+// Refreshing never asks AWS for new data: AWS is polled by the collector only.
+export const AUTO_REFRESH_MS = 300000;
 export const STAT_OVERRIDES = ["auto", "Average", "Minimum", "Maximum", "Sum", "SampleCount"];
 
 export default function ChartToolbar({
-  ranges, timeRange, onTimeRangeChange, refreshMs, onRefreshMsChange, onRefresh, lastUpdated, loading,
+  ranges, timeRange, onTimeRangeChange, onRefresh, lastUpdated, loading,
   statOverride, onStatOverrideChange, bucketSecs, retentionDays, requestedHours, effectiveHours, showTabs = true,
 }) {
   const [, force] = useState(0);
@@ -36,10 +36,8 @@ export default function ChartToolbar({
             {STAT_OVERRIDES.map(s => <option key={s} value={s}>{s === "auto" ? "Statistic: metric default" : `Statistic: ${s}`}</option>)}
           </select>
         )}
-        <select value={refreshMs} onChange={e => onRefreshMsChange(Number(e.target.value))} title="Auto-refresh interval (paused while the tab is hidden)">
-          {REFRESH_OPTIONS.map(o => <option key={o.ms} value={o.ms}>{o.ms ? `Auto-refresh ${o.label}` : "Auto-refresh off"}</option>)}
-        </select>
-        <button className="mc-refresh-btn" onClick={onRefresh} disabled={loading}>{loading ? "⟳ …" : "⟳ Refresh"}</button>
+        <button className="mc-refresh-btn" onClick={onRefresh} disabled={loading}
+                title="Reload the charts from CloudOps. This does not poll AWS; new data arrives every 5 min from the collector. Charts also reload automatically every 5 min while this tab is visible.">{loading ? "⟳ …" : "⟳ Refresh"}</button>
         <span className="mc-updated">
           {ago != null ? `Updated ${ago < 5 ? "just now" : `${ago}s ago`}` : ""}
         </span>

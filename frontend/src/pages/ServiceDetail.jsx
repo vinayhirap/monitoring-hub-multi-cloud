@@ -14,7 +14,7 @@ import { getThresholds, getResourceHealth, getCapacityForecast } from "../api/ap
 import AlertBadge from "../components/AlertBadge";
 import { useResourceAlerts } from "../hooks/useResourceAlerts";
 import MetricChartCard, { MetricPanelContext, AlertedMetricsStrip } from "../components/MetricChartCard";
-import ChartToolbar, { DEFAULT_REFRESH_MS } from "../components/ChartToolbar";
+import ChartToolbar, { AUTO_REFRESH_MS } from "../components/ChartToolbar";
 import { useMetricMeta } from "../hooks/useMetricMeta";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
 import "../components/MetricZoomModal.css";
@@ -228,7 +228,7 @@ export default function ServiceDetail() {
   const [filter,     setFilter]     = useState("all");
   const [sortKey,    setSortKey]    = useState("name");
   const [timeRange,  setTimeRange]  = useState(6);
-  const [refreshMs,  setRefreshMs]  = useState(DEFAULT_REFRESH_MS);
+  const refreshMs = AUTO_REFRESH_MS;
   const [lastUpdated, setLastUpdated] = useState(null);
   const [statOverride, setStatOverride] = useState("auto");
   // Per-resource alert state for EVERY table on this page (was EC2 only, and
@@ -555,7 +555,6 @@ export default function ServiceDetail() {
               region={region}
               timeRange={timeRange}
               onTimeRangeChange={setTimeRange}
-              refreshMs={refreshMs} onRefreshMsChange={setRefreshMs}
               onRefresh={() => refreshMetrics(true)} lastUpdated={lastUpdated}
               statOverride={statOverride} onStatOverrideChange={setStatOverride}
               allRows={rows}
@@ -949,7 +948,7 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated, account
 }
 
 function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange, onTimeRangeChange, allRows, onClose, onSelectRelated, accountId,
-                             refreshMs, onRefreshMsChange, onRefresh, lastUpdated, statOverride, onStatOverrideChange }) {
+                             onRefresh, lastUpdated, statOverride, onStatOverrideChange }) {
   const [thresholdMap, setThresholdMap] = useState({});
   // Chart metadata (titles/units/stats/polling/CURRENT thresholds/alerts) for
   // every metric of this resource, any cloud. Re-fetched with each refresh.
@@ -1195,7 +1194,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
         {!noMetricsMsg && (
           <ChartToolbar
             ranges={TIME_RANGES} timeRange={timeRange} onTimeRangeChange={onTimeRangeChange}
-            refreshMs={refreshMs} onRefreshMsChange={onRefreshMsChange} onRefresh={onRefresh}
+            onRefresh={onRefresh}
             lastUpdated={lastUpdated} loading={mLoading}
             statOverride={statOverride} onStatOverrideChange={onStatOverrideChange}
             bucketSecs={metrics?.bucket_secs} retentionDays={metrics?.retention_days}

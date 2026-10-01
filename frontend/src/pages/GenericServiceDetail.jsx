@@ -51,7 +51,7 @@ import { useTimezone } from "../contexts/TimezoneContext";
 import AlertBadge from "../components/AlertBadge";
 import { useResourceAlerts } from "../hooks/useResourceAlerts";
 import MetricChartCard, { MetricPanelContext, AlertedMetricsStrip } from "../components/MetricChartCard";
-import ChartToolbar, { DEFAULT_REFRESH_MS } from "../components/ChartToolbar";
+import ChartToolbar, { AUTO_REFRESH_MS } from "../components/ChartToolbar";
 import { useMetricMeta } from "../hooks/useMetricMeta";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
 
@@ -309,7 +309,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
   const [filter, setFilter] = useState("all");
   const [sortKey, setSortKey] = useState("name");
   const [timeRange, setTimeRange] = useState(6);
-  const [refreshMs, setRefreshMs] = useState(DEFAULT_REFRESH_MS);
+  const refreshMs = AUTO_REFRESH_MS;
   const [refreshTick, setRefreshTick] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [statOverride, setStatOverride] = useState("auto");
@@ -482,7 +482,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Metrics range:</span>
         <ChartToolbar
           ranges={TIME_RANGES} timeRange={timeRange} onTimeRangeChange={setTimeRange}
-          refreshMs={refreshMs} onRefreshMsChange={setRefreshMs} onRefresh={() => setRefreshTick(t => t + 1)}
+          onRefresh={() => setRefreshTick(t => t + 1)}
           lastUpdated={lastUpdated} loading={false}
           statOverride={statOverride} onStatOverrideChange={setStatOverride}
           retentionDays={30} requestedHours={timeRange} effectiveHours={Math.min(timeRange, 30 * 24)}

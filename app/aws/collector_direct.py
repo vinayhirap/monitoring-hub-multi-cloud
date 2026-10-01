@@ -179,6 +179,7 @@ _CACHE_TTL   = 60
 # boto3 GetMetricData batch. 5 min balances chart freshness against
 # cost until YACE is actually scraping Lambda for this account.
 _LAMBDA_SERIES_CACHE_TTL = 300
+_ECS_SERIES_CACHE_TTL = 300   # refresh-cost audit 2026-10-01: ECS charts were uncached GetMetricData
 
 
 # audit(b11): _cached is hit concurrently by uvicorn request threads and
@@ -1841,16 +1842,20 @@ def _get_elb_metric_series(lb_name: str, region=None, hours=6, account=None) -> 
     alone.
     """
     try:
-        elbv2 = get_session(region, account=account).client("elbv2", config=STANDARD_RETRY)
-
-        lb_dim = lb_name
-        try:
-            lbs = elbv2.describe_load_balancers(Names=[lb_name]).get("LoadBalancers", [])
-            if lbs:
-                arn    = lbs[0]["LoadBalancerArn"]
-                lb_dim = arn.split("loadbalancer/")[-1]
-        except Exception:
-            pass
+        # name -> CloudWatch dimension never changes for a live LB, so resolve it
+        # once an hour instead of a DescribeLoadBalancers call on every chart
+        # view / auto-refresh (2026-10-01 refresh-cost audit).
+        def _resolve_lb_dim():
+            d = lb_name
+            try:
+                elbv2 = get_session(region, account=account).client("elbv2", config=STANDARD_RETRY)
+                lbs = elbv2.describe_load_balancers(Names=[lb_name]).get("LoadBalancers", [])
+                if lbs:
+                    d = lbs[0]["LoadBalancerArn"].split("loadbalancer/")[-1]
+            except Exception:
+                pass
+            return d
+        lb_dim = _cached(f"elb_dim_{(account or {}).get('id')}_{region}_{lb_name}", _resolve_lb_dim, ttl=3600)
 
         end    = datetime.now(timezone.utc)
         start  = end - timedelta(hours=hours)
@@ -1993,26 +1998,34 @@ def _get_ecs_metric_series(cluster_name: str, service_name: str = None,
 
         # boto3 fallback for AWS/ECS if VM has nothing yet (not deployed /
         # not scraped yet) — same safety pattern as _get_elb_metric_series.
+        # Every GetMetricData below is BILLED. They used to run on every chart
+        # view and every auto-refresh tick (5-7 metrics each); the data itself
+        # only changes every few minutes, so share one result per
+        # (account, region, cluster, service, range) for _ECS_SERIES_CACHE_TTL.
+        ckey = f"ecs_cw_{(account or {}).get('id')}_{region}_{cluster_name}_{service_name}_{hours}"
+
         if not cpu or not mem:
-            cw = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
-            fallback_q = [
-                _make_query("cpu", "AWS/ECS", "CPUUtilization",    dims, "Average"),
-                _make_query("mem", "AWS/ECS", "MemoryUtilization", dims, "Average"),
-            ]
-            fb = _gmd_series(cw, fallback_q, hours)
+            def _ecs_fallback():
+                cw = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
+                return _gmd_series(cw, [
+                    _make_query("cpu", "AWS/ECS", "CPUUtilization",    dims, "Average"),
+                    _make_query("mem", "AWS/ECS", "MemoryUtilization", dims, "Average"),
+                ], hours)
+            fb = _cached(ckey + "_fb", _ecs_fallback, ttl=_ECS_SERIES_CACHE_TTL)
             cpu = cpu or fb.get("cpu", [])
             mem = mem or fb.get("mem", [])
 
-        cw = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
-        ci_ns = "ECS/ContainerInsights"
-        ci_queries = [
-            _make_query("running",  ci_ns, "RunningTaskCount",  dims, "Average"),
-            _make_query("pending",  ci_ns, "PendingTaskCount",  dims, "Average"),
-            _make_query("desired",  ci_ns, "DesiredTaskCount",  dims, "Average"),
-            _make_query("cpu_res",  ci_ns, "CpuReserved",       dims, "Average"),
-            _make_query("mem_res",  ci_ns, "MemoryReserved",    dims, "Average"),
-        ]
-        ci = _gmd_series(cw, ci_queries, hours)
+        def _ecs_container_insights():
+            cw = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
+            ci_ns = "ECS/ContainerInsights"
+            return _gmd_series(cw, [
+                _make_query("running",  ci_ns, "RunningTaskCount",  dims, "Average"),
+                _make_query("pending",  ci_ns, "PendingTaskCount",  dims, "Average"),
+                _make_query("desired",  ci_ns, "DesiredTaskCount",  dims, "Average"),
+                _make_query("cpu_res",  ci_ns, "CpuReserved",       dims, "Average"),
+                _make_query("mem_res",  ci_ns, "MemoryReserved",    dims, "Average"),
+            ], hours)
+        ci = _cached(ckey + "_ci", _ecs_container_insights, ttl=_ECS_SERIES_CACHE_TTL)
 
         return {
             "cluster_name":       cluster_name,
