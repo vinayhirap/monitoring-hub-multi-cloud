@@ -115,3 +115,69 @@ def test_unchanged_facts_skip_the_update_and_are_not_counted():
     refreshed = mod.refresh_llm_summaries()
 
     assert refreshed == 0
+
+
+def test_fallback_result_leaves_hash_null_so_it_retries_next_cycle():
+    """
+    2026-09-29 regression -- confirmed live on Prod, not hypothetical:
+    alerts 5614/5615 both had rca.py's own verbatim "flat_then_breach"
+    template sentence cached as their llm_summary after a
+    LLM_SUMMARY_TIMEOUT_SECONDS timeout, under a REAL hash and a real
+    llm_summary_generated_at -- indistinguishable from a genuine success
+    by every signal the table stored. The old code wrote current_hash
+    unconditionally, so the next cycle's skip check (current_hash ==
+    stored hash) matched immediately, treating a transient timeout as
+    "already polished, don't touch" for as long as the alert's facts
+    stayed the same.
+
+    polish_summary's stub here returns the SAME text it was given --
+    exactly what the real function does on a timeout or when disabled
+    (see app/llm/summarizer.py's own docstring) -- so this simulates
+    that failure mode without needing a real slow/dead Ollama. Asserts
+    the UPDATE's hash parameter is NULL specifically (not the real
+    computed hash) when that happens, via a custom predicate that
+    inspects bound params directly rather than just the SQL text.
+
+    _MAX_CONSECUTIVE_FALLBACKS (added alongside the 90s per-cycle
+    budget by a separate fix) doesn't interfere here: with a single
+    candidate, `fallbacks` reaches 1, never the threshold of 2 that
+    would end the batch early -- this test is about what gets cached
+    for that one alert, not the early-exit logic around it.
+    """
+    def update_writes_null_hash(sql, params):
+        return ("UPDATE alerts" in sql and "SET llm_summary" in sql
+                and params[1] is None)  # llm_summary_source_hash position
+
+    script = [
+        (contains("FROM alerts", "ORDER BY triggered_at DESC"),
+         [{"id": 404, "llm_summary_source_hash": None}]),
+        (update_writes_null_hash, None),
+    ]
+    install_stub("app.db", get_connection=lambda: _FakeConnWithRowcount(script))
+    install_stub(
+        "app.llm.summarizer",
+        is_enabled=lambda: True,
+        # Fallback simulation: returns the unchanged deterministic
+        # text, exactly polish_summary()'s documented behavior on a
+        # timeout/disabled/unreachable-API failure.
+        polish_summary=lambda facts, deterministic_summary: deterministic_summary,
+        source_hash=lambda text: f"hash:{text}",
+    )
+    install_stub(
+        "app.collector.rca",
+        explain_alert=lambda alert_id: {
+            "template_summary": f"template for alert {alert_id}",
+            "confidence": "medium", "trend": "rising",
+            "is_likely_flapping": False, "probable_trigger": None,
+            "related_alert_count": 0,
+        },
+    )
+    mod = load_module("app/collector/llm_summarizer.py")
+
+    refreshed = mod.refresh_llm_summaries()
+
+    # Still counted -- the row IS written (correct template content,
+    # just not "genuinely polished") -- what matters, and what the
+    # update_writes_null_hash predicate above actually enforces, is
+    # THAT hash column's value, not this count.
+    assert refreshed == 1

@@ -541,7 +541,21 @@ def explain_alert(alert_id: int):
         cached = cursor.fetchone()
         if cached and cached.get("llm_summary"):
             from app.llm.summarizer import source_hash
-            if cached.get("llm_summary_source_hash") == source_hash(deterministic_summary):
+            # 2026-09-29 FIX: a hash match alone isn't sufficient proof
+            # this was genuinely polished -- see llm_summarizer.py's own
+            # 2026-09-29 fix note for the confirmed-on-Prod incident
+            # this addresses (a timed-out polish_summary() call cached
+            # under a real hash, indistinguishable from a real success
+            # by hash alone). Comparing the cached text directly against
+            # the deterministic template is a stronger, self-contained
+            # check that doesn't depend on llm_summarizer.py's write
+            # path getting it right: genuinely polished text is NEVER
+            # identical to the plain template (the whole point of
+            # asking an LLM to rewrite it), so this can't misreport a
+            # fallback as "llm" regardless of what any hash says --
+            # including on rows cached before this fix shipped.
+            if (cached.get("llm_summary_source_hash") == source_hash(deterministic_summary)
+                    and cached["llm_summary"] != deterministic_summary):
                 summary = cached["llm_summary"]
                 summary_source = "llm"
 

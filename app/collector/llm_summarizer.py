@@ -120,21 +120,47 @@ def refresh_llm_summaries() -> int:
                     "related_alert_count": explanation.get("related_alert_count"),
                 }
                 polished = polish_summary(facts, deterministic_summary)
-                fallbacks = fallbacks + 1 if polished == deterministic_summary else 0
+                is_fallback = (polished == deterministic_summary)
+                fallbacks = fallbacks + 1 if is_fallback else 0
 
-                # If polish_summary fell back to the deterministic text
-                # unchanged (disabled mid-run, transient API failure),
-                # still cache it under the current hash -- correct,
-                # non-stale content either way, and avoids retrying an
-                # unreachable API on every single cycle until it comes
-                # back.
+                # 2026-09-29 FIX -- confirmed live on Prod, not
+                # hypothetical: alerts 5614/5615 both had rca.py's own
+                # verbatim "flat_then_breach" template sentence cached
+                # as their llm_summary after a timeout, word for word,
+                # under a real hash and a real llm_summary_generated_at
+                # -- indistinguishable from a genuine success by every
+                # signal this table stored. The old code here wrote
+                # current_hash unconditionally (see the comment this
+                # replaced), so the next cycle's skip check
+                # (current_hash == stored hash, a few lines up) matched
+                # immediately -- a single transient timeout got treated
+                # as "already polished, don't touch" for as long as the
+                # alert's facts stayed the same, never self-correcting.
+                #
+                # Leaving llm_summary_source_hash NULL on a fallback
+                # fixes that: current_hash is always a real 64-char hex
+                # string, which can never equal NULL, so the skip check
+                # never fires for this row -- it's retried next cycle
+                # instead of potentially never again. llm_summary and
+                # llm_summary_generated_at are still written either way
+                # -- harmless, correct content for the UI meanwhile
+                # (the same plain template it would show with the
+                # feature off entirely).
+                #
+                # This is a narrower fix than it would have been before
+                # _MAX_CONSECUTIVE_FALLBACKS/budget existed above: those
+                # already bound a sustained-outage cycle's worst-case
+                # cost, so retrying a fallback row every cycle (rather
+                # than backing off further) doesn't reintroduce the
+                # "hammer a dead API forever" risk this comment used to
+                # warn about.
                 cursor.execute("""
                     UPDATE alerts
                     SET llm_summary = %s,
                         llm_summary_source_hash = %s,
                         llm_summary_generated_at = NOW()
                     WHERE id = %s
-                """, (polished, current_hash, alert_id))
+                """, (polished, None if is_fallback else current_hash, alert_id))
                 refreshed += cursor.rowcount
                 # Commit per alert, not once after the loop: the UPDATE above
                 # holds a row lock on `alerts` until commit, and with the LLM
