@@ -81,6 +81,9 @@ export function Modal({ title, onClose, children, footer, width = 480, busy = fa
   );
 }
 
+// NOTE (delete-confirm label): .ac-label upper-cases its text, which used to display
+// the username as "TESTVIEWER" while the check below is case-sensitive -- so typing what
+// was shown left Delete disabled. The name is a literal span (.ac-literal) in its real case.
 export function ConfirmDialog({ title, body, confirmLabel = "Confirm", danger = false, onConfirm, onClose, requireText }) {
   const [busy, setBusy] = useState(false);
   const [typed, setTyped] = useState("");
@@ -99,8 +102,9 @@ export function ConfirmDialog({ title, body, confirmLabel = "Confirm", danger = 
       </>}>
       <div className="ac-confirm-body">{body}</div>
       {requireText && (
-        <Field label={`Type "${requireText}" to confirm`}>
-          <input value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" />
+        <Field label={<>Type "<span className="ac-literal">{requireText}</span>" to confirm</>}>
+          <input value={typed} onChange={(e) => setTyped(e.target.value)}
+            autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
         </Field>
       )}
     </Modal>
