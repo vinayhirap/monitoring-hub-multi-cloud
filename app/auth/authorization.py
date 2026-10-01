@@ -98,6 +98,10 @@ class ScopeGrant:
     group_id: Optional[int] = None
     group_name: Optional[str] = None
     group_level: Optional[str] = None
+    # source == "binding": a v2 role binding (RBAC Administration) -- `id`
+    # is then the role_bindings.id, and these say which role / scope label.
+    binding_role: Optional[str] = None
+    binding_scope_label: Optional[str] = None
 
 
 def _parse_json_list(value):
@@ -254,6 +258,83 @@ def validate_group_level_and_parent(conn, level: str, parent_group_id: Optional[
 # Effective scope resolution
 # ─────────────────────────────────────────────────────────────────────────
 
+# Scope columns the data layer cannot enforce. A binding whose scope sets any
+# of them is SKIPPED (fail closed): ignoring the restriction would hand the
+# user MORE access than the scope describes.
+_UNENFORCED_SCOPE_COLUMNS = ("services", "resource_groups", "resource_ids", "tag_selector")
+
+
+def _binding_scope_grants(conn, user_id: int, group_ids: list) -> list:
+    """
+    v2 role bindings -> ScopeGrants, so a binding created in Access Control
+    (user or group principal, optional expiry, cloud/account/region scope)
+    actually changes what the user can see, through the SAME choke point
+    every data endpoint already uses (get_effective_scope /
+    get_accessible_account_ids). No endpoint needed converting.
+
+    WHAT THIS DOES AND DOES NOT DO
+      + Grants DATA VISIBILITY (which accounts / regions) -- enforced everywhere.
+      - Does NOT raise the user's permissions above their base role: a viewer
+        bound to the Administrator role still has viewer permissions. Route
+        gates carry no account context, so per-scope permission elevation
+        cannot be applied safely there.
+      - Never yields FULL_ACCESS, whatever the bound role (admin-rank
+        included); only users.role == 'admin' does.
+      - Expired bindings are ignored (UTC).
+      - Any failure reading bindings returns [] -- i.e. LESS access, never more.
+    """
+    try:
+        cursor = conn.cursor(dictionary=True)
+        clauses, params = ["(b.principal_type = 'user' AND b.principal_id = %s)"], [user_id]
+        if group_ids:
+            clauses.append("(b.principal_type = 'group' AND b.principal_id IN (%s))"
+                           % ",".join(["%s"] * len(group_ids)))
+            params.extend(group_ids)
+        cursor.execute(
+            "SELECT b.id, b.granted_by, r.role_key, s.label, s.cloud, s.account_ref_id, s.regions, "
+            "s.services, s.resource_groups, s.resource_ids, s.tag_selector, "
+            "COALESCE(a.provider, 'aws') AS account_cloud "
+            "FROM role_bindings b "
+            "JOIN roles r ON r.id = b.role_id "
+            "JOIN rbac_scopes s ON s.id = b.scope_id "
+            "LEFT JOIN aws_accounts a ON a.id = s.account_ref_id "
+            "WHERE (" + " OR ".join(clauses) + ") "
+            "AND (b.expires_at IS NULL OR b.expires_at > UTC_TIMESTAMP())",
+            tuple(params),
+        )
+        rows = cursor.fetchall()
+
+        all_clouds = None
+        grants = []
+        for r in rows:
+            if any(_parse_json_list(r.get(c)) for c in _UNENFORCED_SCOPE_COLUMNS):
+                logger.warning("authorization: binding %s skipped -- its scope %r sets a restriction "
+                               "the data layer cannot enforce", r["id"], r["label"])
+                continue
+            regions = _parse_json_list(r["regions"])
+            if r["account_ref_id"] is not None:
+                clouds = [r["cloud"] or r["account_cloud"]]
+            elif r["cloud"]:
+                clouds = [r["cloud"]]
+            else:  # "Organization (all clouds)": one all-accounts grant per cloud
+                if all_clouds is None:
+                    cursor.execute("SELECT DISTINCT COALESCE(provider, 'aws') AS c FROM aws_accounts")
+                    all_clouds = [x["c"] for x in cursor.fetchall()] or ["aws"]
+                clouds = all_clouds
+            for cloud in clouds:
+                grants.append(ScopeGrant(
+                    id=r["id"], user_id=user_id, cloud=cloud, account_ref_id=r["account_ref_id"],
+                    regions=regions, resource_groups=None, resource_types=None, resource_ids=None,
+                    granted_by=r["granted_by"], source="binding",
+                    binding_role=r["role_key"], binding_scope_label=r["label"],
+                ))
+        cursor.close()
+        return grants
+    except Exception as exc:  # fail closed: lose binding grants, never gain access
+        logger.warning("authorization: could not read role bindings for user %s: %s", user_id, exc)
+        return []
+
+
 def get_effective_scope(user: dict):
     """
     Returns FULL_ACCESS for admins, or list[ScopeGrant] for
@@ -264,6 +345,9 @@ def get_effective_scope(user: dict):
          (source="group") -- this is the L1/L2/L3 inheritance:
          membership in an L3 group pulls in that L3's own policy plus
          its L2 parent's plus its L1 grandparent's.
+      3. active (unexpired) v2 role bindings on the user or on any group in
+         that same inheritance chain (source="binding") -- see
+         _binding_scope_grants for exactly what a binding does and doesn't grant.
     An empty combined list still means no access to anything -- deny
     by default is unchanged from Phase 1.
     """
@@ -313,6 +397,7 @@ def get_effective_scope(user: dict):
                 group_level=r["group_level"],
             ))
 
+        grants.extend(_binding_scope_grants(conn, user["id"], list(inherited_group_ids)))
         return grants
     finally:
         conn.close()
@@ -483,6 +568,7 @@ def serialize_scope(user: dict):
             "granted_by": g.granted_by, "source": g.source,
             "group_id": g.group_id, "group_name": g.group_name,
             "group_level": g.group_level,
+            "binding_role": g.binding_role, "binding_scope_label": g.binding_scope_label,
         }
         for g in scope
     ]

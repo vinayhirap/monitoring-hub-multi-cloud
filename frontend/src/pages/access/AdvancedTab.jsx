@@ -4,11 +4,13 @@
 // three sections instead of three separate tabs.
 //
 // ENFORCEMENT STATUS (shown to the admin, not hidden):
-//   • Unscoped DENY overrides  → enforced at the API gate (permissions.py).
-//   • Role bindings, scoped overrides, custom-role grants → recorded,
-//     audited and previewable, NOT yet enforced on data endpoints.
-// The banner below says exactly that so nobody assumes a binding is a
-// working security boundary.
+//   • Role bindings  → ENFORCED as data visibility: an active binding gives
+//     the user / group the accounts and regions of its scope, through the
+//     same effective-scope path every data endpoint uses. Expired ones stop.
+//   • Unscoped DENY overrides → ENFORCED at the API gate.
+//   • NOT enforced: raising a user's permissions above their base role via
+//     a binding, and DENY overrides limited to a scope.
+// The banner below says exactly that so nobody over- or under-trusts it.
 import { useState } from "react";
 import { useAuth } from "../../auth/AuthContext";
 import * as api from "../../api/access";
@@ -159,7 +161,7 @@ function Bindings({ canManage, users, groups }) {
   const [confirm, setConfirm] = useState(null);
   return (
     <section className="ac-panel">
-      <header><div><h3>Role bindings</h3><p className="muted">Grant a role to a user or group at a scope, optionally time-boxed.</p></div>
+      <header><div><h3>Role bindings</h3><p className="muted">Give a user or group access to a scope's accounts and regions, optionally time-boxed.</p></div>
         {canManage && <button className="ac-btn ghost" onClick={() => setAdd(true)}><PlusIcon size={13} /> New binding</button>}</header>
       {list.error && <Banner tone="err">{api.errMsg(list.error)}</Banner>}
       {list.loading && !list.data && <SkeletonRows n={2} />}
@@ -257,7 +259,7 @@ function Overrides({ canManage, users, groups }) {
         <ul className="ac-list roomy">{list.data.map((o) => (
           <li key={o.id}>
             <span><Badge tone="red">DENY</Badge> <code>{o.permission_code}</code> <span className="muted">for {o.principal_type} {o.principal_name || `#${o.principal_id}`}</span>
-              <div className="muted small">{o.reason}{o.expires_at ? ` · ${expiryLabel(o.expires_at).text}` : ""}{o.scope_label ? ` · scoped to ${o.scope_label} (not yet enforced)` : ""}</div></span>
+              <div className="muted small">{o.reason}{o.expires_at ? ` · ${expiryLabel(o.expires_at).text}` : ""}{o.scope_label ? ` · limited to ${o.scope_label} (not applied)` : ""}</div></span>
             {canManage && <button className="ac-link danger" onClick={() => setConfirm(o)}>Remove</button>}
           </li>))}</ul>
       ))}
@@ -276,10 +278,11 @@ export default function AdvancedTab() {
   const u = users.data || [], g = groups.data || [];
   return (
     <div className="ac-stack">
-      <Banner tone="warn">
-        <strong>Enforcement status.</strong> Unscoped deny overrides are enforced on every API call. Role bindings, scoped overrides and
-        custom-role grants are recorded, audited and reviewable, but are <strong>not yet applied to data access</strong> — access to accounts
-        still comes from a user's base role, groups and direct account grants. Don't rely on a binding as a security boundary yet.
+      <Banner tone="info">
+        <strong>What is enforced.</strong> An active role binding gives its user or group <strong>access to the accounts and regions of its scope</strong>,
+        on top of their groups and direct grants, and stops at its expiry. Deny overrides with no scope remove that permission on every API call.
+        <strong>Not enforced:</strong> a binding does not raise anyone's permissions above their base role (a viewer bound to Editor is still a viewer),
+        and a deny override limited to one scope is recorded but not applied. To change what someone can <em>do</em>, change their base role.
       </Banner>
       {hasPermission("rbac.scope.view") && <Scopes canManage={hasPermission("rbac.scope.manage")} accounts={accounts.data || []} />}
       {hasPermission("rbac.binding.view") && <Bindings canManage={hasPermission("rbac.binding.manage")} users={u} groups={g} />}

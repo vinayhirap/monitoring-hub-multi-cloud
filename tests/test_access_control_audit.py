@@ -354,3 +354,93 @@ def test_missing_v2_tables_fail_open_but_other_errors_propagate():
     assert _perms(Err("no table")).has_permission(VIEWER, "alerts.view") is True
     with pytest.raises(RuntimeError):
         _perms(RuntimeError("db down")).has_permission(VIEWER, "alerts.view")
+
+
+# ───────────────────── role bindings feed the effective data scope ─────────────────────
+
+def _authz(script):
+    conn = RecordingConn(script)
+    install_stub("app.db", get_connection=lambda: conn)
+    return load_module("app/auth/authorization.py"), conn
+
+
+def _brow(**kw):
+    base = {"id": 11, "granted_by": 1, "role_key": "viewer", "label": "Prod", "cloud": "aws",
+            "account_ref_id": 5, "regions": '["ap-south-1"]', "services": None, "resource_groups": None,
+            "resource_ids": None, "tag_selector": None, "account_cloud": "aws"}
+    base.update(kw)
+    return base
+
+
+BINDINGS_SQL = contains("FROM role_bindings b")
+
+
+def test_user_binding_becomes_a_binding_sourced_scope_grant():
+    authz, conn = _authz([(BINDINGS_SQL, [_brow()])])
+    grants = authz._binding_scope_grants(conn, 9, [])
+    assert len(grants) == 1
+    g = grants[0]
+    assert (g.source, g.cloud, g.account_ref_id, g.regions, g.binding_role) == ("binding", "aws", 5, ["ap-south-1"], "viewer")
+    sql = conn.log[0][0]
+    assert "UTC_TIMESTAMP()" in sql and "b.expires_at IS NULL" in sql, "expired bindings must be excluded"
+
+
+def test_group_principals_are_included_via_the_inheritance_chain_placeholders():
+    authz, conn = _authz([(BINDINGS_SQL, [])])
+    authz._binding_scope_grants(conn, 9, [3, 4])
+    sql, params = conn.log[0]
+    assert "principal_type = 'group' AND b.principal_id IN (%s,%s)" in sql
+    assert params == (9, 3, 4)
+
+
+def test_organization_scope_expands_to_one_all_accounts_grant_per_cloud():
+    row = _brow(cloud=None, account_ref_id=None, regions=None, label="Organization (all clouds)")
+    authz, conn = _authz([(BINDINGS_SQL, [row]),
+                          (contains("SELECT DISTINCT COALESCE(provider"), [{"c": "aws"}, {"c": "azure"}])])
+    grants = authz._binding_scope_grants(conn, 9, [])
+    assert sorted(g.cloud for g in grants) == ["aws", "azure"]
+    assert all(g.account_ref_id is None and g.regions is None for g in grants)
+
+
+def test_account_scope_without_cloud_takes_the_accounts_cloud():
+    authz, conn = _authz([(BINDINGS_SQL, [_brow(cloud=None, account_cloud="azure")])])
+    assert authz._binding_scope_grants(conn, 9, [])[0].cloud == "azure"
+
+
+@pytest.mark.parametrize("col,val", [("services", '["ec2"]'), ("resource_groups", '["rg"]'),
+                                     ("resource_ids", '["i-1"]'), ("tag_selector", '{"env":"prod"}')])
+def test_binding_with_an_unenforceable_restriction_is_skipped_fail_closed(col, val):
+    authz, conn = _authz([(BINDINGS_SQL, [_brow(**{col: val})])])
+    assert authz._binding_scope_grants(conn, 9, []) == []
+
+
+def test_binding_read_failure_means_no_binding_grants_never_extra_access():
+    class Boom(RecordingConn):
+        def cursor(self, dictionary=True):
+            raise RuntimeError("db down")
+    conn = Boom([])
+    install_stub("app.db", get_connection=lambda: conn)
+    authz = load_module("app/auth/authorization.py")
+    assert authz._binding_scope_grants(conn, 9, [1]) == []
+
+
+def test_effective_scope_unions_direct_group_and_binding_grants_and_admin_binding_never_gives_full_access():
+    own = [{"id": 1, "user_id": 9, "cloud": "aws", "account_ref_id": 7, "regions": None, "resource_groups": None,
+            "resource_types": None, "resource_ids": None, "granted_by": 1}]
+    authz, conn = _authz([(contains("FROM access_scopes WHERE user_id"), own),
+                          (BINDINGS_SQL, [_brow(role_key="admin")]),
+                          (contains("SELECT id, provider FROM aws_accounts"),
+                           [{"id": 5, "provider": "aws"}, {"id": 7, "provider": "aws"}])])
+    authz.get_user_group_memberships = lambda c, uid: []
+    authz.get_group_chain = lambda c, gid: []
+    authz._group_policy_rows = lambda c, ids: []
+    scope = authz.get_effective_scope({"id": 9, "role": "viewer"})
+    assert scope != authz.FULL_ACCESS
+    assert [(g.source, g.account_ref_id) for g in scope] == [("user", 7), ("binding", 5)]
+    assert authz.get_accessible_account_ids({"id": 9, "role": "viewer"}) == {7, 5}
+
+
+def test_admin_short_circuits_without_touching_bindings():
+    authz, conn = _authz([])
+    assert authz.get_effective_scope({"id": 1, "role": "admin"}) == authz.FULL_ACCESS
+    assert conn.log == []

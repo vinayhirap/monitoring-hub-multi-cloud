@@ -230,7 +230,8 @@ function UserDrawer({ userId, onClose, onChanged, groups, accounts, perms, isAdm
                         <li key={i}>
                           <span>{acct ? acct.account_name : s.account_ref_id ? `Account #${s.account_ref_id}` : `All ${s.cloud || ""} accounts`}
                             {s.regions?.length ? <span className="muted"> · {s.regions.join(", ")}</span> : null}</span>
-                          <Badge tone={s.source === "group" ? "purple" : "teal"}>{s.source === "group" ? `via ${s.group_name} (${s.group_level})` : "direct"}</Badge>
+                          <Badge tone={s.source === "group" ? "purple" : s.source === "binding" ? "yellow" : "teal"}>
+                            {s.source === "group" ? `via ${s.group_name} (${s.group_level})` : s.source === "binding" ? `binding: ${s.binding_role}` : "direct"}</Badge>
                         </li>
                       );
                     })}
@@ -286,7 +287,7 @@ function UserDrawer({ userId, onClose, onChanged, groups, accounts, perms, isAdm
           </Section>
 
           {(data.role_bindings?.length > 0 || data.overrides?.length > 0) && (
-            <Section title="Role bindings & overrides" aside={<Badge tone="yellow" title="Recorded and audited; see the Advanced tab for enforcement status">Preview</Badge>}>
+            <Section title="Role bindings & overrides" aside={<span className="muted small">bindings control which accounts they see</span>}>
               <ul className="ac-list">
                 {data.role_bindings.map((b) => {
                   const ex = expiryLabel(b.expires_at);
