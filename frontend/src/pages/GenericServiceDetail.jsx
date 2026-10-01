@@ -50,6 +50,10 @@ import { ArrowLeftIcon, ExternalLinkIcon, ChevronDownIcon, AlertTriangleIcon } f
 import { useTimezone } from "../contexts/TimezoneContext";
 import AlertBadge from "../components/AlertBadge";
 import { useResourceAlerts } from "../hooks/useResourceAlerts";
+import MetricChartCard, { MetricPanelContext, AlertedMetricsStrip } from "../components/MetricChartCard";
+import ChartToolbar, { DEFAULT_REFRESH_MS } from "../components/ChartToolbar";
+import { useMetricMeta } from "../hooks/useMetricMeta";
+import { useAutoRefresh } from "../hooks/useAutoRefresh";
 
 const TIME_RANGES = [
   { label: "1H",  hours: 1 },
@@ -122,68 +126,12 @@ function StateBadge({ state }) {
   return <span className={`state-badge sb-${color}`} style={{ textTransform: "capitalize" }}>{state}</span>;
 }
 
-function MetricChart({ title, unit, description, data, color, warningThreshold, criticalThreshold, timeRangeLabel, ianaName }) {
-  if (!data || data.length === 0) {
-    return (
-      <div className="chart-box">
-        <div className="chart-title">{title}</div>
-        <div className="chart-empty">No data in last {timeRangeLabel}</div>
-      </div>
-    );
-  }
-  // Kept as a real epoch-ms number with a proportional (type="number")
-  // axis and dataMin/dataMax domain -- NOT a pre-formatted display
-  // string -- so gaps in the data show as visual gaps instead of being
-  // silently smoothed away by Recharts' default evenly-spaced category
-  // axis. Same fix ServiceDetail.jsx's MetricChart already applies to
-  // every bespoke chart; a sparse metric here (e.g. an error-count metric
-  // that's near-empty most of the time) deserves the same honesty.
-  const formatted = data.map(d => ({
-    t: new Date(d.t).getTime(),
-    v: d.v,
-    ...(warningThreshold != null ? { warningThreshold } : {}),
-    ...(criticalThreshold != null ? { criticalThreshold } : {}),
-  }));
-  const latest = data[data.length - 1]?.v ?? 0;
-  const unitLabel = unit ? ` ${unit}` : "";
-  const fmtTick = (ms) => new Date(ms).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: ianaName });
-  return (
-    <div className="chart-box">
-      <div className="chart-header">
-        <span className="chart-title" title={description || title}>{title}</span>
-        <span className="chart-latest" style={{ color }}>{typeof latest === "number" ? latest.toFixed(2) : latest}{unitLabel}</span>
-      </div>
-      <ResponsiveContainer width="100%" height={100}>
-        <LineChart data={formatted} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-          <CartesianGrid stroke="rgba(99,130,190,0.08)" strokeDasharray="3 3" />
-          <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} tickFormatter={fmtTick}
-                 tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} scale="time" />
-          <YAxis tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} width={38} />
-          <Tooltip
-            contentStyle={{ background: "#0b1220", border: "1px solid rgba(99,130,190,0.2)", borderRadius: 6, fontSize: 11 }}
-            labelStyle={{ color: "#7a90b8" }}
-            labelFormatter={fmtTick}
-            formatter={(value, name) => {
-              if (name === "warningThreshold") return [`${value}${unitLabel}`, <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><AlertTriangleIcon size={11} /> Warn at</span>];
-              if (name === "criticalThreshold") return [`${value}${unitLabel}`, <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><AlertTriangleIcon size={11} /> Crit at</span>];
-              return [`${typeof value === "number" ? value.toFixed(2) : value}${unitLabel}`, title];
-            }}
-            itemStyle={{ color }}
-          />
-          {warningThreshold != null && (
-            <Line type="monotone" dataKey="warningThreshold" stroke="#f59e0b" strokeDasharray="4 4" dot={false} strokeWidth={1} legendType="none" />
-          )}
-          {criticalThreshold != null && (
-            <Line type="monotone" dataKey="criticalThreshold" stroke="#ef4444" strokeDasharray="2 3" dot={false} strokeWidth={1} legendType="none" />
-          )}
-          <Line type="monotone" dataKey="v" stroke={color} strokeWidth={2} dot={false} activeDot={{ r: 3, fill: color }} />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
+function MetricChart({ title, unit, description, data, color, warningThreshold, criticalThreshold, timeRangeLabel }) {
+  return <MetricChartCard title={title} unit={unit || ""} description={description} data={data} color={color}
+           warningThreshold={warningThreshold} criticalThreshold={criticalThreshold} timeRange={timeRangeLabel} />;
 }
 
-function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel, thresholdMap, autoExpand, alertInfo }) {
+function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel, thresholdMap, autoExpand, alertInfo, refreshMs, refreshTick, statOverride, onLoaded }) {
   const { ianaName } = useTimezone();
   const [expanded, setExpanded] = useState(false);
   const [metrics, setMetrics] = useState(null);
@@ -193,14 +141,26 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
   const rowRef = useRef(null);
   const autoHandledRef = useRef(false);
 
-  const load = useCallback(() => {
-    setLoading(true);
+  // silent=true (auto-refresh / manual refresh) keeps the current charts on
+  // screen instead of flashing "Loading metrics..." every cycle.
+  const load = useCallback((silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     getGenericMetrics(accountId, service, r.resource_id, timeRange)
-      .then(data => setMetrics(data || {}))
+      .then(data => { setMetrics(data || {}); onLoaded && onLoaded(Date.now()); })
       .catch(e => setError(e.message || "Failed to load metrics"))
       .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, service, r.resource_id, timeRange]);
+
+  const metaState = useMetricMeta(accountId, service, [r.resource_id, r.name, r.arn].filter(Boolean), expanded);
+  const reloadMeta = metaState.reload;
+
+  const firstMetric = metrics ? Object.values(metrics)[0] : null;
+  const panelCtx = {
+    meta: metaState.metrics, windowHours: firstMetric?.effective_hours || timeRange,
+    bucketSecs: firstMetric?.bucket_secs || null, statOverride,
+  };
 
   function toggle() {
     const next = !expanded;
@@ -237,19 +197,11 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeRange]);
 
-  // 2026-09-29: same missing-auto-refresh gap fixed in ServiceDetail.jsx's
-  // EC2/EBS/RDS/ELB/Lambda path, found auditing the whole app for it --
-  // load() above only re-runs on expand, a timeRange change, or a deep-
-  // link; nothing re-runs it just from time passing. This page covers
-  // every AWS extended-tier service (~30) plus every Azure and GCP
-  // service, so the gap was actually wider here than the one first
-  // found on EC2. 15s matches ServiceDetail.jsx's own row-list and
-  // chart-refresh cadence for consistency across the app.
-  useEffect(() => {
-    if (!expanded) return;
-    const t = setInterval(() => load(), 15000);
-    return () => clearInterval(t);
-  }, [expanded, load]);
+  // Auto-refresh (interval chosen in the page toolbar, paused while the tab
+  // is hidden) + manual refresh (refreshTick). Meta (thresholds/alerts) is
+  // re-read on the same beat so a Settings change reaches open charts.
+  useAutoRefresh(() => { load(true); reloadMeta(); }, refreshMs, expanded);
+  useEffect(() => { if (expanded && refreshTick) { load(true); reloadMeta(); } }, [refreshTick]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Deep-link support: Alerts.jsx links here with ?resource=<id> for any
   // service, not just the 7 bespoke ones -- auto-expand and scroll to
@@ -318,6 +270,8 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
                 or try a wider time range above.
               </div>
             ) : (
+              <MetricPanelContext.Provider value={panelCtx}>
+              <AlertedMetricsStrip meta={metaState.metrics} unmatched={metaState.alerts_unmatched} />
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10, paddingTop: 10 }}>
                 {metricNames.map((name, i) => {
                   const th = thresholdMap[`${service}:${name}`];
@@ -337,6 +291,7 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
                   );
                 })}
               </div>
+              </MetricPanelContext.Provider>
             )}
           </td>
         </tr>
@@ -357,6 +312,10 @@ export default function GenericServiceDetail({ accountId, service, label }) {
   const [filter, setFilter] = useState("all");
   const [sortKey, setSortKey] = useState("name");
   const [timeRange, setTimeRange] = useState(6);
+  const [refreshMs, setRefreshMs] = useState(DEFAULT_REFRESH_MS);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const [statOverride, setStatOverride] = useState("auto");
   const [thresholdMap, setThresholdMap] = useState({});
   // CRITICAL/WARNING badge per row -- same server rollup as every other
   // resource page, Overview and the Alerts tabs (extended + directory
@@ -524,17 +483,13 @@ export default function GenericServiceDetail({ accountId, service, label }) {
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Metrics range:</span>
-        <div className="time-range-tabs">
-          {TIME_RANGES.map(t => (
-            <button
-              key={t.label}
-              className={`tr-btn ${timeRange === t.hours ? "tr-active" : ""}`}
-              onClick={() => setTimeRange(t.hours)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <ChartToolbar
+          ranges={TIME_RANGES} timeRange={timeRange} onTimeRangeChange={setTimeRange}
+          refreshMs={refreshMs} onRefreshMsChange={setRefreshMs} onRefresh={() => setRefreshTick(t => t + 1)}
+          lastUpdated={lastUpdated} loading={false}
+          statOverride={statOverride} onStatOverrideChange={setStatOverride}
+          retentionDays={30} requestedHours={timeRange} effectiveHours={Math.min(timeRange, 30 * 24)}
+        />
       </div>
 
       {loading ? (
@@ -580,6 +535,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
                   timeRange={timeRange}
                   timeRangeLabel={rangeLabel}
                   thresholdMap={thresholdMap}
+                  refreshMs={refreshMs} refreshTick={refreshTick} statOverride={statOverride} onLoaded={setLastUpdated}
                   alertInfo={alertLookup(r.resource_id)}
                   autoExpand={!!resourceParam && (r.resource_id === resourceParam || r.name === resourceParam)}
                 />

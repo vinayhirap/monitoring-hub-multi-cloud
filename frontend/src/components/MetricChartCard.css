@@ -1,0 +1,25 @@
+.mc-card { position: relative; }
+.mc-alert { background: linear-gradient(180deg, rgba(239,68,68,.06), transparent 60%); }
+.mc-header { align-items: flex-start; }
+.mc-titles { display: flex; flex-direction: column; min-width: 0; }
+.mc-sub { font-size: 9px; color: var(--text-muted); }
+.mc-badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 6px; }
+.mc-badge { font-size: 9px; padding: 1px 6px; border-radius: 999px; border: 1px solid rgba(99,130,190,.25); color: var(--text-secondary); white-space: nowrap; }
+.mc-sev { font-weight: 700; }
+.mc-muted { opacity: .7; text-transform: capitalize; }
+.mc-dyn { color: #7c6ee0; border-color: rgba(124,110,224,.4); }
+.mc-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 10px; color: var(--text-muted); }
+.mc-select { background: var(--bg-surface); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 4px; font-size: 10px; padding: 1px 4px; margin-left: 4px; }
+.mc-legend { display: flex; gap: 12px; font-size: 9px; color: var(--text-muted); margin-top: 4px; }
+.mc-legend i { display: inline-block; width: 10px; height: 2px; margin-right: 4px; vertical-align: middle; }
+.mc-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px; margin: 8px 0 10px; border: 1px solid rgba(239,68,68,.35); background: rgba(239,68,68,.06); border-radius: 8px; }
+.mc-strip-label { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+.mc-chip { font-size: 11px; background: transparent; border: 1px solid; border-radius: 999px; padding: 2px 9px; cursor: pointer; }
+span.mc-chip { cursor: default; }
+
+.mc-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mc-toolbar select, .mc-refresh-btn { background: var(--bg-surface); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 6px; font-size: 11px; padding: 3px 8px; cursor: pointer; }
+.mc-refresh-btn:disabled { opacity: .5; cursor: default; }
+.mc-updated { font-size: 10px; color: var(--text-muted); }
+.mc-note { font-size: 11px; color: #f59e0b; margin: 4px 0 8px; }
+.tr-btn.tr-limited { opacity: .75; }

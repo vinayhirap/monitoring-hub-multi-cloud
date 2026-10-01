@@ -59,6 +59,8 @@ from app import alert_rules as _alert_rules
 from app.alert_visibility import hidden_metrics_sql
 from app.threshold_defaults import normalize_service_key
 from app.utils.time_json import to_utc_iso
+from app.metric_display import effective_hours, shape_response, bucketize, bucket_seconds, display_spec
+from app.metric_meta import build_metric_meta
 import datetime
 import time
 import json
@@ -919,6 +921,9 @@ def live_generic_metrics(
     finally:
         conn.close()
 
+    req_hours = hours
+    hours = effective_hours(hours)
+    bsec  = bucket_seconds(hours)
     end   = datetime.datetime.utcnow()
     start = end - datetime.timedelta(hours=hours)
 
@@ -938,13 +943,38 @@ def live_generic_metrics(
         )
         if not series:
             continue  # no data yet for this metric/resource combo -- skip, don't render an empty chart
+        spec = display_spec(provider, service, row["metric_name"], row.get("unit"), row.get("statistic"))
         result[row["metric_name"]] = {
-            "unit": row.get("unit"),
+            "unit": spec["unit"],
             "statistic": row.get("statistic"),
             "description": row.get("description"),
-            "series": series,
+            "title": spec["title"],
+            "series": bucketize(series, bsec, spec["native_stat"], spec["scale"], rate=spec["rate"]),
+            "bucket_secs": bsec, "effective_hours": hours, "requested_hours": req_hours,
         }
     return result
+
+
+@router.get("/metric-meta/{account_db_id}/{service}")
+def live_metric_meta(
+    account_db_id: int,
+    service: str,
+    resource_ids: str = Query("", description="comma-separated ids the resource is known by (instance id, name, ARN...)"),
+    current_user: dict = Depends(require_permission("metrics.view")),
+):
+    """Chart metadata for every metric of one service on one resource: official
+    title/unit, stats offered, REAL polling cadence, the CURRENT warning/critical
+    lines (static / dynamic baseline / anomaly) and any open alert per metric.
+    Re-fetched by the UI on every refresh so threshold changes show immediately.
+    Same shape for every cloud/service; empty metrics map when nothing matches."""
+    _check_account_scope(current_user, account_db_id)
+    acc = _get_db_account(account_db_id)
+    ids = [x.strip() for x in resource_ids.split(",") if x.strip()]
+    try:
+        return build_metric_meta(account_db_id, acc.get("provider") or "aws", service, ids)
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"metric-meta failed [{account_db_id}/{service}]: {e}")
+        return {"metrics": {}, "alerts_unmatched": [], "retention_days": None}
 
 
 # ── CloudWatch metric series endpoints ───────────────────────
@@ -978,7 +1008,9 @@ def live_ec2_metrics(
 ):
     _check_account_scope(current_user, account_db_id)
     account = _get_db_account(account_db_id)
-    return get_ec2_metric_series(instance_id, region, hours, account=account)
+    req = hours
+    hours = effective_hours(hours)   # metric_history retention caps every range (same for all charts)
+    return shape_response("ec2", get_ec2_metric_series(instance_id, region, hours, account=account), req)
 
 
 @router.get("/metrics/ebs/{account_db_id}/{volume_id}")
@@ -991,7 +1023,9 @@ def live_ebs_metrics(
 ):
     _check_account_scope(current_user, account_db_id)
     account = _get_db_account(account_db_id)
-    return _get_ebs_metric_series(volume_id, region, hours, account=account)
+    req = hours
+    hours = effective_hours(hours)
+    return shape_response("ebs", _get_ebs_metric_series(volume_id, region, hours, account=account), req)
 
 
 @router.get("/metrics/rds/{account_db_id}/{db_id}")
@@ -1004,7 +1038,9 @@ def live_rds_metrics(
 ):
     _check_account_scope(current_user, account_db_id)
     account = _get_db_account(account_db_id)
-    return _get_rds_metric_series(db_id, region, hours, account=account)
+    req = hours
+    hours = effective_hours(hours)
+    return shape_response("rds", _get_rds_metric_series(db_id, region, hours, account=account), req)
 
 
 @router.get("/metrics/lambda/{account_db_id}/{function_name}")
@@ -1017,7 +1053,9 @@ def live_lambda_metrics(
 ):
     _check_account_scope(current_user, account_db_id)
     account = _get_db_account(account_db_id)
-    return _get_lambda_metric_series(function_name, region, hours, account=account)
+    req = hours
+    hours = effective_hours(hours)
+    return shape_response("lambda", _get_lambda_metric_series(function_name, region, hours, account=account), req)
 
 
 @router.get("/metrics/s3/{account_db_id}/{bucket_name:path}")
@@ -1029,7 +1067,9 @@ def live_s3_metrics(
 ):
     _check_account_scope(current_user, account_db_id)
     account = _get_db_account(account_db_id)
-    return get_s3_metric_series(bucket_name, hours, account=account)
+    req = hours
+    hours = effective_hours(hours)
+    return shape_response("s3", get_s3_metric_series(bucket_name, hours, account=account), req)
 
 
 @router.get("/metrics/elb/{account_db_id}")
@@ -1047,7 +1087,9 @@ def live_elb_metrics(
     _check_account_scope(current_user, account_db_id)
     acc = _get_db_account(account_db_id)
     resolved_region = region or acc.get("default_region") 
-    return _get_elb_metric_series(lb_name, resolved_region, hours, account=acc)
+    req = hours
+    hours = effective_hours(hours)
+    return shape_response("elb", _get_elb_metric_series(lb_name, resolved_region, hours, account=acc), req)
 
 
 @router.get("/metrics/ecs/{account_db_id}")
@@ -1066,4 +1108,6 @@ def live_ecs_metrics(
     _check_account_scope(current_user, account_db_id)
     acc = _get_db_account(account_db_id)
     resolved_region = region or acc.get("default_region")
-    return _get_ecs_metric_series(cluster_name, service_name, resolved_region, hours, account=acc)
+    req = hours
+    hours = effective_hours(hours)
+    return shape_response("ecs", _get_ecs_metric_series(cluster_name, service_name, resolved_region, hours, account=acc), req)

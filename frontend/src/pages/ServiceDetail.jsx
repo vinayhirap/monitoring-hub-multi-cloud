@@ -13,7 +13,10 @@ import { getCached, setCached, clearAllCached } from "../utils/dataCache";
 import { getThresholds, getResourceHealth, getCapacityForecast } from "../api/api";
 import AlertBadge from "../components/AlertBadge";
 import { useResourceAlerts } from "../hooks/useResourceAlerts";
-import MetricZoomModal from "../components/MetricZoomModal";
+import MetricChartCard, { MetricPanelContext, AlertedMetricsStrip } from "../components/MetricChartCard";
+import ChartToolbar, { DEFAULT_REFRESH_MS } from "../components/ChartToolbar";
+import { useMetricMeta } from "../hooks/useMetricMeta";
+import { useAutoRefresh } from "../hooks/useAutoRefresh";
 import "../components/MetricZoomModal.css";
 
 const BASE = "";
@@ -228,6 +231,9 @@ export default function ServiceDetail() {
   const [filter,     setFilter]     = useState("all");
   const [sortKey,    setSortKey]    = useState("name");
   const [timeRange,  setTimeRange]  = useState(6);
+  const [refreshMs,  setRefreshMs]  = useState(DEFAULT_REFRESH_MS);
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const [statOverride, setStatOverride] = useState("auto");
   // Per-resource alert state for EVERY table on this page (was EC2 only, and
   // matched the first alert by resource id across all accounts). Same rollup
   // as the Overview banner / Services tiles / Alerts tabs -- see
@@ -324,48 +330,29 @@ export default function ServiceDetail() {
     return () => clearInterval(t);
   }, [loadRows, id, service]);
 
-  useEffect(() => {
-    if (!selectedRef.current) return;
-    const row    = selectedRef.current;
+  // One fetch routine for range changes (loud: clears + spinner), the
+  // auto-refresh timer and the manual button (silent: keeps the old chart on
+  // screen until the new data lands -- no flicker). Shares metricsReqRef's
+  // race guard with selectRow so a slow old response can never overwrite a
+  // newer selection/range.
+  const refreshMetrics = useCallback((silent = true) => {
+    const row = selectedRef.current;
+    if (!row) return Promise.resolve();
     const region = row.region || account?.default_region || "ap-south-2";
     const myReq  = ++metricsReqRef.current;
-    setMetrics(null);
-    setMLoading(true);
-    fetchMetrics(service, row, region, timeRange, id)
-      .then(data => { if (metricsReqRef.current === myReq) setMetrics(data); })
+    if (!silent) { setMetrics(null); setMLoading(true); }
+    return fetchMetrics(service, row, region, timeRange, id)
+      .then(data => { if (metricsReqRef.current === myReq) { setMetrics(data); setLastUpdated(Date.now()); } })
       .catch(console.error)
       .finally(() => { if (metricsReqRef.current === myReq) setMLoading(false); });
   }, [timeRange, service, account, id]);
 
-  // 2026-09-29: the effect above only re-fetches when timeRange/service/
-  // account/id CHANGE -- nothing about it re-runs just from time passing,
-  // so once a resource's charts loaded they stayed frozen at whatever
-  // "now" was at select time for as long as the panel stayed open, while
-  // the topbar's "LIVE" badge and this row's own 15s-polled list-view
-  // cpu_utilization kept moving. Confirmed live: CloudOps's own chart
-  // panel stopped advancing past its select-time window while the AWS
-  // Console (always a fresh live query) and even this page's own table
-  // cell for the same instance kept updating. A silent no-op re-fetch,
-  // not a value/timestamp/stat bug -- the data backing it was already
-  // proven correct by the cross-account verification earlier this
-  // session; this only affects whether the browser ever asks for more
-  // of it. Matches loadRows' own 15s interval above for consistency
-  // (same cadence the row list already uses), reuses the SAME
-  // metricsReqRef race-guard fetchMetrics's effect above already relies
-  // on so a slow response from an old poll can never clobber a newer
-  // selection or timeRange change.
-  useEffect(() => {
-    const t = setInterval(() => {
-      if (!selectedRef.current) return;
-      const row    = selectedRef.current;
-      const region = row.region || account?.default_region || "ap-south-2";
-      const myReq  = ++metricsReqRef.current;
-      fetchMetrics(service, row, region, timeRange, id)
-        .then(data => { if (metricsReqRef.current === myReq) setMetrics(data); })
-        .catch(console.error);
-    }, 15000);
-    return () => clearInterval(t);
-  }, [timeRange, service, account, id]);
+  // time range / service / account change -> immediate loud reload
+  useEffect(() => { if (selectedRef.current) refreshMetrics(false); }, [refreshMetrics]);
+
+  // 2026-10-01: user-selectable auto-refresh (was a hard-coded 15 s timer
+  // with no control and no "last updated"); pauses while the tab is hidden.
+  useAutoRefresh(() => refreshMetrics(true), refreshMs, !!selected);
 
   async function selectRow(row) {
     // S3 storage metrics (BucketSizeBytes / NumberOfObjects) are published by
@@ -382,6 +369,7 @@ export default function ServiceDetail() {
       const data = await fetchMetrics(service, row, region, timeRange, id);
       if (metricsReqRef.current !== myReq) return; // a newer selection/timeRange change superseded this
       setMetrics(data);
+      setLastUpdated(Date.now());
       if (service === "EC2" && data?.cpu?.length > 0) {
         const latestCpu = data.cpu[data.cpu.length - 1].v;
         setRows(prev => prev.map(r =>
@@ -570,6 +558,9 @@ export default function ServiceDetail() {
               region={region}
               timeRange={timeRange}
               onTimeRangeChange={setTimeRange}
+              refreshMs={refreshMs} onRefreshMsChange={setRefreshMs}
+              onRefresh={() => refreshMetrics(true)} lastUpdated={lastUpdated}
+              statOverride={statOverride} onStatOverrideChange={setStatOverride}
               allRows={rows}
               onClose={() => { selectedRef.current = null; setSelected(null); setMetrics(null); }}
               onSelectRelated={(row) => selectRow(row)}
@@ -960,8 +951,20 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated, account
   return null;
 }
 
-function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange, onTimeRangeChange, allRows, onClose, onSelectRelated, accountId }) {
+function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange, onTimeRangeChange, allRows, onClose, onSelectRelated, accountId,
+                             refreshMs, onRefreshMsChange, onRefresh, lastUpdated, statOverride, onStatOverrideChange }) {
   const [thresholdMap, setThresholdMap] = useState({});
+  // Chart metadata (titles/units/stats/polling/CURRENT thresholds/alerts) for
+  // every metric of this resource, any cloud. Re-fetched with each refresh.
+  const resourceIds = [row.instance_id, row.volume_id, row.db_instance_id, row.identifier, row.function_name,
+    row.function_arn, row.bucket_name, row.service_name, row.load_balancer_arn, row.name, row.resource_id].filter(Boolean);
+  const metaState = useMetricMeta(accountId, service, resourceIds, !!service);
+  const reloadMeta = metaState.reload;
+  useEffect(() => { reloadMeta(); }, [lastUpdated, reloadMeta]);
+  const panelCtx = {
+    meta: metaState.metrics, windowHours: metrics?.effective_hours || timeRange,
+    bucketSecs: metrics?.bucket_secs || null, statOverride,
+  };
   // Resource health score + capacity forecast (2026-09-14) -- this
   // data has existed on the backend since the AIOps work (
   // app/collector/health_score.py, app/collector/trend.py) but had no
@@ -1191,20 +1194,17 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
       <div className="id-section">
         <div className="id-section-title-row">
           <span className="id-section-title" style={{ marginBottom: 0 }}><BarChartIcon size={12} /> CLOUDWATCH METRICS</span>
-          {!noMetricsMsg && (
-            <div className="time-range-tabs">
-              {TIME_RANGES.map(t => (
-                <button
-                  key={t.label}
-                  className={`tr-btn ${timeRange === t.hours ? "tr-active" : ""}`}
-                  onClick={() => onTimeRangeChange(t.hours)}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
+        {!noMetricsMsg && (
+          <ChartToolbar
+            ranges={TIME_RANGES} timeRange={timeRange} onTimeRangeChange={onTimeRangeChange}
+            refreshMs={refreshMs} onRefreshMsChange={onRefreshMsChange} onRefresh={onRefresh}
+            lastUpdated={lastUpdated} loading={mLoading}
+            statOverride={statOverride} onStatOverrideChange={onStatOverrideChange}
+            bucketSecs={metrics?.bucket_secs} retentionDays={metrics?.retention_days}
+            requestedHours={metrics?.requested_hours} effectiveHours={metrics?.effective_hours}
+          />
+        )}
 
         {service === "S3" && !noMetricsMsg && (
           <div style={{ fontSize: 11, color: "var(--text-muted)", margin: "4px 0 10px", fontStyle: "italic" }}>
@@ -1225,6 +1225,8 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
         ) : mLoading ? (
           <div className="id-loading">Fetching CloudWatch data…</div>
         ) : metrics ? (
+          <MetricPanelContext.Provider value={panelCtx}>
+          <AlertedMetricsStrip meta={metaState.metrics} unmatched={metaState.alerts_unmatched} />
           <div className="charts-grid">
             {service === "EC2" && (
               <div className="chart-full">
@@ -1232,8 +1234,8 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
               </div>
             )}
             {service === "EC2" && <>
-              <MetricChart title="NetworkIn (Bytes)"  data={metrics.network_in}  color="#22c55e" unit="B" valueFormatter={fmtCwNumber} yTickFormatter={fmtCwAxis} timeRange={rangLabel} />
-              <MetricChart title="NetworkOut (Bytes)" data={metrics.network_out} color="#7c6ee0" unit="B" valueFormatter={fmtCwNumber} yTickFormatter={fmtCwAxis} timeRange={rangLabel} />
+              <MetricChart title="NetworkIn"  data={metrics.network_in}  color="#22c55e" unit="B" timeRange={rangLabel} />
+              <MetricChart title="NetworkOut" data={metrics.network_out} color="#7c6ee0" unit="B" timeRange={rangLabel} />
               {/* Disk Read/Write are instance-store metrics that modern
                   EBS-backed instances never publish — removed outright
                   rather than shown as permanently-empty boxes. Memory
@@ -1242,18 +1244,16 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
                   data") when it isn't installed/reporting for this
                   instance — see cwagent_installed in get_ec2_metric_series. */}
               {metrics.cwagent_installed && <>
-                <MetricChart title={metrics.mem_metric_label || "mem_used_percent"}  data={metrics.mem_utilization}   color="#7c6ee0" unit="%" warningThreshold={getThreshold("ec2", "mem_used_percent")?.warning} criticalThreshold={getThreshold("ec2", "mem_used_percent")?.critical} timeRange={rangLabel} />
-                {metrics.disk_inverted
-                  ? <MetricChart title={metrics.disk_metric_label || "LogicalDisk % Free Space"} data={(metrics.disk_used_percent || []).map(d => ({ ...d, v: Math.round((100 - d.v) * 1e6) / 1e6 }))} color="#fbbf24" unit="%" timeRange={rangLabel} />
-                  : <MetricChart title="disk_used_percent" data={metrics.disk_used_percent} color="#fbbf24" unit="%" warningThreshold={getThreshold("ec2", "disk_used_percent")?.warning} criticalThreshold={getThreshold("ec2", "disk_used_percent")?.critical} timeRange={rangLabel} />}
+                <MetricChart metricKey="mem_used_percent" title="mem_used_percent" forceTitle={metrics.mem_metric_label || undefined} data={metrics.mem_utilization} color="#7c6ee0" unit="%" warningThreshold={getThreshold("ec2", "mem_used_percent")?.warning} criticalThreshold={getThreshold("ec2", "mem_used_percent")?.critical} timeRange={rangLabel} />
+                <MetricChart metricKey="disk_used_percent" title="disk_used_percent" forceTitle={metrics.disk_inverted ? (metrics.disk_metric_label || "LogicalDisk % Free Space") : undefined} invert={!!metrics.disk_inverted} data={metrics.disk_used_percent} color="#fbbf24" unit="%" warningThreshold={getThreshold("ec2", "disk_used_percent")?.warning} criticalThreshold={getThreshold("ec2", "disk_used_percent")?.critical} timeRange={rangLabel} />
               </>}
             </>}
 
             {service === "EBS" && <>
-              <MetricChart title="VolumeReadOps"      data={perSecond(metrics.read_ops)}    color="#38bdf8" unit="" valueFormatter={fmtIops}      yTickFormatter={fmtCompact}      timeRange={rangLabel} />
-              <MetricChart title="VolumeWriteOps"     data={perSecond(metrics.write_ops)}   color="#7c6ee0" unit="" valueFormatter={fmtIops}      yTickFormatter={fmtCompact}      timeRange={rangLabel} />
-              <MetricChart title="VolumeReadBytes"    data={perSecond(metrics.read_bytes)}  color="#22c55e" unit="" valueFormatter={fmtBytesRate} yTickFormatter={fmtCompactBytes} timeRange={rangLabel} />
-              <MetricChart title="VolumeWriteBytes"   data={perSecond(metrics.write_bytes)} color="#fbbf24" unit="" valueFormatter={fmtBytesRate} yTickFormatter={fmtCompactBytes} timeRange={rangLabel} />
+              <MetricChart title="VolumeReadOps"      data={metrics.read_ops}    color="#38bdf8" unit="" timeRange={rangLabel} />
+              <MetricChart title="VolumeWriteOps"     data={metrics.write_ops}   color="#7c6ee0" unit="" timeRange={rangLabel} />
+              <MetricChart title="VolumeReadBytes"    data={metrics.read_bytes}  color="#22c55e" unit="" timeRange={rangLabel} />
+              <MetricChart title="VolumeWriteBytes"   data={metrics.write_bytes} color="#fbbf24" unit="" timeRange={rangLabel} />
               <MetricChart title="VolumeQueueLength"    data={metrics.queue_length}  color="#ef4444" unit=""     warningThreshold={getThreshold("ebs", "VolumeQueueLength")?.warning} criticalThreshold={getThreshold("ebs", "VolumeQueueLength")?.critical} timeRange={rangLabel} />
               <MetricChart title="BurstBalance" data={metrics.burst_balance} color="#2bb3ac" unit="%"    warningThreshold={getThreshold("ebs", "BurstBalance")?.warning} criticalThreshold={getThreshold("ebs", "BurstBalance")?.critical} timeRange={rangLabel} />
             </>}
@@ -1355,6 +1355,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
               <MetricChart title="Memory Reserved"        data={metrics?.mem_reserved       || []} color="#fbbf24" unit=""  timeRange={rangLabel} />
             </>}
           </div>
+          </MetricPanelContext.Provider>
         ) : (
           <div className="id-no-metrics">No metric data in last {rangLabel} — resource may be idle. Try a longer time range.</div>
         )}
@@ -1482,22 +1483,10 @@ function StatusChip({ status, colorMap = {} }) { const s = (status || "").toLowe
 function CpuBar({ cpu, state }) { if (state !== "running") return <span className="mono small muted">—</span>; const pct = cpu ?? 0; const color = pct > 75 ? "#ef4444" : pct > 50 ? "#f59e0b" : "#22c55e"; return <div className="cpu-cell"><div className="cpu-bar-bg"><div className="cpu-bar-fill" style={{ width: `${Math.max(2, pct)}%`, background: color }} /></div><span className="cpu-label mono">{pct.toFixed(1)}%</span></div>; }
 function QuickStat({ label, value, color, mono }) { return <div className="qs-item"><div className="qs-label">{label}</div><div className={`qs-value ${color ? `c-${color}` : ""}${mono ? " mono" : ""}`}>{value}</div></div>; }
 
-// EBS VolumeRead/WriteOps and VolumeRead/WriteBytes are collected as
-// CloudWatch Sum over Period=60 (app/collector/metrics/runner.py) and
-// charted as raw metric_history rows, so each point is a per-minute total.
-// Dividing by the period turns them into real per-second rates (IOPS, B/s).
-// Display-only: stored data and alert thresholds are unchanged.
-const EBS_SUM_PERIOD_SECS = 60;
-function perSecond(series) {
-  if (!Array.isArray(series)) return series; // keep null (hide card) / undefined as-is
-  return series.map(d => ({ ...d, v: d.v / EBS_SUM_PERIOD_SECS }));
-}
-function fmtCwAxis(v) {
-  const units = ["", "k", "M", "G"]; let i = 0;
-  while (Math.abs(v) >= 1000 && i < units.length - 1) { v /= 1000; i++; }
-  return `${Number(v.toFixed(2))}${units[i]}`;
-}
-function fmtCwNumber(v) { return v == null ? "—" : `${Number(v.toFixed(1)).toLocaleString("en-US")} B`; }
+// EBS ops/bytes are converted to Ops/s and KiB/s on the SERVER
+// (app/metric_display.py RATE_DISPLAY, divisor = the metric's real collection
+// period from polling_model.py) -- the old client-side "/ 60" was wrong once
+// the period moved to 300 s on 2026-09-29.
 function fmtSeconds(v) { if (v == null) return "—"; if (Math.abs(v) < 1) return `${Number((v * 1000).toFixed(0))} ms`; return `${Number(v.toFixed(2))} s`; }
 function fmtIops(v) { return `${Number(v.toFixed(1))} IOPS`; }
 function fmtBytesRate(v) {
@@ -1515,97 +1504,6 @@ function fmtCompactBytes(v) {
   return `${Number(v.toFixed(1))}${units[i]}`;
 }
 
-function MetricChart({ title, data, color, unit, warningThreshold, criticalThreshold, timeRange, emptyReason, valueFormatter, yTickFormatter }) {
-  const { ianaName } = useTimezone();
-  const [zoomOpen, setZoomOpen] = useState(false);
-  // data === null (not undefined, not []) means the backend knows this
-  // metric structurally can never have data for this resource (e.g. EBS
-  // BurstBalance -- dropped from collection with no fallback, see
-  // apply_hide_no_data_metrics.py) -- hide the card entirely instead of
-  // showing a permanent, pointless "no data" placeholder. data === []
-  // still means "might have data later, just none in this window" and
-  // keeps the existing placeholder below.
-  if (data === null) return null;
-  if (!data || data.length === 0) return (
-    <div className="chart-box">
-      <div className="chart-title">{title}</div>
-      {/* Plain "No data" reads as "the tool failed to fetch this" --
-          indistinguishable from an actual outage in this app. When the
-          caller can attribute the gap to a specific, known AWS-side
-          cause (see the ELB block below), show that instead so it's
-          clear this is AWS's own CloudWatch behavior, not CloudOps
-          failing to reach it. */}
-      <div className="chart-empty">{emptyReason || `No data in last ${timeRange || "6H"}`}</div>
-    </div>
-  );
-  const latest = data[data.length - 1]?.v ?? 0;
-  // Bug fixed here: `t` used to be a pre-formatted display string, and
-  // XAxis had no `type` -- Recharts defaults an untyped/string dataKey
-  // to a CATEGORY axis, which spaces every point EQUALLY regardless of
-  // its actual time gap. A metric like HTTPCode_Target_5XX_Count is
-  // often near-empty (CloudWatch only reports a Sum datapoint for
-  // periods that actually had an error), so 3-4 real points from a
-  // 45-minute span were getting stretched across the full 6H width,
-  // reading as if the whole window was densely covered when almost
-  // none of it was. Kept as a real epoch-ms number now, with a
-  // proportional (type="number") axis and dataMin/dataMax domain, so
-  // gaps in the data show as visual gaps instead of being silently
-  // smoothed away by even spacing. Affects every metric on every
-  // resource type that renders through this one shared component, not
-  // just ELB -- this was never resource-type-specific.
-  const formatted = data.map(d => ({
-    t: new Date(d.t).getTime(),
-    v: d.v,
-    ...(warningThreshold != null ? { warningThreshold } : {}),
-    ...(criticalThreshold != null ? { criticalThreshold } : {}),
-  }));
-  const fmtTick = (ms) => new Date(ms).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: ianaName });
-  return (
-    <div className="chart-box">
-      <div className="chart-header">
-        <span className="chart-title">{title}</span>
-        <span className="chart-header-right">
-          <span className="chart-latest" style={{ color }}>{valueFormatter ? valueFormatter(latest) : `${latest.toFixed(1)}${unit}`}</span>
-          <button className="chart-expand-btn" onClick={() => setZoomOpen(true)} title={`Zoom ${title}`}>
-            <Maximize2Icon size={13} />
-          </button>
-        </span>
-      </div>
-      <ResponsiveContainer width="100%" height={90}>
-        <LineChart data={formatted} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-          <CartesianGrid stroke="rgba(99,130,190,0.08)" strokeDasharray="3 3" />
-          <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} tickFormatter={fmtTick}
-                 tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} scale="time" />
-          <YAxis tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} {...(yTickFormatter ? { tickFormatter: yTickFormatter } : {})} />
-          <Tooltip
-            contentStyle={{ background: "#0b1220", border: "1px solid rgba(99,130,190,0.2)", borderRadius: 6, fontSize: 11 }}
-            labelStyle={{ color: "#7a90b8" }}
-            labelFormatter={fmtTick}
-            formatter={(value, name) => {
-              if (name === "warningThreshold") return [`${value}${unit}`, <span style={{display:"inline-flex",alignItems:"center",gap:4}}><AlertTriangleIcon size={11} /> Warn at</span>];
-              if (name === "criticalThreshold") return [`${value}${unit}`, <span style={{display:"inline-flex",alignItems:"center",gap:4}}><AlertTriangleIcon size={11} /> Crit at</span>];
-              return [valueFormatter ? valueFormatter(value) : `${value.toFixed(2)}${unit}`, title];
-            }}
-            itemStyle={{ color }}
-          />
-          {warningThreshold != null && (
-            <Line type="monotone" dataKey="warningThreshold" stroke="#f59e0b" strokeDasharray="4 4" dot={false} strokeWidth={1} legendType="none" />
-          )}
-          {criticalThreshold != null && (
-            <Line type="monotone" dataKey="criticalThreshold" stroke="#ef4444" strokeDasharray="2 3" dot={false} strokeWidth={1} legendType="none" />
-          )}
-          <Line type="monotone" dataKey="v" stroke={color} strokeWidth={2} dot={false} activeDot={{ r: 3, fill: color }} />
-        </LineChart>
-      </ResponsiveContainer>
-      <MetricZoomModal
-        open={zoomOpen}
-        onClose={() => setZoomOpen(false)}
-        title={title}
-        data={data}
-        unit={unit}
-        color={color}
-        valueFormatter={valueFormatter}
-      />
-    </div>
-  );
+function MetricChart(props) {
+  return <MetricChartCard {...props} />;
 }

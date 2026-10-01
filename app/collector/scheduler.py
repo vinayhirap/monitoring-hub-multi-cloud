@@ -180,7 +180,8 @@ def run_once(tier="standard"):
         # see weekly seasonality (Monday-morning batch jobs, weekend
         # dips). Bumping retention here, not the function default, keeps
         # any other caller's expectations unchanged.
-        prune_metric_history(retain_days=30)
+        from app.metric_display import METRIC_HISTORY_RETENTION_DAYS
+        prune_metric_history(retain_days=METRIC_HISTORY_RETENTION_DAYS)
         prune_op_events(retain_days=30)
         try:
             from app.collector.synthetic import prune_synthetic_results
