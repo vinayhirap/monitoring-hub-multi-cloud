@@ -55,6 +55,7 @@ import { useResourceAlerts } from "../hooks/useResourceAlerts";
 import MetricChartCard, { MetricPanelContext, AlertedMetricsStrip } from "../components/MetricChartCard";
 import ChartToolbar, { AUTO_REFRESH_MS } from "../components/ChartToolbar";
 import { useMetricMeta } from "../hooks/useMetricMeta";
+import { useInsightsRegistry } from "../hooks/useInsightsRegistry";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
 
 const TIME_RANGES = [
@@ -154,11 +155,13 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
 
   const metaState = useMetricMeta(accountId, service, [r.resource_id, r.name, r.arn].filter(Boolean), expanded);
   const reloadMeta = metaState.reload;
+  const insightsReg = useInsightsRegistry();
 
   const firstMetric = metrics ? Object.values(metrics)[0] : null;
   const panelCtx = {
     meta: metaState.metrics, windowHours: firstMetric?.effective_hours || timeRange,
     bucketSecs: firstMetric?.bucket_secs || null, statOverride,
+    report: insightsReg.report, scope: r.resource_id,
   };
 
   function toggle() {
@@ -263,7 +266,7 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
       {expanded && (
         <tr style={{ borderBottom: isLast ? "none" : "1px solid var(--border)" }}>
           <td colSpan={7} style={{ padding: "0 14px 14px 40px", background: "rgba(255,255,255,.015)" }}>
-            <ResourceEvidence accountId={accountId} service={service} resourceId={r.resource_id} resourceIds={[r.resource_id, r.name, r.arn]} />
+            <ResourceEvidence accountId={accountId} service={service} resourceId={r.resource_id} resourceIds={[r.resource_id, r.name, r.arn]} insights={insightsReg} />
             {loading ? (
               <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "10px 0" }}>Loading metrics…</div>
             ) : error ? (

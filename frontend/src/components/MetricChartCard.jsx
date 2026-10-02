@@ -12,7 +12,7 @@
 //   * metric in alert -> coloured border + CRITICAL/WARNING badge
 //   * fixed time window (not dataMin..dataMax), date-aware ticks, gaps shown
 //     as gaps, linear lines (no invented overshoot), 0-based axis
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { Maximize2Icon } from "./icons";
@@ -24,6 +24,14 @@ import "./MetricChartCard.css";
 
 // value: { meta: {metricName: entry}, windowHours, bucketSecs, statOverride }
 export const MetricPanelContext = createContext({ meta: {}, windowHours: 6, bucketSecs: null, statOverride: "auto" });
+
+/** Renders nothing; tells the panel's insights registry which series this chart is drawing. */
+function InsightReporter({ ctx, id, payload }) {
+  const { report } = ctx;
+  const { scope, title, unit, pts, warn, crit, cmp, sev } = payload;
+  useEffect(() => { if (report) report(id, { scope, title, unit, pts, warn, crit, cmp, sev }); }, [report, id, scope, title, unit, pts, warn, crit, cmp, sev]);
+  return null;
+}
 export const metricAnchor = (name) => `mc-${String(name).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 
 const SEV_COLOR = { CRITICAL: "#ef4444", WARNING: "#f59e0b", INFO: "#38bdf8" };
@@ -135,6 +143,7 @@ export default function MetricChartCard({
   const latest = last ? (last[field] ?? last.v) : null;
   const lastT = last ? new Date(last.t).getTime() : null;
 
+  const reportPts = pts.filter(p => p.v != null);
   // Analytics strip: trend, range and freshness derived only from the points on screen.
   const st = seriesStats(pts);
   const fr = freshness(lastT, Date.now(), meta?.period_seconds || (meta?.poll_seconds || 0));
@@ -225,6 +234,7 @@ export default function MetricChartCard({
               </>}
         </div>
       )}
+      {ctx.report && <InsightReporter ctx={ctx} id={metricKey || title} payload={{ scope: ctx.scope, title: shownTitle, unit: cwUnit || unit, pts: reportPts, warn: warnLine, crit: critLine, cmp: th?.comparison || ">", sev: alert ? alert.severity : null }} />}
       <MetricZoomModal open={zoomOpen} onClose={() => setZoomOpen(false)} title={shownTitle}
         data={data.map(d => ({ ...d, v: d[field] ?? d.v }))} unit={unit} color={color} valueFormatter={fmt} />
     </div>

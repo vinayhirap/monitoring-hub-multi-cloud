@@ -12,12 +12,14 @@ import { useTimezone } from "../contexts/TimezoneContext";
 import { Badge, StatusBeacon, AiChip } from "./ui";
 import { metricAnchor } from "./MetricChartCard";
 import { alertsForResource, eventsForResource, buildTimeline, healthTone, ageText, tsMs } from "../utils/evidence";
+import { buildInsights } from "../utils/intelligence";
+import { fmtMetricValue } from "../utils/metricFormat";
 import "./ResourceEvidence.css";
 
 const SEV_TONE = { CRITICAL: "crit", WARNING: "warn", INFO: "info", ERROR: "crit", RESOLVED: "ok" };
 const fmtVal = v => (v == null || v === "" ? "—" : Number.isFinite(Number(v)) ? String(Number(Number(v).toFixed(2))) : String(v));
 
-export default function ResourceEvidence({ accountId, resourceIds, resourceId, service, reloadKey }) {
+export default function ResourceEvidence({ accountId, resourceIds, resourceId, service, insights: registry, reloadKey }) {
   const navigate = useNavigate();
   const { ianaName } = useTimezone();
   const ids = useMemo(() => [...new Set((resourceIds || []).filter(Boolean).map(String))], [resourceIds]);
@@ -52,6 +54,14 @@ export default function ResourceEvidence({ accountId, resourceIds, resourceId, s
   const score = h && h.health_score != null ? Number(h.health_score) : null;
   const reason = h?.score_reason || {};
   const rows = showAll ? timeline : timeline.slice(0, 6);
+  // Statistical insights computed from the series the charts below are drawing (only on pages that provide a registry)
+  const intel = useMemo(() => {
+    if (!registry) return null;
+    const series = registry.forScope(primary);
+    return buildInsights({ series, alerts: alerts || [], events: events || [], tz: ianaName,
+      fmt: (sr, v) => fmtMetricValue(v, sr.unit && /^[A-Z]/.test(sr.unit) ? sr.unit : undefined, sr.unit) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registry, registry?.version, primary, alerts, events, ianaName]);
 
   const focusMetric = name => {
     const el = document.getElementById(metricAnchor(name));
@@ -104,6 +114,36 @@ export default function ResourceEvidence({ accountId, resourceIds, resourceId, s
           ) : <><div className="rev-v">—</div><div className="rev-s">No metric trending to exhaustion</div></>}
         </div>
       </div>
+
+      {intel && (
+        <div className="rev-intel" aria-label="Insights">
+          <div className="rev-tl-h"><span>Insights</span><AiChip method="statistical" />
+            <span className="rev-sub">computed from the metrics below against each one's own normal range; not a measurement</span></div>
+          {intel.insights.length === 0 ? (
+            <div className="rev-intel-empty">
+              {intel.coverage.total === 0
+                ? "No metric data on this resource yet, so there is nothing to analyse."
+                : intel.coverage.analysed === 0
+                ? "Not enough history yet to judge normal behaviour (needs about 2 hours of data per metric)."
+                : `No unusual behaviour in the ${intel.coverage.analysed} metric${intel.coverage.analysed === 1 ? "" : "s"} with enough history.`}
+              {intel.coverage.total > intel.coverage.analysed && intel.coverage.analysed > 0 && ` ${intel.coverage.total - intel.coverage.analysed} not analysed (too little history).`}
+            </div>
+          ) : intel.insights.map(i => (
+            <div key={i.id} className={`rev-ins lv-${i.level}${i.kind === "forecast" ? " is-forecast" : ""}`}>
+              <div className="rev-ins-h">
+                <Badge tone={i.level === "high" ? "crit" : "warn"} mode={i.kind === "forecast" ? "predicted" : "actual"}>{i.kind === "forecast" ? "forecast" : "anomaly"}</Badge>
+                <b>{i.title}</b>
+                <span className={`rev-conf c-${i.confidence}`} title="Confidence reflects how many independent signals agree (the metric itself, co-moving metrics, a nearby event, a firing alert). It is not a probability.">{i.confidence} confidence</span>
+              </div>
+              <p>{i.text}</p>
+              <div className="rev-ins-f">
+                {i.metrics.map(m => <button key={m} className="rev-chip" onClick={() => focusMetric(m)} title="Jump to this metric's chart">{registry.forScope(primary).find(x => x.key === m)?.title || m}</button>)}
+                <span className="rev-act"><b>Suggested check:</b> {i.action}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {timeline.length > 0 ? (
         <div className="rev-tl">

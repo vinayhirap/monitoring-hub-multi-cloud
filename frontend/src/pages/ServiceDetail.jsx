@@ -15,6 +15,7 @@ import AlertBadge from "../components/AlertBadge";
 import { useResourceAlerts } from "../hooks/useResourceAlerts";
 import MetricChartCard, { MetricPanelContext, AlertedMetricsStrip } from "../components/MetricChartCard";
 import ResourceEvidence from "../components/ResourceEvidence";
+import { useInsightsRegistry } from "../hooks/useInsightsRegistry";
 import ChartToolbar, { AUTO_REFRESH_MS } from "../components/ChartToolbar";
 import { useMetricMeta } from "../hooks/useMetricMeta";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
@@ -956,10 +957,12 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
     row.function_arn, row.bucket_name, row.service_name, row.load_balancer_arn, row.name, row.resource_id].filter(Boolean);
   const metaState = useMetricMeta(accountId, service, resourceIds, !!service);
   const reloadMeta = metaState.reload;
+  const insightsReg = useInsightsRegistry();
   useEffect(() => { reloadMeta(); }, [lastUpdated, reloadMeta]);
   const panelCtx = {
     meta: metaState.metrics, windowHours: metrics?.effective_hours || timeRange,
     bucketSecs: metrics?.bucket_secs || null, statOverride,
+    report: insightsReg.report, scope: consoleParamsFor(service, row)?.resource_id,
   };
   // Resource health score + capacity forecast (2026-09-14) -- this
   // data has existed on the backend since the AIOps work (
@@ -1064,7 +1067,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
 
       {/* Evidence strip: alerts, health score, events and capacity forecast for this resource
           (supersedes the old health/forecast-only block; same endpoints, RBAC-aware). */}
-      <ResourceEvidence accountId={accountId} service={service} resourceId={resourceId} resourceIds={resourceIds} />
+      <ResourceEvidence accountId={accountId} service={service} resourceId={resourceId} resourceIds={resourceIds} insights={insightsReg} />
 
       {service === "S3" && (
         <div className="id-section">
