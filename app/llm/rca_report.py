@@ -20,14 +20,32 @@ fails, those two sections fall back to a plain bullet-point rendering
 of the same facts -- a report is ALWAYS produced, with or without the
 LLM configured.
 """
+import hashlib
+import json
 import logging
+import os
+import threading
+import time
 
 from app.db import get_connection
 from app.collector.rca import explain_alert
-from app.llm.summarizer import generate_rca_narrative
+from app.llm.summarizer import generate_rca_narrative, is_enabled
 from app.llm.aws_docs import get_references
 
 logger = logging.getLogger(__name__)
+
+# AI/ML audit Phase 1 (2026-10-02): the LLM narrative is generated on a background thread
+# and cached in `rca_narratives` (migration 076). A download request waits at most
+# LLM_RCA_WAIT_SECONDS for it, then returns the deterministic template immediately
+# (narrative_pending=True) while generation continues; the next download gets the cached
+# LLM version. Before this, the request thread blocked for the full LLM call (60-90 s on
+# the current hardware) and then usually timed out into the template anyway.
+_DEFAULT_WAIT_SECONDS = 8
+_FAILURE_COOLDOWN_SECONDS = 300   # after a failed generation, don't re-run it on every click
+
+_inflight = {}        # (alert_id, facts_hash) -> threading.Event, set when that generation ends
+_failed_until = {}    # (alert_id, facts_hash) -> monotonic deadline
+_state_lock = threading.Lock()
 
 
 def _gather_facts(alert_id: int) -> dict:
@@ -140,20 +158,129 @@ def _fallback_narrative(facts: dict) -> str:
     return "\n".join(lines)
 
 
+def _facts_hash(facts: dict) -> str:
+    return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _read_cache(alert_id: int, facts_hash: str):
+    """Cached LLM narrative for exactly these facts, or None. Never raises: a missing
+    table (migration 076 not applied yet) or any DB hiccup just means 'no cache'."""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                "SELECT narrative_markdown FROM rca_narratives WHERE alert_id = %s AND facts_hash = %s",
+                (alert_id, facts_hash),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return row["narrative_markdown"] if row else None
+        finally:
+            cursor.close()
+            conn.close()
+    except Exception as e:
+        logger.warning(f"[rca_report] narrative cache read skipped: {e}")
+        return None
+
+
+def _write_cache(alert_id: int, facts_hash: str, narrative: str) -> None:
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO rca_narratives (alert_id, facts_hash, narrative_markdown)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE facts_hash = VALUES(facts_hash),
+                                        narrative_markdown = VALUES(narrative_markdown),
+                                        generated_at = CURRENT_TIMESTAMP
+                """,
+                (alert_id, facts_hash, narrative),
+            )
+            conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
+    except Exception as e:
+        logger.warning(f"[rca_report] narrative cache write skipped: {e}")
+
+
+def _generate_in_background(alert_id: int, facts: dict, facts_hash: str, done: threading.Event):
+    key = (alert_id, facts_hash)
+    try:
+        narrative = generate_rca_narrative(facts)
+        if narrative:
+            _write_cache(alert_id, facts_hash, narrative)
+        else:
+            with _state_lock:
+                _failed_until[key] = time.monotonic() + _FAILURE_COOLDOWN_SECONDS
+    except Exception:
+        logger.exception(f"[rca_report] background narrative generation failed for alert {alert_id}")
+        with _state_lock:
+            _failed_until[key] = time.monotonic() + _FAILURE_COOLDOWN_SECONDS
+    finally:
+        with _state_lock:
+            _inflight.pop(key, None)
+        done.set()
+
+
+def _start_or_join(alert_id: int, facts: dict, facts_hash: str):
+    """Returns the Event for this generation (starting it if nobody has), or None when this
+    exact generation recently failed and is cooling down."""
+    key = (alert_id, facts_hash)
+    with _state_lock:
+        if _failed_until.get(key, 0) > time.monotonic():
+            return None
+        event = _inflight.get(key)
+        if event is None:
+            event = threading.Event()
+            _inflight[key] = event
+            threading.Thread(
+                target=_generate_in_background, args=(alert_id, facts, facts_hash, event),
+                name=f"rca-narrative-{alert_id}", daemon=True,
+            ).start()
+        return event
+
+
 def generate_rca_report(alert_id: int) -> dict:
     """
     Returns None if the alert doesn't exist, otherwise:
         {"facts": {...}, "narrative_markdown": "## Executive Summary...",
-         "narrative_source": "llm" | "template"}
+         "narrative_source": "llm" | "template", "narrative_pending": bool}
+    narrative_pending is True when an LLM narrative is still being generated in the
+    background (the template is returned now; download again shortly for the LLM version).
     """
     facts = _gather_facts(alert_id)
     if facts is None:
         return None
 
-    narrative = generate_rca_narrative(facts)
-    if narrative:
-        return {"facts": facts, "narrative_markdown": narrative, "narrative_source": "llm"}
-    return {"facts": facts, "narrative_markdown": _fallback_narrative(facts), "narrative_source": "template"}
+    if not is_enabled():
+        return {"facts": facts, "narrative_markdown": _fallback_narrative(facts),
+                "narrative_source": "template", "narrative_pending": False}
+
+    facts_hash = _facts_hash(facts)
+    cached = _read_cache(alert_id, facts_hash)
+    if cached:
+        return {"facts": facts, "narrative_markdown": cached,
+                "narrative_source": "llm", "narrative_pending": False}
+
+    event = _start_or_join(alert_id, facts, facts_hash)
+    if event is not None:
+        wait = float(os.getenv("LLM_RCA_WAIT_SECONDS", _DEFAULT_WAIT_SECONDS))
+        if event.wait(timeout=wait):
+            cached = _read_cache(alert_id, facts_hash)
+            if cached:
+                return {"facts": facts, "narrative_markdown": cached,
+                        "narrative_source": "llm", "narrative_pending": False}
+            # finished but produced nothing usable (timeout, verifier rejection, ...)
+            return {"facts": facts, "narrative_markdown": _fallback_narrative(facts),
+                    "narrative_source": "template", "narrative_pending": False}
+        return {"facts": facts, "narrative_markdown": _fallback_narrative(facts),
+                "narrative_source": "template", "narrative_pending": True}
+    return {"facts": facts, "narrative_markdown": _fallback_narrative(facts),
+            "narrative_source": "template", "narrative_pending": False}
 
 
 def render_markdown(report: dict) -> str:
@@ -182,6 +309,9 @@ def render_markdown(report: dict) -> str:
         lines += ["", "## References", ""]
         for ref in f["references"]:
             lines.append(f"- [{ref['title']}]({ref['url']})")
+    if report.get("narrative_pending"):
+        lines += ["", "*An AI-written Executive Summary and Recommendations are being generated for "
+                      "this report -- download it again in a couple of minutes for the full version.*"]
     lines += [
         "",
         f"*Generated automatically ({report['narrative_source']} narrative) by AurionPro CloudOps -- verify before external distribution.*",

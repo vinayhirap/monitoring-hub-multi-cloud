@@ -86,9 +86,9 @@ def test_generate_rca_narrative_fences_facts_as_data(monkeypatch):
     mod = _load_summarizer(monkeypatch, {"LLM_SUMMARY_ENABLED": "true", "LLM_PROVIDER": "ollama"})
     captured = {}
 
-    def fake_call_llm(system_prompt, user_content, max_tokens=500):
+    def fake_call_llm(system_prompt, user_content, max_tokens=500, **kw):
         captured["user_content"] = user_content
-        return "## Executive Summary\n...\n\n## Recommendations\n- ..."
+        return "## Executive Summary\nCPU high.\n\n## Recommendations\n- Review."
 
     mod._call_llm = fake_call_llm
     result = mod.generate_rca_narrative({"resource_type": "ec2"})

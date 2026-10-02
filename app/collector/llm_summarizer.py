@@ -82,6 +82,10 @@ def refresh_llm_summaries() -> int:
             LIMIT %s
         """, (batch_limit,))
         candidates = cursor.fetchall()
+        # Phase 1 AI/ML audit (2026-10-02): end the read snapshot now. The loop
+        # below can run for the whole budget (each LLM call takes 15-60s on this
+        # hardware) -- nothing should stay open or locked while we wait on Ollama.
+        conn.commit()
 
         # Local import to avoid a circular import at module load time
         # (rca.py doesn't import this module, but keeping the edge
@@ -132,6 +136,12 @@ def refresh_llm_summaries() -> int:
                     WHERE id = %s
                 """, (polished, current_hash, alert_id))
                 refreshed += cursor.rowcount
+                # Commit per alert, not once after the loop: the UPDATE above
+                # holds a row lock on `alerts` until commit, and with the LLM
+                # taking up to ~60s per alert a single end-of-loop commit kept
+                # earlier alerts' rows locked for the rest of the batch (one
+                # health-score 1205 lock-wait on PROD 2026-09-30 fits this shape).
+                conn.commit()
 
             except Exception:
                 logger.exception(
