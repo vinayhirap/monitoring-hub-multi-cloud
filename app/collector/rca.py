@@ -258,6 +258,14 @@ def _trend_context(cursor, resource_id, metric_name, breach_time, aws_account_id
     }
 
 
+# Mirror of app/collector/trend.py CAPACITY_METRICS keys, kept local so this module needs no extra
+# import (trend.py pulls numpy + DB at import time). tests/test_explain_alert.py asserts the two
+# stay identical, so adding a capacity metric in trend.py without updating this fails CI.
+_CAPACITY_METRIC_NAMES = frozenset({
+    "DiskSpaceUtilization", "disk_used_percent", "FreeStorageSpace", "EBSFreeSpacePercent",
+})
+
+
 def _check_flapping(cursor, aws_account_id, resource_id, metric_name):
     """
     True if this resource+metric's normal variability (mean +/-
@@ -277,7 +285,17 @@ def _check_flapping(cursor, aws_account_id, resource_id, metric_name):
     exact failure mode can't happen) or not enough baseline confidence
     to judge -- flapping detection is a bonus signal, never a hard
     requirement of a useful explanation.
+
+    2026-10-03: never True for capacity metrics (trend.CAPACITY_METRICS: disk_used_percent,
+    FreeStorageSpace, ...). They are monotonic by nature -- a disk does not "flap on natural
+    noise" -- and a steady climb inflates the baseline stddev enough to fake the signature.
+    A real PROD RCA report (alert 7925, disk_used_percent 81.8 vs 80, rising for 2h) was told
+    "looks like a flapping alert ... consider widening this threshold", which is exactly the
+    wrong advice for a filling disk. Capacity alerts are static-threshold by design
+    (migration 073), so there is nothing for this check to say about them.
     """
+    if metric_name in _CAPACITY_METRIC_NAMES:
+        return False
     cursor.execute("""
         SELECT t.critical_value, t.comparison, t.dynamic_k
         FROM alerts a

@@ -215,3 +215,34 @@ def test_trend_context_detects_gradual_climb():
     result = mod._trend_context(_Cursor([]), "i-abc", "CPUUtilization", "2026-09-14 10:00:00")
     assert result["pattern"] == "gradual_trend"
     assert "climbing" in result["description"]
+
+
+def test_capacity_metric_is_never_flagged_as_flapping_and_never_queries_for_it():
+    """2026-10-03: a filling disk is not 'natural noise'. disk_used_percent must short-circuit
+    before any threshold/baseline query, even when the numbers would otherwise fake the signature."""
+    install_stub("app.db", get_connection=lambda: None)
+    mod = load_module("app/collector/rca.py")
+
+    class _NoQueries:
+        def execute(self, *a, **k):
+            raise AssertionError("capacity metrics must not reach the flapping SQL")
+
+    for metric in ("disk_used_percent", "DiskSpaceUtilization", "FreeStorageSpace", "EBSFreeSpacePercent"):
+        assert mod._check_flapping(_NoQueries(), 1, "i-1", metric) is False
+
+
+def test_non_capacity_metric_still_reaches_the_flapping_check():
+    flapping_threshold = {"critical_value": 1_000_000, "comparison": ">", "dynamic_k": None}
+    flapping_baseline = {"typical_value": 800_000, "typical_stddev": 150_000, "total_samples": 40}
+    _install_stub(_base_alert(metric_name="NetworkIn"),
+                   flapping_threshold=flapping_threshold, flapping_baseline=flapping_baseline)
+    mod = load_module("app/collector/rca.py")
+    assert mod.explain_alert(42)["is_likely_flapping"] is True
+
+
+def test_local_capacity_metric_list_matches_trend_py():
+    """rca.py keeps its own copy of the capacity metric names (no heavy import); this keeps it honest."""
+    install_stub("app.db", get_connection=lambda: None)
+    rca = load_module("app/collector/rca.py")
+    trend = load_module("app/collector/trend.py")
+    assert set(trend.CAPACITY_METRICS) == set(rca._CAPACITY_METRIC_NAMES)

@@ -250,3 +250,14 @@ def test_rca_report_disabled_llm_never_starts_a_thread(monkeypatch):
     mod, _ = _rca_module(monkeypatch, lambda f: calls.append(1), enabled=False)
     rep = mod.generate_rca_report(7)
     assert rep["narrative_source"] == "template" and rep["narrative_pending"] is False and calls == []
+
+
+def test_pending_note_is_plain_text_near_the_top_not_a_trailing_asterisk_line(monkeypatch):
+    mod, _ = _rca_module(monkeypatch, lambda f: None)
+    facts = mod._gather_facts(7)
+    md = mod.render_markdown({"facts": facts, "narrative_markdown": "## Executive Summary\nx\n\n## Recommendations\n- y",
+                              "narrative_source": "template", "narrative_pending": True})
+    note = [ln for ln in md.splitlines() if ln.startswith("Note: an AI-written")]
+    assert len(note) == 1 and "*" not in note[0]
+    assert md.index(note[0]) < md.index("## Executive Summary")
+    assert "being generated" not in md.split("## Timeline")[1]

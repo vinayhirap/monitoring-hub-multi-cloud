@@ -298,6 +298,14 @@ def render_markdown(report: dict) -> str:
         f"- **Current Value / Threshold:** {f['current_value']} / {f['threshold']}",
         f"- **RCA confidence:** {f['confidence']}",
         "",
+    ]
+    if report.get("narrative_pending"):
+        # Plain text on purpose: the PDF renderer prints any line it does not recognise
+        # literally, so markdown emphasis here showed up as stray asterisks (2026-10-03).
+        lines += ["Note: an AI-written Executive Summary and Recommendations are being generated "
+                  "for this alert. The summary below is the standard template version; download "
+                  "this report again in a couple of minutes for the AI-written one.", ""]
+    lines += [
         report["narrative_markdown"],
         "",
         "## Timeline",
@@ -309,9 +317,6 @@ def render_markdown(report: dict) -> str:
         lines += ["", "## References", ""]
         for ref in f["references"]:
             lines.append(f"- [{ref['title']}]({ref['url']})")
-    if report.get("narrative_pending"):
-        lines += ["", "*An AI-written Executive Summary and Recommendations are being generated for "
-                      "this report -- download it again in a couple of minutes for the full version.*"]
     lines += [
         "",
         f"*Generated automatically ({report['narrative_source']} narrative) by AurionPro CloudOps -- verify before external distribution.*",
