@@ -78,7 +78,7 @@ export default function OpEvents() {
           <p className="sub">Collector, discovery, and alert-evaluation failures — not a full application log</p>
         </div>
         <div className="c-header-actions">
-          <select className="oe-sev-select" value={severity} onChange={e => setSeverity(e.target.value)}>
+          <select className="oe-sev-select" aria-label="Filter events by severity" value={severity} onChange={e => setSeverity(e.target.value)}>
             <option value="">All severities</option>
             <option value="ERROR">Error</option>
             <option value="WARNING">Warning</option>

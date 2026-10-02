@@ -221,7 +221,7 @@
 
 [data-theme="light"] .onboard-form    { background: #ffffff; border-color: rgba(99,130,190,0.18); }
 [data-theme="light"] .ob-section      { border-bottom-color: rgba(99,130,190,0.12); }
-[data-theme="light"] .ob-section-title { color: #8099bb; }
+[data-theme="light"] .ob-section-title { color: #526d94; }
 
 [data-theme="light"] .ob-field label  { color: #4a6080; }
 [data-theme="light"] .ob-field input,
@@ -250,12 +250,12 @@
 
 [data-theme="light"] .onboard-sidebar { background: #ffffff; border-color: rgba(99,130,190,0.18); }
 [data-theme="light"] .obs-header      { border-bottom-color: rgba(99,130,190,0.12); }
-[data-theme="light"] .obs-title       { color: #8099bb; }
+[data-theme="light"] .obs-title       { color: #526d94; }
 [data-theme="light"] .obs-empty       { color: #4a6080; }
-[data-theme="light"] .obs-empty-sub   { color: #8099bb; }
+[data-theme="light"] .obs-empty-sub   { color: #526d94; }
 [data-theme="light"] .obs-item        { background: #f5f8fd; border-color: rgba(99,130,190,0.15); }
 [data-theme="light"] .obs-item-name   { color: #0f1c35; }
-[data-theme="light"] .obs-item-id     { color: #8099bb; }
+[data-theme="light"] .obs-item-id     { color: #526d94; }
 /* Metrics-to-monitor step */
 .ob-metrics-hint {
   font-size: 12px;

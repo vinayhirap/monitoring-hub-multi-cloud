@@ -384,12 +384,12 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick }) {
         {(acctCritical > 0 || acctWarning > 0) && (
           <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
             {acctCritical > 0 && (
-              <span style={{ fontSize: 10, color: "#ef4444", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 4, padding: "1px 6px" }}>
+              <span style={{ fontSize: 10, color: "var(--crit-fg)", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 4, padding: "1px 6px" }}>
                 ● {acctCritical} critical alert{acctCritical === 1 ? "" : "s"}
               </span>
             )}
             {acctWarning > 0 && (
-              <span style={{ fontSize: 10, color: "#f59e0b", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 4, padding: "1px 6px" }}>
+              <span style={{ fontSize: 10, color: "var(--warn-fg)", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 4, padding: "1px 6px" }}>
                 <AlertTriangleIcon size={12} className="ico-inline" />{acctWarning} warning alert{acctWarning === 1 ? "" : "s"}
               </span>
             )}

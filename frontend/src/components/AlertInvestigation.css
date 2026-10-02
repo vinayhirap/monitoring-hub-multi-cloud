@@ -36,3 +36,5 @@
 .ai .rev-cards { grid-template-columns: repeat(2, 1fr); } .ai .rev-body { white-space: normal; } .ai .rev-foot { display: none; }
 @media (max-width: 520px) { .ai .rev-it { grid-template-columns: auto 1fr; } .ai .rev-when { grid-column: 1 / -1; } }
 @media (max-width: 520px) { .ai-facts { grid-template-columns: repeat(2, 1fr); } .ai-dl { grid-template-columns: 1fr; } }
+
+.ai:focus { outline: none; }

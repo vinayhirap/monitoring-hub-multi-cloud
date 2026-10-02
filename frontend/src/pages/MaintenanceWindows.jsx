@@ -78,28 +78,28 @@ export default function MaintenanceWindows() {
       <form className="mw-form" onSubmit={handleCreate}>
         <div className="mw-field">
           <label>Account</label>
-          <select value={form.aws_account_id} onChange={e => setForm(f => ({ ...f, aws_account_id: e.target.value }))} required>
+          <select aria-label="Account" value={form.aws_account_id} onChange={e => setForm(f => ({ ...f, aws_account_id: e.target.value }))} required>
             <option value="" disabled>Select account…</option>
             {accounts.map(a => <option key={a.id} value={a.id}>{a.account_name}</option>)}
           </select>
         </div>
         <div className="mw-field mw-field-wide">
           <label>Resource ID</label>
-          <input value={form.resource_id} onChange={e => setForm(f => ({ ...f, resource_id: e.target.value }))}
+          <input aria-label="Resource ID" value={form.resource_id} onChange={e => setForm(f => ({ ...f, resource_id: e.target.value }))}
                  placeholder="e.g. i-0abc123" required />
         </div>
         <div className="mw-field mw-field-wide">
           <label>Reason</label>
-          <input value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))}
+          <input aria-label="Reason" value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))}
                  placeholder="DB patching" required />
         </div>
         <div className="mw-field">
           <label>Starts</label>
-          <input type="datetime-local" value={form.starts_at} onChange={e => setForm(f => ({ ...f, starts_at: e.target.value }))} required />
+          <input aria-label="Starts" type="datetime-local" value={form.starts_at} onChange={e => setForm(f => ({ ...f, starts_at: e.target.value }))} required />
         </div>
         <div className="mw-field">
           <label>Ends</label>
-          <input type="datetime-local" value={form.ends_at} onChange={e => setForm(f => ({ ...f, ends_at: e.target.value }))} required />
+          <input aria-label="Ends" type="datetime-local" value={form.ends_at} onChange={e => setForm(f => ({ ...f, ends_at: e.target.value }))} required />
         </div>
         <label className="mw-checkbox">
           <input type="checkbox" checked={form.silence_downstream}

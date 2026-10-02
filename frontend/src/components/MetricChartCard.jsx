@@ -34,7 +34,8 @@ function InsightReporter({ ctx, id, payload }) {
 }
 export const metricAnchor = (name) => `mc-${String(name).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 
-const SEV_COLOR = { CRITICAL: "#ef4444", WARNING: "#f59e0b", INFO: "#38bdf8" };
+const SEV_COLOR = { CRITICAL: "#ef4444", WARNING: "#f59e0b", INFO: "#38bdf8" };      // borders / tinted backgrounds (hex needed for alpha)
+const SEV_TEXT  = { CRITICAL: "var(--crit-fg)", WARNING: "var(--warn-fg)", INFO: "var(--info-fg, #0369a1)" };   // text: theme-aware, AA in both themes
 
 export default function MetricChartCard({
   title, metricKey, data: rawData, color = "#2bb3ac", unit = "", description, emptyReason, timeRange,
@@ -109,7 +110,7 @@ export default function MetricChartCard({
   );
   const badges = (
     <div className="mc-badges">
-      {alert && <span className="mc-badge mc-sev" style={{ background: `${sevColor}22`, color: sevColor, borderColor: `${sevColor}66` }}>● {alert.severity} ALERT</span>}
+      {alert && <span className="mc-badge mc-sev" style={{ background: `${sevColor}22`, color: SEV_TEXT[alert.severity] || sevColor, borderColor: `${sevColor}66` }}>● {alert.severity} ALERT</span>}
       {meta?.alert && !alert && <span className="mc-badge mc-muted">{meta.alert.state}</span>}
       {meta?.poll_label && <span className="mc-badge mc-poll" title={pollTip}>⏱ polled every {meta.poll_label}</span>}
       {th?.mode && th.mode !== "static" && <span className="mc-badge mc-dyn" title="Threshold follows this resource's own baseline (Settings → Thresholds)">{th.mode} threshold</span>}
@@ -260,13 +261,13 @@ export function AlertedMetricsStrip({ meta, unmatched = [] }) {
     <div className="mc-strip">
       <span className="mc-strip-label">Metrics in alert</span>
       {firing.map(m => (
-        <button key={m.metric_name} className="mc-chip" style={{ borderColor: SEV_COLOR[m.alert.severity], color: SEV_COLOR[m.alert.severity] }}
+        <button key={m.metric_name} className="mc-chip" style={{ borderColor: SEV_COLOR[m.alert.severity], color: SEV_TEXT[m.alert.severity] }}
                 onClick={() => document.getElementById(metricAnchor(m.metric_name))?.scrollIntoView({ behavior: "smooth", block: "center" })}>
           ● {m.alert.severity} · {m.title}
         </button>
       ))}
       {extra.map(u => (
-        <span key={u.metric} className="mc-chip" style={{ borderColor: SEV_COLOR[u.severity], color: SEV_COLOR[u.severity] }} title="No chart for this metric on this page">
+        <span key={u.metric} className="mc-chip" style={{ borderColor: SEV_COLOR[u.severity], color: SEV_TEXT[u.severity] }} title="No chart for this metric on this page">
           ● {u.severity} · {u.metric}
         </span>
       ))}

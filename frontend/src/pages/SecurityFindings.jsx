@@ -110,7 +110,7 @@ export default function SecurityFindings() {
       <div className="sec-filters">
         <div className="sec-field">
           <label>Status</label>
-          <select value={status} onChange={e => setStatus(e.target.value)}>
+          <select aria-label="Filter by status" value={status} onChange={e => setStatus(e.target.value)}>
             <option value="open">Open</option>
             <option value="resolved">Resolved</option>
             <option value="all">All</option>
@@ -118,7 +118,7 @@ export default function SecurityFindings() {
         </div>
         <div className="sec-field">
           <label>Severity</label>
-          <select value={severity} onChange={e => setSeverity(e.target.value)}>
+          <select aria-label="Filter by severity" value={severity} onChange={e => setSeverity(e.target.value)}>
             <option value="">All</option>
             <option value="HIGH">High</option>
             <option value="MEDIUM">Medium</option>
@@ -127,7 +127,7 @@ export default function SecurityFindings() {
         </div>
         <div className="sec-field">
           <label>Account</label>
-          <select value={accountId} onChange={e => setAccountId(e.target.value)}>
+          <select aria-label="Filter by account" value={accountId} onChange={e => setAccountId(e.target.value)}>
             <option value="">All accounts</option>
             {accounts.map(a => (
               <option key={a.account_id} value={a.account_id}>

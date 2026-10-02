@@ -95,13 +95,13 @@ function ToastItem({ toast, onClose }) {
         <div style={{ fontSize: 13, color: "#dce6f5", marginBottom: 2 }}>
           {metricLabel(toast.metric)} — <strong>{formatMetricValue(toast.metric, toast.value)}</strong> (threshold: {formatMetricValue(toast.metric, toast.threshold)})
         </div>
-        <div style={{ fontSize: 11, color: "#4a5f80" }}>
+        <div style={{ fontSize: 11, color: "#7c92b4" }}>
           {toast.account_name || `Account #${toast.account_id}`}
           {toast.region ? ` · ${toast.region}` : ""}
         </div>
       </div>
       <button className="toast-close-btn" onClick={onClose} style={{
-        background: "none", border: "none", color: "#4a5f80",
+        background: "none", border: "none", color: "#7c92b4",
         cursor: "pointer", padding: 4, lineHeight: 1, display: "flex",
       }}>
         <XIcon size={14} />

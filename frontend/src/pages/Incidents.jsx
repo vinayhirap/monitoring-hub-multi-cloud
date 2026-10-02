@@ -192,7 +192,7 @@ export default function Incidents() {
           </p>
         </div>
         <div className="c-header-actions">
-          <select className="inc-status-select" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+          <select className="inc-status-select" aria-label="Filter incidents by status" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
             <option value="active">Active</option>
             <option value="resolved">Resolved</option>
             <option value="">All</option>

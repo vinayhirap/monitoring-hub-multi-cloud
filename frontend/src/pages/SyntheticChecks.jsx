@@ -87,19 +87,19 @@ export default function SyntheticChecks() {
       <form className="syn-form" onSubmit={handleCreate}>
         <div className="syn-field">
           <label>Account</label>
-          <select value={form.aws_account_id} onChange={e => setForm(f => ({ ...f, aws_account_id: e.target.value }))} required>
+          <select aria-label="Account" value={form.aws_account_id} onChange={e => setForm(f => ({ ...f, aws_account_id: e.target.value }))} required>
             <option value="" disabled>Select account…</option>
             {accounts.map(a => <option key={a.id} value={a.id}>{a.account_name}</option>)}
           </select>
         </div>
         <div className="syn-field">
           <label>Name</label>
-          <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+          <input aria-label="Name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                  placeholder="Payment API health" required />
         </div>
         <div className="syn-field syn-field-narrow">
           <label>Type</label>
-          <select value={form.check_type} onChange={e => setForm(f => ({ ...f, check_type: e.target.value }))}>
+          <select aria-label="Type" value={form.check_type} onChange={e => setForm(f => ({ ...f, check_type: e.target.value }))}>
             <option value="http">HTTP</option>
             <option value="tcp">TCP</option>
             <option value="dns">DNS</option>
@@ -107,12 +107,12 @@ export default function SyntheticChecks() {
         </div>
         <div className="syn-field syn-field-wide">
           <label>Target</label>
-          <input value={form.target} onChange={e => setForm(f => ({ ...f, target: e.target.value }))}
+          <input aria-label="Target" value={form.target} onChange={e => setForm(f => ({ ...f, target: e.target.value }))}
                  placeholder={form.check_type === "http" ? "https://api.example.com/health" : form.check_type === "tcp" ? "db.example.com:5432" : "example.com"} required />
         </div>
         <div className="syn-field syn-field-narrow">
           <label>Interval (sec)</label>
-          <input type="number" min="60" value={form.interval_seconds}
+          <input aria-label="Interval (sec)" type="number" min="60" value={form.interval_seconds}
                  onChange={e => setForm(f => ({ ...f, interval_seconds: e.target.value }))} />
         </div>
         <button type="submit" className="syn-btn-add" disabled={saving}>

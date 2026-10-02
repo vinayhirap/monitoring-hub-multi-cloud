@@ -265,7 +265,7 @@
    since Layout.css's versions already produce the identical result. ── */
 [data-theme="light"] .inst-table-wrap  { background: #ffffff; border-color: rgba(99,130,190,0.15); box-shadow: 0 1px 4px rgba(99,130,190,0.08); }
 [data-theme="light"] .inst-table thead { background: #f0f4fa; }
-[data-theme="light"] .inst-table th    { color: #6b84a8; border-bottom-color: rgba(99,130,190,0.15); }
+[data-theme="light"] .inst-table th    { color: #566e92; border-bottom-color: rgba(99,130,190,0.15); }
 [data-theme="light"] .inst-table td    { border-bottom-color: rgba(99,130,190,0.08); color: #0f1c35; }
 [data-theme="light"] .inst-row:hover   { background: rgba(0,119,204,0.03); }
 [data-theme="light"] .inst-selected    { background: rgba(0,119,204,0.06) !important; }
@@ -274,10 +274,10 @@
 [data-theme="light"] .sort-select      { background: #ffffff; border-color: rgba(99,130,190,0.2); color: #4a6080; box-shadow: 0 1px 3px rgba(99,130,190,0.06); }
 [data-theme="light"] .detail-page      { background: transparent; }
 [data-theme="light"] .time-range-tabs  { background: #f0f4fa; border-color: rgba(99,130,190,0.15); }
-[data-theme="light"] .tr-btn           { color: #6b84a8; }
+[data-theme="light"] .tr-btn           { color: #566e92; }
 [data-theme="light"] .tr-btn:hover     { background: rgba(0,119,204,0.06); color: var(--accent); }
 [data-theme="light"] .tr-active        { background: rgba(0,119,204,0.1) !important; color: var(--accent) !important; }
 [data-theme="light"] .rel-item         { background: #f5f8fd; border-color: rgba(99,130,190,0.15); }
 [data-theme="light"] .rel-item:hover   { border-color: rgba(99,130,190,0.28); }
 [data-theme="light"] .rel-name         { color: #0f1c35; }
-[data-theme="light"] .rel-sub          { color: #6b84a8; }
+[data-theme="light"] .rel-sub          { color: #566e92; }

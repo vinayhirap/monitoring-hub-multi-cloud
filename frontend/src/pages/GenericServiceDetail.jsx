@@ -500,7 +500,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
             ))}
           </div>
         )}
-        <select className="sort-select" value={sortKey} onChange={e => setSortKey(e.target.value)}>
+        <select className="sort-select" aria-label="Sort resources" value={sortKey} onChange={e => setSortKey(e.target.value)}>
           <option value="attention">Sort: Needs attention</option>
           <option value="name">Sort: Name</option>
           <option value="region">Sort: Region</option>

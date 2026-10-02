@@ -527,7 +527,7 @@ export default function ServiceDetail() {
                   ))}
                 </div>
               )}
-              <select className="sort-select" value={sortKey} onChange={e => setSortKey(e.target.value)}>
+              <select className="sort-select" aria-label="Sort resources" value={sortKey} onChange={e => setSortKey(e.target.value)}>
                 <option value="name">Sort: Name</option>
                 {service === "EC2" && <option value="cpu">Sort: CPU</option>}
                 <option value="size">Sort: Type / Size</option>
@@ -536,9 +536,9 @@ export default function ServiceDetail() {
             </div>
             <div className="inst-table-wrap">
               {error ? (
-                <div style={{ padding: 16, color: "#ff6b8a", fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ padding: 16, color: "var(--crit-fg)", fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
                   <AlertTriangleIcon size={13} /> Failed to load: {error}{" "}
-                  <button onClick={loadRows} style={{ marginLeft: 8, background: "none", border: "1px solid rgba(239,68,68,0.3)", color: "#ff6b8a", borderRadius: 4, padding: "2px 8px", cursor: "pointer", fontSize: 11 }}>
+                  <button onClick={loadRows} style={{ marginLeft: 8, background: "none", border: "1px solid rgba(239,68,68,0.3)", color: "var(--crit-fg)", borderRadius: 4, padding: "2px 8px", cursor: "pointer", fontSize: 11 }}>
                     Retry
                   </button>
                 </div>

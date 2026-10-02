@@ -135,3 +135,22 @@
   .bell-pop { position: fixed; left: 8px; right: 8px; top: calc(var(--topbar-h) + 6px); width: auto; max-width: none; }
 }
 @media (max-width: 560px) { .live-chip { display: none; } .cmdk-scrim { padding-top: 4vh; } .cmdk-kind { display: none; } }
+
+/* ── One page-header look for every page (final consistency pass) ─────────────────────────
+   Pages still using their own header markup (.c-header, .detail-header, .alerts-header, plain
+   <h1>) are brought to the PageHeader spec: same size, weight, colour, spacing, no accent word,
+   no rule underneath. Specificity is deliberately above the per-page rules. */
+html .page-frame h1:not(.ui-h1) { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.25; color: var(--ink-1, var(--text-primary)); margin: 0; }
+html .page-frame h1:not(.ui-h1) .hl, html .page-frame h1:not(.ui-h1) .accent { color: inherit; font-weight: inherit; }
+.page-frame .c-header, .page-frame .detail-header, .page-frame .alerts-header { border-bottom: 0; padding-bottom: 0; margin-bottom: var(--gap, 12px); align-items: flex-start; gap: var(--gap, 12px); flex-wrap: wrap; }
+.page-frame .c-header .sub, .page-frame .detail-header .sub, .page-frame .sub { font-size: var(--fs-dense, 12px); color: var(--ink-3, var(--text-muted)); margin-top: 2px; }
+/* the shell breadcrumb is the only breadcrumb; the per-page legacy trail duplicated it */
+.page-frame .breadcrumb { display: none; }
+.eb { margin: 40px auto; max-width: 560px; text-align: center; padding: 28px 20px; }
+.eb-actions { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.eb-actions a.ui-btn { text-decoration: none; display: inline-flex; align-items: center; }
+
+/* Skip link: first tab stop, visible only when focused */
+.skip-link { position: absolute; left: 8px; top: -56px; z-index: 9999; background: var(--brand); color: #fff; padding: 8px 14px; border-radius: 6px; font-weight: 600; text-decoration: none; }
+.skip-link:focus { top: 8px; outline: 2px solid #fff; outline-offset: 2px; }
+.main-content:focus { outline: none; }

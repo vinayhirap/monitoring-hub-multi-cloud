@@ -39,6 +39,7 @@ export function Breadcrumb({ pathname, navItems }) {
       label: acct ? `${acct.account_name}${acct.default_region ? ` · ${acct.default_region}` : ""}` : `Account ${id}`,
       to: seg ? `/accounts/${id}/services` : null,
     });
+    if (seg && !SUB_LABEL[seg]) crumbs.push({ label: "Services", to: `/accounts/${id}/services` });   // a service page sits under Services
     if (seg) crumbs.push({ label: SUB_LABEL[seg] || seg.replace(/_/g, " ").toUpperCase() });
   } else {
     const item = navItems.find(n => pathname.startsWith(n.to));

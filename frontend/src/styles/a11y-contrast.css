@@ -1,0 +1,93 @@
+/* GENERATED accessibility overrides (WCAG AA 4.5:1 for text).
+   The app's status colours (red/amber/green/sky/teal/violet) were chosen for the dark theme. On the light
+   theme's tinted surfaces they measure 1.9-3.8:1, and the dark-theme critical red is 4.3:1 on its tinted
+   background. For every rule in the app that sets TEXT to one of those colours, the same selector gets the
+   same hue, darker (light theme) or slightly lighter (dark-theme red). Selectors that already have a
+   hand-written light-theme rule are left alone. Borders, fills, icons and charts are untouched. */
+
+/* light theme */
+html[data-theme="light"] .role-admin { color: #964200; }
+html[data-theme="light"] .role-viewer { color: #0369a1; }
+html[data-theme="light"] .btn-logout { color: #b42424; }
+html[data-theme="light"] .live-pill { color: #007850; }
+html[data-theme="light"] .meta-running { color: #007850; }
+html[data-theme="light"] .sum-tile.sum-green  .sum-value { color: #007850; }
+html[data-theme="light"] .sum-tile.sum-yellow .sum-value { color: #905600; }
+html[data-theme="light"] .atab-active { color: #905600; }
+html[data-theme="light"] .mc-dyn { color: #5b4bc4; }
+html[data-theme="light"] .mc-note { color: #905600; }
+html[data-theme="light"] .mc-na { color: #905600; }
+html[data-theme="light"] .role-badge.role-viewer { color: #0369a1; }
+html[data-theme="light"] .ac-btn.danger { color: #b42424; }
+html[data-theme="light"] .ac-link.danger { color: #b42424; }
+html[data-theme="light"] .ac-err { color: #b42424; }
+html[data-theme="light"] .ac-badge.blue { color: #0369a1; }
+html[data-theme="light"] .ac-badge.green { color: #15793a; }
+html[data-theme="light"] .ac-badge.red { color: #b42424; }
+html[data-theme="light"] .ac-badge.yellow { color: #905600; }
+html[data-theme="light"] .ac-chip button:hover { color: #b42424; }
+html[data-theme="light"] .ac-banner.err { color: #b42424; }
+html[data-theme="light"] .ac-dot.on { color: #15793a; }
+html[data-theme="light"] .ac-menu-pop button.danger { color: #b42424; }
+html[data-theme="light"] .ac-savebar[data-dirty=true] span { color: #905600; }
+html[data-theme="light"] .ac-toast.ok svg { color: #15793a; }
+html[data-theme="light"] .ac-toast.err svg { color: #b42424; }
+html[data-theme="light"] .btn-aws { color: #905600; }
+html[data-theme="light"] .capacity-forecast-row strong { color: #0369a1; }
+html[data-theme="light"] .btn-open-aws { color: #905600; }
+html[data-theme="light"] .ob-success { color: #15793a; }
+html[data-theme="light"] .ob-api-err { color: #b42424; }
+html[data-theme="light"] .ob-req { color: #b42424; }
+html[data-theme="light"] .ob-err-msg { color: #b42424; }
+html[data-theme="light"] .ob-region-active { color: #176b67; }
+html[data-theme="light"] .ob-auth-active { color: #176b67; }
+html[data-theme="light"] .obs-count-orange { color: #905600; }
+html[data-theme="light"] .obs-status-pending { color: #905600; }
+html[data-theme="light"] .obs-status-active { color: #15793a; }
+html[data-theme="light"] .obs-status-error { color: #b42424; }
+html[data-theme="light"] .ob-test-ok { color: #15793a; }
+html[data-theme="light"] .ob-test-fail { color: #b42424; }
+html[data-theme="light"] .accent { color: #905600; }
+html[data-theme="light"] .atab-count-active { color: #905600; }
+html[data-theme="light"] .alerts-error { color: #b42424; }
+html[data-theme="light"] .alerts-error button { color: #b42424; }
+html[data-theme="light"] .sev-critical { color: #b42424; }
+html[data-theme="light"] .sev-warning { color: #905600; }
+html[data-theme="light"] .sev-info { color: #176b67; }
+html[data-theme="light"] .st-active { color: #b42424; }
+html[data-theme="light"] .st-ack { color: #905600; }
+html[data-theme="light"] .st-resolved { color: #15793a; }
+html[data-theme="light"] .alert-val { color: #b42424; }
+html[data-theme="light"] .res-deeplink { color: #176b67; }
+html[data-theme="light"] .btn-console-detail { color: #176b67; }
+html[data-theme="light"] .btn-console-aws { color: #905600; }
+html[data-theme="light"] .btn-ack { color: #905600; }
+html[data-theme="light"] .btn-resolve { color: #15793a; }
+html[data-theme="light"] .explain-confidence-high { color: #15793a; }
+html[data-theme="light"] .alert-tag-attn { color: #b42424; }
+html[data-theme="light"] .alert-tag-tune { color: #176b67; }
+html[data-theme="light"] .sev-group-critical td { color: #b42424; }
+html[data-theme="light"] .sev-group-warning  td { color: #905600; }
+html[data-theme="light"] .sev-group-info     td { color: #176b67; }
+html[data-theme="light"] .sum-tile.sum-green  .sum-icon { color: #15793a; }
+html[data-theme="light"] .sum-tile.sum-yellow .sum-icon { color: #905600; }
+html[data-theme="light"] .sum-tile.sum-red    .sum-icon { color: #b42424; }
+html[data-theme="light"] .region-alert-critical { color: #b42424; }
+html[data-theme="light"] .region-alert-warning { color: #905600; }
+html[data-theme="light"] .ov-refresh:hover { color: #176b67; }
+html[data-theme="light"] .att-red { color: #b42424; }
+html[data-theme="light"] .att-amber { color: #905600; }
+html[data-theme="light"] .sec-provider-aws { color: #905600; }
+html[data-theme="light"] .btn-console-sec { color: #176b67; }
+html[data-theme="light"] .ob-provider-tab { color: #526d94; }
+html[data-theme="light"] .ob-provider-tab.ob-provider-tab-active { color: #0f1c35; }
+
+/* dark theme */
+html:not([data-theme="light"]) .obs-status-error { color: #f26868; }
+html:not([data-theme="light"]) .sev-critical { color: #f26868; }
+html:not([data-theme="light"]) .alert-tag-attn { color: #f26868; }
+html:not([data-theme="light"]) .sev-group-critical td { color: #f26868; }
+html:not([data-theme="light"]) .sum-tile.sum-red    .sum-icon { color: #f26868; }
+html:not([data-theme="light"]) .region-alert-critical { color: #f26868; }
+html:not([data-theme="light"]) .att-red { color: #f26868; }
+html:not([data-theme="light"]) .ob-provider-tab:not(.ob-provider-tab-active), html:not([data-theme="light"]) .ob-cred-notice { color: #7c92b4; }

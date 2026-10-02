@@ -97,26 +97,26 @@ export default function EscalationPolicies() {
       <form className="ep-form" onSubmit={handleCreate}>
         <div className="ep-field">
           <label>Account</label>
-          <select value={form.aws_account_id} onChange={e => setForm(f => ({ ...f, aws_account_id: e.target.value }))}>
+          <select aria-label="Account" value={form.aws_account_id} onChange={e => setForm(f => ({ ...f, aws_account_id: e.target.value }))}>
             <option value="">All accounts (global)</option>
             {accounts.map(a => <option key={a.id} value={a.id}>{a.account_name}</option>)}
           </select>
         </div>
         <div className="ep-field">
           <label>Severity</label>
-          <select value={form.severity} onChange={e => setForm(f => ({ ...f, severity: e.target.value }))}>
+          <select aria-label="Severity" value={form.severity} onChange={e => setForm(f => ({ ...f, severity: e.target.value }))}>
             <option value="CRITICAL">Critical</option>
             <option value="WARNING">Warning</option>
           </select>
         </div>
         <div className="ep-field ep-field-narrow">
           <label>Unacked for (min)</label>
-          <input type="number" min="1" value={form.ack_sla_minutes}
+          <input aria-label="Unacked for (min)" type="number" min="1" value={form.ack_sla_minutes}
                  onChange={e => setForm(f => ({ ...f, ack_sla_minutes: e.target.value }))} />
         </div>
         <div className="ep-field">
           <label>Escalate to</label>
-          <select value={form.escalate_to_group_id} onChange={e => setForm(f => ({ ...f, escalate_to_group_id: e.target.value }))} required>
+          <select aria-label="Escalate to" value={form.escalate_to_group_id} onChange={e => setForm(f => ({ ...f, escalate_to_group_id: e.target.value }))} required>
             <option value="" disabled>Select group…</option>
             {groups.map(g => <option key={g.id} value={g.id}>{g.level} — {g.name}</option>)}
           </select>

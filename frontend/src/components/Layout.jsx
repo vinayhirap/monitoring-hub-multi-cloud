@@ -7,6 +7,7 @@ import { useTimezone } from "../contexts/TimezoneContext";
 import { useWebSocket } from "../hooks/useWebSocket";
 import "./Layout.css";
 import "./shared-controls.css";
+import ErrorBoundary from "./ErrorBoundary";
 import { Breadcrumb, LiveChip, UserMenu, ScopeSwitcher, NotificationBell, CommandPalette } from "./shell";
 import { useAccountsIndex } from "../hooks/useAccountsIndex";
 import { StatusBeacon } from "./ui";
@@ -164,14 +165,22 @@ export default function Layout() {
   // Browser tab title follows the current page.
   const activeItem = visibleNav.find(n => location.pathname.startsWith(n.to));
   useEffect(() => {
-    document.title = `${activeItem ? activeItem.label : location.pathname.startsWith("/accounts/") ? "Infrastructure" : "Overview"} · CloudOps`;
-  }, [activeItem, location.pathname]);
+    const m = location.pathname.match(/^\/accounts\/(\d+)(?:\/([^/]+))?/);
+    let label = activeItem ? activeItem.label : location.pathname.startsWith("/op-events") ? "Operational Events" : "Overview";
+    if (m) {
+      const SUB = { services: "Services", topology: "Topology", incidents: "Incidents" };
+      const row = accountRows.find(r => String(r.id) === m[1]);
+      label = `${m[2] ? (SUB[m[2]] || m[2].toUpperCase()) : "Account"} \u00b7 ${row ? row.account_name : `Account ${m[1]}`}`;
+    }
+    document.title = `${label} \u00b7 CloudOps`;
+  }, [activeItem, location.pathname, accountRows]);
 
   const openPalette = useCallback(() => setPaletteOpen(true), []);
   useSearchHotkey(openPalette);
 
   return (
     <div className={`layout ${navOpen ? "nav-open" : ""}`}>
+      <a href="#main-content" className="skip-link" onClick={e => { e.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to main content</a>
       <div className="sidebar-scrim" onClick={() => setNavOpen(false)} aria-hidden="true" />
       <aside className="sidebar">
         <nav className="sidebar-nav" aria-label="Primary">
@@ -271,8 +280,8 @@ export default function Layout() {
             />
           </div>
         </header>
-        <main className="main-content">
-          <div className="page-frame"><Outlet /></div>
+        <main className="main-content" id="main-content" tabIndex={-1}>
+          <div className="page-frame"><ErrorBoundary key={location.pathname}><Outlet /></ErrorBoundary></div>
           <AlertToast />
         </main>
         <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} pages={visibleNav} rows={accountRows}

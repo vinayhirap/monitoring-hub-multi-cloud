@@ -91,19 +91,19 @@ export default function Slos() {
       <form className="slo-form" onSubmit={handleCreate}>
         <div className="slo-field">
           <label>Account</label>
-          <select value={form.aws_account_id} onChange={e => setForm(f => ({ ...f, aws_account_id: e.target.value }))} required>
+          <select aria-label="Account" value={form.aws_account_id} onChange={e => setForm(f => ({ ...f, aws_account_id: e.target.value }))} required>
             <option value="" disabled>Select account…</option>
             {accounts.map(a => <option key={a.id} value={a.id}>{a.account_name}</option>)}
           </select>
         </div>
         <div className="slo-field">
           <label>Name</label>
-          <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+          <input aria-label="Name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                  placeholder="Payment API uptime" required />
         </div>
         <div className="slo-field slo-field-narrow">
           <label>Measure via</label>
-          <select value={form.mode} onChange={e => setForm(f => ({ ...f, mode: e.target.value }))}>
+          <select aria-label="Measure via" value={form.mode} onChange={e => setForm(f => ({ ...f, mode: e.target.value }))}>
             <option value="synthetic">Synthetic check</option>
             <option value="resource">Resource alerts</option>
           </select>
@@ -111,7 +111,7 @@ export default function Slos() {
         {form.mode === "synthetic" ? (
           <div className="slo-field slo-field-wide">
             <label>Synthetic check</label>
-            <select value={form.synthetic_check_id} onChange={e => setForm(f => ({ ...f, synthetic_check_id: e.target.value }))} required>
+            <select aria-label="Synthetic check" value={form.synthetic_check_id} onChange={e => setForm(f => ({ ...f, synthetic_check_id: e.target.value }))} required>
               <option value="" disabled>Select check…</option>
               {checks.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
@@ -120,24 +120,24 @@ export default function Slos() {
           <>
             <div className="slo-field slo-field-wide">
               <label>Resource ID</label>
-              <input value={form.resource_id} onChange={e => setForm(f => ({ ...f, resource_id: e.target.value }))}
+              <input aria-label="Resource ID" value={form.resource_id} onChange={e => setForm(f => ({ ...f, resource_id: e.target.value }))}
                      placeholder="e.g. i-0abc123 (see Resource column on Alerts)" required />
             </div>
             <div className="slo-field">
               <label>Metric (optional)</label>
-              <input value={form.metric_name} onChange={e => setForm(f => ({ ...f, metric_name: e.target.value }))}
+              <input aria-label="Metric (optional)" value={form.metric_name} onChange={e => setForm(f => ({ ...f, metric_name: e.target.value }))}
                      placeholder="any CRITICAL alert" />
             </div>
           </>
         )}
         <div className="slo-field slo-field-narrow">
           <label>Target %</label>
-          <input type="number" step="0.001" min="0" max="100" value={form.target_pct}
+          <input aria-label="Target %" type="number" step="0.001" min="0" max="100" value={form.target_pct}
                  onChange={e => setForm(f => ({ ...f, target_pct: e.target.value }))} />
         </div>
         <div className="slo-field slo-field-narrow">
           <label>Window (days)</label>
-          <input type="number" min="1" value={form.window_days}
+          <input aria-label="Window (days)" type="number" min="1" value={form.window_days}
                  onChange={e => setForm(f => ({ ...f, window_days: e.target.value }))} />
         </div>
         <button type="submit" className="slo-btn-add" disabled={saving}>

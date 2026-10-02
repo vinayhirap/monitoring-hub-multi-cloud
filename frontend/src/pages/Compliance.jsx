@@ -211,7 +211,7 @@ export default function Compliance() {
     <div className="compliance-page">
       <div className="c-header">
         <div>
-          <h1>Audit <span className="hl">Log</span></h1>
+          <h1>Compliance <span className="hl">Audit Log</span></h1>
           <p className="sub">Full activity history for all admin and viewer actions</p>
         </div>
         <div className="c-header-actions">

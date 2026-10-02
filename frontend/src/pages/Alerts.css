@@ -231,7 +231,7 @@
 .explain-source {
   display: inline-block; width: fit-content; font-size: 10px; font-weight: 600; letter-spacing: .05em;
   text-transform: uppercase; padding: 2px 8px; border-radius: 10px; cursor: help;
-  color: var(--text-muted, #6b84a8); border: 1px solid var(--border, rgba(99,130,190,0.3));
+  color: var(--text-muted, #566e92); border: 1px solid var(--border, rgba(99,130,190,0.3));
 }
 .explain-rca-report-link {
   display: inline-flex; align-items: center; gap: 4px;

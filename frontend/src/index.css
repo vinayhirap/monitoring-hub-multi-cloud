@@ -18,17 +18,17 @@
   --border-md:      rgba(99,130,190,0.24);
   --border-bright:  rgba(99,130,190,0.38);
   --text-primary:   #dce6f5;
-  --text-secondary: #8ca0c4;
-  --text-muted:     #4a5f80;
+  --text-secondary: #a3b4d2;
+  --text-muted:     #7c92b4;
   --accent:         #2bb3ac;
   --accent-dim:     rgba(43,179,172,0.12);
   --accent-green:   #22c55e;
-  --accent-red:     #ef4444;
+  --accent-red:     #f26868;
   --accent-yellow:  #f59e0b;
   --accent-purple:  #7c6ee0;
   --accent-orange:  #f97316;
   --green:          #22c55e;
-  --red:            #ef4444;
+  --red:            #f26868;
   --yellow:         #f59e0b;
 
   /* Typography scale — see index.html for font loading */

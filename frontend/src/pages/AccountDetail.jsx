@@ -202,7 +202,7 @@ export default function AccountDetail() {
               ))}
             </div>
             <select
-              className="sort-select"
+              className="sort-select" aria-label="Sort resources"
               value={sortKey}
               onChange={e => setSortKey(e.target.value)}
             >

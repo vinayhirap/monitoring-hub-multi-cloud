@@ -521,7 +521,7 @@ export default function Alerts() {
           </Fragment>
         ))}
         <select
-          className="alerts-account-filter"
+          className="alerts-account-filter" aria-label="Filter by account"
           value={accountId}
           onChange={e => setAccountId(e.target.value)}
         >
@@ -595,7 +595,7 @@ export default function Alerts() {
 
                       <td className="alert-metric">
                         <div>{metricLabel(a.metric_name)}</div>
-                        <div style={{fontSize:"11px", color:"#888"}}>
+                        <div style={{fontSize:"11px", color:"var(--text-muted)"}}>
                           {(a.service || "").toUpperCase()}
                         </div>
                         {(a.needs_attention || a.auto_tuning) && (
@@ -635,7 +635,7 @@ export default function Alerts() {
                           </span>
                         )}
                         {a.account_name && (
-                          <div style={{fontSize:"11px", color:"#888"}}>
+                          <div style={{fontSize:"11px", color:"var(--text-muted)"}}>
                             {a.account_name}
                           </div>
                         )}

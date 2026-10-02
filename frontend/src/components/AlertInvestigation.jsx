@@ -4,7 +4,7 @@
 // Reuses existing endpoints only (explain, incidents, evidence panel, ack/resolve/mute handlers
 // passed in by the Alerts page). There is NO assignment, notes or manual incident creation in the
 // backend, so none is shown here (see RUNBOOK "required backend work").
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { explainAlert, getIncidents, getIncidentDetail, rcaReportUrl } from "../api/api";
 import { useTimezone } from "../contexts/TimezoneContext";
@@ -27,10 +27,25 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
   const id = a?.id;
 
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(t); }, []);
+  const panel = useRef(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;                      // latest handler without re-running the focus effect
+  // Modal behaviour: focus moves into the drawer, Tab/Shift+Tab stay inside it, Esc closes, focus returns on close.
   useEffect(() => {
-    const h = e => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", h); return () => document.removeEventListener("keydown", h);
-  }, [onClose]);
+    const prev = document.activeElement;
+    panel.current?.focus();
+    const h = e => {
+      if (e.key === "Escape") { closeRef.current(); return; }
+      if (e.key !== "Tab" || !panel.current) return;
+      const f = [...panel.current.querySelectorAll("button:not([disabled]),a[href],select,input,[tabindex]:not([tabindex='-1'])")].filter(x => x.offsetParent !== null);
+      if (!f.length) { e.preventDefault(); return; }
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === panel.current)) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", h);
+    return () => { document.removeEventListener("keydown", h); if (prev && prev.focus && document.contains(prev)) prev.focus(); };
+  }, []);
 
   useEffect(() => {
     if (id == null) return undefined;
@@ -66,7 +81,7 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
   return (
     <>
       <div className="ai-scrim" onClick={onClose} />
-      <aside className="ai" role="dialog" aria-modal="true" aria-label={`Investigate alert ${metricLabel(a.metric_name)}`}>
+      <aside className="ai" ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Investigate alert ${metricLabel(a.metric_name)}`}>
         <header className="ai-h">
           <div className="ai-title">
             <Badge tone={SEV_TONE[sev] || "mute"}><StatusBeacon tone={SEV_TONE[sev] || "mute"} pulse={open && sev === "CRITICAL"} />{sev.toLowerCase()}</Badge>

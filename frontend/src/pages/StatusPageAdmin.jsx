@@ -72,19 +72,19 @@ export default function StatusPageAdmin() {
       <form className="spa-form" onSubmit={handleCreate}>
         <div className="spa-field">
           <label>Account</label>
-          <select value={form.aws_account_id} onChange={e => setForm(f => ({ ...f, aws_account_id: e.target.value }))} required>
+          <select aria-label="Account" value={form.aws_account_id} onChange={e => setForm(f => ({ ...f, aws_account_id: e.target.value }))} required>
             <option value="" disabled>Select account…</option>
             {accounts.map(a => <option key={a.id} value={a.id}>{a.account_name}</option>)}
           </select>
         </div>
         <div className="spa-field">
           <label>Public name</label>
-          <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+          <input aria-label="Public name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                  placeholder="API" required />
         </div>
         <div className="spa-field spa-field-wide">
           <label>Resource IDs (comma-separated)</label>
-          <input value={form.resource_ids} onChange={e => setForm(f => ({ ...f, resource_ids: e.target.value }))}
+          <input aria-label="Resource IDs (comma-separated)" value={form.resource_ids} onChange={e => setForm(f => ({ ...f, resource_ids: e.target.value }))}
                  placeholder="i-0abc123, sg-0def456" required />
         </div>
         <button type="submit" className="spa-btn-add" disabled={saving}>
