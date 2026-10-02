@@ -38,16 +38,20 @@ def _stable_history_rows(resource_id="i-stable-1", n=80, start=None):
     return rows
 
 
-def _history_with_joint_anomaly_at_end(n=80):
-    """Same stable history, but the LAST reading jointly shifts all
+def _history_with_joint_anomaly_at_end(n=80, buckets=3):
+    """Same stable history, but the LAST `buckets` readings jointly shift all
     three metrics far outside anything seen before -- individually each
     value might still look plausible-ish, but the combination should
-    not."""
+    not. Phase 2 (2026-10-02): the detector now needs the deviation to be
+    SUSTAINED across MIN_CONSECUTIVE_BUCKETS (3) buckets, so the default
+    here is 3; buckets=1 models a one-reading blip that must be ignored."""
     rows = _stable_history_rows(n=n)
-    last_ts = rows[-1]["metric_timestamp"] + timedelta(minutes=5)
-    rows.append({"metric_name": "CPUUtilization", "metric_timestamp": last_ts, "metric_value": 95})
-    rows.append({"metric_name": "NetworkIn", "metric_timestamp": last_ts, "metric_value": 9000})
-    rows.append({"metric_name": "DiskReadOps", "metric_timestamp": last_ts, "metric_value": 2000})
+    last_ts = rows[-1]["metric_timestamp"]
+    for i in range(1, buckets + 1):
+        ts = last_ts + timedelta(minutes=5 * i)
+        rows.append({"metric_name": "CPUUtilization", "metric_timestamp": ts, "metric_value": 95})
+        rows.append({"metric_name": "NetworkIn", "metric_timestamp": ts, "metric_value": 9000})
+        rows.append({"metric_name": "DiskReadOps", "metric_timestamp": ts, "metric_value": 2000})
     return rows
 
 
@@ -175,3 +179,111 @@ def test_insufficient_metrics_never_queried_for_history():
     install_stub("app.db", get_connection=lambda: _Conn([]))
     mod = load_module("app/collector/multivariate_anomaly.py")
     assert mod.detect_multivariate_anomalies() == 0
+
+
+# -- Phase 2 AI/ML audit (2026-10-02) ---------------------------------------
+
+def test_single_bucket_blip_is_not_flagged():
+    rows = _history_with_joint_anomaly_at_end(n=80, buckets=1)
+    inserted, updated, resolved = _install_db_stub(rows)
+    mod = load_module("app/collector/multivariate_anomaly.py")
+    assert mod.detect_multivariate_anomalies() == 0
+    assert inserted == []
+
+
+def test_two_bucket_blip_is_not_flagged_but_three_is():
+    rows2 = _history_with_joint_anomaly_at_end(n=80, buckets=2)
+    inserted, _, _ = _install_db_stub(rows2)
+    mod = load_module("app/collector/multivariate_anomaly.py")
+    assert mod.detect_multivariate_anomalies() == 0 and inserted == []
+
+    rows3 = _history_with_joint_anomaly_at_end(n=80, buckets=3)
+    inserted, _, _ = _install_db_stub(rows3)
+    mod = load_module("app/collector/multivariate_anomaly.py")
+    assert mod.detect_multivariate_anomalies() == 1 and len(inserted) == 1
+
+
+def test_normal_daily_cycle_is_not_flagged():
+    """14 days of a strong daily CPU/network cycle, last 3 buckets at a normal peak hour."""
+    import math, random
+    random.seed(7)
+    rows = []
+    start = datetime(2026, 9, 1, 0, 0, 0)
+    for i in range(14 * 288 - 3):
+        ts = start + timedelta(minutes=5 * i)
+        phase = math.sin(2 * math.pi * (ts.hour + ts.minute / 60) / 24)
+        rows.append({"metric_name": "CPUUtilization", "metric_timestamp": ts, "metric_value": 40 + 25 * phase + random.uniform(-2, 2)})
+        rows.append({"metric_name": "NetworkIn", "metric_timestamp": ts, "metric_value": 1000 + 600 * phase + random.uniform(-40, 40)})
+        rows.append({"metric_name": "DiskReadOps", "metric_timestamp": ts, "metric_value": 200 + 100 * phase + random.uniform(-8, 8)})
+    inserted, _, _ = _install_db_stub(rows)
+    mod = load_module("app/collector/multivariate_anomaly.py")
+    assert mod.detect_multivariate_anomalies() == 0
+    assert inserted == []
+
+
+def test_deviation_report_names_the_metrics_that_moved():
+    import pandas as pd
+    install_stub("app.db", get_connection=lambda: None)
+    mod = load_module("app/collector/multivariate_anomaly.py")
+    idx = pd.date_range("2026-09-01", periods=60, freq="5min")
+    hist = pd.DataFrame({"cpu": [40.0 + (i % 5) for i in range(60)], "net": [1000.0 + (i % 7) * 10 for i in range(60)],
+                         "errs": [0.0] * 60}, index=idx)
+    recent = pd.DataFrame({"cpu": [90.0] * 3, "net": [1020.0] * 3, "errs": [0.0] * 3},
+                          index=pd.date_range("2026-09-01 05:00", periods=3, freq="5min"))
+    dev = mod._deviation_report(hist, recent, ["cpu", "net", "errs"])
+    assert dev[0][0] == "cpu" and dev[0][1] > 3.5
+    assert dict(dev)["errs"] == 0.0           # constant-zero metric that stayed zero is not "moved"
+    assert "cpu +" in mod._format_why(dev)
+
+
+def test_outlier_where_fewer_than_two_metrics_moved_is_dismissed(monkeypatch):
+    """Only one metric shifts materially: that is baseline.py's job, not a multivariate anomaly."""
+    rows = _stable_history_rows(n=80)
+    last_ts = rows[-1]["metric_timestamp"]
+    for i in range(1, 4):
+        ts = last_ts + timedelta(minutes=5 * i)
+        rows.append({"metric_name": "CPUUtilization", "metric_timestamp": ts, "metric_value": 95})
+        rows.append({"metric_name": "NetworkIn", "metric_timestamp": ts, "metric_value": 1000})
+        rows.append({"metric_name": "DiskReadOps", "metric_timestamp": ts, "metric_value": 200})
+    inserted, _, _ = _install_db_stub(rows)
+    mod = load_module("app/collector/multivariate_anomaly.py")
+    assert mod.detect_multivariate_anomalies() == 0 and inserted == []
+
+
+def test_time_features_do_not_count_as_metrics_or_appear_in_the_explanation():
+    import pandas as pd
+    install_stub("app.db", get_connection=lambda: None)
+    mod = load_module("app/collector/multivariate_anomaly.py")
+    idx = pd.date_range("2026-09-01", periods=10, freq="5min")
+    base = pd.DataFrame({"a": range(10), "b": range(10), "c": range(10)}, index=idx)
+    feats = mod._add_time_features(base)
+    assert list(feats.columns) == ["a", "b", "c", "_hod_sin", "_hod_cos"]
+    assert list(base.columns) == ["a", "b", "c"]            # input not mutated
+
+
+def test_shadow_report_summarises_counts_duration_and_corroboration():
+    from datetime import datetime
+    mod = load_module("scripts/anomaly_shadow_report.py")
+    t = datetime(2026, 10, 1, 12, 0, 0)
+    rows = [
+        {"id": 1, "aws_account_id": 7, "resource_id": "i-a", "status": "resolved", "triggered_at": t,
+         "resolved_at": t + timedelta(minutes=30), "corroborated": 1},
+        {"id": 2, "aws_account_id": 7, "resource_id": "i-a", "status": "resolved", "triggered_at": t + timedelta(days=1),
+         "resolved_at": t + timedelta(days=1, minutes=90), "corroborated": 0},
+        {"id": 3, "aws_account_id": 7, "resource_id": "i-b", "status": "active", "triggered_at": t + timedelta(days=1),
+         "resolved_at": None, "corroborated": 0},
+    ]
+
+    class C:
+        def execute(self, sql, params=None):
+            assert sql.lstrip().upper().startswith("SELECT") and params == (7,)
+
+        def fetchall(self):
+            return rows
+
+    rep = mod.build_report(C(), 7)
+    assert rep["total"] == 3 and rep["still_active"] == 1 and rep["distinct_resources"] == 2
+    assert rep["corroborated"] == 1 and rep["corroborated_pct"] == 33.3
+    assert rep["median_duration_min"] == 60.0
+    assert rep["top_resources"][0] == ("i-a", 2)
+    assert "total fired" in mod.format_report(rep)

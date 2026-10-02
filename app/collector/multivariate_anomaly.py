@@ -41,9 +41,34 @@ not yet tuned against real confirmed-incident history -- there isn't
 enough of that history yet (the `incidents` table this same roadmap
 phase 1 introduced is exactly what would let this be backtested and
 tuned properly later, per the roadmap's own stated sequencing).
+
+PHASE 2 AI/ML AUDIT (2026-10-02) -- precision work. Anomaly alerts here are
+hidden from the Alerts UI (app/alert_visibility.py) and never seed incidents or
+lower health scores, so today they are shadow output; the goal of this pass is
+to make them trustworthy enough to be judged (scripts/anomaly_shadow_report.py)
+before anyone decides to surface them. Changes, all deterministic and free:
+  1. Sustained, not instantaneous: the model is trained on history EXCLUDING the
+     last MIN_CONSECUTIVE_BUCKETS 5-minute buckets, and ALL of them must score as
+     outliers. Stateless (no new table) and removes single-reading blips. Before
+     this, one anomalous bucket raised an alert -- and CONTAMINATION=0.02 means
+     ~2% of perfectly normal readings score as outliers by construction.
+  2. Time-of-day features (sin/cos of the hour) so a normal daily peak is not an
+     "anomaly" and a peak at 3 a.m. can be.
+  3. Explainability + materiality gate: a robust z-score per metric (median vs the
+     larger of MAD/std) says WHICH metrics moved and by how many sigmas. At least
+     MIN_MOVED_METRICS (2) metrics must have moved by MIN_ROBUST_Z or more --
+     one metric on its own is what baseline.py already covers, and an outlier where
+     nothing moved materially is noise in a dense cluster. (Motivated by PROD
+     2026-10-02: two ALB anomaly alerts at score ~-0.09, 11 mostly-zero metrics.)
+  4. The cycle's log line reports raw/sustained/confirmed counts and elapsed
+     seconds, so tuning and CPU cost are measurable from journalctl alone.
+Tunable without a code change: ANOMALY_CONTAMINATION, ANOMALY_MIN_CONSECUTIVE_BUCKETS,
+ANOMALY_MIN_ROBUST_Z, ANOMALY_MIN_MOVED_METRICS.
 """
 import json
 import logging
+import os
+import time
 
 from app.db import get_connection
 
@@ -56,7 +81,13 @@ LOOKBACK_DAYS = 14
 # genuine multivariate pattern to look for.
 MIN_METRICS_PER_RESOURCE = 3
 MIN_SAMPLES_FOR_TRAINING = 50
-CONTAMINATION = 0.02
+# Was a hard-coded 0.02 (2% of normal readings flagged by construction); halved now that
+# sustained-ness and the materiality gate do most of the filtering. Env-tunable.
+CONTAMINATION = float(os.getenv("ANOMALY_CONTAMINATION", "0.01"))
+# All of the last N 5-minute buckets must be outliers (N*5 minutes of sustained deviation).
+MIN_CONSECUTIVE_BUCKETS = max(1, int(os.getenv("ANOMALY_MIN_CONSECUTIVE_BUCKETS", "3")))
+MIN_ROBUST_Z = float(os.getenv("ANOMALY_MIN_ROBUST_Z", "3.5"))
+MIN_MOVED_METRICS = max(1, int(os.getenv("ANOMALY_MIN_MOVED_METRICS", "2")))
 # Bucket width for aligning metrics collected on independent schedules
 # -- different metrics are rarely sampled at exactly the same instant,
 # so readings are floored into shared buckets before being treated as
@@ -78,6 +109,41 @@ def _pivot_to_matrix(rows):
     pivoted = pivoted.sort_index().ffill()
     pivoted = pivoted.dropna(axis=0, how="any")
     return pivoted
+
+
+def _add_time_features(matrix):
+    """Appends hour-of-day sin/cos (UTC) so the model can learn daily seasonality.
+    The two columns are model features only -- never counted as metrics, never explained."""
+    import numpy as np
+    hours = matrix.index.hour + matrix.index.minute / 60.0
+    out = matrix.copy()
+    out["_hod_sin"] = np.sin(2 * np.pi * hours / 24.0)
+    out["_hod_cos"] = np.cos(2 * np.pi * hours / 24.0)
+    return out
+
+
+def _deviation_report(history, recent, metric_cols):
+    """Robust per-metric z-scores of the recent buckets versus the training history.
+    Returns [(metric, z), ...] sorted by |z| descending. scale = the larger of 1.4826*MAD
+    and the std (MAD collapses to 0 on sparse count metrics that are mostly zero, and
+    std alone is inflated by the odd spike; the larger of the two is the conservative
+    choice), with a 5%-of-median floor so a near-constant metric is not infinitely
+    sensitive. Display z is capped at +/-99."""
+    med = history[metric_cols].median()
+    mad = (history[metric_cols] - med).abs().median() * 1.4826
+    std = history[metric_cols].std(ddof=0)
+    recent_med = recent[metric_cols].median()
+    out = []
+    for m in metric_cols:
+        scale = max(float(mad[m]), float(std[m]), 0.05 * abs(float(med[m])), 1e-9)
+        z = (float(recent_med[m]) - float(med[m])) / scale
+        out.append((m, max(-99.0, min(99.0, z))))
+    out.sort(key=lambda t: abs(t[1]), reverse=True)
+    return out
+
+
+def _format_why(deviations, limit=3):
+    return ", ".join(f"{m} {z:+.1f}\u03c3" for m, z in deviations[:limit])
 
 
 def _resource_ids_with_enough_metrics(cursor):
@@ -104,11 +170,14 @@ def detect_multivariate_anomalies() -> int:
     """
     from sklearn.ensemble import IsolationForest
 
+    started = time.time()
+    scored = raw_flagged = sustained = 0
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
         candidates = _resource_ids_with_enough_metrics(cursor)
         anomalous_resource_ids = set()
+        k = MIN_CONSECUTIVE_BUCKETS
 
         for candidate in candidates:
             aws_resource_id = candidate["resource_id"]
@@ -126,26 +195,41 @@ def detect_multivariate_anomalies() -> int:
             rows = cursor.fetchall()
 
             matrix = _pivot_to_matrix(rows)
-            if len(matrix) < MIN_SAMPLES_FOR_TRAINING + 1 or matrix.shape[1] < MIN_METRICS_PER_RESOURCE:
+            metric_cols = list(matrix.columns)
+            # The last k buckets are the ones under test, so training excludes them.
+            if len(matrix) < MIN_SAMPLES_FOR_TRAINING + k or len(metric_cols) < MIN_METRICS_PER_RESOURCE:
                 continue
+            scored += 1
 
-            history = matrix.iloc[:-1].values
-            latest = matrix.iloc[[-1]].values
+            features = _add_time_features(matrix)
+            history = features.iloc[:-k]
+            recent = features.iloc[-k:]
 
             model = IsolationForest(n_estimators=100, contamination=CONTAMINATION, random_state=42)
-            model.fit(history)
-            is_anomaly = model.predict(latest)[0] == -1
-            score = float(model.decision_function(latest)[0])  # more negative = more anomalous
+            model.fit(history.values)
+            preds = model.predict(recent.values)
+            if preds[-1] != -1:
+                continue
+            raw_flagged += 1                      # newest bucket is an outlier
+            if (preds != -1).any():
+                continue                          # ... but not for the whole sustained window
+            sustained += 1
 
-            if is_anomaly:
-                anomalous_resource_ids.add((candidate["aws_account_id"], aws_resource_id))
-                _upsert_anomaly_alert(cursor, aws_resource_id, candidate["aws_account_id"],
-                                       score, list(matrix.columns))
+            deviations = _deviation_report(matrix.iloc[:-k], matrix.iloc[-k:], metric_cols)
+            moved = [d for d in deviations if abs(d[1]) >= MIN_ROBUST_Z]
+            if len(moved) < MIN_MOVED_METRICS:
+                continue                          # outlier by shape, but nothing moved materially
+
+            score = float(model.decision_function(recent.values).mean())  # more negative = more anomalous
+            anomalous_resource_ids.add((candidate["aws_account_id"], aws_resource_id))
+            _upsert_anomaly_alert(cursor, aws_resource_id, candidate["aws_account_id"],
+                                   score, metric_cols, _format_why(deviations))
 
         resolved = _resolve_cleared_anomalies(cursor, anomalous_resource_ids)
         conn.commit()
-        logger.info(f"[multivariate_anomaly] {len(anomalous_resource_ids)} resource(s) anomalous "
-                    f"this cycle, {resolved} previously-flagged resource(s) recovered")
+        logger.info(f"[multivariate_anomaly] scored {scored} resource(s) in {time.time() - started:.1f}s: "
+                    f"{raw_flagged} outlier now, {sustained} sustained {k * RESAMPLE_MINUTES}min, "
+                    f"{len(anomalous_resource_ids)} confirmed; {resolved} previously-flagged recovered")
         return len(anomalous_resource_ids)
     except Exception:
         conn.rollback()
@@ -155,7 +239,7 @@ def detect_multivariate_anomalies() -> int:
         conn.close()
 
 
-def _upsert_anomaly_alert(cursor, aws_resource_id, aws_account_id, score, metric_names):
+def _upsert_anomaly_alert(cursor, aws_resource_id, aws_account_id, score, metric_names, why=""):
     # Every alert writer MUST set aws_account_id: since migration 048 all
     # readers join on it, so a row without it is invisible (this file's INSERT
     # used to omit it, so anomaly alerts were created, never shown, never
@@ -198,7 +282,7 @@ def _upsert_anomaly_alert(cursor, aws_resource_id, aws_account_id, score, metric
     """, (aws_account_id, aws_resource_id, environment, group_key, score))
 
     logger.info(f"[multivariate_anomaly] new anomaly alert on {aws_resource_id} "
-                f"(metrics: {', '.join(metric_names)}, score={score:.4f})")
+                f"(score={score:.4f}; moved most: {why or 'n/a'}; metrics scored: {len(metric_names)})")
 
 
 def _resolve_cleared_anomalies(cursor, currently_anomalous) -> int:
