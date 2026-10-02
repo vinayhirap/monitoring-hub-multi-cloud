@@ -266,3 +266,9 @@ export const getAlertsPreview = (limit = 8) => apiFetch(`/api/alerts?tab=active&
 
 // Dashboard (Overview) read helpers: same /api/alerts contract as the Alerts page.
 export const getAlertsList = (tab, limit = 500) => apiFetch(`/api/alerts?tab=${encodeURIComponent(tab)}&limit=${limit}&offset=0`);
+
+// Resource evidence (monitoring workflow): alerts of ONE account matching a resource id.
+// Same /api/alerts contract and RBAC as the Alerts page; `q` is the backend's own substring search,
+// callers filter to the exact resource (utils/evidence.js alertsForResource).
+export const getAlertsForResource = (accountId, q, limit = 100) =>
+  apiFetch(`/api/alerts?tab=all&account_id=${encodeURIComponent(accountId)}&q=${encodeURIComponent(q)}&limit=${limit}&offset=0`);

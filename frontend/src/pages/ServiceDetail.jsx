@@ -10,10 +10,11 @@ import {
 } from "../components/icons";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached, clearAllCached } from "../utils/dataCache";
-import { getThresholds, getResourceHealth, getCapacityForecast } from "../api/api";
+import { getThresholds } from "../api/api";
 import AlertBadge from "../components/AlertBadge";
 import { useResourceAlerts } from "../hooks/useResourceAlerts";
 import MetricChartCard, { MetricPanelContext, AlertedMetricsStrip } from "../components/MetricChartCard";
+import ResourceEvidence from "../components/ResourceEvidence";
 import ChartToolbar, { AUTO_REFRESH_MS } from "../components/ChartToolbar";
 import { useMetricMeta } from "../hooks/useMetricMeta";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
@@ -969,8 +970,6 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
   // separate ops console. The API endpoints themselves
   // (/api/incidents/{account}/health, /forecast/{resource}) were never
   // removed, only the Incidents *page* was hidden from ServiceList.
-  const [health, setHealth] = useState(null);
-  const [forecasts, setForecasts] = useState([]);
 
   // Real, currently-configured thresholds for this account -- charts
   // used to draw a hardcoded, unrelated example number as the dashed
@@ -1015,36 +1014,6 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
   }, [accountId]);
 
   const resourceId = consoleParamsFor(service, row)?.resource_id;
-
-  useEffect(() => {
-    if (!accountId || !resourceId) return;
-    let cancelled = false;
-    // Reset before fetching, not just on success/failure: this
-    // component isn't remounted when switching between rows (the
-    // parent renders one <ServiceDetailPanel> and just changes its
-    // `row` prop -- see ServiceDetail's own render), so without this
-    // reset, switching from one resource to another briefly showed the
-    // PREVIOUSLY-selected resource's health score / capacity forecast
-    // under the NEWLY-selected resource's name until the new fetch
-    // resolved.
-    setHealth(null);
-    setForecasts([]);
-    // Was two raw fetch() calls -- every other network call in this
-    // app goes through apiFetch() (via api.js) for one consistent
-    // behavior on session expiry. getResourceHealth()/
-    // getCapacityForecast() are the same shared helpers the Incidents
-    // page already uses for this exact data.
-    getResourceHealth(accountId)
-      .then(list => {
-        if (cancelled) return;
-        setHealth((list || []).find(h => h.resource_id === resourceId) || { health_score: 100 });
-      })
-      .catch(() => { if (!cancelled) setHealth(null); });
-    getCapacityForecast(accountId, resourceId)
-      .then(data => { if (!cancelled) setForecasts(Array.isArray(data) ? data : []); })
-      .catch(() => { if (!cancelled) setForecasts([]); });
-    return () => { cancelled = true; };
-  }, [accountId, resourceId]);
 
   // Looks up the REAL warning + critical thresholds configured in
   // Settings for this exact (resourceType, metricName) pair -- returns
@@ -1093,31 +1062,9 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
         ))}
       </div>
 
-      {/* Resource health + capacity forecast (2026-09-14) -- see this
-          component's own top-of-function comment for why this lives
-          here now instead of a separate Incidents console. */}
-      {(health && health.health_score < 100) || forecasts.length > 0 ? (
-        <div className="id-section">
-          <div className="id-section-title"><AlertTriangleIcon size={12} /> HEALTH &amp; FORECAST</div>
-          {health && health.health_score < 100 && (
-            <div className={`health-score-row health-score-${health.health_score >= 70 ? "warn" : "critical"}`}>
-              <span className="health-score-number">{health.health_score}</span>
-              <span className="health-score-label">
-                Health score — lowered by {health.score_reason?.critical_alerts ? `${health.score_reason.critical_alerts} critical` : ""}
-                {health.score_reason?.critical_alerts && health.score_reason?.warning_alerts ? " and " : ""}
-                {health.score_reason?.warning_alerts ? `${health.score_reason.warning_alerts} warning` : ""} alert(s) on this resource
-                {health.score_reason?.blast_radius_fan_out ? `, plus ${health.score_reason.blast_radius_fan_out} dependent resource(s)` : ""}.
-              </span>
-            </div>
-          )}
-          {forecasts.map((f, i) => (
-            <div key={i} className="capacity-forecast-row">
-              <span className="capacity-forecast-metric">{f.metric_name}</span> is trending toward its limit —
-              at the current rate, expect it to run out in <strong>~{f.days_to_exhaustion} day{f.days_to_exhaustion === 1 ? "" : "s"}</strong>.
-            </div>
-          ))}
-        </div>
-      ) : null}
+      {/* Evidence strip: alerts, health score, events and capacity forecast for this resource
+          (supersedes the old health/forecast-only block; same endpoints, RBAC-aware). */}
+      <ResourceEvidence accountId={accountId} service={service} resourceId={resourceId} resourceIds={resourceIds} />
 
       {service === "S3" && (
         <div className="id-section">

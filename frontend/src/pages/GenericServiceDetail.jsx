@@ -44,11 +44,13 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { getResourcesList, getGenericMetrics, getConsoleUrl, getAccount, getThresholds } from "../api/api";
+import { getResourcesList, getGenericMetrics, getConsoleUrl, getAccount, getThresholds, getResourceHealth } from "../api/api";
 import { CloudServiceIcon } from "../components/cloud-icons";
 import { ArrowLeftIcon, ExternalLinkIcon, ChevronDownIcon, AlertTriangleIcon } from "../components/icons";
 import { useTimezone } from "../contexts/TimezoneContext";
 import AlertBadge from "../components/AlertBadge";
+import ResourceEvidence from "../components/ResourceEvidence";
+import { healthTone } from "../utils/evidence";
 import { useResourceAlerts } from "../hooks/useResourceAlerts";
 import MetricChartCard, { MetricPanelContext, AlertedMetricsStrip } from "../components/MetricChartCard";
 import ChartToolbar, { AUTO_REFRESH_MS } from "../components/ChartToolbar";
@@ -128,7 +130,7 @@ function MetricChart({ title, unit, description, data, color, warningThreshold, 
            warningThreshold={warningThreshold} criticalThreshold={criticalThreshold} timeRange={timeRangeLabel} />;
 }
 
-function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel, thresholdMap, autoExpand, alertInfo, refreshMs, refreshTick, statOverride, onLoaded }) {
+function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel, thresholdMap, autoExpand, alertInfo, health, refreshMs, refreshTick, statOverride, onLoaded }) {
   const { ianaName } = useTimezone();
   const [expanded, setExpanded] = useState(false);
   const [metrics, setMetrics] = useState(null);
@@ -239,6 +241,11 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
         </td>
         <td style={{ padding: "10px 14px", color: "var(--text-muted)" }}>{r.region || "—"}</td>
         <td style={{ padding: "10px 14px" }}><StateBadge state={r.instance_state} /></td>
+        {health != null && (
+          <td style={{ padding: "10px 14px" }}>
+            <span className={`hs-chip hs-${healthTone(health)}`} title={health >= 100 ? "No breaching alerts" : `Health score ${health}/100`}>{health}</span>
+          </td>
+        )}
         <td style={{ padding: "10px 14px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
           {r.created_at ? new Date(r.created_at).toLocaleString("en-US", { timeZone: ianaName }) : "—"}
         </td>
@@ -255,7 +262,8 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
       </tr>
       {expanded && (
         <tr style={{ borderBottom: isLast ? "none" : "1px solid var(--border)" }}>
-          <td colSpan={6} style={{ padding: "0 14px 14px 40px", background: "rgba(255,255,255,.015)" }}>
+          <td colSpan={7} style={{ padding: "0 14px 14px 40px", background: "rgba(255,255,255,.015)" }}>
+            <ResourceEvidence accountId={accountId} service={service} resourceId={r.resource_id} resourceIds={[r.resource_id, r.name, r.arn]} />
             {loading ? (
               <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "10px 0" }}>Loading metrics…</div>
             ) : error ? (
@@ -318,6 +326,19 @@ export default function GenericServiceDetail({ accountId, service, label }) {
   // resource page, Overview and the Alerts tabs (extended + directory
   // services previously had no alert indication at all).
   const { lookup: alertLookup } = useResourceAlerts(accountId, service);
+  // Health score per resource (one call per account). A resource absent from the list is fully
+  // healthy by definition; null = this role cannot read health, so the column is hidden.
+  const [healthMap, setHealthMap] = useState(undefined);
+  useEffect(() => {
+    let dead = false;
+    const load = () => getResourceHealth(accountId)
+      .then(l => { if (!dead) setHealthMap(Object.fromEntries((l || []).map(h => [String(h.resource_id), Number(h.health_score)]))); })
+      .catch(() => { if (!dead) setHealthMap(null); });
+    load();
+    const t = setInterval(load, 60000);
+    return () => { dead = true; clearInterval(t); };
+  }, [accountId]);
+  const healthOf = r => (healthMap ? (healthMap[String(r.resource_id)] ?? healthMap[String(r.name)] ?? 100) : null);
 
   const resourceParam = searchParams.get("resource");
 
@@ -382,6 +403,11 @@ export default function GenericServiceDetail({ accountId, service, label }) {
       return true;
     })
     .sort((a, b) => {
+      if (sortKey === "attention") {
+        const w = r => { const i = alertLookup(r.resource_id, r.name); return (i?.critical || 0) * 1000 + (i?.warning || 0) * 10; };
+        const h = r => 100 - (healthOf(r) ?? 100);
+        return (w(b) + h(b)) - (w(a) + h(a)) || (a.name || a.resource_id || "").localeCompare(b.name || b.resource_id || "");
+      }
       if (sortKey === "state")  return (a.instance_state || "").localeCompare(b.instance_state || "");
       if (sortKey === "region") return (a.region || "").localeCompare(b.region || "");
       return (a.name || a.resource_id || "").localeCompare(b.name || b.resource_id || "");
@@ -472,6 +498,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
           </div>
         )}
         <select className="sort-select" value={sortKey} onChange={e => setSortKey(e.target.value)}>
+          <option value="attention">Sort: Needs attention</option>
           <option value="name">Sort: Name</option>
           <option value="region">Sort: Region</option>
           {hasRealStates && <option value="state">Sort: State</option>}
@@ -517,6 +544,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
                 <th style={{ padding: "10px 14px", color: "var(--text-muted)", fontWeight: 600, fontSize: 11 }}>NAME / ID</th>
                 <th style={{ padding: "10px 14px", color: "var(--text-muted)", fontWeight: 600, fontSize: 11 }}>REGION</th>
                 <th style={{ padding: "10px 14px", color: "var(--text-muted)", fontWeight: 600, fontSize: 11 }}>STATE</th>
+                {healthMap && <th style={{ padding: "10px 14px", color: "var(--text-muted)", fontWeight: 600, fontSize: 11 }} title="0-100; resources with no breaching alerts score 100">HEALTH</th>}
                 <th style={{ padding: "10px 14px", color: "var(--text-muted)", fontWeight: 600, fontSize: 11 }}>DISCOVERED</th>
                 <th style={{ padding: "10px 14px", width: 40 }}></th>
               </tr>
@@ -533,7 +561,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
                   timeRangeLabel={rangeLabel}
                   thresholdMap={thresholdMap}
                   refreshMs={refreshMs} refreshTick={refreshTick} statOverride={statOverride} onLoaded={setLastUpdated}
-                  alertInfo={alertLookup(r.resource_id)}
+                  alertInfo={alertLookup(r.resource_id, r.name)} health={healthOf(r)}
                   autoExpand={!!resourceParam && (r.resource_id === resourceParam || r.name === resourceParam)}
                 />
               ))}

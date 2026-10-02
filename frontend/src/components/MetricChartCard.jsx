@@ -19,6 +19,7 @@ import { Maximize2Icon } from "./icons";
 import MetricZoomModal from "./MetricZoomModal";
 import "./MetricZoomModal.css";
 import { fmtMetricValue, fmtAxisValue, fmtPeriod, makeTickFormatter, timeTicks, niceAxis, fmtFullTime, STAT_FIELD } from "../utils/metricFormat";
+import { seriesStats, freshness, breachState, ageText } from "../utils/evidence";
 import "./MetricChartCard.css";
 
 // value: { meta: {metricName: entry}, windowHours, bucketSecs, statOverride }
@@ -134,6 +135,12 @@ export default function MetricChartCard({
   const latest = last ? (last[field] ?? last.v) : null;
   const lastT = last ? new Date(last.t).getTime() : null;
 
+  // Analytics strip: trend, range and freshness derived only from the points on screen.
+  const st = seriesStats(pts);
+  const fr = freshness(lastT, Date.now(), meta?.period_seconds || (meta?.poll_seconds || 0));
+  const breach = breachState(latest, warnLine, critLine, th?.comparison || ">");
+  const frLabel = { fresh: "fresh", late: "late", stale: "stale", unknown: "last point", none: "no data" }[fr.state];
+
   const end = Math.max(Date.now(), lastT || 0);
   const start = end - windowHours * 3600 * 1000;
   const { ticks: xTicks, step: xStep } = timeTicks(start, end, ianaName);
@@ -162,6 +169,18 @@ export default function MetricChartCard({
         </span>
       )}
       {badges}
+      <div className="mc-stats" aria-label="Metric summary">
+        {breach && breach !== "ok" && <span className={`mc-pill mc-b-${breach}`} title="Latest value against the configured threshold">{breach === "critical" ? "At critical" : "At warning"}</span>}
+        {st?.trend && (
+          <span className={`mc-pill mc-tr-${st.trend.dir}`} title={`Newest quarter of the window vs oldest quarter: ${st.trend.pct >= 0 ? "+" : ""}${st.trend.pct.toFixed(0)}%`}>
+            {st.trend.dir === "up" ? "▲" : st.trend.dir === "down" ? "▼" : "▬"} {st.trend.dir === "flat" ? "steady" : `${st.trend.pct >= 0 ? "+" : ""}${st.trend.pct.toFixed(0)}%`}
+          </span>
+        )}
+        {st && <span className="mc-rng" title="Minimum / average / maximum of the points shown">min {fmt(st.min)} · avg {fmt(st.avg)} · max {fmt(st.max)}</span>}
+        <span className={`mc-fresh mc-f-${fr.state}`} title={lastT ? `Newest datapoint: ${fmtFullTime(lastT, ianaName)}` : "No datapoint in this window"}>
+          ● {frLabel}{fr.age != null ? ` · ${ageText(fr.age)} ago` : ""}
+        </span>
+      </div>
       {stats.length > 0 && (
         <div className="mc-controls">
           <label>Statistic
