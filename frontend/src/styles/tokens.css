@@ -1,0 +1,81 @@
+/*
+  CloudOps design tokens, layer 2 (2026-09-30, UI Phase 1).
+  ADDITIVE ONLY: index.css remains the source of the legacy names
+  (--bg-card, --border, --accent, ...). Nothing here redeclares them, so
+  existing pages render identically. New primitives in components/ui/ use
+  ONLY the names below, and both themes are defined here -- no
+  [data-theme="light"] .component overrides needed for anything new.
+*/
+:root {
+  /* surface tiers: floor < canvas < card < overlay */
+  --surface-0: #060b14;
+  --surface-1: #0b1220;
+  --surface-2: #0e1829;
+  --surface-3: #141f30;
+  --surface-row-alt: rgba(99,130,190,0.035);
+  --line-1: rgba(99,130,190,0.14);
+  --line-2: rgba(99,130,190,0.24);
+  --line-3: rgba(99,130,190,0.38);
+  --ink-1: #dce6f5;
+  --ink-2: #8ca0c4;
+  --ink-3: #5d7196;
+
+  --brand:     #2bb3ac;
+  --brand-bg:  rgba(43,179,172,0.12);
+  --brand-line: rgba(43,179,172,0.35);
+
+  /* status semantics: fg / 12% fill / line */
+  --ok-fg:   #22c55e;  --ok-bg:   rgba(34,197,94,0.12);   --ok-line:   rgba(34,197,94,0.35);
+  --warn-fg: #f59e0b;  --warn-bg: rgba(245,158,11,0.12);  --warn-line: rgba(245,158,11,0.35);
+  --crit-fg: #ef4444;  --crit-bg: rgba(239,68,68,0.12);   --crit-line: rgba(239,68,68,0.38);
+  --info-fg: #38bdf8;  --info-bg: rgba(56,189,248,0.12);  --info-line: rgba(56,189,248,0.35);
+  --mute-fg: #8ca0c4;  --mute-bg: rgba(140,160,196,0.10); --mute-line: rgba(140,160,196,0.28);
+
+  /* AI / predicted. Reserved: violet means "model output", nothing else.
+     measured = solid stroke; predicted = dashed + this tint + chip. */
+  --predicted-fg:   #9b8df0;
+  --predicted-bg:   rgba(124,110,224,0.12);
+  --predicted-line: rgba(124,110,224,0.45);
+
+  --glow-crit: 0 0 10px rgba(239,68,68,0.55);
+  --glow-warn: 0 0 8px rgba(245,158,11,0.4);
+
+  /* density */
+  --row-h: 32px;
+  --ctl-h: 30px;
+  --card-pad: 14px;
+  --gap: 12px;
+
+  --font-ui:   var(--font-sans, 'Inter', -apple-system, 'Segoe UI', sans-serif);
+  --font-data: var(--font-mono, 'JetBrains Mono', 'Fira Code', monospace);
+  --fs-dense: 12px;
+  --fs-micro: 10px;
+  --dur: 120ms;
+}
+
+:root[data-density="compact"] { --row-h: 26px; --ctl-h: 26px; --card-pad: 10px; --gap: 8px; }
+
+[data-theme="light"] {
+  --surface-0: #f0f4fa;
+  --surface-1: #ffffff;
+  --surface-2: #ffffff;
+  --surface-3: #f6f8fc;
+  --surface-row-alt: rgba(15,28,53,0.03);
+  --line-1: rgba(99,130,190,0.18);
+  --line-2: rgba(99,130,190,0.30);
+  --line-3: rgba(99,130,190,0.45);
+  --ink-1: #0f1c35;
+  --ink-2: #3d5070;
+  --ink-3: #6b84a8;
+  --brand: #0e8f89;
+  --brand-bg: rgba(14,143,137,0.10);
+  --brand-line: rgba(14,143,137,0.35);
+  --ok-fg: #0f8a43;   --warn-fg: #b26a00;  --crit-fg: #c62828;
+  --info-fg: #0369a1; --mute-fg: #52658a;
+  --predicted-fg: #5b4bc4;
+  --glow-crit: none; --glow-warn: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur: 0ms; }
+}
