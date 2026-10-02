@@ -105,3 +105,12 @@ export function healthTone(score) {
   if (score == null) return "mute";
   return score >= 90 ? "ok" : score >= 70 ? "warn" : "crit";
 }
+
+/** Real lifecycle steps from the alert's own fields (no invented states). */
+export function lifecycle(a) {
+  const steps = [{ key: "triggered", label: "Triggered", at: a.triggered_at, done: true }];
+  steps.push({ key: "ack", label: "Acknowledged", at: a.acked_at, who: a.acked_by, done: !!(a.acked || a.acked_at) });
+  steps.push({ key: "resolved", label: "Resolved", at: a.resolved_at, why: a.resolution_reason, done: !!a.resolved_at || a.status === "resolved" });
+  return steps;
+}
+

@@ -27,6 +27,7 @@ function StatusBadge({ status }) {
 }
 
 function IncidentRow({ incident, ianaName, accountId }) {
+  const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -82,7 +83,7 @@ function IncidentRow({ incident, ianaName, accountId }) {
                 <h4>Member alerts</h4>
                 <div className="tbl-scroll"><table className="inc-alert-table">
                   <thead>
-                    <tr><th>Resource</th><th>Metric</th><th>Value</th><th>Severity</th><th>Status</th></tr>
+                    <tr><th>Resource</th><th>Metric</th><th>Value</th><th>Severity</th><th>Status</th><th></th></tr>
                   </thead>
                   <tbody>
                     {detail.alerts.map(a => (
@@ -92,6 +93,7 @@ function IncidentRow({ incident, ianaName, accountId }) {
                         <td>{a.value}</td>
                         <td><SeverityBadge sev={a.severity} /></td>
                         <td>{a.status}</td>
+                        <td><button className="inc-link" onClick={() => navigate(`/alerts?tab=all&q=${encodeURIComponent(a.resource_id)}&alert=${a.id}`)} title="Open this alert's investigation">Investigate &rarr;</button></td>
                       </tr>
                     ))}
                   </tbody>

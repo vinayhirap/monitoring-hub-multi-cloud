@@ -272,3 +272,7 @@ export const getAlertsList = (tab, limit = 500) => apiFetch(`/api/alerts?tab=${e
 // callers filter to the exact resource (utils/evidence.js alertsForResource).
 export const getAlertsForResource = (accountId, q, limit = 100) =>
   apiFetch(`/api/alerts?tab=all&account_id=${encodeURIComponent(accountId)}&q=${encodeURIComponent(q)}&limit=${limit}&offset=0`);
+
+// Alert grouping / dedup view: open alerts sharing a group_key (same metric on many resources).
+export const getGroupedAlerts = () => apiFetch("/api/alerts/grouped");
+export const ackAlertGroup = (groupKey) => apiFetch(`/api/alerts/grouped/${encodeURIComponent(groupKey)}/ack`, { method: "POST" });

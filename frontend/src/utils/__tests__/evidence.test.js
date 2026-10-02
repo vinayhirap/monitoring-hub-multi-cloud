@@ -57,3 +57,13 @@ test("ageText / healthTone / tsMs", () => {
   assert.equal(healthTone(95), "ok"); assert.equal(healthTone(75), "warn"); assert.equal(healthTone(40), "crit"); assert.equal(healthTone(null), "mute");
   assert.equal(tsMs("2026-10-01 10:00:00"), Date.parse("2026-10-01T10:00:00Z"));
 });
+
+import { lifecycle } from "../evidence.js";
+test("lifecycle reflects only real alert fields", () => {
+  const open = lifecycle({ triggered_at: "2026-10-01T10:00:00Z", status: "active" });
+  assert.deepEqual(open.map(s => s.done), [true, false, false]);
+  const acked = lifecycle({ triggered_at: "x", acked: 1, acked_by: "amy", acked_at: "2026-10-01T10:05:00Z", status: "acknowledged" });
+  assert.equal(acked[1].done, true); assert.equal(acked[1].who, "amy"); assert.equal(acked[2].done, false);
+  const res = lifecycle({ triggered_at: "x", resolved_at: "2026-10-01T11:00:00Z", resolution_reason: "auto", status: "resolved" });
+  assert.equal(res[2].done, true); assert.equal(res[2].why, "auto");
+});

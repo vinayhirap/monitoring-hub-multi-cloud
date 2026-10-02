@@ -9,7 +9,9 @@ import { severityHeaders } from "../utils/alertGroups";
 import "./Alerts.css";
 import { useTimezone, formatInTz } from "../contexts/TimezoneContext";
 import { InfoIcon, DownloadIcon, BellIcon, BellOffIcon, AlertTriangleIcon, BarChartIcon, CloudIcon, CheckIcon, EyeIcon, RefreshCwIcon } from "../components/icons";
-import { rcaReportUrl } from "../api/api";
+import { rcaReportUrl, getGroupedAlerts, ackAlertGroup, getAlertsForResource } from "../api/api";
+import AlertInvestigation from "../components/AlertInvestigation";
+import { PageHeader, KpiStrip, KpiCard, SegmentedControl, EmptyState } from "../components/ui";
 import { clearAllCached } from "../utils/dataCache";
 
 
@@ -214,6 +216,12 @@ export default function Alerts() {
   // Deep RCA (2026-09-14): which alert row (if any) has its "Why did
   // this happen?" explanation expanded, plus a per-alert-id cache so
   // re-expanding a row already viewed this session doesn't refetch.
+  const [selId, setSelId] = useState(null);              // alert open in the investigation drawer
+  const [selSnap, setSelSnap] = useState(null);          // last known copy of it: the row leaves the current tab once acknowledged/resolved
+  const openAlert = a => { setSelId(a.id); setSelSnap(a); };
+  const deepAlert = searchParams.get("alert");
+  const [view, setView] = useState("list");               // list | grouped
+  const [groups, setGroups] = useState(undefined);        // undefined loading, null unavailable
   const [expandedExplainId, setExpandedExplainId] = useState(null);
   const [explainCache, setExplainCache] = useState({});
   const [explainLoading, setExplainLoading] = useState(null);
@@ -427,27 +435,64 @@ export default function Alerts() {
   const sevHeaders = severityHeaders(filtered, tab);
   const displayCounts = counts ?? { all: 0, active: 0, stale: 0, critical: 0, attention: 0, tuning: 0, acknowledged: 0, resolved: 0, suppressed: 0 };
 
+  useEffect(() => {
+    if (view !== "grouped") return undefined;
+    let dead = false;
+    const load = () => getGroupedAlerts().then(g => !dead && setGroups(Array.isArray(g) ? g : [])).catch(() => !dead && setGroups(null));
+    load();
+    return () => { dead = true; };
+  }, [view, alerts]);       // refresh whenever the list reloads (alert sync / poll)
+
+  // ?alert=<id>: open that alert's investigation once it is in the loaded rows
+  useEffect(() => {
+    if (!deepAlert || selId != null) return;
+    const hit = alerts.find(x => String(x.id) === String(deepAlert));
+    if (hit) { setSelId(hit.id); setSelSnap(hit); }
+  }, [deepAlert, alerts, selId]);
+
+  async function handleAckGroup(key) {
+    if (!canAct) return;
+    setActing(key);
+    try { await ackAlertGroup(key); await loadAlerts(); } catch (e) { alert("Acknowledge group failed: " + e.message); } finally { setActing(null); }
+  }
+  const inList = selId != null ? alerts.find(x => x.id === selId) : null;
+  // Keep the drawer (and its context) open when the action moved the alert to another tab: take the
+  // fresh copy from the list when it is there, otherwise look it up in the all-tabs search.
+  useEffect(() => {
+    if (selId == null) return undefined;
+    if (inList) { setSelSnap(inList); return undefined; }
+    if (!selSnap) return undefined;
+    let dead = false;
+    getAlertsForResource(selSnap.account_id, selSnap.resource, 200)
+      .then(rows => { const f = (Array.isArray(rows) ? rows : []).find(x => x.id === selId); if (!dead && f) setSelSnap(f); })
+      .catch(() => {});
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alerts, selId]);
+  const selected = selId != null ? (inList || selSnap) : null;
+
   return (
     <div className="alerts-page">
-      <div className="alerts-header">
-        <div>
-          <h1>Active <span className="accent">Alerts</span></h1>
-        </div>
-        <div className="alerts-header-right">
-          <button
-            className="btn-refresh"
-            onClick={() => {
-              unlockAudio();
-              setSoundOn(v => !v);
-            }}
-            title={soundOn ? "Mute alert sound" : "Enable alert sound"}
-            style={{ fontSize: 14, padding: "6px 10px" }}
-          >
+      <PageHeader
+        title="Alerts"
+        subtitle="Triage, investigate and resolve. Click an alert to open its full investigation."
+        actions={<>
+          <SegmentedControl label="View" value={view} onChange={setView} options={[{ key: "list", label: "List" }, { key: "grouped", label: "Grouped" }]} />
+          <button className="btn-refresh" onClick={() => { unlockAudio(); setSoundOn(v => !v); }} title={soundOn ? "Mute alert sound" : "Enable alert sound"} aria-label={soundOn ? "Mute alert sound" : "Enable alert sound"} style={{ fontSize: 14, padding: "6px 10px" }}>
             {soundOn ? <BellIcon size={16} /> : <BellOffIcon size={16} />}
           </button>
           <button className="btn-refresh" onClick={loadAlerts}><RefreshCwIcon size={13} className="ico-inline" />Refresh</button>
-        </div>
-      </div>
+        </>}
+      />
+
+      <KpiStrip>
+        <KpiCard label="Critical firing" value={displayCounts.critical} tone={displayCounts.critical > 0 ? "crit" : undefined} pulse={displayCounts.critical > 0} onClick={() => { setView("list"); setTab("critical"); }} hint="Show critical alerts" />
+        <KpiCard label="Needs attention" value={displayCounts.attention} tone={displayCounts.attention > 0 ? "warn" : undefined} onClick={() => { setView("list"); setTab("attention"); }} hint="Firing on unhealthy resources" />
+        <KpiCard label="Active" value={displayCounts.active} onClick={() => { setView("list"); setTab("active"); }} />
+        <KpiCard label="Acknowledged" value={displayCounts.acknowledged} onClick={() => { setView("list"); setTab("acknowledged"); }} />
+        <KpiCard label="No data (stale)" value={displayCounts.stale} onClick={() => { setView("list"); setTab("stale"); }} />
+        <KpiCard label="Auto-tuning" value={displayCounts.tuning} sub="likely noise" onClick={() => { setView("list"); setTab("tuning"); }} />
+      </KpiStrip>
 
       {(tab === "attention" || tab === "tuning") && (
         <div className={`alerts-explain ${tab === "tuning" ? "alerts-explain-tune" : "alerts-explain-attn"}`}>
@@ -493,7 +538,11 @@ export default function Alerts() {
         />
       </div>
 
-      {loading ? (
+      {view === "grouped" ? (
+        <GroupedView groups={groups} canAct={canAct} acting={acting} ianaName={ianaName}
+          onAck={handleAckGroup}
+          onOpen={g => { setView("list"); setTab("active"); setSearch(g.metric_name || ""); }} />
+      ) : loading ? (
         <div className="alerts-loading">Loading alerts…</div>
       ) : error ? (
         <div className="alerts-error">
@@ -540,7 +589,7 @@ export default function Alerts() {
                         </td>
                       </tr>
                     )}
-                    <tr className={`alert-row sev-row-${sev.toLowerCase()}`}>
+                    <tr className={`alert-row sev-row-${sev.toLowerCase()}${selId === a.id ? " alert-row-sel" : ""}`} onClick={e => { if (!e.target.closest("button,a,select,input,.res-deeplink")) openAlert(a); }} style={{ cursor: "pointer" }}>
 
                       <td><SevBadge sev={sev} /></td>
 
@@ -633,6 +682,13 @@ export default function Alerts() {
                               lazily on first expand. Uses the app's own
                               icon set (icons.jsx), not an emoji, matching
                               the earlier fix on ServiceList's buttons. */}
+                          <button
+                            className="btn-console-detail"
+                            onClick={e => { e.stopPropagation(); openAlert(a); }}
+                            title="Open the full investigation for this alert"
+                          >
+                            Investigate
+                          </button>
                           <button
                             className="btn-console-detail"
                             onClick={e => { e.stopPropagation(); toggleExplain(a.id); }}
@@ -767,6 +823,15 @@ export default function Alerts() {
           )}
         </div>
       )}
+      {selected && (
+        <AlertInvestigation
+          alert={selected} canAct={canAct} acting={acting}
+          onClose={() => { setSelId(null); setSelSnap(null); }}
+          onAck={handleAck} onResolve={handleResolve} onMute={handleMute} onFalsePositive={handleMarkFalsePositive}
+          route={detailRoute(selected.resource, selected.account_id, selected.service)}
+          canConsole={hasConsoleTarget(selected.resource)} onConsole={openConsole}
+        />
+      )}
     </div>
   );
 }
@@ -825,4 +890,37 @@ function shortDateTime(iso, ianaName) {
     second: "2-digit",
     hour12: false,
   }) || iso;
+}
+
+
+/** Deduplicated view: open alerts that share a group_key (same metric across resources). */
+function GroupedView({ groups, canAct, acting, ianaName, onAck, onOpen }) {
+  if (groups === undefined) return <div className="alerts-loading">Loading groups…</div>;
+  if (groups === null) return <EmptyState title="Grouping isn't available" body="Your role can't read grouped alerts." />;
+  if (groups.length === 0) return <EmptyState title="No open alert groups" body="Nothing is firing or awaiting acknowledgement." />;
+  return (
+    <div className="alerts-table-wrap">
+      <table className="alerts-table">
+        <thead><tr><th>SEVERITY</th><th>METRIC</th><th>SERVICE</th><th>ACCOUNT</th><th>RESOURCES</th><th>ACTIVE / ACK</th><th>FIRST SEEN</th><th>LAST SEEN</th>{canAct && <th>ACTION</th>}</tr></thead>
+        <tbody>
+          {groups.map(g => (
+            <tr key={`${g.group_key}-${g.account_id}`} className={`alert-row sev-row-${g.has_critical ? "critical" : "warning"}`} style={{ cursor: "pointer" }} onClick={e => { if (!e.target.closest("button")) onOpen(g); }}>
+              <td><SevBadge sev={g.has_critical ? "CRITICAL" : "WARNING"} /></td>
+              <td>{metricLabel(g.metric_name)}</td>
+              <td className="mono small">{g.service ? String(g.service).toUpperCase() : "—"}</td>
+              <td>{g.account_name}</td>
+              <td className="mono"><b>{g.resource_count}</b></td>
+              <td className="mono small">{Number(g.active_count) || 0} / {Number(g.acknowledged_count) || 0}</td>
+              <td className="mono small">{g.first_triggered_at ? shortDateTime(g.first_triggered_at, ianaName) : ""}</td>
+              <td className="mono small">{g.last_seen_at ? `${timeSince(g.last_seen_at)} ago` : ""}</td>
+              {canAct && <td>{/[\/\\]/.test(String(g.group_key))
+                ? <button className="btn-console-detail" disabled title="This group's key contains a slash, which the bulk-acknowledge endpoint cannot address. Open the group and acknowledge its alerts individually.">Acknowledge group</button>
+                : <button className="btn-console-detail" disabled={acting === g.group_key || !Number(g.active_count)} onClick={() => onAck(g.group_key)} title="Acknowledge every active alert in this group (this account, this service, this metric)">Acknowledge group</button>}</td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ padding: "8px 16px", color: "var(--text-muted)", fontSize: 12 }}>{groups.length} groups. Click a group to see its member alerts in the list.</div>
+    </div>
+  );
 }

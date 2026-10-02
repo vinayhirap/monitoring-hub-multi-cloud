@@ -278,3 +278,10 @@
 .sev-group-warning  td { color: #f59e0b; border-left: 3px solid #f59e0b; }
 .sev-group-info     td { color: #2bb3ac; border-left: 3px solid #2bb3ac; }
 [data-theme="light"] .sev-group-row td { background: #f0f4fa; }
+
+/* Phase 4 */
+.alert-row-sel { background: var(--brand-bg) !important; }
+.alerts-page .ui-kpistrip { margin-bottom: 12px; }
+
+/* a disabled row action must look disabled (e.g. bulk-ack of a group whose key the server cannot address) */
+.alerts-table .btn-console-detail:disabled { opacity: .4; cursor: not-allowed; filter: grayscale(.6); }

@@ -17,7 +17,7 @@ import "./ResourceEvidence.css";
 const SEV_TONE = { CRITICAL: "crit", WARNING: "warn", INFO: "info", ERROR: "crit", RESOLVED: "ok" };
 const fmtVal = v => (v == null || v === "" ? "—" : Number.isFinite(Number(v)) ? String(Number(Number(v).toFixed(2))) : String(v));
 
-export default function ResourceEvidence({ accountId, resourceIds, resourceId, service }) {
+export default function ResourceEvidence({ accountId, resourceIds, resourceId, service, reloadKey }) {
   const navigate = useNavigate();
   const { ianaName } = useTimezone();
   const ids = useMemo(() => [...new Set((resourceIds || []).filter(Boolean).map(String))], [resourceIds]);
@@ -40,7 +40,7 @@ export default function ResourceEvidence({ accountId, resourceIds, resourceId, s
     getResourceHealth(accountId).then(l => set({ health: (l || []).find(h => String(h.resource_id) === String(primary)) || { health_score: 100, absent: true } })).catch(() => set({ health: null }));
     getCapacityForecast(accountId, primary).then(f => set({ forecast: Array.isArray(f) ? f : [] })).catch(() => set({ forecast: null }));
     return () => { dead = true; };
-  }, [accountId, primary, tick]);
+  }, [accountId, primary, tick, reloadKey]);       // reloadKey: the host changed something about this resource (e.g. an alert was acknowledged/resolved)
 
   const alerts = useMemo(() => (st.alerts ? alertsForResource(st.alerts, ids) : st.alerts), [st.alerts, ids]);
   const events = useMemo(() => (st.events ? eventsForResource(st.events, ids) : st.events), [st.events, ids]);
