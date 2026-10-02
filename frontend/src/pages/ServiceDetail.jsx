@@ -6,7 +6,7 @@ import {
   ServerIcon, SaveIcon, DatabaseIcon, BucketIcon, PackageIcon, ScaleIcon,
   ArrowLeftIcon, CloudIcon, ExternalLinkIcon, AlertTriangleIcon, RedDotIcon,
   LockIcon, CheckIcon, XCircleIcon, LinkIcon, GlobeIcon, LayersIcon,
-  XIcon, TagIcon, BarChartIcon, ToolIcon, ZapIcon, RefreshCwIcon, Maximize2Icon,
+  XIcon, TagIcon, BarChartIcon, ToolIcon, ZapIcon,
 } from "../components/icons";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached, clearAllCached } from "../utils/dataCache";
@@ -17,7 +17,6 @@ import MetricChartCard, { MetricPanelContext, AlertedMetricsStrip } from "../com
 import ChartToolbar, { AUTO_REFRESH_MS } from "../components/ChartToolbar";
 import { useMetricMeta } from "../hooks/useMetricMeta";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
-import "../components/MetricZoomModal.css";
 
 const BASE = "";
 

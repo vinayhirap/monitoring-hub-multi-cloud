@@ -17,6 +17,7 @@ import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianG
 import { useTimezone } from "../contexts/TimezoneContext";
 import { Maximize2Icon } from "./icons";
 import MetricZoomModal from "./MetricZoomModal";
+import "./MetricZoomModal.css";
 import { fmtMetricValue, fmtAxisValue, fmtPeriod, makeTickFormatter, timeTicks, niceAxis, fmtFullTime, STAT_FIELD } from "../utils/metricFormat";
 import "./MetricChartCard.css";
 
