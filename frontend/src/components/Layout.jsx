@@ -1,15 +1,19 @@
 // src/components/Layout.jsx
 import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import AlertToast from "./AlertToast";
-import { useTimezone, TIMEZONE_OPTIONS } from "../contexts/TimezoneContext";
-import { getAlertCounts } from "../api/api";
-import { useAlertSync } from "../hooks/useAlertSync";
+import { useTimezone } from "../contexts/TimezoneContext";
+import { useWebSocket } from "../hooks/useWebSocket";
 import "./Layout.css";
 import "./shared-controls.css";
+import { Breadcrumb, LiveChip, UserMenu, ScopeSwitcher, NotificationBell, CommandPalette } from "./shell";
+import { useAccountsIndex } from "../hooks/useAccountsIndex";
+import { StatusBeacon } from "./ui";
+import { useSearchHotkey } from "../hooks/useSearchHotkey";
+import { getAlertCounts } from "../api/api";
+import { useAlertSync } from "../hooks/useAlertSync";
 
-import { SunIcon, MoonIcon } from "./icons";
 // Role-based nav visibility:
 // admin   → all items
 // editor  → overview, alerts, compliance, settings (NO onboarding, NO user mgmt)
@@ -22,31 +26,36 @@ import { SunIcon, MoonIcon } from "./icons";
 // going forward: add `perm: "some.code"` to a nav item instead of
 // widening `roles`, as more of the app gets its own permission codes.
 const NAV_ITEMS = [
-  { to: "/overview",   label: "Overview",           icon: OverviewIcon,   roles: ["admin","editor","viewer"] },
-  { to: "/alerts",     label: "Alerts",             icon: AlertIcon,      roles: ["admin","editor","viewer"], badge: true },
-  { to: "/onboarding", label: "Account Onboarding", icon: OnboardIcon,    roles: ["admin","editor"] },
-  { to: "/access",     label: "Access Control",     icon: UsersIcon,      roles: ["admin","editor","viewer"], perm: "users.view" },
-  { to: "/compliance", label: "Compliance",         icon: ComplianceIcon, roles: ["admin","editor","viewer"] },
-  // Operational Events: nav entry temporarily hidden (2026-09-13) --
-  // route/page/backend all still fully intact at /op-events, just not
-  // linked from the sidebar for now. Uncomment to re-enable.
-  // { to: "/op-events",          label: "Operational Events", icon: OpEventsIcon,   roles: ["admin","editor","viewer"], perm: "operations.view" },
-  { to: "/escalation-policies", label: "Escalation Policies", icon: EscalationIcon, roles: ["admin","editor","viewer"], perm: "escalation.view" },
-  { to: "/synthetic-checks",    label: "Synthetic Checks",    icon: SyntheticIcon,  roles: ["admin","editor","viewer"], perm: "synthetic.view" },
-  { to: "/slos",                label: "SLOs",                icon: SloIcon,        roles: ["admin","editor","viewer"], perm: "slo.view" },
-  { to: "/security-findings",   label: "Security Findings",   icon: SecurityIcon,   roles: ["admin","editor","viewer"], perm: "security.view" },
-  { to: "/maintenance-windows", label: "Maintenance Windows", icon: MaintenanceIcon,roles: ["admin","editor","viewer"], perm: "maintenance.view" },
-  // Deploy Risk: nav entry hidden (2026-09-17, per request) -- route,
-  // page, and backend (app/api/deploy_risk.py, app/collector/rca.py)
-  // all still fully intact, just not linked from the sidebar or
-  // routable from the frontend. Uncomment here AND in App.jsx's route
-  // list to re-enable.
-  // { to: "/deploy-risk",         label: "Deploy Risk",         icon: DeployRiskIcon, roles: ["admin","editor","viewer"], perm: "deploy_risk.view" },
-  { to: "/search",              label: "Search",              icon: SearchNavIcon,  roles: ["admin","editor","viewer"], perm: "search.query" },
-  { to: "/status-page-admin",   label: "Status Page",         icon: StatusPageIcon, roles: ["admin","editor"],          perm: "status_page.manage" },
-  { to: "/reports",             label: "Reports",             icon: ReportsIcon,    roles: ["admin","editor","viewer"], perm: "reports.view", feature: "reports" },
-  { to: "/settings",   label: "Settings",           icon: SettingsIcon,   roles: ["admin","editor"] },
+  // Overview
+  { group: "Overview", to: "/overview", label: "Overview", icon: OverviewIcon, roles: ["admin","editor","viewer"] },
+  // Infrastructure (the per-account/region tree is injected live from the accounts index)
+  { group: "Infrastructure", to: "/onboarding", label: "Account Onboarding", icon: OnboardIcon, roles: ["admin","editor"] },
+  // Monitoring
+  { group: "Monitoring", to: "/slos",                label: "SLOs",                icon: SloIcon,         roles: ["admin","editor","viewer"], perm: "slo.view" },
+  { group: "Monitoring", to: "/synthetic-checks",    label: "Synthetic Checks",    icon: SyntheticIcon,   roles: ["admin","editor","viewer"], perm: "synthetic.view" },
+  { group: "Monitoring", to: "/security-findings",   label: "Security Findings",   icon: SecurityIcon,    roles: ["admin","editor","viewer"], perm: "security.view" },
+  { group: "Monitoring", to: "/maintenance-windows", label: "Maintenance Windows", icon: MaintenanceIcon, roles: ["admin","editor","viewer"], perm: "maintenance.view" },
+  // Alerts & Incidents
+  { group: "Alerts & Incidents", to: "/alerts",               label: "Alerts",              icon: AlertIcon,      roles: ["admin","editor","viewer"], badge: true },
+  { group: "Alerts & Incidents", to: "/escalation-policies",  label: "Escalation Policies", icon: EscalationIcon, roles: ["admin","editor","viewer"], perm: "escalation.view" },
+  { group: "Alerts & Incidents", to: "/status-page-admin",    label: "Status Page",         icon: StatusPageIcon, roles: ["admin","editor"],          perm: "status_page.manage" },
+  // Intelligence
+  { group: "Intelligence", to: "/search", label: "Smart Search", icon: SearchNavIcon, roles: ["admin","editor","viewer"], perm: "search.query" },
+  // Reports
+  { group: "Reports", to: "/reports",    label: "Reports",    icon: ReportsIcon,    roles: ["admin","editor","viewer"], perm: "reports.view", feature: "reports" },
+  { group: "Reports", to: "/compliance", label: "Compliance", icon: ComplianceIcon, roles: ["admin","editor","viewer"] },
+  // Administration
+  { group: "Administration", to: "/access", label: "Access Control", icon: UsersIcon, roles: ["admin","editor","viewer"], perm: "users.view" },
+  { group: "Administration", to: "/settings",   label: "Settings",            icon: SettingsIcon, roles: ["admin","editor"] },
+  // Hidden (route + page + backend intact, not linked): /op-events (Operational Events,
+  // perm operations.view) and /deploy-risk (Deploy Risk, perm deploy_risk.view). To
+  // re-enable, add the entry here (and the route in App.jsx for Deploy Risk).
 ];
+
+const GROUP_ORDER = ["Overview", "Infrastructure", "Monitoring", "Alerts & Incidents", "Intelligence", "Reports", "Administration"];
+const INFRA_MAX = 6;   // account/region links shown in the sidebar before "All accounts"
+const STATUS_RANK = { critical: 0, warning: 1, healthy: 2 };
+const TONE = { critical: "crit", warning: "warn", healthy: "ok" };
 
 export default function Layout() {
   const { user, logout, hasPermission, hasFeature } = useAuth();
@@ -57,12 +66,35 @@ export default function Layout() {
   const [now, setNow]     = useState(new Date());
   const [alertCount, setAlertCount] = useState(0);
   const [dark, setDark]   = useState(() => localStorage.getItem("theme") !== "light");
-  const [navOpen, setNavOpen] = useState(false);
+  // Sidebar: >=1280px opens expanded (persisted choice), 900-1279 opens as the icon rail,
+  // <900 is an off-canvas drawer that always starts closed.
+  const [navOpen, setNavOpen] = useState(() => {
+    if (typeof window === "undefined" || window.innerWidth < 900) return false;
+    let pref = null; try { pref = localStorage.getItem("mh:nav"); } catch { /* storage unavailable */ }
+    return pref ? pref === "full" : window.innerWidth >= 1280;
+  });
+  const toggleNav = useCallback(() => setNavOpen(o => {
+    const n = !o;
+    if (window.innerWidth >= 900) { try { localStorage.setItem("mh:nav", n ? "full" : "rail"); } catch { /* ignore */ } }
+    return n;
+  }), []);
+  const closeDrawer = () => { if (window.innerWidth < 900) setNavOpen(false); };
+  const [compact, setCompact] = useState(() => { try { return localStorage.getItem("mh:density") === "compact"; } catch { return false; } });
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const accountRows = useAccountsIndex(true);
+  const [lastOkAt, setLastOkAt] = useState(null);   // last successful counts poll (drives the Live/Stale chip)
+  const { isConnected: wsUp } = useWebSocket("alerts");
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
     localStorage.setItem("theme", dark ? "dark" : "light");
   }, [dark]);
+
+  useEffect(() => {
+    if (compact) document.documentElement.setAttribute("data-density", "compact");
+    else document.documentElement.removeAttribute("data-density");
+    try { localStorage.setItem("mh:density", compact ? "compact" : "comfortable"); } catch { /* ignore */ }
+  }, [compact]);
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
@@ -82,6 +114,7 @@ export default function Layout() {
         // silently forever against a dead session.
         const data = await getAlertCounts();
         setAlertCount(data.active ?? 0);
+        setLastOkAt(Date.now());
       } catch {}
     }
     refreshBadgeRef.current = fetchCount;
@@ -121,52 +154,73 @@ export default function Layout() {
     (!item.feature || hasFeature(item.feature))
   );
 
-  // Gives the topbar a current-page label without every page having to
-  // set it itself — falls back to "Accounts" for the drill-down routes
-  // (/accounts/:id, /accounts/:id/services, /accounts/:id/:service),
-  // which aren't top-level nav items.
-  const pageLabel =
-    NAV_ITEMS.find(item => location.pathname.startsWith(item.to))?.label
-    ?? (location.pathname.startsWith("/accounts") ? "Accounts" : "");
+  // Grouped nav in the fixed IA order. Infrastructure also lists the live account/region
+  // tree (sorted worst-first); it exists only when the user actually has accounts or items.
+  const infraRows = [...accountRows].sort((x, y) =>
+    (STATUS_RANK[x.status] ?? 3) - (STATUS_RANK[y.status] ?? 3) || String(x.account_name).localeCompare(String(y.account_name)) || String(x.region).localeCompare(String(y.region)));
+  const navGroups = GROUP_ORDER.map(name => ({ name, items: visibleNav.filter(i => i.group === name) }))
+    .filter(g => g.items.length || (g.name === "Infrastructure" && infraRows.length));
+
+  // Browser tab title follows the current page.
+  const activeItem = visibleNav.find(n => location.pathname.startsWith(n.to));
+  useEffect(() => {
+    document.title = `${activeItem ? activeItem.label : location.pathname.startsWith("/accounts/") ? "Infrastructure" : "Overview"} · CloudOps`;
+  }, [activeItem, location.pathname]);
+
+  const openPalette = useCallback(() => setPaletteOpen(true), []);
+  useSearchHotkey(openPalette);
 
   return (
     <div className={`layout ${navOpen ? "nav-open" : ""}`}>
       <div className="sidebar-scrim" onClick={() => setNavOpen(false)} aria-hidden="true" />
       <aside className="sidebar">
-        <nav className="sidebar-nav">
-          {visibleNav.map(({ to, label, icon: Icon, badge }) => (
-            <NavLink
-              key={to}
-              to={to}
-              title={label}
-              onClick={() => setNavOpen(false)}
-              className={({ isActive }) => `nav-item ${isActive ? "nav-active" : ""}`}
-            >
-              <span className="nav-icon"><Icon /></span>
-              <span className="nav-label">{label}</span>
-              {badge && alertCount > 0 && (
-                <span className="nav-badge">{alertCount}</span>
+        <nav className="sidebar-nav" aria-label="Primary">
+          {navGroups.map(g => (
+            <div className="nav-group" key={g.name} role="group" aria-label={g.name}>
+              {!(g.items.length === 1 && g.items[0].label === g.name && g.name !== "Infrastructure") && <div className="nav-group-label">{g.name}</div>}
+              {g.name === "Infrastructure" && infraRows.slice(0, INFRA_MAX).map(r => (
+                <NavLink
+                  key={`acct-${r.id}`}
+                  to={`/accounts/${r.id}/services`}
+                  title={`${r.account_name} · ${r.region}`}
+                  onClick={closeDrawer}
+                  className={() => `nav-item nav-acct ${location.pathname === `/accounts/${r.id}` || location.pathname.startsWith(`/accounts/${r.id}/`) ? "nav-active" : ""}`}
+                >
+                  <span className="nav-icon"><StatusBeacon tone={TONE[r.status] || "mute"} /></span>
+                  <span className="nav-label nav-acct-label">{r.account_name}<span className="nav-acct-region">{r.region}</span></span>
+                </NavLink>
+              ))}
+              {g.name === "Infrastructure" && infraRows.length > INFRA_MAX && (
+                <NavLink to="/overview" onClick={closeDrawer} className="nav-item nav-more" title="All accounts">
+                  <span className="nav-icon"><OverviewIcon /></span>
+                  <span className="nav-label">All accounts ({new Set(infraRows.map(r => r.account_id)).size})</span>
+                </NavLink>
               )}
-            </NavLink>
+              {g.items.map(({ to, label, icon: Icon, badge }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  title={label}
+                  onClick={closeDrawer}
+                  className={({ isActive }) => `nav-item ${isActive ? "nav-active" : ""}`}
+                >
+                  <span className="nav-icon"><Icon /></span>
+                  <span className="nav-label">{label}</span>
+                  {badge && alertCount > 0 && (
+                    <span className="nav-badge">{alertCount}</span>
+                  )}
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
-
-        <div className="sidebar-footer">
-          <div className="sidebar-last-updated">
-            <span className="lup-label">Last updated</span>
-            <span className="lup-time">
-              {now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: ianaName })},{" "}
-              {timeStr.split(":").slice(0, 3).join(":")}
-            </span>
-          </div>
-        </div>
       </aside>
 
       <div className="main-wrap">
         <header className="topbar">
           <button
             className="btn-nav-toggle"
-            onClick={() => setNavOpen(o => !o)}
+            onClick={toggleNav}
             aria-label={navOpen ? "Close navigation menu" : "Open navigation menu"}
             aria-expanded={navOpen}
             title={navOpen ? "Collapse sidebar" : "Expand sidebar"}
@@ -192,60 +246,37 @@ export default function Layout() {
               <div className="sidebar-brand-name">CloudOps</div>
             </div>
           </div>
-          <div className="topbar-page-label">{pageLabel}</div>
+          <Breadcrumb pathname={location.pathname} navItems={NAV_ITEMS} />
           <div className="topbar-right">
-            <div className="live-pill">
-              <span className="live-dot" />
-              LIVE
-            </div>
-            <button
-              className="btn-theme-toggle"
-              onClick={() => setDark(d => !d)}
-              title={dark ? "Switch to light theme" : "Switch to dark theme"}
-              aria-label={dark ? "Switch to light theme" : "Switch to dark theme"}
-            >
-              {dark ? <SunIcon size={15} /> : <MoonIcon size={15} />}
+            <ScopeSwitcher rows={accountRows} />
+            <button type="button" className="tb-search" onClick={openPalette} aria-label="Search and jump (Ctrl+K)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <span>Search</span><kbd>Ctrl K</kbd>
             </button>
-            <select
-              className="tz-select"
-              value={timezone}
-              onChange={e => setTimezone(e.target.value)}
-              title="Display timezone — applies to every clock and chart"
-              aria-label="Display timezone"
-            >
-              {Object.entries(TIMEZONE_OPTIONS).map(([key, opt]) => (
-                <option key={key} value={key}>{opt.label}</option>
-              ))}
-            </select>
+            <LiveChip connected={wsUp} lastOkAt={lastOkAt} now={now.getTime()} />
+            <NotificationBell count={alertCount} />
             <div className="topbar-clock">
               {timeStr} <span className="topbar-tz">{timezone}</span>
             </div>
-            <div className="topbar-user">
-              <span className="topbar-user-icon">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                  <circle cx="12" cy="7" r="4"/>
-                </svg>
-              </span>
-              <span className="topbar-username">{user?.username ?? "admin"}</span>
-              <span className={`topbar-role-badge role-${role}`}>
-                {role.toUpperCase()}
-              </span>
-            </div>
-            <button className="btn-logout" onClick={handleLogout} title="Logout" aria-label="Log out">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-                <polyline points="16 17 21 12 16 7"/>
-                <line x1="21" y1="12" x2="9" y2="12"/>
-              </svg>
-              <span>Logout</span>
-            </button>
+            <UserMenu
+              username={user?.username ?? "admin"}
+              role={role}
+              dark={dark}
+              onToggleTheme={() => setDark(d => !d)}
+              compact={compact}
+              onToggleDensity={() => setCompact(c => !c)}
+              timezone={timezone}
+              onTimezone={setTimezone}
+              onLogout={handleLogout}
+            />
           </div>
         </header>
         <main className="main-content">
-          <Outlet />
+          <div className="page-frame"><Outlet /></div>
           <AlertToast />
         </main>
+        <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} pages={visibleNav} rows={accountRows}
+          canSmartSearch={visibleNav.some(n => n.to === "/search")} />
       </div>
     </div>
   );

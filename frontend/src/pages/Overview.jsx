@@ -1,6 +1,6 @@
 // monitoring-hub/frontend/src/pages/Overview.jsx
 import { useEffect, useState, useCallback, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAlertSync } from "../hooks/useAlertSync";
 import { getLiveAccounts, getFleetSummary, getFleetDetail, deleteAccount } from "../api/api";
 import { metricLabel } from "../utils/metricLabels";
@@ -95,6 +95,8 @@ function aggregateStats(regions) {
 
 export default function Overview() {
   const navigate = useNavigate();
+  const [sp] = useSearchParams();
+  const scopeAcct = sp.get("a") || "";          // set by the shell scope switcher
   const { ianaName } = useTimezone();
   const OVERVIEW_CACHE_KEY = "overview:accounts";
 
@@ -218,7 +220,7 @@ export default function Overview() {
   }
 
   // Group into logical accounts
-  const grouped = groupByAccount(accounts);
+  const grouped = groupByAccount(scopeAcct ? accounts.filter(a => String(a.account_id) === scopeAcct) : accounts);
 
   const healthyCount  = grouped.filter(g => aggregateStatus(g.regions) === "healthy").length;
   const warningCount  = grouped.filter(g => aggregateStatus(g.regions) === "warning").length;

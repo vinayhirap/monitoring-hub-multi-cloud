@@ -51,7 +51,18 @@
   --fs-dense: 12px;
   --fs-micro: 10px;
   --dur: 120ms;
+
+  /* shell geometry + layering (UI Phase 1b) */
+  --topbar-h: 48px;
+  --sidebar-w: 216px;
+  --sidebar-rail: 60px;
+  --page-max: 2240px;
+  --page-pad: clamp(14px, 1.3vw, 32px);
+  --z-topbar: 40; --z-pop: 70; --z-scrim: 200;
+  --fs-body: 13px; --fs-h1: 20px; --fs-h2: 14px;
 }
+@media (min-width: 1600px) { :root { --sidebar-w: 236px; } }
+@media (min-width: 2200px) { :root { --sidebar-w: 256px; --fs-body: 14px; --fs-dense: 13px; --fs-h1: 22px; } }
 
 :root[data-density="compact"] { --row-h: 26px; --ctl-h: 26px; --card-pad: 10px; --gap: 8px; }
 

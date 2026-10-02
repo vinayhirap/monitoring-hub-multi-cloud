@@ -259,3 +259,7 @@ export const getAlertsByResource = (accountId, service) =>
   apiFetch(`/api/alerts/by-resource?account_id=${accountId}${service ? `&service=${encodeURIComponent(String(service).toLowerCase())}` : ""}`);
 
 // RBAC / users / groups API lives in ./access.js (used by pages/AccessControl).
+
+// Shell notification bell: newest/most severe active alerts, same endpoint and
+// tab rules the Alerts page uses (so the bell can never disagree with it).
+export const getAlertsPreview = (limit = 8) => apiFetch(`/api/alerts?tab=active&limit=${limit}&offset=0`);
