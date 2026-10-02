@@ -263,3 +263,6 @@ export const getAlertsByResource = (accountId, service) =>
 // Shell notification bell: newest/most severe active alerts, same endpoint and
 // tab rules the Alerts page uses (so the bell can never disagree with it).
 export const getAlertsPreview = (limit = 8) => apiFetch(`/api/alerts?tab=active&limit=${limit}&offset=0`);
+
+// Dashboard (Overview) read helpers: same /api/alerts contract as the Alerts page.
+export const getAlertsList = (tab, limit = 500) => apiFetch(`/api/alerts?tab=${encodeURIComponent(tab)}&limit=${limit}&offset=0`);

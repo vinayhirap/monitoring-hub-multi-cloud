@@ -1,11 +1,16 @@
 // monitoring-hub/frontend/src/pages/Overview.jsx
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAlertSync } from "../hooks/useAlertSync";
-import { getLiveAccounts, getFleetSummary, getFleetDetail, deleteAccount } from "../api/api";
+import { getLiveAccounts, getFleetDetail, deleteAccount } from "../api/api";
+import { useDashboardData } from "../hooks/useDashboardData";
+import { summarize } from "../utils/dashboardModel";
+import { StatusHero, KpiRow, ActivityPanel, FeedPanel, MatrixPanel, TopResourcesPanel, IncidentsPanel, IntelligencePanel, CoveragePanel } from "./overview/panels";
+import { PageHeader } from "../components/ui";
 import { metricLabel } from "../utils/metricLabels";
 import { AlertOctagonIcon, ZapIcon, AlertTriangleIcon, ServerIcon, HardDriveIcon, BucketIcon, XIcon, RefreshCwIcon } from "../components/icons";
 import "./Overview.css";
+import "./overview/dash.css";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached } from "../utils/dataCache";
 
@@ -96,7 +101,7 @@ function aggregateStats(regions) {
 export default function Overview() {
   const navigate = useNavigate();
   const [sp] = useSearchParams();
-  const scopeAcct = sp.get("a") || "";          // set by the shell scope switcher
+  const scopeAcct = sp.get("a") || "";
   const { ianaName } = useTimezone();
   const OVERVIEW_CACHE_KEY = "overview:accounts";
 
@@ -115,19 +120,7 @@ export default function Overview() {
   // Fleet-wide health summary (2026-09-14) -- one server-side aggregate
   // call across every account, not N per-account calls from here. See
   // GET /api/incidents/fleet-summary's own docstring.
-  const [fleet, setFleet] = useState(null);
   const [showAttention, setShowAttention] = useState(false);
-  useEffect(() => {
-    // Was a raw fetch() with no credentials handling -- harmless here
-    // (a same-origin request still sends the session cookie by
-    // default, and a 401 was already swallowed into the same "just
-    // omit the tile" catch branch), but every other network call in
-    // this app goes through apiFetch() for one consistent behavior on
-    // session expiry (redirect to /login, clear the stale data
-    // cache -- see api.js's apiFetch docstring).
-    getFleetSummary().then(setFleet).catch(() => setFleet(null));
-  }, []);
-
   const deletedIds = useRef(new Set());
 
   // Alert counts are NOT fetched independently here anymore -- see the
@@ -242,17 +235,18 @@ export default function Overview() {
   // this banner mathematically guaranteed to agree with every tile on
   // screen -- one source of truth, not two independently-fetched and
   // independently-filtered ones.
-  const alertTotals    = grouped.reduce((acc, g) => {
-    const s = aggregateStats(g.regions);
-    acc.critical += s.critical_alerts;
-    acc.warning  += s.warning_alerts;
-    acc.stale        += s.stale_alerts;
-    acc.acknowledged += s.acknowledged_alerts;
-    acc.suppressed   += s.suppressed_alerts;
-    return acc;
-  }, { critical: 0, warning: 0, stale: 0, acknowledged: 0, suppressed: 0 });
-  const criticalAlerts = alertTotals.critical;
-  const warningAlerts  = alertTotals.warning;
+  // Executive + Operations dashboard: real data only (utils/dashboardModel.js)
+  const rowIds = useMemo(() => accounts.map(a => a.id), [accounts]);
+  const dash = useDashboardData(rowIds);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(t); }, []);
+  const scopeIds = useMemo(() => (scopeAcct ? new Set(accounts.filter(a => String(a.account_id) === scopeAcct).map(a => a.id)) : null), [accounts, scopeAcct]);
+  const model = useMemo(() => summarize({ rows: accounts, firing: dash.firing, resolved: dash.resolved, incidents: dash.incidents,
+    events: dash.events, fleet: dash.fleet, now, scopeIds }), [accounts, dash.firing, dash.resolved, dash.incidents, dash.events, dash.fleet, now, scopeIds]);
+  const go = useCallback(to => {
+    if (to.startsWith("#")) document.getElementById(to.slice(1))?.scrollIntoView({ behavior: "smooth", block: "start" });
+    else navigate(to);
+  }, [navigate]);
 
   const filteredGroups = grouped.filter(g => {
     const s = aggregateStatus(g.regions);
@@ -264,87 +258,27 @@ export default function Overview() {
 
   return (
     <div className="overview">
-      <div className="ov-header">
-        <div>
-          <h1 style={{ fontSize: "var(--fs-page-title)", fontWeight: 700, letterSpacing: "-0.01em" }}>
-            Infrastructure <span className="hl">Overview</span>
-          </h1>
-          <p style={{ color: "var(--text-muted)", fontSize: 14, marginTop: 4 }}>
-            Live infrastructure monitoring across all accounts and clouds
-          </p>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          {lastSync && (
-            <span style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-              Synced {lastSync.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: ianaName })}
-              {revalidating && <span style={{ marginLeft: 6, opacity: 0.7 }}>· updating…</span>}
-            </span>
-          )}
-          <button className="btn-refresh" onClick={loadAll} title="Refresh now"><RefreshCwIcon size={13} className="ico-inline" />Refresh</button>
-        </div>
-      </div>
+      <PageHeader
+        title="Overview"
+        subtitle="What is happening, what is unhealthy, where, and what changed"
+        meta={lastSync && (<>Synced {lastSync.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: ianaName })}{revalidating && " · updating…"}</>)}
+        actions={<button className="btn-refresh" onClick={loadAll} title="Refresh now"><RefreshCwIcon size={13} className="ico-inline" />Refresh</button>}
+      />
 
-      <div className="ov-summary">
-        {loading ? (
-          <>
-            <SkeletonTile /><SkeletonTile /><SkeletonTile /><SkeletonTile />
-          </>
-        ) : (
-          <>
-            <SummaryTile icon={<IconAccounts />} label="Total Accounts" value={grouped.length} />
-            <SummaryTile icon={<IconHealthy />}  label="Healthy"  value={healthyCount}  color="green" />
-            <SummaryTile icon={<IconWarning />}  label="Warning"  value={warningCount}  color={warningCount  > 0 ? "yellow" : "default"} pulse={warningCount  > 0} />
-            <SummaryTile icon={<IconCritical />} label="Critical" value={criticalCount} color={criticalCount > 0 ? "red"    : "default"} pulse={criticalCount > 0} />
-            {/* Fleet health (2026-09-14): a genuine "is everything OK
-                right now" glance -- aggregates app/collector/
-                health_score.py + trend.py's capacity forecasts across
-                every account, computed server-side in one call. Only
-                shown once the fetch resolves; silently omitted (not a
-                skeleton) if it fails, so a slow/unavailable AIOps
-                endpoint never blocks the rest of this page rendering. */}
-            {fleet && (fleet.critical_resource_count > 0 || fleet.capacity_risk_count > 0) && (
-              <SummaryTile
-                icon={<AlertOctagonIcon size={18} />}
-                label="Resources Need Attention"
-                value={fleet.critical_resource_count}
-                color={fleet.critical_resource_count > 0 ? "red" : "default"}
-                pulse={fleet.critical_resource_count > 0}
-                sub={fleet.capacity_risk_count > 0 ? `${fleet.capacity_risk_count} approaching capacity` : null}
-                onClick={() => setShowAttention(true)}
-                hint="See which resources"
-              />
-            )}
-            {/* Flapping-alert count (2026-09-14) -- deliberately a
-                SEPARATE tile from "Resources Need Attention," not folded into
-                its sub-line: this number is expected to trend toward
-                zero on its own as app/collector/threshold_tuning.py's
-                background auto-tuning converts these thresholds to
-                dynamic (see Settings' new "Dynamic" badge for the
-                per-threshold detail) -- it's a "the system is already
-                handling this" signal, not a "something needs fixing"
-                one, so it gets its own neutral-colored tile rather
-                than sharing the red "Resources Need Attention" tile's urgency. */}
-            {fleet && fleet.likely_flapping_count > 0 && (
-              <SummaryTile
-                icon={<ZapIcon size={18} />}
-                label="Flapping (Self-Tuning)"
-                value={fleet.likely_flapping_count}
-                color="default"
-                sub="Auto-tuning is adjusting these"
-                onClick={() => navigate("/alerts?tab=tuning")}
-                hint="See these alerts"
-              />
-            )}
-          </>
-        )}
-      </div>
-
-      {(criticalAlerts > 0 || warningAlerts > 0) && (
-        <AlertStrip
-          critical={criticalAlerts}
-          warning={warningAlerts}
-          onViewAlerts={() => navigate("/alerts")}
-        />
+      {!loading && (
+        <>
+          <StatusHero verdict={model.verdict} kpi={model.kpi} fetchedAt={dash.fetchedAt} now={now} revalidating={revalidating} />
+          <KpiRow kpi={model.kpi} onGo={go} />
+          <div className="dash-grid">
+            <div className="span-7"><ActivityPanel activity={model.activity} tz={ianaName} /></div>
+            <div className="span-5"><FeedPanel feed={model.feed} total={model.feedTotal} now={now} onGo={go} /></div>
+            <div className="span-7"><MatrixPanel matrix={model.matrix} onGo={go} /></div>
+            <div className="span-5"><TopResourcesPanel rows={model.topResources} onGo={go} /></div>
+            <div className="span-4"><IncidentsPanel incidents={model.incidents} capped={dash.incidentsCapped} now={now} onGo={go} /></div>
+            <div className="span-4"><IntelligencePanel anomalies={model.anomalies} fleet={dash.fleet} kpi={model.kpi} now={now} onGo={go} onOpenAttention={() => setShowAttention(v => !v)} /></div>
+            <div className="span-4"><CoveragePanel freshness={model.freshness} kpi={model.kpi} onGo={go} /></div>
+          </div>
+        </>
       )}
 
       <div className="ov-section-bar">
@@ -769,28 +703,6 @@ function SkeletonAccountCard() {
 
 /** Firing-alert banner. Tone follows the worst severity present: red with a dot when anything is
  *  CRITICAL, amber (no dot) when there are only warnings, so a banner is never red without a critical. */
-function AlertStrip({ critical, warning, onViewAlerts }) {
-  const hasCritical = critical > 0;
-  return (
-    <div className={`alert-strip${hasCritical ? "" : " alert-strip-warn"}`}>
-      {hasCritical && <span className="as-dot critical" />}
-      {hasCritical && (
-        <span style={{ fontWeight: 700, color: "var(--red)", marginRight: 8 }}>
-          {critical} CRITICAL
-        </span>
-      )}
-      {warning > 0 && (
-        <>
-          {hasCritical && <span style={{ color: "var(--text-muted)", marginRight: 8 }}>·</span>}
-          <span style={{ fontWeight: 600, color: "var(--yellow)", marginRight: 8 }}>
-            {warning} WARNING
-          </span>
-        </>
-      )}
-      <button onClick={onViewAlerts} className="as-btn">View Alerts →</button>
-    </div>
-  );
-}
 
 function SummaryTile({ icon, label, value, color, pulse, sub, onClick, hint }) {
   const clickable = typeof onClick === "function";
