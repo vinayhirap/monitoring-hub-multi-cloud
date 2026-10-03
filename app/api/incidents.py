@@ -13,11 +13,45 @@ since incidents are tied to a specific AWS account's resources.
 """
 from fastapi import APIRouter, HTTPException, Query, Depends
 import json
+import threading
+import time
 from app.db import get_connection
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
 
 router = APIRouter(prefix="/api/incidents", tags=["Incidents"])
+
+# Audit C3: fleet-summary AND fleet-detail each called compute_capacity_forecasts(),
+# which fits a linear trend over 14 days of history for every capacity metric of every
+# resource (measured 3.5-5.9 s per call, issued twice per Overview refresh, identical
+# result). The forecast changes on the scale of hours, so one result per scope is reused
+# for _FORECAST_TTL seconds and shared by both endpoints. Keyed by the caller's account
+# scope (never a superset), so a scoped viewer never sees another account's forecast.
+_FORECAST_TTL = 120
+_forecast_cache: dict = {}
+_forecast_lock = threading.Lock()
+
+
+def _scope_key(accessible):
+    return None if accessible is None else tuple(sorted(accessible))
+
+
+def _capacity_forecasts_cached(accessible):
+    key = _scope_key(accessible)
+    now = time.time()
+    hit = _forecast_cache.get(key)
+    if hit and now - hit[0] < _FORECAST_TTL:
+        return hit[1]
+    with _forecast_lock:
+        hit = _forecast_cache.get(key)          # another request may have filled it while we waited
+        if hit and time.time() - hit[0] < _FORECAST_TTL:
+            return hit[1]
+        from app.collector.trend import compute_capacity_forecasts
+        result = compute_capacity_forecasts(aws_account_ids=accessible)
+        if len(_forecast_cache) > 64:           # bound memory: scopes are few, but never unbounded
+            _forecast_cache.clear()
+        _forecast_cache[key] = (time.time(), result)
+        return result
 
 
 def _require_account_access(account_id: int, current_user: dict) -> None:
@@ -86,8 +120,7 @@ def fleet_health_summary(current_user: dict = Depends(require_permission("incide
         cur.close()
         conn.close()
 
-    from app.collector.trend import compute_capacity_forecasts
-    forecasts = compute_capacity_forecasts(aws_account_ids=accessible)
+    forecasts = _capacity_forecasts_cached(accessible)
 
     from app.collector.threshold_tuning import count_likely_flapping_alerts
     flapping_count = count_likely_flapping_alerts(aws_account_ids=accessible)
@@ -142,8 +175,7 @@ def fleet_health_detail(current_user: dict = Depends(require_permission("inciden
                     row["score_reason"] = {}
             row["health_score"] = float(row["health_score"]) if row["health_score"] is not None else None
 
-        from app.collector.trend import compute_capacity_forecasts
-        forecasts = compute_capacity_forecasts(aws_account_ids=accessible)
+        forecasts = _capacity_forecasts_cached(accessible)
         names = {}
         if forecasts:
             ids = sorted({f["resource_id"] for f in forecasts})

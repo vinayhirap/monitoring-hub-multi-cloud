@@ -9,7 +9,14 @@
 #
 # What it adds inside the server block (inherited by every location):
 #   server_tokens off; X-Content-Type-Options; X-Frame-Options; Referrer-Policy;
-#   Permissions-Policy; Content-Security-Policy[-Report-Only]; [HSTS].
+#   Permissions-Policy; Content-Security-Policy[-Report-Only]; [HSTS];
+#   gzip for JSON/JS/CSS/SVG (API responses were sent uncompressed -- audit C2).
+#
+# The FastAPI app (app/main.py _security_headers) already sets the same headers on
+# /api responses. nginx static files (the SPA shell) never pass through it, which is
+# why they were bare. To avoid DUPLICATE headers on proxied responses (Chrome ignores
+# a duplicated X-Frame-Options), the block hides the app's copies of the headers nginx
+# now owns. The app's own enforced Content-Security-Policy is left alone.
 # Re-running with different flags replaces the previous block.
 set -euo pipefail
 
@@ -48,6 +55,17 @@ BLOCK=$(mktemp)
 {
   echo "    # >>> monitoring-hub security headers (deploy/apply_security_headers.sh)"
   echo "    server_tokens off;"
+  echo "    proxy_hide_header X-Content-Type-Options;"
+  echo "    proxy_hide_header X-Frame-Options;"
+  echo "    proxy_hide_header Referrer-Policy;"
+  echo "    proxy_hide_header Permissions-Policy;"
+  echo "    proxy_hide_header Strict-Transport-Security;"
+  echo "    gzip on;"
+  echo "    gzip_vary on;"
+  echo "    gzip_proxied any;"
+  echo "    gzip_comp_level 5;"
+  echo "    gzip_min_length 1024;"
+  echo "    gzip_types application/json application/javascript text/css image/svg+xml text/plain;"
   echo "    add_header X-Content-Type-Options \"nosniff\" always;"
   echo "    add_header X-Frame-Options \"DENY\" always;"
   echo "    add_header Referrer-Policy \"strict-origin-when-cross-origin\" always;"
@@ -75,5 +93,6 @@ cat <<MSG
 Security headers applied (CSP mode: $([ "$ENFORCE" -eq 1 ] && echo ENFORCED || echo report-only), HSTS: $([ "$HSTS" -eq 1 ] && echo "on, max-age=86400" || echo off)).
 Backup: ${BACKUP}
 Verify:   curl -sI http://127.0.0.1/ | grep -i -E 'server|x-frame|x-content|referrer|content-security|strict-transport'
+          curl -sI -H 'Accept-Encoding: gzip' http://127.0.0.1/api/alerts | grep -i -E 'content-encoding|x-frame'   # 401 is fine: headers still show
 ROLLBACK: cp -p ${BACKUP} ${CONF} && nginx -t && sudo systemctl reload nginx
 MSG

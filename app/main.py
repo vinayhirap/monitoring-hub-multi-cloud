@@ -11,6 +11,7 @@ import os
 import threading
 
 from app.api.alerts         import router as alerts_router
+from app.api.health         import router as health_router
 from app.api.admin.accounts import router as admin_accounts_router
 from app.api.auth           import router as auth_router
 from app.api.admin.users    import router as admin_users_router
@@ -344,6 +345,7 @@ async def ws_status():
 # specific role/scope checks are a later authorization phase.
 _auth_dep = [Depends(get_current_user)]
 
+app.include_router(health_router)   # public live/ready; /detail enforces operations.view itself
 app.include_router(alerts_router,         prefix="/api", dependencies=_auth_dep)
 app.include_router(admin_accounts_router, dependencies=_auth_dep)
 app.include_router(auth_router)

@@ -62,6 +62,7 @@ from app.utils.time_json import to_utc_iso
 from app.metric_display import effective_hours, shape_response, bucketize, bucket_seconds, display_spec, period_cutover_epoch
 from app.metric_meta import build_metric_meta
 import datetime
+import threading
 import time
 import json
 import logging
@@ -93,8 +94,15 @@ def invalidate_accounts_cache():
     page/sidebar badge on top of the raw-count-vs-distinct-resource
     issue already fixed there -- same class of bug, different cause.
     """
+    # Audit C3: this runs on EVERY alert change (each evaluator cycle that
+    # opens/resolves something, every ack/resolve/mute). It used to drop the
+    # cached data, so the very next /api/live/accounts call paid for fresh AWS
+    # describe calls on the request path (4.7-10.6 s measured). Layer 2 (alert
+    # fields) is recomputed on every request anyway, so only EXPIRE layer 1:
+    # the stale resource data is served at once and refreshed in the background
+    # (see _refresh_accounts_cache_async).
     global _accounts_cache
-    _accounts_cache = {"data": None, "ts": 0}
+    _accounts_cache = {"data": _accounts_cache.get("data"), "ts": 0}
 
 
 def _serialize(obj):
@@ -507,10 +515,107 @@ def _get_ec2_instance_health_by_account() -> dict:
         return {}
 
 
+_accounts_refresh_lock = threading.Lock()
+
+
+def _build_base_accounts():
+    """Layer 1: per-account AWS resource summary. Slow (live describe calls)."""
+    accounts = _get_db_accounts()
+    active_services = _get_active_services_by_account()
+
+    def process_account(acc):
+        region  = acc.get("default_region")
+        summary = get_account_summary(region, role_arn=acc.get("role_arn"), external_id=acc.get("external_id"), account=acc)
+        running = summary.get("ec2_running", 0)
+        total   = summary.get("ec2_total",   0)
+        avg_cpu = summary.get("ec2_avg_cpu", 0)
+
+        services = []
+        if summary.get("ec2_total", 0) > 0:
+            services.append({
+                "name":           "EC2",
+                "status":         "ok",
+                "instance_count": running,
+                "cpu":            avg_cpu,
+                "memory":         0,
+            })
+        if summary.get("rds_total", 0) > 0:
+            services.append({
+                "name":           "RDS",
+                "status":         "ok",
+                "instance_count": summary["rds_total"],
+            })
+        if summary.get("lambda_total", 0) > 0:
+            services.append({
+                "name":           "Lambda",
+                "status":         "ok",
+                "instance_count": summary["lambda_total"],
+            })
+
+        return _serialize({
+            "id":               acc["id"],
+            "account_name":     acc["account_name"],
+            "account_id":       acc["account_id"],
+            "region":           region,
+            "environment":      acc.get("environment", "PROD"),
+            "owner_team":       acc.get("owner_team", acc.get("team", "")),
+            "ec2_total":        total,
+            "ec2_running":      running,
+            "ec2_stopped":      summary.get("ec2_stopped", 0),
+            "ebs_total":        summary.get("ebs_total",    0),
+            "rds_total":        summary.get("rds_total",    0),
+            "lambda_total":     summary.get("lambda_total", 0),
+            "s3_total":         summary.get("s3_total",     0),
+            "elb_total":        summary.get("elb_total",    0),
+            "ecs_total":        summary.get("ecs_total",    0),
+            "avg_cpu":          avg_cpu,
+            "instance_count":   total,
+            "services":         services,
+            "active_services":  sorted(active_services.get(acc["id"], ())),
+            "created_at":       acc.get("created_at"),
+            "last_synced_at":   acc.get("last_synced_at"),
+        })
+
+    base_accounts = []
+    with ThreadPoolExecutor(max_workers=min(len(accounts), 8) or 1) as ex:
+        futures = {ex.submit(process_account, acc): acc for acc in accounts}
+        for f in as_completed(futures):
+            try:
+                base_accounts.append(f.result())
+            except Exception as e:
+                logger.error(f"Account processing error: {e}")
+
+    return base_accounts
+
+
+def _refresh_accounts_cache():
+    """Rebuild layer 1 and store it. Single-flight per worker: if another thread is
+    already rebuilding, wait for it and use its result instead of doubling the AWS calls."""
+    global _accounts_cache
+    with _accounts_refresh_lock:
+        if _accounts_cache["data"] is not None and time.time() - _accounts_cache["ts"] < CACHE_TTL:
+            return _accounts_cache["data"]   # someone else just refreshed it
+        base_accounts = _build_base_accounts()
+        _accounts_cache = {"data": base_accounts, "ts": time.time()}
+        return base_accounts
+
+
+def _refresh_accounts_cache_async():
+    """Fire-and-forget refresh; a no-op if one is already running."""
+    if _accounts_refresh_lock.locked():
+        return
+
+    def _run():
+        try:
+            _refresh_accounts_cache()
+        except Exception as e:
+            logger.error(f"Background accounts cache refresh failed: {e}")
+
+    threading.Thread(target=_run, name="live-accounts-refresh", daemon=True).start()
+
+
 @router.get("/accounts")
 def live_accounts(current_user: dict = Depends(require_permission("resources.view"))):
-    global _accounts_cache
-
     # Two layers, on purpose (2026-09-29):
     #   1. SLOW, per-account resource data (AWS describe calls, resource counts,
     #      which services have tiles) -- cached CACHE_TTL seconds, unfiltered
@@ -521,75 +626,13 @@ def live_accounts(current_user: dict = Depends(require_permission("resources.vie
     #      to be cached together with layer 1 for 60 s, per worker, so this page
     #      showed an older alert picture than the Alerts page for up to minutes.
     now = time.time()
-    if _accounts_cache["data"] is not None and now - _accounts_cache["ts"] < CACHE_TTL:
-        base_accounts = _accounts_cache["data"]
+    if _accounts_cache["data"] is None:
+        # Cold start only: nothing to serve yet, so build synchronously once.
+        base_accounts = _refresh_accounts_cache()
     else:
-        accounts = _get_db_accounts()
-        active_services = _get_active_services_by_account()
-
-        def process_account(acc):
-            region  = acc.get("default_region")
-            summary = get_account_summary(region, role_arn=acc.get("role_arn"), external_id=acc.get("external_id"), account=acc)
-            running = summary.get("ec2_running", 0)
-            total   = summary.get("ec2_total",   0)
-            avg_cpu = summary.get("ec2_avg_cpu", 0)
-
-            services = []
-            if summary.get("ec2_total", 0) > 0:
-                services.append({
-                    "name":           "EC2",
-                    "status":         "ok",
-                    "instance_count": running,
-                    "cpu":            avg_cpu,
-                    "memory":         0,
-                })
-            if summary.get("rds_total", 0) > 0:
-                services.append({
-                    "name":           "RDS",
-                    "status":         "ok",
-                    "instance_count": summary["rds_total"],
-                })
-            if summary.get("lambda_total", 0) > 0:
-                services.append({
-                    "name":           "Lambda",
-                    "status":         "ok",
-                    "instance_count": summary["lambda_total"],
-                })
-
-            return _serialize({
-                "id":               acc["id"],
-                "account_name":     acc["account_name"],
-                "account_id":       acc["account_id"],
-                "region":           region,
-                "environment":      acc.get("environment", "PROD"),
-                "owner_team":       acc.get("owner_team", acc.get("team", "")),
-                "ec2_total":        total,
-                "ec2_running":      running,
-                "ec2_stopped":      summary.get("ec2_stopped", 0),
-                "ebs_total":        summary.get("ebs_total",    0),
-                "rds_total":        summary.get("rds_total",    0),
-                "lambda_total":     summary.get("lambda_total", 0),
-                "s3_total":         summary.get("s3_total",     0),
-                "elb_total":        summary.get("elb_total",    0),
-                "ecs_total":        summary.get("ecs_total",    0),
-                "avg_cpu":          avg_cpu,
-                "instance_count":   total,
-                "services":         services,
-                "active_services":  sorted(active_services.get(acc["id"], ())),
-                "created_at":       acc.get("created_at"),
-                "last_synced_at":   acc.get("last_synced_at"),
-            })
-
-        base_accounts = []
-        with ThreadPoolExecutor(max_workers=min(len(accounts), 8) or 1) as ex:
-            futures = {ex.submit(process_account, acc): acc for acc in accounts}
-            for f in as_completed(futures):
-                try:
-                    base_accounts.append(f.result())
-                except Exception as e:
-                    logger.error(f"Account processing error: {e}")
-
-        _accounts_cache = {"data": base_accounts, "ts": now}
+        base_accounts = _accounts_cache["data"]
+        if now - _accounts_cache["ts"] >= CACHE_TTL:
+            _refresh_accounts_cache_async()   # serve stale now, refresh behind the response
 
     # ── fresh alert overlay (every request) ──────────────────────
     alert_counts_by_account = _get_active_alert_counts_by_account()
