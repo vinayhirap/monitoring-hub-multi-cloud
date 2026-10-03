@@ -22,6 +22,12 @@
  * same shape of data on every reload.
  */
 const PREFIX = "mh_cache:";
+// Between a logout and the next sign-in, cache writes are ignored: a request that was still in flight when the user
+// logged out would otherwise finish AFTER clearAllCached() and put that user's account list back into localStorage
+// for the next person on a shared browser to see.
+let writesBlocked = false;
+export const blockCacheWrites = () => { writesBlocked = true; };
+export const allowCacheWrites = () => { writesBlocked = false; };
 const MAX_AGE_MS = 24 * 60 * 60 * 1000; // ignore anything older than this rather than show ancient data
 
 export function getCached(key) {
@@ -41,6 +47,7 @@ export function getCached(key) {
 }
 
 export function setCached(key, data) {
+  if (writesBlocked) return;
   try {
     localStorage.setItem(PREFIX + key, JSON.stringify({ data, ts: Date.now() }));
   } catch {

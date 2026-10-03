@@ -174,15 +174,19 @@ export function summarize({ rows, firing, resolved, incidents, events, fleet, no
 
   return {
     verdict: { level, reasons, affected, total: R.length },
+    // undefined = that source has not answered yet (show a skeleton); null = the caller may not read it. Never the same thing.
+    pending: { firing: firing === undefined, resolved: resolved === undefined, incidents: incidents === undefined, events: events === undefined, fleet: fleet === undefined },
     kpi: { critical, warning, critAlerts, warnAlerts, critResources: critResources.size, incidents: activeInc ? activeInc.length : null, anomalies: anomalies.length,
-      attention: [...g.values()].filter(e => e.attention).length,      // SAME rule as the Alerts "Needs attention" tab: a firing alert on a resource with health < 70
-      attentionAlerts: F.filter(a => a.needs_attention).length,
+      // SAME rule AND SAME UNIT as the Alerts "Needs attention" tab: firing ALERTS on resources with health < 70
+      attention: F.filter(a => a.needs_attention).length,
+      attentionResources: [...g.values()].filter(e => e.attention).length,
       capacity: fleet?.summary ? fleet.summary.capacity_risk_count : null,
       flapping: fleet?.summary ? fleet.summary.likely_flapping_count : null, ...windows, fresh: freshCount, regions: R.length, stale: staleCount },
     activity: { buckets, windows, capped },
     matrix: { cols, rows: matrixRows },
     topResources, anomalies, incidents: activeInc,
     freshness: freshRows,
+    fleetView: fleet ? { summary: fleet.summary ?? null, detail: fleet.detail ?? null } : null,
     feed: feed.slice(0, 14), feedTotal: feed.length,
   };
 }

@@ -109,17 +109,17 @@ test("capped flags fire only at the fetch limits", () => {
 const A = (id, res, o = {}) => ({ id, resource: res, resource_name: res, account_id: 1, account_name: "Prod", region: "ap-south-1", service: "ec2", metric_name: "CPUUtilization",
   severity: "WARNING", state: "firing", triggered_at: new Date(Date.now() - 600e3).toISOString(), needs_attention: false, ...o });
 const ROW = { id: 1, account_id: "111", account_name: "Prod", region: "ap-south-1", status: "warning", critical_alerts: 0, warning_alerts: 8, last_synced_at: new Date().toISOString(), active_services: ["ec2"] };
-test("Needs attention = resources (and alert count) from the alert rows, not from the fleet summary", () => {
+test("Needs attention = ALERT count (same unit as the Alerts page) from the alert rows, with the resource count alongside", () => {
   const firing = [A(1, "r1", { needs_attention: true }), A(2, "r1", { needs_attention: true, metric_name: "NetworkOut" }), A(3, "r2", { needs_attention: true }),
     A(4, "r2", { needs_attention: true, metric_name: "NetworkIn" }), A(5, "r2", { needs_attention: true, metric_name: "Disk" }), A(6, "r3"), A(7, "r4"), A(8, "r5")];
   const r = summarize({ rows: [{ ...ROW, warning_alerts: 5 }], firing, resolved: [], incidents: [], events: [], fleet: { summary: { critical_resource_count: 99, capacity_risk_count: 7 }, detail: null }, now: Date.now() });
-  assert.equal(r.kpi.attention, 2);                    // r1, r2  (NOT the fleet's 99)
-  assert.equal(r.kpi.attentionAlerts, 5);              // equals the Alerts "Needs attention" tab count for the same rows
+  assert.equal(r.kpi.attention, 5);                    // ALERTS: equals the Alerts "Needs attention" tab/tile for the same rows (NOT the fleet's 99)
+  assert.equal(r.kpi.attentionResources, 2);           // r1, r2: shown in the sub-label
   assert.equal(r.kpi.warning, 5);                      // r1..r5 distinct resources with warning alerts; 8 alerts
 });
 test("Needs attention ignores resolved alerts and works for roles without fleet access", () => {
   const r = summarize({ rows: [ROW], firing: [A(1, "r1")], resolved: [A(2, "r9", { state: "resolved", needs_attention: true })], incidents: null, events: null, fleet: null, now: Date.now() });
-  assert.equal(r.kpi.attention, 0); assert.equal(r.kpi.attentionAlerts, 0);
+  assert.equal(r.kpi.attention, 0); assert.equal(r.kpi.attentionResources, 0);
 });
 test("the platform verdict uses the same Healthy / Warning / Critical words as the accounts", () => {
   const w = summarize({ rows: [ROW], firing: [A(1, "r1")], resolved: [], incidents: [], events: [], fleet: null, now: Date.now() });
@@ -128,4 +128,21 @@ test("the platform verdict uses the same Healthy / Warning / Critical words as t
   assert.equal(c.verdict.level, "critical");
   const h = summarize({ rows: [{ ...ROW, status: "healthy", warning_alerts: 0 }], firing: [], resolved: [], incidents: [], events: [], fleet: null, now: Date.now() });
   assert.equal(h.verdict.level, "healthy");
+});
+
+// ---- loading vs unavailable must never be confused (a dash/zero while loading is what made the page flicker)
+test("pending flags: undefined = still loading, null = not allowed, array = data", () => {
+  const loading = summarize({ rows: [ROW], firing: undefined, resolved: undefined, incidents: undefined, events: undefined, fleet: undefined, now: Date.now() });
+  assert.deepEqual(loading.pending, { firing: true, resolved: true, incidents: true, events: true, fleet: true });
+  const denied = summarize({ rows: [ROW], firing: [], resolved: [], incidents: null, events: null, fleet: null, now: Date.now() });
+  assert.deepEqual(denied.pending, { firing: false, resolved: false, incidents: false, events: false, fleet: false });
+  assert.equal(denied.kpi.incidents, null);            // unavailable is reported as such (the tile says "not available for this role")
+});
+test("the whole model survives a JSON round trip (it is cached between visits)", () => {
+  const firing = [A(1, "r1", { needs_attention: true }), A(2, "r2")];
+  const m = summarize({ rows: [ROW], firing, resolved: [], incidents: [], events: [], fleet: { summary: { critical_resource_count: 1, capacity_risk_count: 1, likely_flapping_count: 0 }, detail: { critical_resources: [], capacity_risks: [] } }, now: Date.now() });
+  const back = JSON.parse(JSON.stringify(m));
+  assert.equal(back.kpi.attention, m.kpi.attention); assert.equal(back.verdict.level, m.verdict.level);
+  assert.equal(back.topResources.length, m.topResources.length); assert.deepEqual(back.matrix.cols, m.matrix.cols);
+  assert.ok(back.fleetView && back.fleetView.summary.capacity_risk_count === 1);
 });

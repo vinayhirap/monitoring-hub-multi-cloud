@@ -1,6 +1,6 @@
 // src/auth/AuthContext.jsx
 import { createContext, useContext, useEffect, useState } from "react";
-import { clearAllCached } from "../utils/dataCache";
+import { clearAllCached, blockCacheWrites, allowCacheWrites } from "../utils/dataCache";
 
 const AuthContext = createContext(null);
 const BASE = "";
@@ -50,6 +50,7 @@ export function AuthProvider({ children }) {
         if (!cancelled) {
           const ok = res.ok;
           setUser(ok ? await res.json() : null);
+          if (ok) allowCacheWrites();
           if (ok) {
             await loadPermissions();
           } else {
@@ -87,6 +88,7 @@ export function AuthProvider({ children }) {
       if (!res.ok) return false;
       const data = await res.json();
       setUser({ id: data.id, username: data.username, role: data.role });
+    allowCacheWrites();
       await loadPermissions();
       return true;
     } catch {
@@ -104,6 +106,7 @@ export function AuthProvider({ children }) {
     // SECURITY: must run on every logout, not just be "nice to have" —
     // see clearAllCached()'s own docstring for why leaving this data
     // behind is a real cross-user disclosure risk on shared devices.
+    blockCacheWrites();
     clearAllCached();
     setUser(null);
     setPermissions(new Set());

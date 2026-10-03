@@ -6,7 +6,7 @@ import { useAlertSync } from "../hooks/useAlertSync";
 import { getLiveAccounts } from "../api/api";
 import { useDashboardData } from "../hooks/useDashboardData";
 import { summarize } from "../utils/dashboardModel";
-import { StatusHero, KpiRow, ActivityPanel, FeedPanel, MatrixPanel, TopResourcesPanel, IncidentsPanel, IntelligencePanel, CoveragePanel } from "./overview/panels";
+import { StatusHero, KpiRow, ActivityPanel, FeedPanel, MatrixPanel, TopResourcesPanel, IncidentsPanel, IntelligencePanel, CoveragePanel, PanelSkeleton } from "./overview/panels";
 import { PageHeader } from "../components/ui";
 import { AlertOctagonIcon, ZapIcon, AlertTriangleIcon, ServerIcon, HardDriveIcon, BucketIcon, RefreshCwIcon } from "../components/icons";
 import "./Overview.css";
@@ -218,6 +218,19 @@ export default function Overview() {
   const scopeIds = useMemo(() => (scopeAcct ? new Set(accounts.filter(a => String(a.account_id) === scopeAcct).map(a => a.id)) : null), [accounts, scopeAcct]);
   const model = useMemo(() => summarize({ rows: accounts, firing: dash.firing, resolved: dash.resolved, incidents: dash.incidents,
     events: dash.events, fleet: dash.fleet, now, scopeIds }), [accounts, dash.firing, dash.resolved, dash.incidents, dash.events, dash.fleet, now, scopeIds]);
+  // Stale-while-revalidate: the last computed dashboard is kept per scope (small, JSON, cleared on logout with the other
+  // cached data) so returning to this page or refreshing shows the previous numbers at once, labelled "updating",
+  // instead of dashes. It is replaced as soon as every source has answered once. Older than 30 min = not shown.
+  const [bootMs] = useState(() => Date.now());            // captured once: age of a cached view is judged at page load
+  const cacheKey = `dash:model:${scopeAcct || "all"}`;
+  const snap = useMemo(() => {
+    const c = getCached(cacheKey);
+    return c?.data?.v === 1 && c.data.model && bootMs - c.ts < 30 * 60 * 1000 ? { model: c.data.model, ts: c.ts } : null;
+  }, [cacheKey, bootMs]);
+  const showSnap = !!snap && !dash.ready;
+  const view = showSnap ? snap.model : model;
+  const pend = showSnap ? {} : model.pending;
+  useEffect(() => { if (dash.ready && !loading) setCached(cacheKey, { v: 1, model }); }, [dash.ready, loading, model, cacheKey]);
   const go = useCallback(to => {
     if (to.startsWith("#")) document.getElementById(to.slice(1))?.scrollIntoView({ behavior: "smooth", block: "start" });
     else navigate(to);
@@ -242,16 +255,16 @@ export default function Overview() {
 
       {!loading && (
         <>
-          <StatusHero verdict={model.verdict} kpi={model.kpi} fetchedAt={dash.fetchedAt} now={now} revalidating={revalidating} />
-          <KpiRow kpi={model.kpi} onGo={go} />
+          <StatusHero verdict={view.verdict} kpi={view.kpi} fetchedAt={showSnap ? snap.ts : dash.fetchedAt} now={now} revalidating={revalidating || showSnap} pending={pend} />
+          <KpiRow kpi={view.kpi} onGo={go} pending={pend} />
           <div className="dash-grid">
-            <div className="span-7"><ActivityPanel activity={model.activity} tz={ianaName} /></div>
-            <div className="span-5"><FeedPanel feed={model.feed} total={model.feedTotal} now={now} onGo={go} /></div>
-            <div className="span-7"><MatrixPanel matrix={model.matrix} onGo={go} /></div>
-            <div className="span-5"><TopResourcesPanel rows={model.topResources} onGo={go} /></div>
-            <div className="span-4"><IncidentsPanel incidents={model.incidents} capped={dash.incidentsCapped} now={now} onGo={go} /></div>
-            <div className="span-4"><IntelligencePanel anomalies={model.anomalies} fleet={dash.fleet} kpi={model.kpi} now={now} onGo={go} /></div>
-            <div className="span-4"><CoveragePanel freshness={model.freshness} kpi={model.kpi} onGo={go} /></div>
+            <div className="span-7">{pend.firing ? <PanelSkeleton title="Alert activity, last 24 hours" /> : <ActivityPanel activity={view.activity} tz={ianaName} />}</div>
+            <div className="span-5">{pend.firing || pend.resolved ? <PanelSkeleton title="Recent changes" /> : <FeedPanel feed={view.feed} total={view.feedTotal} now={now} onGo={go} />}</div>
+            <div className="span-7">{pend.firing ? <PanelSkeleton title="Where it is happening" /> : <MatrixPanel matrix={view.matrix} onGo={go} />}</div>
+            <div className="span-5">{pend.firing ? <PanelSkeleton title="Top problematic resources" /> : <TopResourcesPanel rows={view.topResources} onGo={go} />}</div>
+            <div className="span-4">{pend.incidents ? <PanelSkeleton title="Active incidents" rows={3} /> : <IncidentsPanel incidents={view.incidents} capped={dash.incidentsCapped} now={now} onGo={go} />}</div>
+            <div className="span-4">{pend.firing || pend.fleet ? <PanelSkeleton title="Anomalies and forecasts" rows={3} /> : <IntelligencePanel anomalies={view.anomalies} fleet={showSnap ? snap.model.fleetView ?? null : dash.fleet} kpi={view.kpi} now={now} onGo={go} />}</div>
+            <div className="span-4"><CoveragePanel freshness={view.freshness} kpi={view.kpi} onGo={go} /></div>
           </div>
         </>
       )}

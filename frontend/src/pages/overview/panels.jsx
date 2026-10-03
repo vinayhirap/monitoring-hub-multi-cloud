@@ -10,20 +10,32 @@ const hourLabel = (t, tz) => new Date(t).toLocaleTimeString("en-US", { hour: "2-
 const hhmm = (t, tz) => new Date(t).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz });
 const Dim = ({ children }) => <span className="dash-dim">{children}</span>;
 
+/** Placeholder for a section whose data source has not answered yet (never a dash, never a fake zero). */
+export function PanelSkeleton({ title, subtitle, rows = 4 }) {
+  return (
+    <Panel title={title} subtitle={subtitle}>
+      <div className="dash-skel" role="status" aria-busy="true" aria-label={`Loading ${title}`}>
+        {Array.from({ length: rows }, (_, i) => <span key={i} className="ui-skel ui-skel-line" style={{ width: `${88 - i * 11}%` }} />)}
+      </div>
+    </Panel>
+  );
+}
+
 /* ── 1. What is the state of the platform, and why ─────────────────────────── */
-export function StatusHero({ verdict, kpi, fetchedAt, now, revalidating }) {
-  const t = TONE[verdict.level];
+export function StatusHero({ verdict, kpi, fetchedAt, now, revalidating, pending }) {
+  const checking = !!pending?.firing;                   // alert data has not arrived yet: do not claim a verdict
+  const t = checking ? "mute" : TONE[verdict.level];
   const age = fetchedAt ? now - fetchedAt : null;
   return (
     <section className={`dash-hero t-${t}`} aria-label="Platform status">
       <div className="dash-hero-verdict">
         <span className="dash-hero-cap">Platform status</span>
-        <span className="dash-hero-level"><StatusBeacon tone={t} pulse={verdict.level === "critical"} label={LEVEL_TEXT[verdict.level]} />{LEVEL_TEXT[verdict.level]}</span>
-        {verdict.total > 0 && <span className="dash-hero-sub">{verdict.affected} of {verdict.total} region{verdict.total === 1 ? "" : "s"} affected</span>}
+        <span className="dash-hero-level"><StatusBeacon tone={t} pulse={!checking && verdict.level === "critical"} label={checking ? "Checking" : LEVEL_TEXT[verdict.level]} />{checking ? "Checking…" : LEVEL_TEXT[verdict.level]}</span>
+        {!checking && verdict.total > 0 && <span className="dash-hero-sub">{verdict.affected} of {verdict.total} region{verdict.total === 1 ? "" : "s"} affected</span>}
       </div>
       <ul className="dash-hero-reasons">
-        {verdict.reasons.map(r => <li key={r}>{r}</li>)}
-        {verdict.level === "unknown" && <li>No accounts are reporting yet.</li>}
+        {checking ? <li><span className="ui-skel ui-skel-line" /></li> : verdict.reasons.map(r => <li key={r}>{r}</li>)}
+        {!checking && verdict.level === "unknown" && <li>No accounts are reporting yet.</li>}
       </ul>
       <div className="dash-hero-meta">
         <span className="dash-hero-cap">Data</span>
@@ -35,20 +47,21 @@ export function StatusHero({ verdict, kpi, fetchedAt, now, revalidating }) {
 }
 
 /* ── 2. How severe, how much, what changed: one row of answerable numbers ──── */
-export function KpiRow({ kpi, onGo }) {
+export function KpiRow({ kpi, onGo, pending = {} }) {
   const n = v => (v == null ? "—" : v);
+  const L = (flag, text) => (flag ? "loading…" : text);        // a loading tile never describes a state
   return (
     <div className="dash-kpis"><KpiStrip>
-      <KpiCard label="Critical resources" value={kpi.critical} tone={kpi.critical ? "crit" : undefined} pulse={kpi.critical > 0}
-        sub={kpi.critical ? `${kpi.critAlerts} critical alert${kpi.critAlerts === 1 ? "" : "s"} firing` : "none firing"} onClick={() => onGo("/alerts?tab=critical")} />
-      <KpiCard label="Warning resources" value={kpi.warning} tone={kpi.warning ? "warn" : undefined} sub={kpi.warning ? `${kpi.warnAlerts} warning alert${kpi.warnAlerts === 1 ? "" : "s"} firing` : "none firing"} onClick={() => onGo("/alerts?tab=active")} />
-      <KpiCard label="Active incidents" value={n(kpi.incidents)} tone={kpi.incidents ? "crit" : undefined}
-        sub={kpi.incidents == null ? "not available for this role" : "correlated, system-detected"} onClick={() => onGo("#dash-incidents")} />
-      <KpiCard label="Needs attention" value={kpi.attention} tone={kpi.attention ? "warn" : undefined}
-        sub={kpi.attention ? `${kpi.attentionAlerts} alert${kpi.attentionAlerts === 1 ? "" : "s"} on resources with health < 70` : "no resource below health 70"} onClick={() => onGo("/alerts?tab=attention")} />
-      <KpiCard label="Metric anomalies" value={kpi.anomalies} tone={kpi.anomalies ? "warn" : undefined} sub="multivariate, firing" onClick={() => onGo("#dash-intel")} />
-      <KpiCard label="New · last hour" value={kpi.new1h} sub={`${kpi.new6h} in 6h · ${kpi.new24h} in 24h`} onClick={() => onGo("#dash-activity")} />
-      <KpiCard label="Resolved · 24h" value={kpi.res24h} tone={kpi.res24h ? "ok" : undefined} sub={`${kpi.res1h} in the last hour`} onClick={() => onGo("/alerts?tab=resolved")} />
+      <KpiCard label="Critical resources" loading={pending.firing} value={kpi.critical} tone={kpi.critical ? "crit" : undefined} pulse={kpi.critical > 0}
+        sub={L(pending.firing, kpi.critical ? `${kpi.critAlerts} critical alert${kpi.critAlerts === 1 ? "" : "s"} firing` : "none firing")} onClick={() => onGo("/alerts?tab=critical")} />
+      <KpiCard label="Warning resources" loading={pending.firing} value={kpi.warning} tone={kpi.warning ? "warn" : undefined} sub={L(pending.firing, kpi.warning ? `${kpi.warnAlerts} warning alert${kpi.warnAlerts === 1 ? "" : "s"} firing` : "none firing")} onClick={() => onGo("/alerts?tab=active")} />
+      <KpiCard label="Active incidents" loading={pending.incidents} value={n(kpi.incidents)} tone={kpi.incidents ? "crit" : undefined}
+        sub={L(pending.incidents, kpi.incidents == null ? "not available for this role" : "correlated, system-detected")} onClick={() => onGo("#dash-incidents")} />
+      <KpiCard label="Needs attention" loading={pending.firing} value={kpi.attention} tone={kpi.attention ? "warn" : undefined}
+        sub={L(pending.firing, kpi.attention ? `alert${kpi.attention === 1 ? "" : "s"} on ${kpi.attentionResources} resource${kpi.attentionResources === 1 ? "" : "s"} with health < 70` : "no resource below health 70")} onClick={() => onGo("/alerts?tab=attention")} />
+      <KpiCard label="Metric anomalies" loading={pending.firing} value={kpi.anomalies} tone={kpi.anomalies ? "warn" : undefined} sub="multivariate, firing" onClick={() => onGo("#dash-intel")} />
+      <KpiCard label="New · last hour" loading={pending.firing} value={kpi.new1h} sub={L(pending.firing, `${kpi.new6h} in 6h · ${kpi.new24h} in 24h`)} onClick={() => onGo("#dash-activity")} />
+      <KpiCard label="Resolved · 24h" loading={pending.resolved} value={kpi.res24h} tone={kpi.res24h ? "ok" : undefined} sub={L(pending.resolved, `${kpi.res1h} in the last hour`)} onClick={() => onGo("/alerts?tab=resolved")} />
       <KpiCard label="Regions synced" value={`${kpi.fresh}/${kpi.regions}`} tone={kpi.stale ? "warn" : kpi.regions && kpi.fresh === kpi.regions ? "ok" : undefined}
         sub={kpi.stale ? `${kpi.stale} stale` : `≤${FRESH_MIN} min`} onClick={() => onGo("#dash-coverage")} />
     </KpiStrip></div>

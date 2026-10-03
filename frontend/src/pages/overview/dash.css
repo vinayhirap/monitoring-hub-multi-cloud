@@ -88,3 +88,8 @@
 .dash-res-sub { display: block; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ui-table .is-num, .mx-c { white-space: nowrap; }
 .act-up { height: 150px; }
+
+/* loading placeholders: shown only until a source answers the FIRST time */
+.dash-skel { display: grid; gap: 12px; padding: 18px 16px; min-height: 150px; align-content: start; }
+.ui-skel-line { display: block; height: 12px; }
+.dash-hero-reasons .ui-skel-line { width: 260px; max-width: 80%; }
