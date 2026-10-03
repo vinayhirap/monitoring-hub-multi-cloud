@@ -40,6 +40,12 @@
 }
 .mzm-range-btn.active { background: rgba(34, 211, 238, 0.12); border-color: #22d3ee; color: #22d3ee; }
 .mzm-range-btn:not(.active):hover { color: #e6ecf7; }
+.mzm-range-btn.unavailable { opacity: 0.35; cursor: not-allowed; }
+.mzm-range-btn.unavailable:hover { color: #7a90b8; }
+
+.mzm-span-note {
+  font-size: 11px; color: #4d6082; margin: -2px 0 10px; line-height: 1.4;
+}
 
 .mzm-controls-right { display: flex; align-items: center; gap: 10px; }
 

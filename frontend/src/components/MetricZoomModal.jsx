@@ -54,11 +54,19 @@ export default function MetricZoomModal({
   seriesLabel, onRefresh, viewInMetricsHref, valueFormatter,
 }) {
   const { ianaName, timezone } = useTimezone();
-  // Defaults to the widest range that still fits the data actually
-  // passed in -- this modal windows client-side over whatever the
-  // parent already fetched rather than re-querying CloudWatch itself,
-  // so "1W" only shows real data if the parent fetched a week's worth.
-  const [rangeHours, setRangeHours] = useState(RANGE_OPTIONS[RANGE_OPTIONS.length - 1].hours);
+  // Default to the widest range that's actually reachable given what the
+  // parent handed over, not blindly "1W" -- with the availability check
+  // added below, a range wider than the loaded data gets disabled, and
+  // defaulting to a disabled button would be a confusing way to open a
+  // chart (exactly what a live screenshot showed: "1W" selected, but
+  // the axis only spanned the page's default 6H load).
+  const [rangeHours, setRangeHours] = useState(() => {
+    if (!data || data.length < 2) return RANGE_OPTIONS[RANGE_OPTIONS.length - 1].hours;
+    const times = data.map(d => new Date(d.t).getTime());
+    const spanMs = Math.max(...times) - Math.min(...times);
+    const reachable = RANGE_OPTIONS.filter(o => o.hours * 3600 * 1000 <= spanMs * 1.05);
+    return reachable.length ? reachable[reachable.length - 1].hours : RANGE_OPTIONS[0].hours;
+  });
 
   // Bug found live (screenshots showed 1H/3H correctly returning
   // "No data" while 1D/1W worked fine): this modal windows over
@@ -84,6 +92,24 @@ export default function MetricZoomModal({
     if (!data || data.length === 0) return null;
     return Math.max(...data.map(d => new Date(d.t).getTime()));
   }, [data]);
+
+  // Second bug found live, same root cause: with the page's main range
+  // selector sitting on its default "6H", this modal's own "1W" button
+  // silently showed just those same ~6 hours -- correct data, but
+  // mislabeled as a week, with nothing telling the viewer why a "1W"
+  // chart looked identical to "1D". availableSpanMs is how much history
+  // the parent actually handed over; any range option that asks for
+  // more than that is flagged rather than silently truncated.
+  const earliestPointTime = useMemo(() => {
+    if (!data || data.length === 0) return null;
+    return Math.min(...data.map(d => new Date(d.t).getTime()));
+  }, [data]);
+  const availableSpanMs = (latestPointTime != null && earliestPointTime != null)
+    ? latestPointTime - earliestPointTime
+    : null;
+  const TOLERANCE = 1.05; // 5% grace so "6H loaded" doesn't flag the 6H button itself
+  const exceedsAvailable = (hours) =>
+    availableSpanMs != null && hours * 3600 * 1000 > availableSpanMs * TOLERANCE;
 
   const windowed = useMemo(() => {
     if (!data || data.length === 0 || latestPointTime == null) return [];
@@ -112,15 +138,22 @@ export default function MetricZoomModal({
 
         <div className="mzm-controls">
           <div className="mzm-range-group">
-            {RANGE_OPTIONS.map(opt => (
-              <button
-                key={opt.label}
-                className={`mzm-range-btn ${rangeHours === opt.hours ? "active" : ""}`}
-                onClick={() => setRangeHours(opt.hours)}
-              >
-                {opt.label}
-              </button>
-            ))}
+            {RANGE_OPTIONS.map(opt => {
+              const unreachable = exceedsAvailable(opt.hours);
+              return (
+                <button
+                  key={opt.label}
+                  className={`mzm-range-btn ${rangeHours === opt.hours ? "active" : ""} ${unreachable ? "unavailable" : ""}`}
+                  onClick={() => setRangeHours(opt.hours)}
+                  disabled={unreachable}
+                  title={unreachable
+                    ? `Only ${formatSpan(availableSpanMs)} of data is loaded on this page right now -- ${opt.label} would show the same thing. Pick a wider range on the page itself (above the chart), then re-open this zoom.`
+                    : undefined}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
           </div>
           <div className="mzm-controls-right">
             {/* No timezone selector here on purpose -- see file header
@@ -134,6 +167,16 @@ export default function MetricZoomModal({
             )}
           </div>
         </div>
+        {availableSpanMs != null && exceedsAvailable(RANGE_OPTIONS[RANGE_OPTIONS.length - 1].hours) && (
+          // Second bug's fix, visible half: don't just quietly disable the
+          // wider buttons -- say in plain words why "1W" can't show a week
+          // right now, since that's exactly what looked like a silent lie
+          // before this fix (a "1W" chart with only ~6h of real data in it).
+          <div className="mzm-span-note">
+            Only {formatSpan(availableSpanMs)} of data is loaded for this chart. To zoom further back,
+            pick a wider range on the page itself (above the chart), then re-open this zoom.
+          </div>
+        )}
 
         <div className="mzm-chart">
           {windowed.length === 0 ? (
@@ -173,4 +216,15 @@ export default function MetricZoomModal({
       </div>
     </div>
   );
+}
+
+/** "5h 25m" / "45m" / "3d" -- for the "only X of data is loaded" note. */
+function formatSpan(ms) {
+  const totalMin = Math.round(ms / 60000);
+  const days = Math.floor(totalMin / 1440);
+  const hours = Math.floor((totalMin % 1440) / 60);
+  const mins = totalMin % 60;
+  if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  if (hours > 0) return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  return `${mins}m`;
 }
