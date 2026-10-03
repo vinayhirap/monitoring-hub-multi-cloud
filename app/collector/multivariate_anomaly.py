@@ -88,6 +88,33 @@ CONTAMINATION = float(os.getenv("ANOMALY_CONTAMINATION", "0.01"))
 MIN_CONSECUTIVE_BUCKETS = max(1, int(os.getenv("ANOMALY_MIN_CONSECUTIVE_BUCKETS", "3")))
 MIN_ROBUST_Z = float(os.getenv("ANOMALY_MIN_ROBUST_Z", "3.5"))
 MIN_MOVED_METRICS = max(1, int(os.getenv("ANOMALY_MIN_MOVED_METRICS", "2")))
+
+# Cost controls (2026-10-03). PROD measured this job at ~69 s per run for 70 resources, every 15 min,
+# to produce alerts that are hidden from the UI. Defaults keep the old behaviour (enabled, every
+# scheduler cycle); set these in .env to cut the cost without a code change:
+#   ANOMALY_ENABLED=false               -> skip scoring entirely (open hidden anomaly alerts are resolved once)
+#   ANOMALY_MIN_INTERVAL_MINUTES=60     -> run at most once per 60 min (the scheduler still ticks every 15)
+_last_run_monotonic = None
+
+
+def _enabled() -> bool:
+    return os.getenv("ANOMALY_ENABLED", "true").strip().lower() != "false"
+
+
+def _min_interval_seconds() -> float:
+    try:
+        return max(0.0, float(os.getenv("ANOMALY_MIN_INTERVAL_MINUTES", "0"))) * 60.0
+    except ValueError:
+        return 0.0
+
+
+def _too_soon() -> bool:
+    """True if the previous run was less than ANOMALY_MIN_INTERVAL_MINUTES ago. A 60-second
+    tolerance stops a cycle that lands a few seconds early from being skipped for a whole interval."""
+    interval = _min_interval_seconds()
+    if not interval or _last_run_monotonic is None:
+        return False
+    return (time.monotonic() - _last_run_monotonic) < (interval - 60.0)
 # Bucket width for aligning metrics collected on independent schedules
 # -- different metrics are rarely sampled at exactly the same instant,
 # so readings are floored into shared buckets before being treated as
@@ -168,6 +195,24 @@ def detect_multivariate_anomalies() -> int:
     alert auto-resolved. Returns the number of resources found
     anomalous THIS cycle.
     """
+    global _last_run_monotonic
+    if not _enabled():
+        conn = get_connection()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            resolved = _resolve_cleared_anomalies(cursor, set())
+            conn.commit()
+            if resolved:
+                logger.info(f"[multivariate_anomaly] disabled (ANOMALY_ENABLED=false); "
+                            f"resolved {resolved} previously-flagged alert(s)")
+        finally:
+            cursor.close()
+            conn.close()
+        return 0
+    if _too_soon():
+        return 0
+    _last_run_monotonic = time.monotonic()
+
     from sklearn.ensemble import IsolationForest
 
     started = time.time()

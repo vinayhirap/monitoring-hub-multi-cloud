@@ -287,3 +287,57 @@ def test_shadow_report_summarises_counts_duration_and_corroboration():
     assert rep["median_duration_min"] == 60.0
     assert rep["top_resources"][0] == ("i-a", 2)
     assert "total fired" in mod.format_report(rep)
+
+
+# -- cost controls (2026-10-03) -----------------------------------------------
+
+def test_default_runs_every_cycle(monkeypatch):
+    monkeypatch.delenv("ANOMALY_ENABLED", raising=False)
+    monkeypatch.delenv("ANOMALY_MIN_INTERVAL_MINUTES", raising=False)
+    rows = _history_with_joint_anomaly_at_end(n=80, buckets=3)
+    _install_db_stub(rows)
+    mod = load_module("app/collector/multivariate_anomaly.py")
+    assert mod.detect_multivariate_anomalies() == 1
+    assert mod.detect_multivariate_anomalies() == 1      # no interval configured: runs again
+
+
+def test_min_interval_skips_a_second_run_without_touching_the_database(monkeypatch):
+    monkeypatch.setenv("ANOMALY_MIN_INTERVAL_MINUTES", "60")
+    rows = _history_with_joint_anomaly_at_end(n=80, buckets=3)
+    _install_db_stub(rows)
+    mod = load_module("app/collector/multivariate_anomaly.py")
+    assert mod.detect_multivariate_anomalies() == 1
+    calls = []
+    install_stub("app.db", get_connection=lambda: calls.append(1))
+    mod.get_connection = lambda: calls.append(1)
+    assert mod.detect_multivariate_anomalies() == 0      # 15-min tick inside the 60-min window
+    assert calls == []
+
+
+def test_min_interval_runs_again_once_the_window_has_passed(monkeypatch):
+    monkeypatch.setenv("ANOMALY_MIN_INTERVAL_MINUTES", "60")
+    rows = _history_with_joint_anomaly_at_end(n=80, buckets=3)
+    _install_db_stub(rows)
+    mod = load_module("app/collector/multivariate_anomaly.py")
+    assert mod.detect_multivariate_anomalies() == 1
+    mod._last_run_monotonic -= 61 * 60                   # pretend an hour passed
+    assert mod.detect_multivariate_anomalies() == 1
+
+
+def test_a_cycle_a_few_seconds_early_is_not_skipped_for_a_whole_interval(monkeypatch):
+    monkeypatch.setenv("ANOMALY_MIN_INTERVAL_MINUTES", "60")
+    install_stub("app.db", get_connection=lambda: None)
+    mod = load_module("app/collector/multivariate_anomaly.py")
+    mod._last_run_monotonic = mod.time.monotonic() - (60 * 60 - 20)    # 20 s short of an hour
+    assert mod._too_soon() is False
+
+
+def test_disabled_skips_scoring_and_resolves_open_hidden_alerts(monkeypatch):
+    monkeypatch.setenv("ANOMALY_ENABLED", "false")
+    inserted, updated, resolved = _install_db_stub(
+        _history_with_joint_anomaly_at_end(n=80, buckets=3),
+        active_anomaly_alerts=[{"id": 11, "aws_account_id": 7, "resource_id": "i-1"}])
+    mod = load_module("app/collector/multivariate_anomaly.py")
+    assert mod.detect_multivariate_anomalies() == 0
+    assert inserted == [] and updated == []              # nothing was scored
+    assert len(resolved) == 1                            # the open hidden alert was closed once
