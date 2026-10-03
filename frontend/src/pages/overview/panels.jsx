@@ -4,8 +4,8 @@ import { Panel, Badge, StatusBeacon, KpiStrip, KpiCard, DataTable, EmptyState, A
 import { ageLabel, serviceLabel, FRESH_MIN, STALE_MIN } from "../../utils/dashboardModel";
 import { metricLabel } from "../../utils/metricLabels";
 
-const TONE = { crit: "crit", warn: "warn", info: "info", ok: "ok", critical: "crit", warning: "warn", healthy: "ok", degraded: "warn", unknown: "mute" };
-const LEVEL_TEXT = { critical: "Critical", degraded: "Degraded", healthy: "Healthy", unknown: "No data" };
+const TONE = { crit: "crit", warn: "warn", info: "info", ok: "ok", critical: "crit", warning: "warn", healthy: "ok", unknown: "mute" };
+const LEVEL_TEXT = { critical: "Critical", warning: "Warning", healthy: "Healthy", unknown: "No data" };
 const hourLabel = (t, tz) => new Date(t).toLocaleTimeString("en-US", { hour: "2-digit", hour12: false, timeZone: tz });
 const hhmm = (t, tz) => new Date(t).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz });
 const Dim = ({ children }) => <span className="dash-dim">{children}</span>;
@@ -44,8 +44,8 @@ export function KpiRow({ kpi, onGo }) {
       <KpiCard label="Warning resources" value={kpi.warning} tone={kpi.warning ? "warn" : undefined} sub={kpi.warning ? `${kpi.warnAlerts} warning alert${kpi.warnAlerts === 1 ? "" : "s"} firing` : "none firing"} onClick={() => onGo("/alerts?tab=active")} />
       <KpiCard label="Active incidents" value={n(kpi.incidents)} tone={kpi.incidents ? "crit" : undefined}
         sub={kpi.incidents == null ? "not available for this role" : "correlated, system-detected"} onClick={() => onGo("#dash-incidents")} />
-      <KpiCard label="Needs attention" value={n(kpi.attention)} tone={kpi.attention ? "crit" : undefined}
-        sub={kpi.capacity ? `${kpi.capacity} nearing capacity` : "health score < 70"} onClick={() => onGo("#dash-intel")} />
+      <KpiCard label="Needs attention" value={kpi.attention} tone={kpi.attention ? "warn" : undefined}
+        sub={kpi.attention ? `${kpi.attentionAlerts} alert${kpi.attentionAlerts === 1 ? "" : "s"} on resources with health < 70` : "no resource below health 70"} onClick={() => onGo("/alerts?tab=attention")} />
       <KpiCard label="Metric anomalies" value={kpi.anomalies} tone={kpi.anomalies ? "warn" : undefined} sub="multivariate, firing" onClick={() => onGo("#dash-intel")} />
       <KpiCard label="New · last hour" value={kpi.new1h} sub={`${kpi.new6h} in 6h · ${kpi.new24h} in 24h`} onClick={() => onGo("#dash-activity")} />
       <KpiCard label="Resolved · 24h" value={kpi.res24h} tone={kpi.res24h ? "ok" : undefined} sub={`${kpi.res1h} in the last hour`} onClick={() => onGo("/alerts?tab=resolved")} />
@@ -200,11 +200,11 @@ export function IncidentsPanel({ incidents, capped, now, onGo }) {
 }
 
 /* ── 8. Intelligence: anomalies, capacity forecast, self-tuning ───────────── */
-export function IntelligencePanel({ anomalies, fleet, kpi, now, onGo, onOpenAttention }) {
+export function IntelligencePanel({ anomalies, fleet, kpi, now, onGo }) {
   const cap = fleet?.detail?.capacity_risks || [];
   return (
     <Panel title="Anomalies and forecasts" subtitle="Model-derived signals, kept visually distinct from measurements" flush
-      footer={<button type="button" className="ui-btn" onClick={onOpenAttention}>All resources needing attention</button>}>
+      footer={<button type="button" className="ui-btn" onClick={() => onGo("/alerts?tab=attention")}>Alerts needing attention</button>}>
       <div id="dash-intel" className="dash-anchor" />
       <h3 className="dash-sec">Metric anomalies <AiChip method="Multivariate" /><span>{anomalies.length}</span></h3>
       {anomalies.length === 0 ? <div className="dash-none">No multivariate anomalies firing</div> : (

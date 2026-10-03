@@ -140,7 +140,7 @@ export function summarize({ rows, firing, resolved, incidents, events, fleet, no
   let level = "healthy";
   if (!R.length) level = "unknown";
   else if (critical > 0 || incCrit > 0) level = "critical";
-  else if (warning > 0 || staleCount > 0 || sysErr > 0 || (activeInc && activeInc.length)) level = "degraded";
+  else if (warning > 0 || staleCount > 0 || sysErr > 0 || (activeInc && activeInc.length)) level = "warning";
   const reasons = [];
   const raw = n => (n ? ` (${n} alert${n === 1 ? "" : "s"})` : "");
   if (critical > 0) reasons.push(`${critical} resource${critical === 1 ? "" : "s"} with critical alerts${raw(critAlerts)}`);
@@ -175,7 +175,9 @@ export function summarize({ rows, firing, resolved, incidents, events, fleet, no
   return {
     verdict: { level, reasons, affected, total: R.length },
     kpi: { critical, warning, critAlerts, warnAlerts, critResources: critResources.size, incidents: activeInc ? activeInc.length : null, anomalies: anomalies.length,
-      attention: fleet?.summary ? fleet.summary.critical_resource_count : null, capacity: fleet?.summary ? fleet.summary.capacity_risk_count : null,
+      attention: [...g.values()].filter(e => e.attention).length,      // SAME rule as the Alerts "Needs attention" tab: a firing alert on a resource with health < 70
+      attentionAlerts: F.filter(a => a.needs_attention).length,
+      capacity: fleet?.summary ? fleet.summary.capacity_risk_count : null,
       flapping: fleet?.summary ? fleet.summary.likely_flapping_count : null, ...windows, fresh: freshCount, regions: R.length, stale: staleCount },
     activity: { buckets, windows, capped },
     matrix: { cols, rows: matrixRows },

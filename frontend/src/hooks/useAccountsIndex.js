@@ -27,7 +27,9 @@ export function useAccountsIndex(enabled = true) {
     if (!enabled) return;
     const first = setTimeout(() => { if (Date.now() - read().ts > FRESH_MS) refresh(); }, 0);
     const t = setInterval(() => setRows(prev => { const r = read().rows; return r.length || !prev.length ? r : prev; }), 30000);
-    return () => { clearTimeout(first); clearInterval(t); };
+    const onChanged = () => setRows(read().rows);              // Settings > Accounts & Regions removed one
+    window.addEventListener("mh:accounts-changed", onChanged);
+    return () => { clearTimeout(first); clearInterval(t); window.removeEventListener("mh:accounts-changed", onChanged); };
   }, [enabled, refresh]);
   return rows;
 }

@@ -1,6 +1,7 @@
 ﻿// monitoring-hub/frontend/src/pages/Settings.jsx
 import { useState, useEffect, useCallback } from "react";
 import MetricSelector from "../components/MetricSelector";
+import AccountsRegions from "../components/AccountsRegions";
 import {
   getAccountMetrics, saveAccountMetrics,
   applyDefaultTemplate, discoverNamespaceMetrics, downloadYaceConfig,
@@ -61,6 +62,9 @@ async function guardedFetch(path, options = {}) {
 
 export default function Settings() {
   const { hasPermission } = useAuth();
+  useEffect(() => {          // /settings#accounts (link from the Overview)
+    if (window.location.hash === "#accounts") setTimeout(() => document.getElementById("accounts")?.scrollIntoView({ behavior: "smooth", block: "start" }), 400);
+  }, []);
   const [accounts,    setAccounts]    = useState([]);
   const [accountId,   setAccountId]   = useState(null);
   const [thresholds,  setThresholds]  = useState([]);
@@ -548,6 +552,9 @@ export default function Settings() {
           </div>
         )}
       </div>
+
+      {/* Accounts & regions (removal lives here, behind accounts.delete) */}
+      <AccountsRegions />
     </div>
   );
 }

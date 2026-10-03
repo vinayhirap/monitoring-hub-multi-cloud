@@ -66,7 +66,9 @@ test("freshness levels (15/60 min) and unknown for never-synced", () => {
 });
 test("missing endpoints yield null, never a guess", () => {
   const n = summarize({ rows, firing, resolved, incidents: null, events: null, fleet: null, now: NOW });
-  assert.equal(n.kpi.incidents, null); assert.equal(n.kpi.attention, null); assert.equal(n.incidents, null);
+  assert.equal(n.kpi.incidents, null); assert.equal(n.incidents, null);
+  assert.equal(typeof n.kpi.attention, "number");        // Needs attention now comes from the alert rows, so a missing fleet endpoint no longer blanks it
+  assert.equal(n.kpi.capacity, null);                    // the capacity count genuinely needs the fleet endpoint
 });
 test("incidents: active only, critical first; verdict degrades/escalates on them", () => {
   const inc = [{ id: 1, account_row_id: 2, title: "Disk saturation", severity: "warning", status: "active", alert_count: 3, started_at: iso(50), last_seen_at: iso(5) },
@@ -86,7 +88,7 @@ test("system ERROR events in the last hour degrade a clean fleet; INFO never app
   const ev = [{ event_type: "collector_cycle_failed", severity: "ERROR", message: "boom", created_at: "2026-10-01T12:10:00", aws_account_id: 2 },
     { event_type: "discovery_ok", severity: "INFO", message: "fine", created_at: "2026-10-01T12:11:00", aws_account_id: 2 }];
   const r = summarize({ rows: ok, firing: [], resolved: [], incidents: [], events: ev, fleet: null, now: NOW });
-  assert.equal(r.verdict.level, "degraded"); assert.equal(r.feed.length, 1); assert.equal(r.feed[0].kind, "System");
+  assert.equal(r.verdict.level, "warning"); assert.equal(r.feed.length, 1); assert.equal(r.feed[0].kind, "System");
 });
 test("scope filter limits every section to the chosen account rows", () => {
   const r = summarize({ rows, firing, resolved, incidents: [], events: [], fleet: null, now: NOW, scopeIds: new Set([3]) });
@@ -100,4 +102,30 @@ test("capped flags fire only at the fetch limits", () => {
   assert.equal(s.activity.capped.firing, false);
   const big = Array.from({ length: 1000 }, (_, i) => alert(100 + i, "WARNING", 1, `i-${i}`, "ec2", iso(10)));
   assert.equal(summarize({ rows, firing: big, resolved: [], incidents: [], events: [], fleet: null, now: NOW }).activity.capped.firing, true);
+});
+
+
+// ---- "Needs attention": ONE definition shared with the Alerts page (a FIRING alert on a resource with health < 70)
+const A = (id, res, o = {}) => ({ id, resource: res, resource_name: res, account_id: 1, account_name: "Prod", region: "ap-south-1", service: "ec2", metric_name: "CPUUtilization",
+  severity: "WARNING", state: "firing", triggered_at: new Date(Date.now() - 600e3).toISOString(), needs_attention: false, ...o });
+const ROW = { id: 1, account_id: "111", account_name: "Prod", region: "ap-south-1", status: "warning", critical_alerts: 0, warning_alerts: 8, last_synced_at: new Date().toISOString(), active_services: ["ec2"] };
+test("Needs attention = resources (and alert count) from the alert rows, not from the fleet summary", () => {
+  const firing = [A(1, "r1", { needs_attention: true }), A(2, "r1", { needs_attention: true, metric_name: "NetworkOut" }), A(3, "r2", { needs_attention: true }),
+    A(4, "r2", { needs_attention: true, metric_name: "NetworkIn" }), A(5, "r2", { needs_attention: true, metric_name: "Disk" }), A(6, "r3"), A(7, "r4"), A(8, "r5")];
+  const r = summarize({ rows: [{ ...ROW, warning_alerts: 5 }], firing, resolved: [], incidents: [], events: [], fleet: { summary: { critical_resource_count: 99, capacity_risk_count: 7 }, detail: null }, now: Date.now() });
+  assert.equal(r.kpi.attention, 2);                    // r1, r2  (NOT the fleet's 99)
+  assert.equal(r.kpi.attentionAlerts, 5);              // equals the Alerts "Needs attention" tab count for the same rows
+  assert.equal(r.kpi.warning, 5);                      // r1..r5 distinct resources with warning alerts; 8 alerts
+});
+test("Needs attention ignores resolved alerts and works for roles without fleet access", () => {
+  const r = summarize({ rows: [ROW], firing: [A(1, "r1")], resolved: [A(2, "r9", { state: "resolved", needs_attention: true })], incidents: null, events: null, fleet: null, now: Date.now() });
+  assert.equal(r.kpi.attention, 0); assert.equal(r.kpi.attentionAlerts, 0);
+});
+test("the platform verdict uses the same Healthy / Warning / Critical words as the accounts", () => {
+  const w = summarize({ rows: [ROW], firing: [A(1, "r1")], resolved: [], incidents: [], events: [], fleet: null, now: Date.now() });
+  assert.equal(w.verdict.level, "warning");
+  const c = summarize({ rows: [{ ...ROW, status: "critical", critical_alerts: 1, warning_alerts: 0 }], firing: [A(1, "r1", { severity: "CRITICAL" })], resolved: [], incidents: [], events: [], fleet: null, now: Date.now() });
+  assert.equal(c.verdict.level, "critical");
+  const h = summarize({ rows: [{ ...ROW, status: "healthy", warning_alerts: 0 }], firing: [], resolved: [], incidents: [], events: [], fleet: null, now: Date.now() });
+  assert.equal(h.verdict.level, "healthy");
 });

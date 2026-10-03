@@ -1,0 +1,17 @@
+.ar-body { display: grid; gap: 12px; padding: 16px 20px 20px; }
+.ar-note { margin: 0; font-size: 12.5px; color: var(--text-muted); }
+.ar-search { max-width: 320px; }
+.ar-msg { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 8px 12px; border-radius: 8px; font-size: 12.5px; border: 1px solid var(--border); }
+.ar-msg.ok { color: var(--ok-fg); background: var(--ok-bg); } .ar-msg.err { color: var(--crit-fg); background: var(--crit-bg); }
+.ar-x { background: none; border: 0; color: inherit; font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer; }
+.ar-acct { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--surface-1, transparent); }
+.ar-acct header { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface-2, transparent); }
+.ar-acct header b { color: var(--text-primary); font-size: 13.5px; } .ar-id, .ar-n { font: 11.5px var(--font-mono, monospace); color: var(--text-muted); }
+.ar-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ar-table th { text-align: left; font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: var(--text-muted); padding: 7px 12px; font-weight: 600; }
+.ar-table td { padding: 8px 12px; border-top: 1px solid var(--border); color: var(--text-secondary); }
+.ar-act { text-align: right; white-space: nowrap; }
+.ar-remove { background: transparent; border: 1px solid var(--crit-line, rgba(239,68,68,.4)); color: var(--crit-fg); border-radius: 6px; padding: 3px 10px; font: 600 12px var(--font-sans, inherit); cursor: pointer; }
+.ar-remove:hover { background: var(--crit-bg); } .ar-remove:focus-visible, .ar-x:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.ar-list { margin: 6px 0 10px; padding-left: 18px; font-size: 12.5px; line-height: 1.6; color: var(--text-secondary); }
+@media (max-width: 640px) { .ar-table th:nth-child(4), .ar-table td:nth-child(4) { display: none; } }

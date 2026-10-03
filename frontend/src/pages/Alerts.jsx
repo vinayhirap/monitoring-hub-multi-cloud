@@ -18,7 +18,7 @@ import { clearAllCached } from "../utils/dataCache";
 // Tab order: what needs a person first, then the lifecycle states, then history.
 // Groups are separated by a thin divider in the tab bar.
 const TAB_GROUPS = [
-  [["active", "Active"], ["critical", "Critical"], ["attention", "Alerts Needs Attention"], ["tuning", "Auto-tuning"]],
+  [["active", "Active"], ["critical", "Critical"], ["attention", "Needs Attention"], ["tuning", "Auto-tuning"]],
   [["stale", "Stale"], ["acknowledged", "Acknowledged"], ["suppressed", "Muted / Maint."]],
   [["resolved", "Resolved"], ["all", "All"]],
 ];
@@ -487,7 +487,7 @@ export default function Alerts() {
 
       <KpiStrip>
         <KpiCard label="Critical firing" value={displayCounts.critical} tone={displayCounts.critical > 0 ? "crit" : undefined} pulse={displayCounts.critical > 0} onClick={() => { setView("list"); setTab("critical"); }} hint="Show critical alerts" />
-        <KpiCard label="Needs attention" value={displayCounts.attention} tone={displayCounts.attention > 0 ? "warn" : undefined} onClick={() => { setView("list"); setTab("attention"); }} hint="Firing on unhealthy resources" />
+        <KpiCard label="Needs attention" value={displayCounts.attention} tone={displayCounts.attention > 0 ? "warn" : undefined} sub="alerts on resources with health < 70" onClick={() => { setView("list"); setTab("attention"); }} hint="Firing on unhealthy resources" />
         <KpiCard label="Active" value={displayCounts.active} onClick={() => { setView("list"); setTab("active"); }} />
         <KpiCard label="Acknowledged" value={displayCounts.acknowledged} onClick={() => { setView("list"); setTab("acknowledged"); }} />
         <KpiCard label="No data (stale)" value={displayCounts.stale} onClick={() => { setView("list"); setTab("stale"); }} />

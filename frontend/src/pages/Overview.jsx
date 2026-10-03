@@ -1,14 +1,14 @@
 // monitoring-hub/frontend/src/pages/Overview.jsx
-import { useEffect, useState, useCallback, useRef, useMemo } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
+import { useAuth } from "../auth/AuthContext";
 import { useAlertSync } from "../hooks/useAlertSync";
-import { getLiveAccounts, getFleetDetail, deleteAccount } from "../api/api";
+import { getLiveAccounts } from "../api/api";
 import { useDashboardData } from "../hooks/useDashboardData";
 import { summarize } from "../utils/dashboardModel";
 import { StatusHero, KpiRow, ActivityPanel, FeedPanel, MatrixPanel, TopResourcesPanel, IncidentsPanel, IntelligencePanel, CoveragePanel } from "./overview/panels";
 import { PageHeader } from "../components/ui";
-import { metricLabel } from "../utils/metricLabels";
-import { AlertOctagonIcon, ZapIcon, AlertTriangleIcon, ServerIcon, HardDriveIcon, BucketIcon, XIcon, RefreshCwIcon } from "../components/icons";
+import { AlertOctagonIcon, ZapIcon, AlertTriangleIcon, ServerIcon, HardDriveIcon, BucketIcon, RefreshCwIcon } from "../components/icons";
 import "./Overview.css";
 import "./overview/dash.css";
 import { useTimezone } from "../contexts/TimezoneContext";
@@ -100,6 +100,8 @@ function aggregateStats(regions) {
 
 export default function Overview() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const canManage = ["admin", "editor"].includes(String(user?.role || "").toLowerCase());   // same roles that can open Settings
   const [sp] = useSearchParams();
   const scopeAcct = sp.get("a") || "";
   const { ianaName } = useTimezone();
@@ -120,8 +122,6 @@ export default function Overview() {
   // Fleet-wide health summary (2026-09-14) -- one server-side aggregate
   // call across every account, not N per-account calls from here. See
   // GET /api/incidents/fleet-summary's own docstring.
-  const [showAttention, setShowAttention] = useState(false);
-  const deletedIds = useRef(new Set());
 
   // Alert counts are NOT fetched independently here anymore -- see the
   // criticalAlerts/warningAlerts comment below for why (they used to
@@ -134,8 +134,7 @@ export default function Overview() {
     setRevalidating(true);
     try {
       const data = await getLiveAccounts();
-      const filtered = (Array.isArray(data) ? data : [])
-        .filter(a => !deletedIds.current.has(a.id));
+      const filtered = Array.isArray(data) ? data : [];
       setAccounts(filtered);
       setLoadError(false);
       setCached(OVERVIEW_CACHE_KEY, { accounts: filtered });
@@ -156,7 +155,7 @@ export default function Overview() {
   useEffect(() => {
     const cached = getCached(OVERVIEW_CACHE_KEY);
     if (!cached) return;
-    const filtered = (cached.data.accounts || []).filter(a => !deletedIds.current.has(a.id));
+    const filtered = cached.data.accounts || [];
     setAccounts(filtered);
     setLastSync(new Date(cached.ts));
     setLoading(false);
@@ -182,27 +181,6 @@ export default function Overview() {
   // worker, so the Overview trailed the Alerts page by minutes.
   useAlertSync(loadAll);
 
-  async function handleDelete(e, acc) {
-    e.stopPropagation();
-    if (!window.confirm(`Remove "${acc.account_name}" (${acc.region}) from monitoring?`)) return;
-    deletedIds.current.add(acc.id);
-    setAccounts(prev => prev.filter(a => a.id !== acc.id));
-    try {
-      // Was a raw fetch() -- unlike every other authenticated action
-      // in this app, it never went through apiFetch(), so a
-      // mid-session expiry here showed the generic "Failed to remove
-      // account" alert below instead of bouncing to /login like the
-      // rest of the app does on a 401 (see api.js's apiFetch
-      // docstring). deleteAccount() is the same shared helper other
-      // admin actions already use.
-      await deleteAccount(acc.id);
-    } catch (err) {
-      console.error("Delete failed:", err);
-      deletedIds.current.delete(acc.id);
-      setAccounts(prev => [...prev, acc].sort((a, b) => a.id - b.id));
-      alert("Failed to remove account. Please try again.");
-    }
-  }
 
   function toggleExpand(accountId) {
     setExpandedIds(prev => {
@@ -215,9 +193,6 @@ export default function Overview() {
   // Group into logical accounts
   const grouped = groupByAccount(scopeAcct ? accounts.filter(a => String(a.account_id) === scopeAcct) : accounts);
 
-  const healthyCount  = grouped.filter(g => aggregateStatus(g.regions) === "healthy").length;
-  const warningCount  = grouped.filter(g => aggregateStatus(g.regions) === "warning").length;
-  const criticalCount = grouped.filter(g => aggregateStatus(g.regions) === "critical").length;
 
   // Root cause of "the alert counts are different everywhere" (Vinay,
   // 2026-09-11): this banner used to derive its numbers from raw rows
@@ -275,7 +250,7 @@ export default function Overview() {
             <div className="span-7"><MatrixPanel matrix={model.matrix} onGo={go} /></div>
             <div className="span-5"><TopResourcesPanel rows={model.topResources} onGo={go} /></div>
             <div className="span-4"><IncidentsPanel incidents={model.incidents} capped={dash.incidentsCapped} now={now} onGo={go} /></div>
-            <div className="span-4"><IntelligencePanel anomalies={model.anomalies} fleet={dash.fleet} kpi={model.kpi} now={now} onGo={go} onOpenAttention={() => setShowAttention(v => !v)} /></div>
+            <div className="span-4"><IntelligencePanel anomalies={model.anomalies} fleet={dash.fleet} kpi={model.kpi} now={now} onGo={go} /></div>
             <div className="span-4"><CoveragePanel freshness={model.freshness} kpi={model.kpi} onGo={go} /></div>
           </div>
         </>
@@ -287,6 +262,7 @@ export default function Overview() {
           <span style={{ fontWeight: 400, fontSize: 13, color: "var(--text-muted)", marginLeft: 8 }}>
             ({filteredGroups.length})
           </span>
+          {canManage && <Link to="/settings#accounts" className="ov-link" style={{ fontSize: 12, fontWeight: 600, marginLeft: 14 }}>Manage accounts &amp; regions →</Link>}
         </h2>
         <div className="filter-row">
           <span style={{ fontSize: 13, color: "var(--text-muted)", marginRight: 6 }}>Filter:</span>
@@ -325,19 +301,17 @@ export default function Overview() {
               expanded={expandedIds.has(group.account_id)}
               onToggle={() => toggleExpand(group.account_id)}
               onRegionClick={(regionRow) => navigate(`/accounts/${regionRow.id}/services`)}
-              onDelete={handleDelete}
             />
           ))}
         </div>
       )}
-      {showAttention && <AttentionPanel onClose={() => setShowAttention(false)} />}
     </div>
   );
 }
 
 // ─── Account Group Card ──────────────────────────────────────────────────────
 
-function AccountGroupCard({ group, expanded, onToggle, onRegionClick, onDelete }) {
+function AccountGroupCard({ group, expanded, onToggle, onRegionClick }) {
   const status = aggregateStatus(group.regions);
   const stats  = aggregateStats(group.regions);
   const regionCount = group.regions.length;
@@ -457,7 +431,6 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick, onDelete }
               key={regionRow.id}
               regionRow={regionRow}
               onClick={() => onRegionClick(regionRow)}
-              onDelete={(e) => onDelete(e, regionRow)}
             />
           ))}
         </div>
@@ -468,7 +441,7 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick, onDelete }
 
 // ─── Region Row (drilldown) ───────────────────────────────────────────────────
 
-function RegionRow({ regionRow, onClick, onDelete }) {
+function RegionRow({ regionRow, onClick }) {
   const status = regionRow.status || "healthy";
 
   // Same authoritative per-region counts the backend used to set
@@ -523,12 +496,6 @@ function RegionRow({ regionRow, onClick, onDelete }) {
           <span className="region-alert-badge region-alert-warning"><AlertTriangleIcon size={11} className="ico-inline" />{warning}</span>
         )}
         <span className="region-row-goto">Services →</span>
-        <button
-          className="btn-delete-sm"
-          onClick={onDelete}
-          title="Remove region"
-          aria-label="Remove region"
-        ><XIcon size={14} /></button>
       </div>
     </div>
   );
@@ -729,77 +696,6 @@ function SummaryTile({ icon, label, value, color, pulse, sub, onClick, hint }) {
 }
 
 /** Slide-over listing exactly what the "Resources Need Attention" tile counts. */
-function AttentionPanel({ onClose }) {
-  const navigate = useNavigate();
-  const [data, setData] = useState(null);
-  const [err, setErr] = useState(null);
-  useEffect(() => {
-    let dead = false;
-    getFleetDetail().then(d => { if (!dead) setData(d); }).catch(e => { if (!dead) setErr(e.message || "Could not load"); });
-    return () => { dead = true; };
-  }, []);
-  useEffect(() => {
-    const h = (e) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [onClose]);
-
-  const goAlerts = (resourceId) => { onClose(); navigate(`/alerts?tab=active&q=${encodeURIComponent(resourceId)}`); };
-  const reasonText = (r) => {
-    const parts = [];
-    if (r?.critical_alerts) parts.push(`${r.critical_alerts} critical`);
-    if (r?.warning_alerts) parts.push(`${r.warning_alerts} warning`);
-    return parts.join(" · ") || "low health score";
-  };
-
-  return (
-    <div className="att-overlay" onClick={onClose}>
-      <aside className="att-panel" role="dialog" aria-label="Resources need attention" onClick={e => e.stopPropagation()}>
-        <div className="att-head">
-          <div>
-            <h2>Resources Need Attention</h2>
-            <p>Resources with a health score below 70, and resources trending toward a capacity limit.</p>
-          </div>
-          <button className="att-close" onClick={onClose} aria-label="Close"><XIcon size={14} /></button>
-        </div>
-        {!data && !err && <div className="att-empty">Loading…</div>}
-        {err && <div className="att-empty">Could not load the list: {err}</div>}
-        {data && (
-          <>
-            <h3 className="att-sec">Critical health <span>{data.critical_resources.length}</span></h3>
-            {data.critical_resources.length === 0 && <div className="att-empty">None right now.</div>}
-            {data.critical_resources.map(r => (
-              <button key={`${r.aws_account_id}-${r.resource_id}`} className="att-row" onClick={() => goAlerts(r.resource_id)}>
-                <div className="att-main">
-                  <div className="att-name">{r.resource_name || r.resource_id}</div>
-                  <div className="att-sub">{(r.resource_type || "").toUpperCase()} · {r.account_name || `Account ${r.aws_account_id}`} · {reasonText(r.score_reason)}</div>
-                </div>
-                <div className="att-badge att-red">{Math.round(r.health_score)}<small>score</small></div>
-              </button>
-            ))}
-            <h3 className="att-sec">Approaching capacity <span>{data.capacity_risks.length}</span></h3>
-            {data.capacity_risks.length === 0 && <div className="att-empty">None right now.</div>}
-            {data.capacity_risks.map(r => (
-              <button key={`${r.aws_account_id}-${r.resource_id}-${r.metric_name}`} className="att-row" onClick={() => goAlerts(r.resource_id)}>
-                <div className="att-main">
-                  <div className="att-name">{r.resource_name || r.resource_id}</div>
-                  <div className="att-sub">{metricLabel(r.metric_name)} at {Number(r.current_value).toFixed(1)}%{r.account_name ? ` · ${r.account_name}` : ""} · rising {Number(r.slope_per_day).toFixed(2)}/day</div>
-                </div>
-                <div className="att-badge att-amber">{Number(r.days_to_exhaustion) >= 100 ? Math.round(r.days_to_exhaustion) : Number(r.days_to_exhaustion).toFixed(0)}<small>days left</small></div>
-              </button>
-            ))}
-            <div className="att-foot">
-              <button className="att-link" onClick={() => { onClose(); navigate("/alerts?tab=attention"); }}>
-                See the alerts on these resources →
-              </button>
-            </div>
-          </>
-        )}
-      </aside>
-    </div>
-  );
-}
-
 function StatusPill({ status }) {
   const m = {
     healthy:  { label: "Healthy",  cls: "pill-green"  },
