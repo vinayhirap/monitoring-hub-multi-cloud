@@ -143,7 +143,12 @@ export default function Compliance() {
             ...l,
             action:  l.action  ?? payload?.action ?? "System action",
             actor:   l.actor   ?? payload?.actor  ?? "System",
-            payload: l.ip_address ? { ...payload, ip_address: l.ip_address } : payload,
+            payload: (l.ip_address || l.user_agent || l.request_id)
+              ? { ...payload,
+                  ...(l.ip_address ? { ip_address: l.ip_address } : {}),
+                  ...(l.user_agent ? { user_agent: l.user_agent } : {}),
+                  ...(l.request_id ? { request_id: l.request_id } : {}) }
+              : payload,
           };
         }));
         setLastFetch(new Date());
@@ -169,13 +174,16 @@ export default function Compliance() {
 
   function exportCSV() {
     const rows = [
-      ["Timestamp", "Action", "Actor", "Detail", "Role"],
+      ["Timestamp", "Action", "Actor", "Detail", "Role", "Source IP", "User agent", "Request ID"],
       ...logs.map(l => [
         l.created_at ? formatTs(l.created_at, ianaName, timezone) : "",
         l.action ?? "",
         l.actor  ?? "",
         l.payload?.detail ?? "",
         displayRole(l.payload),
+        l.ip_address ?? "",
+        l.user_agent ?? "",
+        l.request_id ?? "",
       ])
     ];
     // SECURITY (CSV/formula injection, CWE-1236): actor/detail can

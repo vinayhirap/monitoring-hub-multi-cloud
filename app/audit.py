@@ -34,6 +34,7 @@ from the others.
 """
 import json
 import logging
+import re
 
 from app.db import get_connection
 
@@ -69,6 +70,38 @@ def _client_ip(request) -> str | None:
         return request.client.host if request.client else None
     except Exception:
         return None
+
+
+_CTRL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _user_agent(request) -> str | None:
+    """Caller's User-Agent, control characters stripped, capped at 255. Never raises."""
+    if request is None:
+        return None
+    try:
+        ua = request.headers.get("user-agent")
+    except Exception:
+        return None
+    if not ua:
+        return None
+    return _CTRL.sub(" ", ua)[:255]
+
+
+def _request_id(request) -> str | None:
+    try:
+        rid = getattr(getattr(request, "state", None), "request_id", None)
+        if not rid:
+            from app.request_context import get_request_id   # lazy: keeps this module importable in isolation
+            rid = get_request_id()
+    except Exception:
+        rid = None
+    return str(rid)[:64] if rid else None
+
+
+# MySQL 1054 = unknown column: migration 078 not applied yet. Fall back to the old INSERT so a
+# deploy that races the migration loses no audit rows.
+_UNKNOWN_COLUMN = 1054
 
 
 def write_audit(actor: str, action: str, detail: str = None, *,
@@ -129,10 +162,20 @@ def write_audit(actor: str, action: str, detail: str = None, *,
         try:
             conn = get_connection()
             cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO audit_logs (actor, action, payload, ip_address) VALUES (%s,%s,%s,%s)",
-                (actor or "unknown", action, json.dumps(payload), _client_ip(request)),
-            )
+            try:
+                cur.execute(
+                    "INSERT INTO audit_logs (actor, action, payload, ip_address, user_agent, request_id) "
+                    "VALUES (%s,%s,%s,%s,%s,%s)",
+                    (actor or "unknown", action, json.dumps(payload), _client_ip(request),
+                     _user_agent(request), _request_id(request)),
+                )
+            except Exception as insert_exc:
+                if getattr(insert_exc, "errno", None) != _UNKNOWN_COLUMN:
+                    raise
+                cur.execute(
+                    "INSERT INTO audit_logs (actor, action, payload, ip_address) VALUES (%s,%s,%s,%s)",
+                    (actor or "unknown", action, json.dumps(payload), _client_ip(request)),
+                )
             conn.commit()
             cur.close()
         finally:

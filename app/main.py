@@ -46,6 +46,8 @@ from app.ws.manager import ws_manager, KNOWN_CHANNELS
 from app.ws.pusher  import redis_listener, stop_listener
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+from app.request_context import install_log_filter, request_id_middleware
+install_log_filter()   # adds [request_id] to log lines (audit C8)
 logger = logging.getLogger(__name__)
 
 
@@ -178,6 +180,9 @@ async def lifespan(app):
 
 app = FastAPI(title="CloudOps API", version="0.3.0", lifespan=lifespan)
 
+from app import errors as _errors
+_errors.install(app)   # uniform error body + request id (audit C8)
+
 _cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
 CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
 
@@ -203,7 +208,11 @@ async def _origin_check(request, call_next):
         request.headers.get("origin"), request.headers.get("host"),
     ):
         from fastapi.responses import JSONResponse
-        return JSONResponse(status_code=403, content={"detail": "Cross-origin request blocked"})
+        return JSONResponse(
+            status_code=403,
+            content=_errors.build_body(403, "Cross-origin request blocked", "Cross-origin request blocked",
+                                       getattr(request.state, "request_id", None)),
+        )
     return await call_next(request)
 
 
@@ -255,6 +264,11 @@ async def _security_headers(request, call_next):
     if request.url.scheme == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
+
+
+# Registered LAST so it is the outermost middleware: every response (incl. the 403 from
+# _origin_check) carries X-Request-ID. See app/request_context.py.
+app.middleware("http")(request_id_middleware)
 
 
 @app.get("/")

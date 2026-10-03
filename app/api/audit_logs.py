@@ -51,7 +51,10 @@ def get_audit_logs(
     Fetch audit logs from DB.
     Optional filters: actor, action (partial match).
     """
-    query  = "SELECT id, actor, action, payload, created_at FROM audit_logs WHERE 1=1"
+    # ip_address/user_agent/request_id: stored by write_audit() but never returned before, so the
+    # Compliance page's IP handling had nothing to show (audit E8).
+    cols   = "id, actor, action, payload, ip_address, user_agent, request_id, created_at"
+    query  = "SELECT {cols} FROM audit_logs WHERE 1=1"
     params = []
 
     if actor:
@@ -68,7 +71,12 @@ def get_audit_logs(
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute(query, params)
+        try:
+            cursor.execute(query.format(cols=cols), params)
+        except Exception as exc:
+            if getattr(exc, "errno", None) != 1054:      # unknown column: migration 078 not applied yet
+                raise
+            cursor.execute(query.format(cols="id, actor, action, payload, created_at"), params)
         rows = cursor.fetchall()
     finally:
         cursor.close()
