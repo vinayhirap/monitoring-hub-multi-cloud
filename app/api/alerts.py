@@ -255,6 +255,8 @@ def _fetch_alerts_from_db(current_user: dict, tab: str = "all", limit: int = 500
                 {alert_rules.state_sql()}              AS state,
                 a.current_value,
                 a.threshold,
+                a.breach_value,
+                a.breach_threshold,
                 a.value,
                 CONVERT_TZ(a.triggered_at, @@session.time_zone, '+00:00') AS triggered_at,
                 CONVERT_TZ(a.resolved_at,  @@session.time_zone, '+00:00') AS resolved_at,

@@ -156,7 +156,15 @@ export default function ResourceEvidence({ accountId, resourceIds, resourceId, s
                 {it.kind === "alert" ? (
                   <span className="rev-body">
                     <button className="rev-link" onClick={() => focusMetric(it.alert.metric_name)} title="Jump to this metric's chart">{metricLabel(it.alert.metric_name)}</button>
-                    {it.label === "triggered" && <span className="rev-dim"> {formatMetricValue(it.alert.metric_name, it.alert.current_value ?? it.alert.value)} vs threshold {formatMetricValue(it.alert.metric_name, it.alert.threshold)}</span>}
+                    {it.label === "triggered" && (
+                      /* Show the reading that actually breached (breach_value/breach_threshold, migration 077), never the live
+                         current_value: that is overwritten by the healthy cycles an open alert needs to resolve, which printed
+                         "WARNING 11.68% vs threshold 70%". Alerts raised before the migration have no snapshot, so only the
+                         threshold is shown for them rather than a value that may contradict the severity. */
+                      it.alert.breach_value != null && it.alert.breach_threshold != null
+                        ? <span className="rev-dim"> {formatMetricValue(it.alert.metric_name, it.alert.breach_value)} vs threshold {formatMetricValue(it.alert.metric_name, it.alert.breach_threshold)}</span>
+                        : <span className="rev-dim"> threshold {formatMetricValue(it.alert.metric_name, it.alert.threshold)}</span>
+                    )}
                     {it.label === "triggered" && it.alert.state === "firing" && <span className="rev-live"> · still firing</span>}
                     {it.alert.resolution_reason && it.label === "resolved" && <span className="rev-dim"> · {it.alert.resolution_reason}</span>}
                   </span>

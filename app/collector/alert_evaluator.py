@@ -851,10 +851,15 @@ def _evaluate_row(cursor, row, silenced_map, stats):
     threshold_value = critical_value if is_critical else warning_value
 
     if existing:
+        # breach_value/breach_threshold (migration 077): the reading that
+        # actually breached this cycle and the line it breached. Unlike
+        # current_value/threshold they are never touched on a healthy
+        # cycle, so the pair always agrees with the alert's severity.
         update_fields = ["current_value = %s", "threshold = %s",
+                          "breach_value = %s", "breach_threshold = %s",
                           "last_seen_at = UTC_TIMESTAMP()", "healthy_streak = 0",
                           "cycle_at = UTC_TIMESTAMP()"]
-        params = [metric_value, threshold_value]
+        params = [metric_value, threshold_value, metric_value, threshold_value]
         if existing["severity"] == "CRITICAL" and severity != "CRITICAL":
             # DE-ESCALATION (2026-09-21). An open CRITICAL whose reading no
             # longer reaches the critical line -- volume anomalies (never
@@ -901,11 +906,13 @@ def _evaluate_row(cursor, row, silenced_map, stats):
         INSERT INTO alerts
             (aws_account_id, resource_id, metric_name, severity,
              environment, group_key, status, triggered_at, last_seen_at, cycle_at,
-             healthy_streak, current_value, threshold, silenced, silenced_reason)
-        VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0, %s, %s, %s, %s)
+             healthy_streak, current_value, threshold, breach_value, breach_threshold,
+             silenced, silenced_reason)
+        VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0, %s, %s, %s, %s, %s, %s)
     """, (
         aws_account_id, aws_resource_id, metric_name, promoted_severity, environment,
         group_key, pending["first_breach_at"], metric_value, threshold_value,
+        metric_value, threshold_value,
         1 if silence_reason else 0, silence_reason,
     ))
     new_alert_id = cursor.lastrowid
