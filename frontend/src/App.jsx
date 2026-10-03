@@ -27,6 +27,7 @@ import MaintenanceWindows  from "./pages/MaintenanceWindows";
 // import DeployRisk          from "./pages/DeployRisk";
 import Search              from "./pages/Search";
 import Reports              from "./pages/Reports";
+import NotFound             from "./pages/NotFound";
 import StatusPageAdmin     from "./pages/StatusPageAdmin";
 import StatusPagePublic    from "./pages/StatusPagePublic";
 
@@ -138,8 +139,10 @@ function AppRoutes() {
         <Route path="accounts/:id/incidents"    element={<Incidents />} />
         <Route path="accounts/:id/:service"     element={<ServiceDetailRouter />} />
         <Route path="accounts/:id"              element={<AccountDetail />} />
+        {/* Unknown URL: say so (audit B1) instead of silently landing on Overview. Signed-out visitors
+            never reach this: RequireAuth sends them to /login and brings them back to the URL they asked for. */}
+        <Route path="*"                         element={<NotFound />} />
       </Route>
-      <Route path="*" element={<Navigate to="/overview" replace />} />
     </Routes>
   );
 }
