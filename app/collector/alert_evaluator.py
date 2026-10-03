@@ -33,7 +33,7 @@ from app.alert_rules import (
 )
 from app.threshold_defaults import (
     is_placeholder_threshold, AWS_METRIC_NAME_TO_DB_NAME, normalize_service_key,
-    is_capacity_percent_metric, alert_floor,
+    is_capacity_percent_metric, is_static_only_metric, alert_floor,
 )
 
 # 2026-09-15 fix: this background evaluator resolves alerts directly via SQL
@@ -747,11 +747,12 @@ def _evaluate_row(cursor, row, silenced_map, stats):
             warning_value = critical_value = None
         else:
             warning_value = critical_value = line
-    elif row.get("use_dynamic") and not is_capacity_percent_metric(metric_name):
-        # Capacity-percent metrics (disk/mem used %) are always evaluated
-        # against the static line even if use_dynamic=1 was set (by the
-        # tuner before 2026-09-29, or by hand): see
-        # threshold_defaults.CAPACITY_PERCENT_METRICS.
+    elif row.get("use_dynamic") and not is_static_only_metric(metric_name):
+        # Capacity-percent metrics (disk/mem used %) and availability /
+        # absolute-limit metrics (healthy hosts, status checks, cert expiry,
+        # failed jobs ...) are always evaluated against the static line even
+        # if use_dynamic=1 was set (by the tuner earlier, or by hand): see
+        # threshold_defaults.is_static_only_metric.
         dynamic = _dynamic_bounds(
             cursor, aws_account_id, aws_resource_id, metric_name,
             comparison, row["dynamic_k"] or 3.0,

@@ -318,6 +318,35 @@ def is_capacity_percent_metric(metric_name):
                for base in CAPACITY_PERCENT_METRICS)
 
 
+# Audit A5 (2026-10-03): the auto-tuner switched availability / absolute-limit
+# metrics to a learned band because they "typically run" at a bad value --
+# HealthyHostCount on a target group that has had zero healthy hosts for days
+# was reclassified as normal, and the alert then kept showing the old static
+# line. For these metrics the bad value IS the incident, whatever the history
+# says: they alert on the static line only (same treatment as the capacity
+# percent metrics above). Matched on the lower-cased DB or catalog name by
+# prefix, so StatusCheckFailed_System, healthyhosts_describe, etc. all hit.
+STATIC_ONLY_METRIC_PREFIXES = (
+    "healthyhost", "unhealthyhost", "healthcheckpercentagehealthy",
+    "statuscheckfailed",
+    "daystoexpiry",
+    "numberofbackupjobsfailed", "numberofrestorejobsfailed",
+    "numberofnotificationsfailed",
+    "errorportallocation",
+    "freestorage",
+)
+
+
+def is_static_only_metric(metric_name):
+    """True when a metric must never use a learned/dynamic band: capacity
+    percentages (disk/mem used %) plus availability and absolute-limit
+    metrics (see STATIC_ONLY_METRIC_PREFIXES)."""
+    if is_capacity_percent_metric(metric_name):
+        return True
+    name = (metric_name or "").lower()
+    return any(name.startswith(prefix) for prefix in STATIC_ONLY_METRIC_PREFIXES)
+
+
 # Used when a metric_name has no explicit entry above (e.g. a "directory"
 # metric discovered live via ListMetrics that isn't in the curated catalog).
 FALLBACK_THRESHOLD = (1000000, 5000000, ">")

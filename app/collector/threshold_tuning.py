@@ -132,7 +132,7 @@ should self-correct continuously.
 """
 import logging
 from app.db import get_connection
-from app.threshold_defaults import resolve_db_metric_name, is_capacity_percent_metric
+from app.threshold_defaults import resolve_db_metric_name, is_capacity_percent_metric, is_static_only_metric
 
 logger = logging.getLogger(__name__)
 
@@ -340,7 +340,10 @@ def auto_tune_static_thresholds() -> int:
             # Never auto-switch disk/mem used-% to dynamic: one genuinely
             # full instance would flip the whole account and make every
             # healthy disk flap (see threshold_defaults.CAPACITY_PERCENT_METRICS).
-            if is_capacity_percent_metric(th.get("metric_name")):
+            # Same for availability / absolute-limit metrics (healthy hosts,
+            # status checks, cert expiry, failed jobs ...): a persistently bad
+            # value there is the incident, not "normal" (audit A5).
+            if is_static_only_metric(th.get("metric_name")):
                 continue
             try:
                 result = _tune_one(cursor, th)

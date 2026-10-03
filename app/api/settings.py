@@ -3,7 +3,7 @@ from fastapi import APIRouter, Body, Query, Depends, HTTPException
 from app.db import get_db_cursor
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
-from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type, resolve_db_metric_name, is_capacity_percent_metric
+from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type, resolve_db_metric_name, is_static_only_metric
 import datetime, json, logging, math
 from app.utils.time_json import to_utc_iso
 
@@ -397,10 +397,10 @@ def toggle_dynamic_threshold(threshold_id: int, payload: dict = Body(...), curre
             )
             _row = cur.fetchone()
             _name = (_row.get("metric_name") if isinstance(_row, dict) else (_row[0] if _row else None))
-            if is_capacity_percent_metric(_name):
+            if is_static_only_metric(_name):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"{_name} is a capacity metric and always uses its static "
+                    detail=f"{_name} is a capacity or availability metric and always uses its static "
                            f"warning/critical values; dynamic thresholds are not supported for it",
                 )
         cur.execute(

@@ -16,7 +16,7 @@ from app import alert_rules
 from app.db import get_db_cursor
 from app.metric_display import (METRIC_HISTORY_RETENTION_DAYS, display_spec, fmt_interval,
                                 polling_info, stats_available)
-from app.threshold_defaults import is_capacity_percent_metric, is_placeholder_threshold, resolve_db_metric_name
+from app.threshold_defaults import is_static_only_metric, is_placeholder_threshold, resolve_db_metric_name
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ def _effective_lines(cur, account_id, resource_id, row, db_name):
         if is_placeholder_threshold(warning, critical, comparison):
             line = ev._anomaly_only_bound(cur, account_id, resource_id, db_name, row.get("dynamic_k") or 3.0)
             return (line, line, "anomaly") if line is not None else (None, None, "anomaly")
-        if row.get("use_dynamic") and not is_capacity_percent_metric(db_name):
+        if row.get("use_dynamic") and not is_static_only_metric(db_name):
             dyn = ev._dynamic_bounds(cur, account_id, resource_id, db_name, comparison,
                                      row.get("dynamic_k") or 3.0, static_warning=warning, static_critical=critical)
             if dyn is not None:
