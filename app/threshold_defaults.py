@@ -262,6 +262,7 @@ DEFAULT_THRESHOLDS = {
 #   EBS volume ops / bytes   Sum over one 5-minute period       (1,000 ops ~ 3.3 IOPS; 50 MB ~ 170 KB/s)
 #   EC2 network in / out     Average bytes per MINUTE            (1 MB/min ~ 17 KB/s)
 #   WAF blocked requests     requests per collection period
+#   ALB target 4xx count     requests per collection period (5 min)
 # Busy resources are unaffected (their own lines are far above the floor). Adjust here.
 ALERT_MIN_ABSOLUTE = {
     "volumereadops": 1000.0,
@@ -271,6 +272,12 @@ ALERT_MIN_ABSOLUTE = {
     "networkin": 1_000_000.0,
     "networkout": 1_000_000.0,
     "blockedrequests": 10.0,
+    # ALB target 4xx (client error) count. PROD 2026-10-03, 7 days, value at trigger time: of 356 alerts
+    # 207 fired at <=5 requests and 49 more at 6-10 (72% at or below 10; alert 9160 fired at 3 requests
+    # against a dynamic line of 1.77). A handful of client errors per 5 minutes is background noise on
+    # any public endpoint. Deliberately NOT applied to 5xx counts: a server error is worth an alert at
+    # any volume.
+    "httpcode_target_4xx_count": 10.0,
 }
 
 

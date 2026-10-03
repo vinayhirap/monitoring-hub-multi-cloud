@@ -28,10 +28,19 @@ def test_floor_table_holds_exactly_the_agreed_metrics_and_units():
     assert ALERT_MIN_ABSOLUTE == {
         "volumereadops": 1000.0, "volumewriteops": 1000.0,
         "volumereadbytes": 50_000_000.0, "volumewritebytes": 50_000_000.0,
-        "networkin": 1_000_000.0, "networkout": 1_000_000.0, "blockedrequests": 10.0}
+        "networkin": 1_000_000.0, "networkout": 1_000_000.0, "blockedrequests": 10.0,
+        "httpcode_target_4xx_count": 10.0}
     assert alert_floor("VolumeReadOps") == 1000.0                 # PascalCase family (extended tier) too
     assert alert_floor("NetworkOut") == 1_000_000.0 and alert_floor("BlockedRequests") == 10.0
     assert alert_floor("requestcount") == 0.0 and alert_floor("allowedrequests") == 0.0 and alert_floor(None) == 0.0
+
+
+def test_4xx_count_has_a_floor_but_server_errors_never_do():
+    """2026-10-03: client-error noise is floored (10 per 5 min); 5xx must keep alerting at any count."""
+    assert alert_floor("httpcode_target_4xx_count") == 10.0
+    assert alert_floor("HTTPCode_Target_4XX_Count") == 10.0          # PascalCase family too
+    for server_error in ("httpcode_target_5xx_count", "httpcode_elb_5xx_count", "errors5xx"):
+        assert alert_floor(server_error) == 0.0
 
 
 def test_idle_volume_line_is_the_floor_not_a_near_zero_number():
