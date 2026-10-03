@@ -31,6 +31,7 @@ exists (consistent 503 with a clear message rather than a bare 404)
 and flipping the flag needs nothing but a restart -- no code change,
 no redeploy.
 """
+import hashlib
 import logging
 import os
 import re
@@ -98,6 +99,26 @@ def _resolve_period(report_type: str, period_start: str | None, period_end: str 
     return start, end
 
 
+_INFLIGHT_MAX_MINUTES = 15       # a QUEUED/PROCESSING job older than this is presumed stuck and does not block
+_RECENT_COMPLETE_SECONDS = 60    # a just-finished identical report answers a double click
+
+
+def _find_duplicate_job(cur, report_type, scope_type, scope_id, account_id, username, start, end):
+    """Most recent job that already satisfies an identical request, or None."""
+    sql = """SELECT id, status FROM report_jobs
+             WHERE report_type = %s AND scope_type = %s AND scope_id = %s
+               AND account_id <=> %s AND requested_by = %s
+               AND ( (status IN ('QUEUED','PROCESSING') AND created_at > NOW() - INTERVAL %s MINUTE)
+                  OR (status = 'COMPLETE' AND created_at > NOW() - INTERVAL %s SECOND) )"""
+    params = [report_type, scope_type, scope_id, account_id, username,
+              _INFLIGHT_MAX_MINUTES, _RECENT_COMPLETE_SECONDS]
+    if report_type == "CUSTOM":      # fixed ranges: the same range, not merely the same type
+        sql += " AND period_start = %s AND period_end = %s"
+        params += [start, end]
+    cur.execute(sql + " ORDER BY id DESC LIMIT 1", params)
+    return cur.fetchone()
+
+
 @router.post("/generate")
 def generate_report(
     background_tasks: BackgroundTasks,
@@ -143,16 +164,33 @@ def generate_report(
 
     start, end = _resolve_period(report_type, period_start, period_end)
 
-    with get_db_cursor() as (_, cur):
-        cur.execute(
-            """INSERT INTO report_jobs
-               (report_type, scope_type, scope_id, account_id, period_start, period_end,
-                requested_by, requested_by_role)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-            (report_type, scope_type, scope_id, account_id, start, end,
-             current_user["username"], current_user.get("role")),
-        )
-        job_id = cur.lastrowid
+    # IDEMPOTENCY (audit B11/C6): a double click, a retry after a slow response, or two tabs used to
+    # create two jobs and two identical PDFs (the library held duplicate "Weekly" reports and the audit
+    # log showed two requests 44 s apart). An identical request by the same user for the same scope is
+    # now answered with the job that already exists -- one still running (up to _INFLIGHT_MAX_MINUTES)
+    # or one that finished within the last _RECENT_COMPLETE_SECONDS. FAILED jobs never block a retry.
+    # GET_LOCK serialises the check-then-insert so two simultaneous requests cannot both miss.
+    lock_name = "report_gen:" + hashlib.sha1(
+        f"{report_type}|{scope_type}|{scope_id}|{account_id}|{current_user['username']}".encode()
+    ).hexdigest()
+    with get_db_cursor(dictionary=True) as (_, cur):
+        cur.execute("SELECT GET_LOCK(%s, 3) AS got", (lock_name,))
+        try:
+            existing = _find_duplicate_job(cur, report_type, scope_type, scope_id, account_id,
+                                           current_user["username"], start, end)
+            if existing:
+                return {"job_id": existing["id"], "status": existing["status"], "deduplicated": True}
+            cur.execute(
+                """INSERT INTO report_jobs
+                   (report_type, scope_type, scope_id, account_id, period_start, period_end,
+                    requested_by, requested_by_role)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (report_type, scope_type, scope_id, account_id, start, end,
+                 current_user["username"], current_user.get("role")),
+            )
+            job_id = cur.lastrowid
+        finally:
+            cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
 
     write_audit(current_user["username"], "Report generation requested",
                 f"{report_type} report for {scope_type}={scope_id}",

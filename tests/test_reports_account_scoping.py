@@ -92,7 +92,10 @@ def test_generate_report_account_scope_requires_account_id():
 def test_generate_report_account_scope_with_account_id_succeeds():
     from tests.conftest import contains
     script = [
+        (contains("GET_LOCK"), [{"got": 1}]),
+        (contains("FROM report_jobs"), []),
         (contains("INSERT INTO report_jobs"), []),
+        (contains("RELEASE_LOCK"), []),
     ]
     mod = _load_reports_module(script)
     result = mod.generate_report(
@@ -133,7 +136,10 @@ def test_generate_report_client_scope_denied_for_non_admin():
 def test_generate_report_client_scope_allowed_for_admin():
     from tests.conftest import contains
     script = [
+        (contains("GET_LOCK"), [{"got": 1}]),
+        (contains("FROM report_jobs"), []),
         (contains("INSERT INTO report_jobs"), []),
+        (contains("RELEASE_LOCK"), []),
     ]
     mod = _load_reports_module(script)
     result = mod.generate_report(
