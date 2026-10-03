@@ -77,22 +77,29 @@ export function AuthProvider({ children }) {
     return () => { cancelled = true; };
   }, []);
 
+  // Returns { ok:true } or { ok:false, status, retryAfter } / { ok:false, network:true } so the sign-in page can say WHY it failed
+  // (wrong password vs rate-limited vs server error vs unreachable) instead of always claiming the password was wrong.
   async function login(username, password) {
+    let res;
     try {
-      const res = await fetch(`${BASE}/api/auth/login`, {
+      res = await fetch(`${BASE}/api/auth/login`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
-      if (!res.ok) return false;
+    } catch {
+      return { ok: false, network: true };
+    }
+    if (!res.ok) return { ok: false, status: res.status, retryAfter: res.headers.get("Retry-After") };
+    try {
       const data = await res.json();
       setUser({ id: data.id, username: data.username, role: data.role });
-    allowCacheWrites();
+      allowCacheWrites();
       await loadPermissions();
-      return true;
+      return { ok: true };
     } catch {
-      return false;
+      return { ok: false, status: 500 };
     }
   }
 

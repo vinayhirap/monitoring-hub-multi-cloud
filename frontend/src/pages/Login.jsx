@@ -1,9 +1,10 @@
 // src/pages/Login.jsx
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { CheckIcon } from "../components/icons";
 import { AwsBrandLogo, AzureBrandLogo, GoogleCloudBrandLogo } from "../components/cloud-icons";
+import { sanitizeNext, loginFailure, formatWait, insecureContext, takeSessionExpired, FALLBACK_AFTER_LOGIN } from "../utils/loginFlow";
 import "./Login.css";
 
 const EyeIcon = ({ open }) => (
@@ -20,7 +21,7 @@ const EyeIcon = ({ open }) => (
   )
 );
 
-const PwField = ({ id, label, value, onChange, show, onToggle, placeholder, autoComplete, disabled, autoFocus }) => (
+const PwField = ({ id, label, value, onChange, show, onToggle, placeholder, autoComplete, disabled, autoFocus, inputRef, invalid, describedBy, onCaps }) => (
   <div className="login-field">
     <label htmlFor={id}>{label}</label>
     <div className="login-input-wrap">
@@ -40,13 +41,19 @@ const PwField = ({ id, label, value, onChange, show, onToggle, placeholder, auto
         autoComplete={autoComplete}
         disabled={disabled}
         autoFocus={autoFocus}
+        ref={inputRef}
+        aria-invalid={invalid ? "true" : undefined}
+        aria-describedby={describedBy}
+        onKeyDown={onCaps}
+        onKeyUp={onCaps}
+        onBlur={onCaps ? () => onCaps(null) : undefined}
       />
       <button
         type="button"
         className="login-toggle-pw"
         onClick={onToggle}
-        tabIndex={-1}
         aria-label={show ? "Hide password" : "Show password"}
+        aria-pressed={show ? "true" : "false"}
       >
         <EyeIcon open={show} />
       </button>
@@ -57,6 +64,33 @@ const PwField = ({ id, label, value, onChange, show, onToggle, placeholder, auto
 export default function Login() {
   const { login } = useAuth();
   const navigate   = useNavigate();
+  const location   = useLocation();
+  const [sp]       = useSearchParams();
+  // Where to go after signing in: the page the person was trying to open (route guard) or the one a session expiry
+  // interrupted (?next=). Only same-site paths are accepted -- see utils/loginFlow.js.
+  const from = location.state?.from;
+  const next = sanitizeNext(sp.get("next")) || sanitizeNext(from ? `${from.pathname || ""}${from.search || ""}${from.hash || ""}` : null) || FALLBACK_AFTER_LOGIN;
+  const [errKind,  setErrKind]  = useState("");
+  const [waitUntil, setWaitUntil] = useState(0);
+  const [tick,     setTick]     = useState(0);
+  const [caps,     setCaps]     = useState(false);
+  const [ssoBusy,  setSsoBusy]  = useState(false);
+  const userRef = useRef(null), pwRef = useRef(null), wantFocus = useRef(null);
+
+  const insecure = insecureContext(window.location);
+  useEffect(() => { document.title = "Sign in · CloudOps"; }, []);
+  useEffect(() => {                                   // lockout countdown; ends by itself
+    if (!waitUntil) return undefined;
+    const t = setInterval(() => {
+      if (Date.now() >= waitUntil) { setWaitUntil(0); setError(""); setErrKind(""); setInfo("You can try again now."); }
+      else setTick(n => n + 1);
+    }, 250);
+    return () => clearInterval(t);
+  }, [waitUntil]);
+  void tick;
+  const remaining = waitUntil ? Math.max(0, Math.ceil((waitUntil - Date.now()) / 1000)) : 0;
+  const locked = remaining > 0;
+  const capsHandler = e => setCaps(!!(e && e.getModifierState && e.getModifierState("CapsLock")));
 
   // "login" | "forgot" | "reset" | "change"
   const [mode, setMode] = useState("login");
@@ -64,7 +98,7 @@ export default function Login() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error,    setError]    = useState("");
-  const [info,     setInfo]     = useState("");
+  const [info,     setInfo]     = useState(() => (takeSessionExpired(window.location.search, window.sessionStorage) ? "Your session expired. Sign in again to continue." : ""));
   const [loading,  setLoading]  = useState(false);
   const [showPw,   setShowPw]   = useState(false);
 
@@ -93,21 +127,52 @@ export default function Login() {
     setMode(nextMode);
   }
 
+  // The fields are disabled while a request is running, so a focus request made at the moment the answer arrives is lost.
+  // Remember it and apply it as soon as the fields are enabled again.
+  useEffect(() => { if (!loading && wantFocus.current) { wantFocus.current.focus(); wantFocus.current = null; } }, [loading]);
+
   async function handleSubmit(e) {
     e.preventDefault();
+    if (loading || locked) return;
     if (!username.trim() || !password.trim()) {
+      setErrKind("credentials");
       setError("Username and password are required.");
+      (!username.trim() ? userRef : pwRef).current?.focus();
       return;
     }
     setLoading(true);
-    setError("");
-    const ok = await login(username.trim(), password);
+    setError(""); setErrKind(""); setInfo("");
+    const r = await login(username.trim(), password);
+    const f = r.ok ? null : loginFailure(r);
+    if (f?.kind === "credentials") wantFocus.current = pwRef.current;
     setLoading(false);
-    if (ok) {
-      navigate("/overview", { replace: true });
-    } else {
-      setError("Invalid username or password.");
+    if (r.ok) {
+      navigate(next, { replace: true });
+      return;
     }
+    setError(f.message);
+    setErrKind(f.fieldsInvalid ? "credentials" : f.kind);
+    if (f.waitSec) setWaitUntil(Date.now() + f.waitSec * 1000);
+    if (f.kind === "credentials") setPassword("");                                      // keep the username, clear the password (focus is applied once the fields are enabled)
+  }
+
+  // SSO is a real full-page redirect, but a server without SSO configured answers 503 -- which used to dump people on a raw
+  // error page. Ask first (without following the redirect); only navigate when it is actually available.
+  async function handleSso(e) {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;      // new-tab clicks behave normally
+    e.preventDefault();
+    if (ssoBusy) return;
+    setSsoBusy(true); setError(""); setErrKind(""); setInfo("");
+    try {
+      const r = await fetch("/api/auth/sso/login", { redirect: "manual", credentials: "include" });
+      if (r.status === 503) {
+        setErrKind("sso");
+        setError("Single sign-on isn't set up on this server. Sign in with your username and password, or ask an administrator to enable SSO.");
+        setSsoBusy(false);
+        return;
+      }
+    } catch { /* could not check: let the browser try the real navigation */ }
+    window.location.assign("/api/auth/sso/login");
   }
 
   async function handleForgotSubmit(e) {
@@ -283,6 +348,9 @@ export default function Login() {
                   autoComplete="username"
                   autoFocus
                   disabled={loading}
+                  ref={userRef}
+                  aria-invalid={error && errKind === "credentials" ? "true" : undefined}
+                  aria-describedby={error ? "login-error" : undefined}
                 />
               </div>
             </div>
@@ -292,7 +360,9 @@ export default function Login() {
               value={password} onChange={e => { setPassword(e.target.value); setError(""); }}
               show={showPw} onToggle={() => setShowPw(v => !v)}
               autoComplete="current-password" disabled={loading}
+              inputRef={pwRef} invalid={!!error && errKind === "credentials"} describedBy={error ? "login-error" : undefined} onCaps={capsHandler}
             />
+            {caps && <div className="login-caps" role="status">Caps Lock is on</div>}
 
             <div className="login-links-row">
               <button type="button" className="login-link" onClick={() => goTo("forgot")}>
@@ -305,7 +375,7 @@ export default function Login() {
 
             {info && <div className="login-info" role="status">{info}</div>}
             {error && (
-              <div className="login-error" role="alert">
+              <div className="login-error" id="login-error" role="alert">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <circle cx="12" cy="12" r="10"/>
                   <line x1="12" y1="8" x2="12" y2="12"/>
@@ -315,8 +385,8 @@ export default function Login() {
               </div>
             )}
 
-            <button type="submit" className={`login-btn ${loading ? "login-btn-loading" : ""}`} disabled={loading}>
-              {loading ? (<><span className="login-spinner" />Authenticating…</>) : "Sign In →"}
+            <button type="submit" className={`login-btn ${loading ? "login-btn-loading" : ""}`} disabled={loading || locked}>
+              {loading ? (<><span className="login-spinner" />Authenticating…</>) : locked ? `Try again in ${formatWait(remaining)}` : "Sign In →"}
             </button>
 
             {/* SAML SSO (2026-09-14) -- always shown; if SSO_SAML_ENABLED
@@ -327,9 +397,14 @@ export default function Login() {
                 be a real full-page navigation for the SP-initiated
                 redirect flow to work. */}
             <div className="login-divider" role="presentation"><span>or</span></div>
-            <a href="/api/auth/sso/login" className="login-sso-link">
-              Log in with SSO
+            <a href="/api/auth/sso/login" className="login-sso-link" onClick={handleSso} aria-busy={ssoBusy ? "true" : undefined}>
+              {ssoBusy ? "Checking SSO…" : "Log in with SSO"}
             </a>
+            {insecure && (
+              <p className="login-note" role="note">
+                This connection isn't encrypted (HTTP). Passwords and sessions can be read on the network. Ask your administrator to enable HTTPS.
+              </p>
+            )}
           </form>
         )}
 

@@ -13,6 +13,7 @@ import { rcaReportUrl, getGroupedAlerts, ackAlertGroup, getAlertsForResource } f
 import AlertInvestigation from "../components/AlertInvestigation";
 import { PageHeader, KpiStrip, KpiCard, SegmentedControl, EmptyState } from "../components/ui";
 import { clearAllCached } from "../utils/dataCache";
+import { redirectToSignIn } from "../utils/loginFlow";
 
 
 // Tab order: what needs a person first, then the lifecycle states, then history.
@@ -141,9 +142,7 @@ function detailRoute(resource, accountId, service) {
 // same 401 behavior is replicated locally instead, in both helpers.
 function _handleUnauthorized() {
   clearAllCached();
-  if (window.location.pathname !== "/login") {
-    window.location.href = "/login";
-  }
+  redirectToSignIn();
 }
 
 async function apiFetch(path, method = "GET", body) {

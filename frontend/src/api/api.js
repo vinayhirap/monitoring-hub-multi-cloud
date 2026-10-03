@@ -1,5 +1,6 @@
 // src/api/api.js
 import { clearAllCached } from "../utils/dataCache";
+import { redirectToSignIn } from "../utils/loginFlow";
 
 const BASE = "";
 
@@ -24,9 +25,7 @@ export async function apiFetch(path, options = {}) {
     // its own scoped fetch resolves. See dataCache.js's
     // clearAllCached() docstring for the full shared-device scenario.
     clearAllCached();
-    if (window.location.pathname !== "/login") {
-      window.location.href = "/login";
-    }
+    redirectToSignIn();                              // shared with the pages below: records why + where they were, then goes to /login
     throw new Error(`API ${path} \u2192 401 (session expired)`);
   }
   if (!res.ok) {

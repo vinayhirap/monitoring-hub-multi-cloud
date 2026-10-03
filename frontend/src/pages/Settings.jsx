@@ -15,6 +15,7 @@ import {
   RedDotIcon, CheckIcon, CompassIcon, RotateCcwIcon, DownloadIcon, LockIcon,
   XIcon, ZapIcon,
 } from "../components/icons";
+import { redirectToSignIn } from "../utils/loginFlow";
 
 const BASE = "";
 
@@ -53,9 +54,7 @@ async function guardedFetch(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, options);
   if (res.status === 401) {
     clearAllCached();
-    if (window.location.pathname !== "/login") {
-      window.location.href = "/login";
-    }
+    redirectToSignIn();
   }
   return res;
 }

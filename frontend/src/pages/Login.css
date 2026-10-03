@@ -615,3 +615,25 @@
   .login-card { padding: 28px 22px 24px; }
   .login-brand { margin-bottom: 20px; }
 }
+
+
+/* ── sign-in behaviour states ───────────────────────────────────────────────────────────── */
+.login-caps { margin: -4px 0 6px; font-size: 12px; color: #f5b84a; display: flex; align-items: center; gap: 6px; }
+.login-caps::before { content: "⇪"; font-size: 14px; }
+.login-note { margin: 14px 0 0; padding: 8px 10px; font-size: 11.5px; line-height: 1.5; color: #f0c674; background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.28); border-radius: 8px; }
+.login-btn:disabled { cursor: not-allowed; opacity: .75; }
+.login-input[aria-invalid="true"] { border-color: rgba(239,68,68,.6); }
+.login-toggle-pw:focus-visible, .login-link:focus-visible, .login-sso-link:focus-visible, .login-btn:focus-visible { outline: 2px solid #2bb3ac; outline-offset: 2px; }
+.login-sso-link[aria-busy="true"] { opacity: .7; pointer-events: none; }
+
+/* People who ask their device for less motion get a still page: the decorative animations are off */
+@media (prefers-reduced-motion: reduce) {
+  .login-root *, .login-root *::before, .login-root *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+/* ── Contrast (WCAG AA 4.5:1), measured on the real rendered card. Automated scanners cannot judge text over gradients
+   and silently skip it, which is how these stayed at 1.5-3.5:1. ─────────────────────────────────────────────────── */
+.login-brand-sub, .login-desc, .login-field label, .login-link-tertiary, .login-sso-link { color: #7b90b6; }
+.login-link-tertiary:hover { color: rgba(220, 230, 245, 0.95); }
+.login-divider, .login-divider span { color: #6a83b3; }
+.login-input::placeholder { color: #6a83b3; opacity: 1; }

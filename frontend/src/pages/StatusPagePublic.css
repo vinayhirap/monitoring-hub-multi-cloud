@@ -63,3 +63,7 @@
 .stp-event-time { font-size: 12px; color: var(--text-muted, #4a5f80); margin-top: 2px; font-family: var(--font-mono, monospace); }
 
 .stp-footer { text-align: center; font-size: 11px; color: var(--text-muted, #4a5f80); margin-top: 40px; }
+
+/* nothing configured: neutral, not the green all-clear */
+.stp-banner-mute { background: rgba(124,146,180,.10); color: #9fb0cc; border: 1px solid rgba(124,146,180,.30); }
+.stp-dot-none { background: #7c92b4; }

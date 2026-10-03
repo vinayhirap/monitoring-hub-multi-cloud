@@ -19,6 +19,7 @@ import { useInsightsRegistry } from "../hooks/useInsightsRegistry";
 import ChartToolbar, { AUTO_REFRESH_MS } from "../components/ChartToolbar";
 import { useMetricMeta } from "../hooks/useMetricMeta";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
+import { redirectToSignIn } from "../utils/loginFlow";
 
 const BASE = "";
 
@@ -78,7 +79,7 @@ const TIME_RANGES = [
 function checkSessionExpired(res) {
   if (res.status !== 401) return false;
   clearAllCached();
-  if (window.location.pathname !== "/login") window.location.href = "/login";
+  redirectToSignIn();
   return true;
 }
 

@@ -1,5 +1,5 @@
 // monitoring-hub/frontend/src/App.jsx
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth }  from "./auth/AuthContext";
 import { TimezoneProvider } from "./contexts/TimezoneContext";
 import Layout            from "./components/Layout";
@@ -46,8 +46,9 @@ function SessionCheckingScreen() {
 
 function RequireAuth({ children }) {
   const { isLoggedIn, loading } = useAuth();
+  const location = useLocation();
   if (loading) return <SessionCheckingScreen />;
-  return isLoggedIn ? children : <Navigate to="/login" replace />;
+  return isLoggedIn ? children : <Navigate to="/login" replace state={{ from: location }} />;   // the sign-in page returns them here
 }
 
 // SECURITY: hiding a nav item was never authorization -- the backend's

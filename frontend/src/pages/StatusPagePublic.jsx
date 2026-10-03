@@ -27,6 +27,7 @@ import "./StatusPagePublic.css";
 
 const STATUS_COPY = {
   operational: { label: "All Systems Operational", tone: "ok" },
+  none:        { label: "No services configured", tone: "mute" },      // nothing monitored is NOT "all systems operational"
   degraded:    { label: "Degraded Performance",     tone: "warn" },
   outage:      { label: "Service Outage",           tone: "bad" },
 };
@@ -73,7 +74,8 @@ export default function StatusPagePublic() {
     );
   }
 
-  const overall = STATUS_COPY[data.overall_status] || STATUS_COPY.operational;
+  const noServices = Array.isArray(data.components) && data.components.length === 0;
+  const overall = noServices ? STATUS_COPY.none : (STATUS_COPY[data.overall_status] || STATUS_COPY.operational);
 
   return (
     <div className="stp-page">
@@ -93,13 +95,13 @@ export default function StatusPagePublic() {
         </div>
 
         <div className={`stp-banner stp-banner-${overall.tone}`}>
-          <ComponentDot status={data.overall_status} />
+          <ComponentDot status={noServices ? "none" : data.overall_status} />
           <span>{overall.label}</span>
         </div>
 
         <div className="stp-components">
           {data.components.length === 0 ? (
-            <p className="stp-empty">No services configured yet.</p>
+            <p className="stp-empty">No services are configured yet. Their status will appear here once they are added.</p>
           ) : (
             data.components.map((c, i) => (
               <div className="stp-component-row" key={i}>

@@ -280,7 +280,7 @@ export default function AdvancedTab() {
     <div className="ac-stack">
       <Banner tone="info">
         <strong>What is enforced.</strong> An active role binding gives its user or group <strong>access to the accounts and regions of its scope</strong>,
-        on top of their groups and direct grants, and stops at its expiry. Deny overrides with no scope remove that permission on every API call.
+        on top of their groups and direct grants, and stops at its expiry. Deny overrides with no scope remove that permission on every API call.{" "}
         <strong>Not enforced:</strong> a binding does not raise anyone's permissions above their base role (a viewer bound to Editor is still a viewer),
         and a deny override limited to one scope is recorded but not applied. To change what someone can <em>do</em>, change their base role.
       </Banner>
