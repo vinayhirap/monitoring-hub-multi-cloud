@@ -620,7 +620,6 @@
 /* ── sign-in behaviour states ───────────────────────────────────────────────────────────── */
 .login-caps { margin: -4px 0 6px; font-size: 12px; color: #f5b84a; display: flex; align-items: center; gap: 6px; }
 .login-caps::before { content: "⇪"; font-size: 14px; }
-.login-note { margin: 14px 0 0; padding: 8px 10px; font-size: 11.5px; line-height: 1.5; color: #f0c674; background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.28); border-radius: 8px; }
 .login-btn:disabled { cursor: not-allowed; opacity: .75; }
 .login-input[aria-invalid="true"] { border-color: rgba(239,68,68,.6); }
 .login-toggle-pw:focus-visible, .login-link:focus-visible, .login-sso-link:focus-visible, .login-btn:focus-visible { outline: 2px solid #2bb3ac; outline-offset: 2px; }

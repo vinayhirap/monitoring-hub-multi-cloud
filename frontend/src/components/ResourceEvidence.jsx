@@ -14,10 +14,10 @@ import { metricAnchor } from "./MetricChartCard";
 import { alertsForResource, eventsForResource, buildTimeline, healthTone, ageText, tsMs } from "../utils/evidence";
 import { buildInsights } from "../utils/intelligence";
 import { fmtMetricValue } from "../utils/metricFormat";
+import { metricLabel, formatMetricValue } from "../utils/metricLabels";
 import "./ResourceEvidence.css";
 
 const SEV_TONE = { CRITICAL: "crit", WARNING: "warn", INFO: "info", ERROR: "crit", RESOLVED: "ok" };
-const fmtVal = v => (v == null || v === "" ? "—" : Number.isFinite(Number(v)) ? String(Number(Number(v).toFixed(2))) : String(v));
 
 export default function ResourceEvidence({ accountId, resourceIds, resourceId, service, insights: registry, reloadKey }) {
   const navigate = useNavigate();
@@ -155,8 +155,8 @@ export default function ResourceEvidence({ accountId, resourceIds, resourceId, s
                 <Badge tone={SEV_TONE[it.sev] || "mute"}><StatusBeacon tone={SEV_TONE[it.sev] || "mute"} />{it.kind === "alert" ? (it.label === "resolved" ? "resolved" : it.sev.toLowerCase()) : `event · ${it.sev.toLowerCase()}`}</Badge>
                 {it.kind === "alert" ? (
                   <span className="rev-body">
-                    <button className="rev-link" onClick={() => focusMetric(it.alert.metric_name)} title="Jump to this metric's chart">{it.alert.metric_name}</button>
-                    {it.label === "triggered" && <span className="rev-dim"> {fmtVal(it.alert.current_value ?? it.alert.value)} vs threshold {fmtVal(it.alert.threshold)}</span>}
+                    <button className="rev-link" onClick={() => focusMetric(it.alert.metric_name)} title="Jump to this metric's chart">{metricLabel(it.alert.metric_name)}</button>
+                    {it.label === "triggered" && <span className="rev-dim"> {formatMetricValue(it.alert.metric_name, it.alert.current_value ?? it.alert.value)} vs threshold {formatMetricValue(it.alert.metric_name, it.alert.threshold)}</span>}
                     {it.label === "triggered" && it.alert.state === "firing" && <span className="rev-live"> · still firing</span>}
                     {it.alert.resolution_reason && it.label === "resolved" && <span className="rev-dim"> · {it.alert.resolution_reason}</span>}
                   </span>

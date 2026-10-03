@@ -118,7 +118,7 @@ export function FeedPanel({ feed, total, now, onGo }) {
               <button type="button" className="feed-row" onClick={() => onGo(f.to)}>
                 <span className="feed-age">{ageLabel(now - f.t)}</span>
                 <Badge tone={TONE[f.sev] || "mute"}>{f.kind}</Badge>
-                <span className="feed-main"><span className="feed-text">{f.text}</span><span className="feed-sub">{f.sub}</span></span>
+                <span className="feed-main"><span className="feed-text">{f.text}</span><span className="feed-sub">{f.sub}{f.count > 1 ? ` · ${f.count} times in 24h` : ""}</span></span>
               </button>
             </li>
           ))}

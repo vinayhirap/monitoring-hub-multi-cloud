@@ -11,11 +11,10 @@ import { useTimezone } from "../contexts/TimezoneContext";
 import { Badge, StatusBeacon, AiChip } from "./ui";
 import ResourceEvidence from "./ResourceEvidence";
 import { tsMs, ageText, lifecycle } from "../utils/evidence";
-import { metricLabel } from "../utils/metricLabels";
+import { metricLabel, formatMetricValue } from "../utils/metricLabels";
 import "./AlertInvestigation.css";
 
 const SEV_TONE = { CRITICAL: "crit", WARNING: "warn", INFO: "info" };
-const num = v => (v == null || v === "" ? "—" : Number.isFinite(Number(v)) ? String(Number(Number(v).toFixed(2))) : String(v));
 
 export default function AlertInvestigation({ alert: a, canAct, acting, onClose, onAck, onResolve, onMute, onFalsePositive, route, canConsole, onConsole }) {
   const navigate = useNavigate();
@@ -95,8 +94,8 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
           <section className="ai-sec">
             <h3>1 · Alert</h3>
             <div className="ai-facts">
-              <div><span>Value</span><b className={open ? `c-${SEV_TONE[sev] || "mute"}` : ""}>{num(a.current_value ?? a.value)}</b></div>
-              <div><span>Threshold</span><b>{num(a.threshold)}</b></div>
+              <div><span>Value</span><b className={open ? `c-${SEV_TONE[sev] || "mute"}` : ""} title={String(a.current_value ?? a.value ?? "")}>{formatMetricValue(a.metric_name, a.current_value ?? a.value)}</b></div>
+              <div><span>Threshold</span><b title={String(a.threshold ?? "")}>{formatMetricValue(a.metric_name, a.threshold)}</b></div>
               <div><span>State</span><b>{String(state).toUpperCase()}</b></div>
               <div><span>{open ? "Open for" : "Lasted"}</span><b>{dur}</b></div>
             </div>
@@ -147,7 +146,7 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
                 </div>
                 <p className="ai-sum">{ex.summary}</p>
                 <dl className="ai-dl">
-                  {ex.trend?.description && <><dt>Behaviour</dt><dd>{ex.trend.description}</dd></>}
+                  {ex.trend?.description && !String(ex.summary || "").toLowerCase().includes(String(ex.trend.description).toLowerCase().replace(/[.\s]+$/, "")) && <><dt>Behaviour</dt><dd>{ex.trend.description}</dd></>}      {/* the summary often already says it */}
                   {ex.probable_trigger && <><dt>Possible trigger</dt><dd><code>{ex.probable_trigger.event_name}</code> by {ex.probable_trigger.username || "unknown"}{ex.probable_trigger.event_time ? ` · ${fmt(ex.probable_trigger.event_time)}` : ""} <span className="ai-dim">(probable, not confirmed)</span></dd></>}
                   {ex.recent_deployment && <><dt>Recent deployment</dt><dd>{ex.recent_deployment.message || ex.recent_deployment.event_type || "Deployment event recorded shortly before"}</dd></>}
                   {ex.related_alert_count > 0 && <><dt>Related</dt><dd>{ex.related_alert_count} other alert(s) active alongside</dd></>}

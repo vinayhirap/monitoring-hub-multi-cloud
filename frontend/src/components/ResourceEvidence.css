@@ -7,7 +7,7 @@
 .rev-k { font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); display: flex; gap: 6px; align-items: center; }
 .rev-v { font-size: 20px; font-weight: 700; font-family: var(--font-data); line-height: 1.25; color: var(--text-primary); }
 .rev-v span { font-size: 11px; font-weight: 500; color: var(--text-muted); margin-left: 3px; }
-.rev-s, .rev-na { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rev-s, .rev-na { font-size: 11px; color: var(--text-muted); white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }       /* wrap, never cut a sentence off mid-word */
 .rev-na { font-style: italic; padding: 6px 0; }
 .rev-sub { font-size: 10px; text-transform: none; letter-spacing: 0; color: var(--text-muted); font-weight: 400; }
 .rev-tl { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-md, 8px); padding: 8px 10px; }

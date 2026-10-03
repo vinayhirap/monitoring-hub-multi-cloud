@@ -146,3 +146,14 @@ test("the whole model survives a JSON round trip (it is cached between visits)",
   assert.equal(back.topResources.length, m.topResources.length); assert.deepEqual(back.matrix.cols, m.matrix.cols);
   assert.ok(back.fleetView && back.fleetView.summary.capacity_risk_count === 1);
 });
+
+test("a system event that repeats is ONE feed row with a count (alerts are never merged)", () => {
+  const ev = (id, min) => ({ id, event_type: "schema_drift", severity: "WARNING", message: "1 resource_id-shaped column(s) have drifted", created_at: new Date(Date.now() - min * 60000).toISOString(), aws_account_id: null });
+  const firing = [A(1, "r1"), A(2, "r1", { metric_name: "NetworkOut" })];
+  const r = summarize({ rows: [ROW], firing, resolved: [], incidents: [], events: [ev(1, 5), ev(2, 20), ev(3, 40)], fleet: null, now: Date.now() });
+  const sys = r.feed.filter(f => f.kind === "System");
+  assert.equal(sys.length, 1); assert.equal(sys[0].count, 3);
+  assert.equal(r.feed.filter(f => f.kind === "Triggered").length, 2);           // two alerts stay two rows
+  assert.equal(r.feedTotal, 3);
+  assert.ok(sys[0].t >= Date.now() - 6 * 60000);                                 // the row is dated by the NEWEST occurrence
+});

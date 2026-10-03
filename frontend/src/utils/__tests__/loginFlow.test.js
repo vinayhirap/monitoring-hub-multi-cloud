@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeNext, parseRetryAfter, formatWait, loginFailure, insecureContext, FALLBACK_AFTER_LOGIN, markSessionExpired, takeSessionExpired, EXPIRED_KEY } from "../loginFlow.js";
+import { sanitizeNext, parseRetryAfter, formatWait, loginFailure, FALLBACK_AFTER_LOGIN, markSessionExpired, takeSessionExpired, EXPIRED_KEY } from "../loginFlow.js";
 
 test("sanitizeNext keeps ordinary in-app paths (with query and hash)", () => {
   for (const ok of ["/overview", "/alerts?tab=attention", "/accounts/1/ec2?resource=i-0abc#x", "/settings#accounts", "/reports"]) assert.equal(sanitizeNext(ok), ok);
@@ -33,12 +33,7 @@ test("loginFailure tells wrong password, lockout, server and network apart", () 
 test("a wrong password and an unknown user get the SAME message (no username enumeration)", () => {
   assert.equal(loginFailure({ status: 401 }).message, "Invalid username or password.");
 });
-test("insecureContext: http on a real host only", () => {
-  assert.equal(insecureContext({ protocol: "http:", hostname: "35.154.149.94" }), true);
-  assert.equal(insecureContext({ protocol: "https:", hostname: "35.154.149.94" }), false);
-  for (const h of ["localhost", "127.0.0.1", "[::1]"]) assert.equal(insecureContext({ protocol: "http:", hostname: h }), false);
-  assert.equal(insecureContext(null), false); assert.equal(FALLBACK_AFTER_LOGIN, "/overview");
-});
+test("FALLBACK_AFTER_LOGIN", () => { assert.equal(FALLBACK_AFTER_LOGIN, "/overview"); });
 
 const fakeStore = () => { const m = new Map(); return { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k), m }; };
 test("session-expired note: set by the API handler, shown once, ignored when old", () => {

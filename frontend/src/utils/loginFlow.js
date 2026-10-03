@@ -54,11 +54,6 @@ export function loginFailure(r = {}) {
   return { kind: "unknown", fieldsInvalid: false, waitSec: 0, message: "Sign-in failed. Try again." };
 }
 
-/** True when the page is served over plain HTTP from a real host (not localhost). */
-export function insecureContext(loc) {
-  if (!loc || loc.protocol !== "http:") return false;
-  return !["localhost", "127.0.0.1", "[::1]", "::1"].includes(loc.hostname);
-}
 
 // A session can end while another request is already navigating to /login (the route guard and the API error handler race),
 // so the API handler leaves a short-lived note instead of relying on a query parameter that only one of the two paths adds.

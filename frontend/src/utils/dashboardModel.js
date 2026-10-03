@@ -171,6 +171,18 @@ export function summarize({ rows, firing, resolved, incidents, events, fleet, no
       feed.push({ t, kind: "System", sev: String(e.severity).toUpperCase() === "ERROR" ? "crit" : "warn", text: String(e.message || e.event_type).slice(0, 140), sub: `${e.event_type}${e.account_name ? ` · ${e.account_name}` : ""}`, to: "/op-events" });
   }
   feed.sort((a, b) => b.t - a.t);
+  // The same system event repeating every few minutes (e.g. a recurring health warning) is ONE row with a count, newest first;
+  // alerts and incidents are never merged.
+  const seenSys = new Map(), merged = [];
+  for (const f of feed) {
+    if (f.kind === "System") {
+      const k = `${f.sev}|${f.text}|${f.sub}`, e = seenSys.get(k);
+      if (e) { e.count = (e.count || 1) + 1; continue; }
+      seenSys.set(k, f);
+    }
+    merged.push(f);
+  }
+  feed.length = 0; feed.push(...merged);
 
   return {
     verdict: { level, reasons, affected, total: R.length },

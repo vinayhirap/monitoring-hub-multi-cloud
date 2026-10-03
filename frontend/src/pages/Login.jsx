@@ -4,7 +4,7 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { CheckIcon } from "../components/icons";
 import { AwsBrandLogo, AzureBrandLogo, GoogleCloudBrandLogo } from "../components/cloud-icons";
-import { sanitizeNext, loginFailure, formatWait, insecureContext, takeSessionExpired, FALLBACK_AFTER_LOGIN } from "../utils/loginFlow";
+import { sanitizeNext, loginFailure, formatWait, takeSessionExpired, FALLBACK_AFTER_LOGIN } from "../utils/loginFlow";
 import "./Login.css";
 
 const EyeIcon = ({ open }) => (
@@ -77,7 +77,6 @@ export default function Login() {
   const [ssoBusy,  setSsoBusy]  = useState(false);
   const userRef = useRef(null), pwRef = useRef(null), wantFocus = useRef(null);
 
-  const insecure = insecureContext(window.location);
   useEffect(() => { document.title = "Sign in · CloudOps"; }, []);
   useEffect(() => {                                   // lockout countdown; ends by itself
     if (!waitUntil) return undefined;
@@ -400,11 +399,6 @@ export default function Login() {
             <a href="/api/auth/sso/login" className="login-sso-link" onClick={handleSso} aria-busy={ssoBusy ? "true" : undefined}>
               {ssoBusy ? "Checking SSO…" : "Log in with SSO"}
             </a>
-            {insecure && (
-              <p className="login-note" role="note">
-                This connection isn't encrypted (HTTP). Passwords and sessions can be read on the network. Ask your administrator to enable HTTPS.
-              </p>
-            )}
           </form>
         )}
 
