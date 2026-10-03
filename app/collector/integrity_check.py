@@ -74,7 +74,11 @@ _EXPECTED_RESOURCE_ID_WIDTHS = {
     ("resources", "resource_id"): 512,
     ("alerts", "resource_id"): 512,
     ("op_events", "resource_id"): 512,
-    ("alert_pending", "resource_id"): 500,  # migration 012's own stated width
+    # Migration 012 created this at 500; migration 059 widened it to 512 to
+    # match resources/alerts. The expectation was never updated, so every
+    # discovery cycle reported a "drift" on a correctly migrated database
+    # (audit A2: resource_id_column_width_drift x23 in 24 h).
+    ("alert_pending", "resource_id"): 512,
     ("resource_relationships", "source_resource_id"): 512,
     ("resource_relationships", "target_resource_id"): 512,
 }
@@ -151,8 +155,12 @@ def find_cross_account_resource_collisions(cursor) -> list[dict]:
 def check_resource_id_column_widths(cursor) -> list[dict]:
     """
     Returns [{table, column, expected, actual}] for every column in
-    _EXPECTED_RESOURCE_ID_WIDTHS whose live VARCHAR width doesn't match
-    what it's supposed to be. Empty list = healthy.
+    _EXPECTED_RESOURCE_ID_WIDTHS whose live VARCHAR width is NARROWER than
+    the expected minimum. Empty list = healthy.
+
+    Only a narrower column can truncate or reject a long ARN. A wider one
+    is harmless, so it is not reported (previously any difference was,
+    which turned a correct widening migration into a recurring warning).
     """
     drifted = []
     for (table, column), expected in _EXPECTED_RESOURCE_ID_WIDTHS.items():
@@ -165,7 +173,7 @@ def check_resource_id_column_widths(cursor) -> list[dict]:
         if not row or row.get("CHARACTER_MAXIMUM_LENGTH") is None:
             continue  # table/column doesn't exist yet (e.g. not migrated) -- not this check's job
         actual = row["CHARACTER_MAXIMUM_LENGTH"]
-        if actual != expected:
+        if actual < expected:
             drifted.append({
                 "table": table, "column": column,
                 "expected": expected, "actual": actual,
@@ -288,7 +296,7 @@ def run_integrity_check() -> dict:
 
     if result["width_drift"]:
         lines = [
-            f"  - {d['table']}.{d['column']}: expected VARCHAR({d['expected']}), is VARCHAR({d['actual']})"
+            f"  - {d['table']}.{d['column']}: needs at least VARCHAR({d['expected']}), is VARCHAR({d['actual']})"
             for d in result["width_drift"]
         ]
         msg = (

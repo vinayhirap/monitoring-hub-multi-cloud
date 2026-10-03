@@ -26,6 +26,8 @@ version could replace this once there's enough real incident history
 (from the new `incidents` table) to validate one against.
 """
 import logging
+import random
+import time
 from app.db import get_connection
 from app import alert_rules
 
@@ -38,13 +40,45 @@ BLAST_RADIUS_PENALTY_PER_DEPENDENT = 1
 MAX_BLAST_RADIUS_PENALTY = 20
 
 
+# MySQL 1213 = deadlock victim (InnoDB already rolled the transaction back),
+# 1205 = lock wait timeout. Both are safe to retry from scratch: the whole
+# recompute is one transaction and a pure function of the alerts table.
+_RETRYABLE_ERRNOS = {1213, 1205}
+_MAX_ATTEMPTS = 4
+
+
+def _is_retryable(exc: Exception) -> bool:
+    return getattr(exc, "errno", None) in _RETRYABLE_ERRNOS
+
+
 def recompute_health_scores() -> int:
     """
     Recomputes every currently-breaching resource's health score and
     upserts into resource_health; deletes rows for resources that have
     recovered (no active alerts left). Returns the number of resources
     scored this run.
+
+    Audit A2: this used to surface "1213 Deadlock found" as a failed run
+    (stale scores until the next cycle). It now retries the whole
+    transaction with jittered backoff on 1213/1205 and only raises if all
+    attempts fail.
     """
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            return _recompute_health_scores_once()
+        except Exception as exc:
+            if not _is_retryable(exc) or attempt == _MAX_ATTEMPTS:
+                raise
+            delay = 0.2 * (2 ** (attempt - 1)) + random.uniform(0, 0.2)
+            logger.warning(
+                f"[health_score] errno {getattr(exc, 'errno', '?')} on attempt "
+                f"{attempt}/{_MAX_ATTEMPTS}; retrying in {delay:.2f}s"
+            )
+            time.sleep(delay)
+    return 0  # unreachable; keeps type-checkers quiet
+
+
+def _recompute_health_scores_once() -> int:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
@@ -64,7 +98,12 @@ def recompute_health_scores() -> int:
             GROUP BY r.resource_id, r.aws_account_id
             HAVING critical_count + warning_count > 0
         """)
-        breaching = cursor.fetchall()
+        # Deterministic key order: every writer takes row locks in the same
+        # sequence, which removes the lock-order inversion behind 1213.
+        breaching = sorted(
+            cursor.fetchall(),
+            key=lambda r: (r["aws_account_id"], r["resource_id"]),
+        )
 
         scored = 0
         for row in breaching:
@@ -105,18 +144,25 @@ def recompute_health_scores() -> int:
         # their row entirely -- "no row" is read by the API as fully
         # healthy (100), so deleting correctly reflects recovery rather
         # than leaving a stale low score behind.
-        cursor.execute(f"""
-            DELETE rh FROM resource_health rh
-            LEFT JOIN (
-                SELECT DISTINCT a.aws_account_id, a.resource_id
-                FROM alerts a
-                JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
-                JOIN aws_accounts acc ON acc.id = a.aws_account_id AND acc.status = 'active'
-                WHERE {alert_rules.firing_where()} AND {alert_rules.base_where()}
-                  AND UPPER(a.severity) IN ('CRITICAL', 'WARNING')
-            ) f ON f.aws_account_id = rh.aws_account_id AND f.resource_id = rh.resource_id
-            WHERE f.resource_id IS NULL
-        """)
+        #
+        # Done as plain SELECT + DELETE-by-primary-key instead of a
+        # DELETE ... LEFT JOIN over alerts/resources/aws_accounts: a
+        # multi-table DELETE takes shared locks on every joined table, which
+        # contended with the alert evaluator's writes (audit A2 deadlock).
+        # `breaching` is already the firing set (same predicates), so a
+        # health row is stale exactly when its key is not in it.
+        firing_keys = {(r["aws_account_id"], r["resource_id"]) for r in breaching}
+        cursor.execute("SELECT aws_account_id, resource_id FROM resource_health")
+        stale = sorted(
+            (r["aws_account_id"], r["resource_id"])
+            for r in cursor.fetchall()
+            if (r["aws_account_id"], r["resource_id"]) not in firing_keys
+        )
+        for acct_id, res_id in stale:
+            cursor.execute(
+                "DELETE FROM resource_health WHERE aws_account_id = %s AND resource_id = %s",
+                (acct_id, res_id),
+            )
 
         conn.commit()
         logger.info(f"[health_score] scored {scored} breaching resource(s)")

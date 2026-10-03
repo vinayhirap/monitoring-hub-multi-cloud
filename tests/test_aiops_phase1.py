@@ -26,6 +26,7 @@ def test_health_score_penalizes_critical_and_warning_and_blast_radius():
         {"resource_id": "alb-1", "aws_account_id": 7, "critical_count": 1, "warning_count": 0},
     ]
     inserts = []
+    deletes = []
 
     class _Cursor(FakeCursor):
         def execute(self, sql, params=None):
@@ -37,7 +38,14 @@ def test_health_score_penalizes_critical_and_warning_and_blast_radius():
             elif normalized.startswith("INSERT INTO resource_health"):
                 inserts.append(params)
                 self._pending = []
-            elif normalized.startswith("DELETE rh"):
+            elif normalized.startswith("SELECT aws_account_id, resource_id FROM resource_health"):
+                # existing rows: one stale (recovered) resource that must be deleted by PK
+                self._pending = [
+                    {"aws_account_id": 7, "resource_id": "alb-1"},
+                    {"aws_account_id": 7, "resource_id": "recovered-1"},
+                ]
+            elif normalized.startswith("DELETE FROM resource_health"):
+                deletes.append(params)
                 self._pending = []
             else:
                 raise AssertionError(f"unexpected query: {normalized!r}")
@@ -59,6 +67,8 @@ def test_health_score_penalizes_critical_and_warning_and_blast_radius():
     assert account_id == 7
     # 1 CRITICAL (-40) + 5 fan-out (-5) = 100 - 45 = 55
     assert score == 55
+    # Only the recovered resource is removed; the still-breaching one is kept.
+    assert deletes == [(7, "recovered-1")]
 
 
 def test_health_score_caps_alert_penalty_at_max():
@@ -73,7 +83,12 @@ def test_health_score_caps_alert_penalty_at_max():
                 self._pending = breaching_rows
             elif "COUNT(DISTINCT target_resource_id)" in normalized:
                 self._pending = [{"fan_out": 0}]
-            elif normalized.startswith("INSERT INTO resource_health") or normalized.startswith("DELETE rh"):
+            elif normalized.startswith("INSERT INTO resource_health") or normalized.startswith("DELETE FROM resource_health"):
+                self.last_insert_params = params
+                self._pending = []
+            elif normalized.startswith("SELECT aws_account_id, resource_id FROM resource_health"):
+                self._pending = []
+            elif False:
                 self.last_insert_params = params
                 self._pending = []
 
