@@ -1,5 +1,6 @@
 ﻿// monitoring-hub/frontend/src/pages/Alerts.jsx
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
+import { assertHttpUrl } from "../utils/safeUrl";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useWebSocket } from "../hooks/useWebSocket";
@@ -381,8 +382,9 @@ export default function Alerts() {
     setOpeningConsole(id);
     try {
       const { url } = await apiFetch(`/api/alerts/${id}/console-url`, "POST");
-      if (tab) tab.location.href = url;
-      else window.open(url, "_blank", "noopener,noreferrer");
+      const safeUrl = assertHttpUrl(url);
+      if (tab) tab.location.href = safeUrl;
+      else window.open(safeUrl, "_blank", "noopener,noreferrer");
     } catch (e) {
       if (tab) tab.close();
       alert("Couldn't open console: " + e.message);

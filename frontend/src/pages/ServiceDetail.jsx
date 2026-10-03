@@ -1,5 +1,6 @@
 // monitoring-hub/frontend/src/pages/ServiceDetail.jsx
 import { useEffect, useState, useCallback, useRef } from "react";
+import { assertHttpUrl } from "../utils/safeUrl";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import {
@@ -1331,7 +1332,7 @@ async function openAccountConsole(accountId, service, params = {}) {
     const res = await fetch(`/api/admin/accounts/${accountId}/console-url?${qs}`, { method: "POST" });
     if (!res.ok) throw new Error(String(res.status));
     const data = await res.json();
-    window.open(data.url, "_blank", "noopener,noreferrer");
+    window.open(assertHttpUrl(data.url), "_blank", "noopener,noreferrer");
   } catch (e) {
     console.error("Console link failed:", e);
     alert("Could not open AWS console link.");

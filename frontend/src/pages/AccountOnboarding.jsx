@@ -259,6 +259,10 @@ export default function AccountOnboarding() {
         if (!form.iam_role_arn.trim()) e.iam_role_arn = "IAM Role ARN is required";
         else if (!AWS_ROLE_ARN_RE.test(form.iam_role_arn.trim()))
           e.iam_role_arn = "Must look like arn:aws:iam::123456789012:role/RoleName";
+        // Required (audit E7): without an ExternalId a cross-account role is open to the
+        // confused-deputy problem. The same value must be in the role's trust policy
+        // (sts:ExternalId condition). The server enforces this too.
+        if (!form.external_id.trim()) e.external_id = "External ID is required for IAM role access";
       }
       if (form.auth_method === "access_keys") {
         if (!form.access_key.trim()) e.access_key = "Required";
@@ -638,11 +642,11 @@ export default function AccountOnboarding() {
                       onChange={e => { setForm(f => ({ ...f, iam_role_arn: e.target.value })); invalidateTest(); }}
                     />
                   </Field>
-                  <Field id="external_id" label="External ID">
+                  <Field id="external_id" label="External ID" required error={errors.external_id}>
                     <input
                       id="external_id"
                       value={form.external_id}
-                      placeholder="Optional STS ExternalId"
+                      placeholder="Must match the sts:ExternalId in the role's trust policy"
                       autoComplete="off"
                       onChange={e => { setForm(f => ({ ...f, external_id: e.target.value })); invalidateTest(); }}
                     />

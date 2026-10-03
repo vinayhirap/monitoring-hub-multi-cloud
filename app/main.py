@@ -39,6 +39,7 @@ from app.api.security       import router as security_router
 from app.api.maintenance    import router as maintenance_router
 from app.api.status_page    import admin_router as status_page_admin_router, public_router as status_page_public_router
 from app.auth.deps          import get_current_user, COOKIE_NAME, validate_session_claims
+from app.auth import csrf as _csrf
 from app.auth.security      import decode_token
 
 from app.ws.manager import ws_manager, KNOWN_CHANNELS
@@ -192,6 +193,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _origin_check(request, call_next):
+    """Reject cross-origin state-changing browser requests (audit E3). See app/auth/csrf.py."""
+    if _csrf.enabled() and not _csrf.origin_allowed(
+        request.method, request.url.path,
+        request.headers.get("origin"), request.headers.get("host"),
+    ):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=403, content={"detail": "Cross-origin request blocked"})
+    return await call_next(request)
 
 
 @app.middleware("http")

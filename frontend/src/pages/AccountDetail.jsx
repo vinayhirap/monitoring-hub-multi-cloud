@@ -1,5 +1,6 @@
 ﻿// monitoring-hub/frontend/src/pages/AccountDetail.jsx
 import { useEffect, useState } from "react";
+import { assertHttpUrl } from "../utils/safeUrl";
 import { useParams, useNavigate } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { getLiveEC2, getLiveEC2Metrics, getConsoleUrl } from "../api/api";
@@ -20,7 +21,7 @@ import { CloudIcon, XIcon } from "../components/icons";
 async function openAccountConsole(accountId, service, resourceId) {
   try {
     const data = await getConsoleUrl(accountId, service, { resourceId });
-    window.open(data.url, "_blank", "noopener,noreferrer");
+    window.open(assertHttpUrl(data.url), "_blank", "noopener,noreferrer");
   } catch (e) {
     console.error("Console link failed:", e);
     alert("Could not open AWS console link.");

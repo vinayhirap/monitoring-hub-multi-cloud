@@ -14,6 +14,7 @@
 // "Open in console" action wired to the new
 // /api/security-findings/{id}/console-url endpoint.
 import { useState, useEffect, useCallback } from "react";
+import { assertHttpUrl } from "../utils/safeUrl";
 import {
   getSecurityFindings, getSecurityFindingsSummary,
   getSecurityFindingsAccounts, getSecurityFindingConsoleUrl,
@@ -79,8 +80,9 @@ export default function SecurityFindings() {
     setOpeningConsole(findingId);
     try {
       const { url } = await getSecurityFindingConsoleUrl(findingId);
-      if (tab) tab.location.href = url;
-      else window.open(url, "_blank", "noopener,noreferrer");
+      const safeUrl = assertHttpUrl(url);
+      if (tab) tab.location.href = safeUrl;
+      else window.open(safeUrl, "_blank", "noopener,noreferrer");
     } catch (e) {
       if (tab) tab.close();
       alert("Couldn't open console: " + e.message);

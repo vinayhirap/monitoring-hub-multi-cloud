@@ -42,6 +42,7 @@
 //     already sends every bespoke page) auto-expands and scrolls to
 //     that resource's row instead of leaving the user to search for it
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
+import { assertHttpUrl } from "../utils/safeUrl";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { getResourcesList, getGenericMetrics, getConsoleUrl, getAccount, getThresholds, getResourceHealth } from "../api/api";
@@ -184,7 +185,7 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
     e.stopPropagation();
     setConsoleLoading(true);
     getConsoleUrl(accountId, service, { resourceId: r.resource_id, region: r.region, resourceName: r.name })
-      .then(res => { if (res?.url) window.open(res.url, "_blank", "noopener,noreferrer"); })
+      .then(res => { if (res?.url) window.open(assertHttpUrl(res.url), "_blank", "noopener,noreferrer"); })
       .catch(() => {
         window.alert("Couldn't open the cloud console for this resource. Check that credentials are configured for this account in Settings.");
       })
@@ -377,7 +378,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
   function openInConsole() {
     setConsoleLoading(true);
     getConsoleUrl(accountId, service)
-      .then(r => { if (r?.url) window.open(r.url, "_blank", "noopener,noreferrer"); })
+      .then(r => { if (r?.url) window.open(assertHttpUrl(r.url), "_blank", "noopener,noreferrer"); })
       .catch(() => {
         window.alert("Couldn't open the cloud console for this service. Check that credentials are configured for this account in Settings.");
       })

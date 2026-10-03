@@ -5,6 +5,7 @@ from app.auth.deps import get_current_user
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
 import datetime
+import os
 from app.utils.time_json import to_utc_iso
 import json
 import logging
@@ -195,6 +196,23 @@ def _check_duplicate_account_id(account_id_value: str, id_label: str, current_us
     )
 
 
+def _external_id_required() -> bool:
+    """Audit E7 (confused deputy): cross-account AssumeRole without an ExternalId lets anyone
+    who knows or guesses a customer's role ARN make this app assume it. Default ON; set
+    REQUIRE_EXTERNAL_ID=false only for a deployment that cannot add the condition yet."""
+    return os.getenv("REQUIRE_EXTERNAL_ID", "true").strip().lower() != "false"
+
+
+def _check_external_id(role_arn: str, external_id: str) -> None:
+    if role_arn and not external_id and _external_id_required():
+        raise HTTPException(
+            status_code=400,
+            detail="External ID is required when onboarding with an IAM role. Add the same value "
+                   "as an sts:ExternalId condition in the role's trust policy.",
+        )
+
+
+
 def _add_aws_account(payload: dict, current_user: dict) -> tuple[int, str, str]:
     import json as _json
     from app.credentials import save_credential, new_credential_ref
@@ -232,6 +250,8 @@ def _add_aws_account(payload: dict, current_user: dict) -> tuple[int, str, str]:
     auth_mode  = "static_keys" if (access_key and secret_key) else "assume_role"
     if auth_mode == "static_keys":
         role_arn = ""  # keys and role_arn are mutually exclusive for a given account
+    if auth_mode == "assume_role":
+        _check_external_id(role_arn, external_id)
 
     conn   = get_connection()
     cursor = conn.cursor()
@@ -859,6 +879,7 @@ def test_role(payload: dict = Body(...), current_user: dict = Depends(require_pe
     else:
         if not role_arn or not role_arn.startswith("arn:aws:"):
             raise HTTPException(status_code=400, detail="Valid IAM Role ARN required")
+        _check_external_id(role_arn, ext_id)
         try:
             from app.aws.sts import assume_role
             session  = assume_role(role_arn, ext_id)
