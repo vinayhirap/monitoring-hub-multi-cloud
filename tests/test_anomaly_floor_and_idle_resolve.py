@@ -43,6 +43,18 @@ def test_4xx_count_has_a_floor_but_server_errors_never_do():
         assert alert_floor(server_error) == 0.0
 
 
+def test_4xx_count_line_is_lifted_to_the_floor_for_a_quiet_alb_and_untouched_for_a_busy_one():
+    """Through the real evaluator path: a quiet ALB's baseline (mean 0.5, sigma 1.2 -> line ~4) must not
+    alert on a handful of 4xx; a busy one's own line (mean 500, sigma 100) is far above the floor."""
+    ev = _load_alert_evaluator()
+    quiet = ev._anomaly_only_bound(_baseline_cursor(0.5, 1.2, 100), 7, "alb-quiet", "httpcode_target_4xx_count", 3.0)
+    busy = ev._anomaly_only_bound(_baseline_cursor(500.0, 100.0, 100), 7, "alb-busy", "httpcode_target_4xx_count", 3.0)
+    assert quiet == 10.0
+    assert busy > 100.0 and busy != 10.0
+    # server errors keep their small baseline-derived line -- no floor
+    assert ev._anomaly_only_bound(_baseline_cursor(0.5, 1.2, 100), 7, "alb-quiet", "httpcode_target_5xx_count", 3.0) < 10.0
+
+
 def test_idle_volume_line_is_the_floor_not_a_near_zero_number():
     ev = _load_alert_evaluator()
     # the real case: baseline mean ~2 operations, sigma ~7 -> old line 26 -> a reading of 57 fired

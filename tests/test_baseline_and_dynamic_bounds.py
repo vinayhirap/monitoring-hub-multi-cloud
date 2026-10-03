@@ -107,7 +107,10 @@ def test_recompute_baselines_writes_nothing_when_no_bucket_clears_min_samples():
 # ── 2. alert_evaluator.py: _dynamic_bounds confidence blending ─────
 
 def _load_alert_evaluator():
-    install_stub("app.db", get_connection=lambda: FakeConn([]))
+    # get_db_cursor: alert_evaluator -> api.live_data -> metric_meta (UI Phase 3) now does
+    # `from app.db import get_db_cursor` at import time; without it every test that loads the
+    # evaluator died with ImportError (12 tests in test_anomaly_floor_and_idle_resolve.py alone).
+    install_stub("app.db", get_connection=lambda: FakeConn([]), get_db_cursor=lambda *a, **k: None)
     install_stub("app.ws.publisher", publish_alert=lambda *a, **k: None,
                  publish_alert_resolved=lambda *a, **k: None)
     return load_module("app/collector/alert_evaluator.py")
