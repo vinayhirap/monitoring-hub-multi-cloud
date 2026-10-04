@@ -8,7 +8,6 @@ import { useDashboardData } from "../hooks/useDashboardData";
 import { summarize } from "../utils/dashboardModel";
 import { StatusHero, KpiRow, ActivityPanel, FeedPanel, MatrixPanel, TopResourcesPanel, IncidentsPanel, IntelligencePanel, CoveragePanel, PanelSkeleton } from "./overview/panels";
 import { PageHeader } from "../components/ui";
-import FirstRunChecklist from "../components/FirstRunChecklist";
 import { AlertOctagonIcon, ZapIcon, AlertTriangleIcon, ServerIcon, HardDriveIcon, BucketIcon, RefreshCwIcon } from "../components/icons";
 import "./Overview.css";
 import "./overview/dash.css";
@@ -253,8 +252,6 @@ export default function Overview() {
         meta={lastSync && (<>Synced {lastSync.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: ianaName })}{revalidating && " · updating…"}</>)}
         actions={<button className="btn-refresh" onClick={loadAll} title="Refresh now"><RefreshCwIcon size={13} className="ico-inline" />Refresh</button>}
       />
-
-      <FirstRunChecklist />
 
       {!loading && (
         <>

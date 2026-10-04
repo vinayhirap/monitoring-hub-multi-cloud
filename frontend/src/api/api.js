@@ -304,6 +304,3 @@ export const getThresholdCoverage = (accountId) =>
   apiFetch(`/api/settings/thresholds/coverage?account_id=${accountId}`);
 export const applyRecommendedThresholds = (accountId, dryRun = true) =>
   apiFetch(`/api/settings/thresholds/apply-defaults?account_id=${accountId}&dry_run=${dryRun}`, { method: "POST" });
-
-// ── First-run checklist (audit B9) ───────────────────────────────────
-export const getSetupStatus = () => apiFetch("/api/setup/status");

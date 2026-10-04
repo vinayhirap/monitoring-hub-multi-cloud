@@ -45,7 +45,7 @@ def test_security_findings_filters_and_paginates():
 
 
 def test_checklist_and_pollers_are_wired():
-    assert "<FirstRunChecklist />" in _t("pages/Overview.jsx")
+    assert "FirstRunChecklist" not in _t("pages/Overview.jsx")        # removed on request: the monitoring team shares admin access
     assert "visibleInterval(load, POLL_MS)" in _t("hooks/useDashboardData.js")
     assert "visibleInterval(load, POLL_MS)" in _t("hooks/useResourceAlerts.js")
     assert "backoffSkips(failures)" in _t("hooks/useAlertSync.js")

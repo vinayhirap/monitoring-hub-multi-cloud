@@ -13,7 +13,6 @@ import threading
 from app.api.alerts         import router as alerts_router
 from app.api.health         import router as health_router
 from app.api.notifications  import router as notifications_router
-from app.api.setup_status   import router as setup_router
 from app.api.admin.accounts import router as admin_accounts_router
 from app.api.auth           import router as auth_router
 from app.api.admin.users    import router as admin_users_router
@@ -42,6 +41,7 @@ from app.api.maintenance    import router as maintenance_router
 from app.api.status_page    import admin_router as status_page_admin_router, public_router as status_page_public_router
 from app.auth.deps          import get_current_user, COOKIE_NAME, validate_session_claims
 from app.auth import csrf as _csrf
+from app.auth.permissions   import require_permission
 from app.auth.security      import decode_token
 
 from app.ws.manager import ws_manager, KNOWN_CHANNELS
@@ -363,7 +363,9 @@ async def websocket_endpoint(websocket: WebSocket, channel: str):
 
 
 @app.get("/ws/status")
-async def ws_status():
+async def ws_status(current_user: dict = Depends(require_permission("operations.view"))):
+    # Was unauthenticated (audit E5): it told anyone how many live WebSocket clients were connected. Nothing in the UI
+    # calls it, so it is now an operator-only diagnostic.
     return {"connections": ws_manager.connection_count()}
 
 
@@ -377,7 +379,6 @@ _auth_dep = [Depends(get_current_user)]
 app.include_router(health_router)   # public live/ready; /detail enforces operations.view itself
 app.include_router(alerts_router,         prefix="/api", dependencies=_auth_dep)
 app.include_router(notifications_router,  dependencies=_auth_dep)   # prefix /api/notifications is on the router; permission notifications.manage
-app.include_router(setup_router,          dependencies=_auth_dep)   # first-run checklist data: counts only
 app.include_router(admin_accounts_router, dependencies=_auth_dep)
 app.include_router(auth_router)
 app.include_router(admin_users_router)

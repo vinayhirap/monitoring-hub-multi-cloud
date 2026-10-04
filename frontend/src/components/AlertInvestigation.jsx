@@ -94,7 +94,7 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
           <section className="ai-sec">
             <h3>1 · Alert</h3>
             <div className="ai-facts">
-              <div><span>Value</span><b className={open ? `c-${SEV_TONE[sev] || "mute"}` : ""} title={String(a.current_value ?? a.value ?? "")}>{formatMetricValue(a.metric_name, a.current_value ?? a.value)}</b></div>
+              <div><span>Value</span><b className={open ? `c-${SEV_TONE[sev] || "mute"}` : ""} title={String(a.current_value ?? "")}>{formatMetricValue(a.metric_name, a.current_value)}</b></div>
               <div><span>Threshold</span><b title={String(a.threshold ?? "")}>{formatMetricValue(a.metric_name, a.threshold)}</b></div>
               <div><span>State</span><b>{String(state).toUpperCase()}</b></div>
               <div><span>{open ? "Open for" : "Lasted"}</span><b>{dur}</b></div>
