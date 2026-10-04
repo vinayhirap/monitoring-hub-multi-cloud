@@ -55,7 +55,7 @@ _GRAY_LINE   = (222, 227, 235)
 _WHITE       = (255, 255, 255)
 _INK         = (20, 26, 38)     # near-black body text, better print contrast than pure black
 
-_LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "aslops_logo.png")
+_LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "cloudops_mark.png")
 
 # AUDIT FIX (b21/082, MEDIUM): safety-valve row cap for gather_report_data's
 # alerts/incidents queries -- see the comment at its alerts query for why.
@@ -276,15 +276,22 @@ class ReportPDF(FPDF):
         self.rect(0, 0, self.w, 16, style="F")
         if os.path.exists(_LOGO_PATH):
             try:
-                self.image(_LOGO_PATH, x=10, y=3, h=10)
+                self.image(_LOGO_PATH, x=10, y=3.5, h=9)
             except Exception as e:
                 # AUDIT FIX (b21/082, LOW): was a bare except: pass --
                 # a corrupt/unreadable logo file silently rendered every
                 # page header without one, with zero trace anywhere.
                 logger.warning(f"Report PDF: failed to draw header logo from {_LOGO_PATH}: {e}")
-        self.set_xy(0, 5)
+        # "CloudOps" as real PDF text next to the mark, not baked into
+        # the logo image -- matches the app's own topbar treatment
+        # (icon + text, no boxed background) and stays crisp at any
+        # zoom level rather than being raster text inside a PNG.
+        self.set_xy(21, 4.5)
         self.set_font("Helvetica", "B", 10)
         self.set_text_color(*_WHITE)
+        self.cell(30, 7, _safe("CloudOps"))
+        self.set_xy(0, 5)
+        self.set_font("Helvetica", "B", 10)
         self.cell(0, 6, _safe(self._meta["title"]), align="R", new_x="LMARGIN", new_y="NEXT")
         self.set_y(20)
         self.set_text_color(*_INK)
@@ -521,11 +528,20 @@ def _draw_cover(pdf: ReportPDF, *, title: str, subtitle: str, meta_lines: list[s
 
     if os.path.exists(_LOGO_PATH):
         try:
-            pdf.image(_LOGO_PATH, x=(pdf.w - 55) / 2, y=32, w=55)
+            mark_w = 34
+            pdf.image(_LOGO_PATH, x=(pdf.w - mark_w) / 2, y=40, w=mark_w)
         except Exception as e:
             logger.warning(f"Report PDF: failed to draw cover logo from {_LOGO_PATH}: {e}")
 
-    pdf.set_y(95)
+    pdf.set_y(78)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.set_text_color(180, 190, 205)
+    pdf.cell(0, 6, _safe("AURIONPRO"), align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.set_text_color(*_WHITE)
+    pdf.cell(0, 9, _safe("CloudOps"), align="C", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_y(105)
     pdf.set_font("Helvetica", "B", 26)
     pdf.set_text_color(*_WHITE)
     pdf.multi_cell(0, 12, _safe(title), align="C")
