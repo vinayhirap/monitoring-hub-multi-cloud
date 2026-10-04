@@ -266,6 +266,44 @@ _CAPACITY_METRIC_NAMES = frozenset({
 })
 
 
+_CAPACITY_METRIC_NAMES_LOWER = frozenset(n.lower() for n in _CAPACITY_METRIC_NAMES)
+
+
+def _capacity_forecast(aws_account_id, resource_id, metric_name):
+    """Deterministic days-to-exhaustion for a capacity metric, from the SAME linear fit the Insights
+    page uses (trend.compute_capacity_forecasts, 14 days of hourly means). None for any other metric,
+    when the series is flat/falling, has too little history, or the fit says > 365 days. Never raises:
+    a failure here must not take the whole explanation down.
+
+    2026-10-04: RCA reports for disk alerts (the 206 a week on PROD) said only "jumped sharply" /
+    "building up" -- never how long until the disk is full, which is the one thing the reader needs."""
+    if (metric_name or "").lower() not in _CAPACITY_METRIC_NAMES_LOWER:
+        return None
+    try:
+        from app.collector.trend import compute_capacity_forecasts, CAPACITY_METRICS
+        rows = compute_capacity_forecasts(resource_id, [aws_account_id] if aws_account_id is not None else None)
+        for r in rows or []:
+            if r["metric_name"].lower() == metric_name.lower() and r["resource_id"] == resource_id:
+                return {
+                    "days_to_exhaustion": r["days_to_exhaustion"],
+                    "slope_per_day": r["slope_per_day"],
+                    "current_value": round(float(r["current_value"]), 1),
+                    "counts_up": CAPACITY_METRICS[r["metric_name"]] > 0,
+                }
+    except Exception as e:
+        logger.warning(f"[rca] capacity forecast skipped for {resource_id}/{metric_name}: {e}")
+    return None
+
+
+def _forecast_sentence(f):
+    days = f["days_to_exhaustion"]
+    when = "under a day" if days < 1 else (f"about {days:.1f} days" if days < 10 else f"about {round(days)} days")
+    if f["counts_up"]:
+        return (f"At the recent growth rate (about {abs(f['slope_per_day']):.1f} percentage points per day), "
+                f"usage is projected to reach 100% in {when}.")
+    return f"At the recent rate of decline, free space is projected to run out in {when}."
+
+
 def _check_flapping(cursor, aws_account_id, resource_id, metric_name):
     """
     True if this resource+metric's normal variability (mean +/-
@@ -294,7 +332,7 @@ def _check_flapping(cursor, aws_account_id, resource_id, metric_name):
     wrong advice for a filling disk. Capacity alerts are static-threshold by design
     (migration 073), so there is nothing for this check to say about them.
     """
-    if metric_name in _CAPACITY_METRIC_NAMES:
+    if (metric_name or "").lower() in _CAPACITY_METRIC_NAMES_LOWER:
         return False
     cursor.execute("""
         SELECT t.critical_value, t.comparison, t.dynamic_k
@@ -439,6 +477,7 @@ def explain_alert(alert_id: int):
         trend = _trend_context(cursor, resource_id, alert["metric_name"], breach_time,
                                aws_account_id=account_id)
         is_flapping = _check_flapping(cursor, alert["aws_account_id"], resource_id, alert["metric_name"])
+        capacity_forecast = _capacity_forecast(account_id, resource_id, alert["metric_name"])
 
         # The alert's CURRENT incident: an alert can belong to an old,
         # resolved incident as well as an active one, and the previous
@@ -500,6 +539,8 @@ def explain_alert(alert_id: int):
                     f"This is the most likely trigger, though not confirmed."
                 )
         summary_parts.append(trend["description"])
+        if capacity_forecast:
+            summary_parts.append(_forecast_sentence(capacity_forecast))
         if in_degree:
             summary_parts.append(
                 f"{in_degree} other resource(s) rely on this one, so the impact may be wider than this single alert."
@@ -575,6 +616,7 @@ def explain_alert(alert_id: int):
             "template_summary": deterministic_summary,
             "trend": trend,
             "is_likely_flapping": is_flapping,
+            "capacity_forecast": capacity_forecast,
             "probable_trigger": cloud_events[0] if cloud_events else None,
             "recent_deployment": recent_deployment,
             "related_alert_count": related["other_count"] if related else 0,

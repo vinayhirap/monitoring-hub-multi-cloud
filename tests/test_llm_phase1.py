@@ -335,3 +335,30 @@ def test_digest_lookup_failure_never_breaks_the_refresh(monkeypatch, caplog):
     with caplog.at_level(logging.INFO):
         assert mod.refresh_ollama_model() is True
     assert any("refreshed Ollama model" in r.getMessage() for r in caplog.records)
+
+
+# -- capacity forecast in the report (2026-10-04) -----------------------------
+
+def test_report_fallback_recommends_acting_when_a_disk_fills_within_30_days(monkeypatch):
+    mod, _ = _rca_module(monkeypatch, lambda f: None)
+    facts = mod._gather_facts(7)
+    facts["capacity_forecast"] = {"days_to_exhaustion": 11.8, "slope_per_day": 1.43, "current_value": 83.0, "counts_up": True}
+    md = mod._fallback_narrative(facts)
+    assert "- Capacity: at the recent rate this resource reaches its limit in about 12 days" in md
+    facts["capacity_forecast"]["days_to_exhaustion"] = 200.0
+    assert "- Capacity:" not in mod._fallback_narrative(facts)        # far-off forecasts are not an action item
+    facts["capacity_forecast"] = None
+    assert "- Capacity:" not in mod._fallback_narrative(facts)
+
+
+def test_rca_prompt_lets_the_model_cite_the_forecast_but_the_verifier_still_guards_the_numbers(monkeypatch):
+    mod = _summ(monkeypatch)
+    assert "capacity_forecast" in mod._RCA_REPORT_SYSTEM_PROMPT
+    facts = dict(FACTS, capacity_forecast={"days_to_exhaustion": 11.8, "slope_per_day": 1.43})
+    good = ("## Executive Summary\nDisk will fill in about 12 days at 1.43 per day.\n\n"
+            "## Recommendations\n- Review i-0abc1234.")
+    bad = good.replace("12 days", "3 days")
+    mod._call_llm = lambda *a, **k: good
+    assert mod.generate_rca_narrative(facts) == good
+    mod._call_llm = lambda *a, **k: bad
+    assert mod.generate_rca_narrative(facts) is None

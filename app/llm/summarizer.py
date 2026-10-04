@@ -117,6 +117,8 @@ _RCA_REPORT_SYSTEM_PROMPT = (
     "not already present in the input JSON. (2) Do not speculate about root "
     "cause beyond what the input's probable_trigger/recent_deployment/trend "
     "fields state -- if those are empty, say the cause is undetermined. "
+    "When capacity_forecast is present, you may state its days_to_exhaustion "
+    "and slope_per_day exactly as given. "
     "(3) Recommendations must be concrete and directly tied to facts present "
     "in the input (e.g. only recommend a deploy-process change if "
     "recent_deployment is non-null). (4) The Executive Summary should be "

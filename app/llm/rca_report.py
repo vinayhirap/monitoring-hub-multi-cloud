@@ -114,6 +114,7 @@ def _gather_facts(alert_id: int) -> dict:
             "confidence": explanation.get("confidence"),
             "trend": explanation.get("trend"),
             "is_likely_flapping": explanation.get("is_likely_flapping"),
+            "capacity_forecast": explanation.get("capacity_forecast"),
             "probable_trigger": explanation.get("probable_trigger"),
             "recent_deployment": explanation.get("recent_deployment"),
             "related_alert_count": explanation.get("related_alert_count"),
@@ -146,6 +147,11 @@ def _fallback_narrative(facts: dict) -> str:
     lines = ["## Executive Summary", "", " ".join(summary_parts), "", "## Recommendations", ""]
     if facts.get("recent_deployment"):
         lines.append("- Review the deployment listed in the timeline above for a possible causal link.")
+    cf = facts.get("capacity_forecast")
+    if cf and cf.get("days_to_exhaustion") is not None and cf["days_to_exhaustion"] <= 30:
+        days = cf["days_to_exhaustion"]
+        when = "under a day" if days < 1 else (f"about {days:.1f} days" if days < 10 else f"about {round(days)} days")
+        lines.append(f"- Capacity: at the recent rate this resource reaches its limit in {when} -- clean up or extend storage before then.")
     if facts.get("is_likely_flapping"):
         lines.append("- Consider widening this metric's threshold -- this alert shows signs of flapping on normal variance.")
     if facts.get("related_alert_count"):

@@ -246,3 +246,71 @@ def test_local_capacity_metric_list_matches_trend_py():
     rca = load_module("app/collector/rca.py")
     trend = load_module("app/collector/trend.py")
     assert set(trend.CAPACITY_METRICS) == set(rca._CAPACITY_METRIC_NAMES)
+
+
+# -- capacity forecast in the explanation (2026-10-04) ------------------------
+
+def _forecast_rows(**over):
+    row = {"resource_id": "i-abc", "aws_account_id": 7, "metric_name": "disk_used_percent",
+           "current_value": 83.04, "slope_per_day": 1.43, "days_to_exhaustion": 11.8}
+    row.update(over)
+    return [row]
+
+
+def _stub_trend(rows=None, boom=False):
+    def fc(resource_id, account_ids):
+        if boom:
+            raise RuntimeError("db down")
+        return rows if rows is not None else []
+    install_stub("app.collector.trend", compute_capacity_forecasts=fc,
+                 CAPACITY_METRICS={"disk_used_percent": 100.0, "FreeStorageSpace": 0.0,
+                                   "DiskSpaceUtilization": 100.0, "EBSFreeSpacePercent": 0.0})
+
+
+def test_disk_alert_gets_a_days_to_full_sentence_and_fact():
+    _install_stub(_base_alert(metric_name="disk_used_percent", current_value=83.04, threshold=80.0))
+    _stub_trend(_forecast_rows())
+    mod = load_module("app/collector/rca.py")
+    result = mod.explain_alert(42)
+    assert result["capacity_forecast"] == {"days_to_exhaustion": 11.8, "slope_per_day": 1.43,
+                                            "current_value": 83.0, "counts_up": True}
+    assert "about 1.4 percentage points per day" in result["summary"]
+    assert "reach 100% in about 12 days" in result["summary"]
+
+
+def test_free_space_metric_uses_the_decline_wording():
+    _install_stub(_base_alert(metric_name="FreeStorageSpace"))
+    _stub_trend(_forecast_rows(metric_name="FreeStorageSpace", slope_per_day=-2e9, days_to_exhaustion=3.2))
+    mod = load_module("app/collector/rca.py")
+    result = mod.explain_alert(42)
+    assert result["capacity_forecast"]["counts_up"] is False
+    assert "free space is projected to run out in about 3.2 days" in result["summary"]
+
+
+def test_lowercase_alert_metric_name_still_matches_the_capacity_metric():
+    _install_stub(_base_alert(metric_name="freestoragespace"))
+    _stub_trend(_forecast_rows(metric_name="FreeStorageSpace", slope_per_day=-1.0, days_to_exhaustion=40.0))
+    mod = load_module("app/collector/rca.py")
+    assert mod.explain_alert(42)["capacity_forecast"]["days_to_exhaustion"] == 40.0
+
+
+def test_flat_or_unfittable_series_adds_nothing_and_non_capacity_metrics_never_call_trend():
+    _install_stub(_base_alert(metric_name="disk_used_percent"))
+    _stub_trend([])                                   # flat / falling / too little history
+    mod = load_module("app/collector/rca.py")
+    result = mod.explain_alert(42)
+    assert result["capacity_forecast"] is None and "projected" not in result["summary"]
+
+    _install_stub(_base_alert(metric_name="CPUUtilization"))
+    install_stub("app.collector.trend", compute_capacity_forecasts=lambda *a: (_ for _ in ()).throw(
+        AssertionError("non-capacity metrics must not run a forecast")), CAPACITY_METRICS={})
+    mod = load_module("app/collector/rca.py")
+    assert mod.explain_alert(42)["capacity_forecast"] is None
+
+
+def test_a_forecast_failure_never_breaks_the_explanation():
+    _install_stub(_base_alert(metric_name="disk_used_percent"))
+    _stub_trend(boom=True)
+    mod = load_module("app/collector/rca.py")
+    result = mod.explain_alert(42)
+    assert result["capacity_forecast"] is None and result["summary"]
