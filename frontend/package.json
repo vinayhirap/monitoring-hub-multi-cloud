@@ -8,7 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node --test src/utils/__tests__/dashboardModel.test.js src/utils/__tests__/evidence.test.js src/utils/__tests__/intelligence.test.js src/utils/__tests__/reportPlan.test.js src/utils/__tests__/accountsAdmin.test.js src/utils/__tests__/dataCache.test.js src/utils/__tests__/loginFlow.test.js src/utils/__tests__/safeUrl.test.js src/utils/__tests__/timeFormat.test.js src/utils/__tests__/setupChecklist.test.js src/utils/__tests__/poll.test.js src/utils/__tests__/findingsView.test.js"
+    "test": "node --test src/utils/__tests__/dashboardModel.test.js src/utils/__tests__/evidence.test.js src/utils/__tests__/intelligence.test.js src/utils/__tests__/reportPlan.test.js src/utils/__tests__/accountsAdmin.test.js src/utils/__tests__/dataCache.test.js src/utils/__tests__/loginFlow.test.js src/utils/__tests__/safeUrl.test.js src/utils/__tests__/timeFormat.test.js src/utils/__tests__/setupChecklist.test.js src/utils/__tests__/poll.test.js src/utils/__tests__/findingsView.test.js src/utils/__tests__/lazyWithRetry.test.js src/utils/__tests__/forecastFormat.test.js"
   },
   "dependencies": {
     "@aws-icons/react": "^4.1.0",

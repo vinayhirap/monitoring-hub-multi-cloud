@@ -44,7 +44,7 @@ export default function Search() {
       <div className="c-header">
         <div>
           <h1>Search <span className="hl">Alerts</span></h1>
-          <p className="sub">Plain English -- try "critical rds alerts last hour" or "warning alerts on payment-api today"</p>
+          <p className="sub">Plain English -- try "critical alerts last hour", "warning ec2 alerts today" or "disk alerts this week"</p>
         </div>
       </div>
 

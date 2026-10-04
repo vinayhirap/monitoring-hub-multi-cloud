@@ -464,7 +464,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
         <div className="detail-header-right">
           <button className="btn-back" onClick={() => navigate(`/accounts/${accountId}/services`)}><ArrowLeftIcon size={13} /> Back</button>
           <button className="btn-aws" onClick={openInConsole} disabled={consoleLoading}>
-            <ExternalLinkIcon size={13} /> {consoleLoading ? "Opening…" : "Open Console"}
+            <ExternalLinkIcon size={13} /> {consoleLoading ? "Opening…" : "Open in cloud console"}
           </button>
         </div>
       </div>

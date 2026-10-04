@@ -1,4 +1,5 @@
 // src/components/Layout.jsx
+import { Suspense } from "react";
 import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -281,7 +282,7 @@ export default function Layout() {
           </div>
         </header>
         <main className="main-content" id="main-content" tabIndex={-1}>
-          <div className="page-frame"><ErrorBoundary key={location.pathname}><Outlet /></ErrorBoundary></div>
+          <div className="page-frame"><ErrorBoundary key={location.pathname}><Suspense fallback={<div className="ui-sub" role="status" style={{ padding: 24 }}>Loading…</div>}><Outlet /></Suspense></ErrorBoundary></div>
           <AlertToast />
         </main>
         <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} pages={visibleNav} rows={accountRows}

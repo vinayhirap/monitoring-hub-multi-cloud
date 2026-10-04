@@ -518,6 +518,27 @@ def apply_recommended_defaults(
     return result
 
 
+# "Check Now" cooldown (audit G10). Each click makes live AWS Describe* and billed GetMetricData calls for the whole
+# account; repeated clicks, or several people at once, could stampede the collector. One check per account every
+# CHECK_COOLDOWN_SECONDS (per worker process, which is enough to blunt the stampede - it is not a security control).
+CHECK_COOLDOWN_SECONDS = 30
+_last_check: dict = {}
+
+
+def check_cooldown_remaining(account_id, now=None, window=CHECK_COOLDOWN_SECONDS, store=None) -> int:
+    """Seconds still to wait (0 = allowed, and the attempt is recorded). Old entries are dropped so the map stays small."""
+    import time as _time
+    store = _last_check if store is None else store
+    now = _time.monotonic() if now is None else now
+    for k in [k for k, t in store.items() if now - t > window * 4]:
+        del store[k]
+    last = store.get(account_id)
+    if last is not None and now - last < window:
+        return max(1, int(window - (now - last) + 0.999))
+    store[account_id] = now
+    return 0
+
+
 @router.get("/check")
 def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(require_permission("alerts.configure"))):
     # alerts.configure, not alerts.view (audit B07): check_and_write_alerts()
@@ -526,6 +547,10 @@ def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(re
     # account, so a read-only viewer must not be able to trigger it. Kept as
     # GET only because the shipped UI calls it that way.
     _require_account_access(account_id, current_user)
+    wait = check_cooldown_remaining(account_id)
+    if wait:
+        raise HTTPException(status_code=429, detail=f"A check for this account ran moments ago. Try again in {wait} s.",
+                            headers={"Retry-After": str(wait)})
     from app.aws.collector_direct import check_and_write_alerts
     from app.api.live_data import _get_db_account
 

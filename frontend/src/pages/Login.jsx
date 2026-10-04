@@ -6,6 +6,7 @@ import { CheckIcon } from "../components/icons";
 import { AwsBrandLogo, AzureBrandLogo, GoogleCloudBrandLogo } from "../components/cloud-icons";
 import { sanitizeNext, loginFailure, formatWait, takeSessionExpired, FALLBACK_AFTER_LOGIN } from "../utils/loginFlow";
 import "./Login.css";
+import { shouldLoadBrandVideo, readEnvironment } from "../utils/loginMedia";
 
 const EyeIcon = ({ open }) => (
   open ? (
@@ -607,14 +608,18 @@ export default function Login() {
             </ul>
 
             <div className="login-visual-video-frame">
-              <video
-                className="login-visual-video"
-                src="/cloudops-brand-story.mp4"
-                autoPlay
-                muted
-                loop
-                playsInline
-              />
+              {/* Only fetched where it is visible and welcome (audit G5); preload=metadata keeps the first paint light. */}
+              {shouldLoadBrandVideo(readEnvironment()) && (
+                <video
+                  className="login-visual-video"
+                  src="/cloudops-brand-story.mp4"
+                  preload="metadata"
+                  autoPlay
+                  muted
+                  loop
+                  playsInline
+                />
+              )}
             </div>
           </div>
         </div>

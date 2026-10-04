@@ -12,7 +12,8 @@ from tests.conftest import load_module, install_stub, FakeCursor, FakeConn
 
 
 def _install_stub(alert_row, in_degree=0, cloud_events=None, config_changes=None,
-                   trend_points=None, related=None, flapping_threshold=None, flapping_baseline=None):
+                   trend_points=None, related=None, flapping_threshold=None, flapping_baseline=None,
+                   recurrences=0):
     cloud_events = cloud_events or []
     config_changes = config_changes or []
     trend_points = trend_points if trend_points is not None else []
@@ -47,6 +48,9 @@ def _install_stub(alert_row, in_degree=0, cloud_events=None, config_changes=None
                 # _gather_deployment_signal()'s op_events lookup -- no
                 # recent deployment in these tests' windows.
                 self._pending = []
+            elif normalized.startswith("SELECT COUNT(*) AS recurrences"):
+                # explain_alert()'s recurrence count (audit H1) - none unless a test says otherwise.
+                self._pending = [{"recurrences": recurrences}]
             elif normalized.startswith("SELECT llm_summary, llm_summary_source_hash"):
                 # explain_alert()'s LLM-polish cache check -- nothing cached,
                 # so the deterministic template these tests verify is used.
@@ -314,3 +318,66 @@ def test_a_forecast_failure_never_breaks_the_explanation():
     mod = load_module("app/collector/rca.py")
     result = mod.explain_alert(42)
     assert result["capacity_forecast"] is None and result["summary"]
+
+# ── Audit H1: persistent conditions are not "isolated fluctuations" ────────
+
+def test_persistence_wording_is_bucketed_and_ignores_short_or_bad_values():
+    install_stub("app.db", get_connection=lambda: None)
+    mod = load_module("app/collector/rca.py")
+    p = mod.persistence_phrase
+    assert [p(m) for m in (None, "x", 0, 59)] == [None, None, None, None]
+    assert p(60) == "more than an hour" and p(359) == "more than an hour"
+    assert p(360) == "more than 6 hours" and p(720) == "more than 12 hours"
+    assert p(1440) == "1 day" and p(14400) == "10 days" and p(14400 + 700) == "10 days"     # whole days, stable all day
+
+
+def test_ten_day_breach_is_described_as_persistent_with_no_isolated_fluctuation_text():
+    """The audit's xrai-alb case: an alert active ~10 days with no AWS activity around it."""
+    _install_stub(_base_alert(status="active", open_minutes=14400), recurrences=0)
+    mod = load_module("app/collector/rca.py")
+    out = mod.explain_alert(42)
+    assert "breaching for 10 days" in out["summary"] and "persistent problem" in out["summary"]
+    assert "isolated fluctuation" not in out["summary"]
+    assert "new normal" in out["summary"] or "unaddressed fault" in out["summary"]
+    assert out["open_minutes"] == 14400 and out["recurrences_30d"] == 0
+    assert out["confidence"] == "low" and "No corroborating signal" in out["confidence_reason"]
+
+
+def test_short_alert_keeps_the_isolated_fluctuation_wording():
+    _install_stub(_base_alert(status="active", open_minutes=12))
+    mod = load_module("app/collector/rca.py")
+    out = mod.explain_alert(42)
+    assert "isolated fluctuation" in out["summary"] and "persistent problem" not in out["summary"]
+
+
+def test_recurrence_is_reported_and_a_resolved_alert_is_described_in_the_past_tense():
+    _install_stub(_base_alert(status="resolved", open_minutes=300), recurrences=7)
+    mod = load_module("app/collector/rca.py")
+    s = mod.explain_alert(42)["summary"]
+    assert "lasted more than an hour before it cleared" in s and "persistent problem" not in s
+    assert "triggered 7 other times in the last 30 days" in s
+
+
+def test_confidence_reason_lists_the_signals_behind_the_level():
+    _install_stub(_base_alert(), in_degree=2, related={"incident_id": 1, "other_count": 3})
+    mod = load_module("app/collector/rca.py")
+    out = mod.explain_alert(42)
+    assert out["confidence"] == "high"
+    assert "2 supporting signal(s)" in out["confidence_reason"] and "dependent resources" in out["confidence_reason"]
+
+
+# -- both features together: a long-running disk alert (H1 + capacity forecast) ---
+
+def test_persistent_disk_alert_gets_duration_then_trend_then_days_to_full():
+    """A disk that has been over its line for 10 days and is still filling: the reader needs how long it has been
+    wrong AND how long until it is full, in that order, and must not be told it is an isolated fluctuation."""
+    _install_stub(_base_alert(metric_name="disk_used_percent", status="active", open_minutes=14400,
+                              current_value=91.0, threshold=80.0), recurrences=0)
+    _stub_trend(_forecast_rows(current_value=91.0, days_to_exhaustion=6.2))
+    mod = load_module("app/collector/rca.py")
+    out = mod.explain_alert(42)
+    s = out["summary"]
+    assert "breaching for 10 days" in s and "reach 100% in about 6.2 days" in s
+    assert s.index("breaching for 10 days") < s.index("reach 100%")          # how long first, how soon next
+    assert "isolated fluctuation" not in s
+    assert out["capacity_forecast"]["days_to_exhaustion"] == 6.2 and out["open_minutes"] == 14400

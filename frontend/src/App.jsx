@@ -1,35 +1,40 @@
 // monitoring-hub/frontend/src/App.jsx
+import { Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth }  from "./auth/AuthContext";
 import { TimezoneProvider } from "./contexts/TimezoneContext";
 import Layout            from "./components/Layout";
 import Login             from "./pages/Login";
 import Overview          from "./pages/Overview";
-import Alerts            from "./pages/Alerts";
-import AccountDetail     from "./pages/AccountDetail";
-import AccessControl     from "./pages/AccessControl";
-import Compliance        from "./pages/Compliance";
-import Settings          from "./pages/Settings";
-import AccountOnboarding from "./pages/AccountOnboarding";
-import ServiceList       from "./pages/ServiceList";
-import ServiceDetailRouter from "./pages/ServiceDetailRouter";
-import Topology          from "./pages/Topology";
-import Incidents         from "./pages/Incidents";
-import OpEvents          from "./pages/OpEvents";
-import EscalationPolicies from "./pages/EscalationPolicies";
-import SyntheticChecks    from "./pages/SyntheticChecks";
-import Slos                from "./pages/Slos";
-import SecurityFindings    from "./pages/SecurityFindings";
-import MaintenanceWindows  from "./pages/MaintenanceWindows";
 // Deploy Risk hidden from frontend (2026-09-17, per request) -- backend
 // (app/api/deploy_risk.py, app/collector/rca.py) untouched. Uncomment
 // here and in components/Layout.jsx's NAV_ITEMS to re-enable.
 // import DeployRisk          from "./pages/DeployRisk";
-import Search              from "./pages/Search";
-import Reports              from "./pages/Reports";
 import NotFound             from "./pages/NotFound";
-import StatusPageAdmin     from "./pages/StatusPageAdmin";
-import StatusPagePublic    from "./pages/StatusPagePublic";
+import { lazyWithRetry } from "./utils/lazyWithRetry";
+
+// Route-level code splitting (audit G1): everything except the shell, sign-in, Overview and the 404 page loads on
+// first visit, so the initial download no longer includes Topology, ServiceDetail, Reports, Settings, etc.
+const Alerts = lazyWithRetry(() => import("./pages/Alerts"));
+const AccountDetail = lazyWithRetry(() => import("./pages/AccountDetail"));
+const AccessControl = lazyWithRetry(() => import("./pages/AccessControl"));
+const Compliance = lazyWithRetry(() => import("./pages/Compliance"));
+const Settings = lazyWithRetry(() => import("./pages/Settings"));
+const AccountOnboarding = lazyWithRetry(() => import("./pages/AccountOnboarding"));
+const ServiceList = lazyWithRetry(() => import("./pages/ServiceList"));
+const ServiceDetailRouter = lazyWithRetry(() => import("./pages/ServiceDetailRouter"));
+const Topology = lazyWithRetry(() => import("./pages/Topology"));
+const Incidents = lazyWithRetry(() => import("./pages/Incidents"));
+const OpEvents = lazyWithRetry(() => import("./pages/OpEvents"));
+const EscalationPolicies = lazyWithRetry(() => import("./pages/EscalationPolicies"));
+const SyntheticChecks = lazyWithRetry(() => import("./pages/SyntheticChecks"));
+const Slos = lazyWithRetry(() => import("./pages/Slos"));
+const SecurityFindings = lazyWithRetry(() => import("./pages/SecurityFindings"));
+const MaintenanceWindows = lazyWithRetry(() => import("./pages/MaintenanceWindows"));
+const Search = lazyWithRetry(() => import("./pages/Search"));
+const Reports = lazyWithRetry(() => import("./pages/Reports"));
+const StatusPageAdmin = lazyWithRetry(() => import("./pages/StatusPageAdmin"));
+const StatusPagePublic = lazyWithRetry(() => import("./pages/StatusPagePublic"));
 
 function SessionCheckingScreen() {
   // Shown only for the brief moment while AuthContext asks the backend
@@ -111,7 +116,7 @@ function AppRoutes() {
           pages/StatusPagePublic.jsx and app/api/status_page.py's
           module docstring for the sanitization boundary that makes
           this safe to expose with no auth check at all. */}
-      <Route path="/status" element={<StatusPagePublic />} />
+      <Route path="/status" element={<Suspense fallback={<SessionCheckingScreen />}><StatusPagePublic /></Suspense>} />
       <Route path="/" element={<RequireAuth><Layout /></RequireAuth>}>
         <Route index element={<Navigate to="/overview" replace />} />
         <Route path="overview"                  element={<RequireAccess path="overview"><Overview /></RequireAccess>} />

@@ -448,6 +448,48 @@ def rank_probable_cause(incident_id: int):
         conn.close()
 
 
+def persistence_phrase(open_minutes):
+    """Coarse, human wording for how long a condition has been breaching, or None for a short-lived one.
+
+    Deliberately bucketed (over an hour / 6 h / 12 h, then whole days): this text feeds the hash that decides whether
+    the cached LLM polish is still valid (see explain_alert), so a phrase that changed every minute would force a
+    re-polish of every open alert every cycle.
+    """
+    try:
+        m = int(open_minutes)
+    except (TypeError, ValueError):
+        return None
+    if m < 60:
+        return None
+    if m < 360:
+        return "more than an hour"
+    if m < 720:
+        return "more than 6 hours"
+    if m < 1440:
+        return "more than 12 hours"
+    days = m // 1440
+    return f"{days} day{'s' if days != 1 else ''}"
+
+
+def persistence_sentence(open_minutes, status, recurrences):
+    """Audit H1: the explanation used to call a 10-day continuous breach "an isolated fluctuation". Say how long it
+    has lasted and how often it has recurred, so the reader can tell a spike from a standing problem."""
+    parts = []
+    phrase = persistence_phrase(open_minutes)
+    if phrase and str(status or "").lower() != "resolved":
+        parts.append(f"This condition has now been breaching for {phrase}, so it is a persistent problem, "
+                     f"not a one-off spike.")
+    elif phrase:
+        parts.append(f"This condition lasted {phrase} before it cleared.")
+    try:
+        n = int(recurrences or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n >= 3:
+        parts.append(f"It has also triggered {n} other time{'s' if n != 1 else ''} in the last 30 days.")
+    return " ".join(parts)
+
+
 def explain_alert(alert_id: int):
     """
     CUSTOMER-FACING -- plain-English root-cause explanation for a
@@ -459,7 +501,8 @@ def explain_alert(alert_id: int):
     try:
         cursor.execute("""
             SELECT id, aws_account_id, resource_id, metric_name, severity, triggered_at,
-                   current_value, threshold
+                   current_value, threshold, status,
+                   TIMESTAMPDIFF(MINUTE, triggered_at, COALESCE(resolved_at, UTC_TIMESTAMP())) AS open_minutes
             FROM alerts WHERE id = %s
         """, (alert_id,))
         alert = cursor.fetchone()
@@ -478,6 +521,17 @@ def explain_alert(alert_id: int):
                                aws_account_id=account_id)
         is_flapping = _check_flapping(cursor, alert["aws_account_id"], resource_id, alert["metric_name"])
         capacity_forecast = _capacity_forecast(account_id, resource_id, alert["metric_name"])
+
+        # How often this exact condition has fired before (audit H1) - same account, resource and metric.
+        cursor.execute("""
+            SELECT COUNT(*) AS recurrences FROM alerts
+            WHERE aws_account_id = %s AND resource_id = %s AND metric_name = %s AND id != %s
+              AND triggered_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)
+        """, (account_id, resource_id, alert["metric_name"], alert_id))
+        recurrences = int((cursor.fetchone() or {}).get("recurrences") or 0)
+        open_minutes = alert.get("open_minutes")
+        persistence = persistence_sentence(open_minutes, alert.get("status"), recurrences)
+        is_persistent = bool(persistence_phrase(open_minutes)) and str(alert.get("status") or "").lower() != "resolved"
 
         # The alert's CURRENT incident: an alert can belong to an old,
         # resolved incident as well as an active one, and the previous
@@ -504,6 +558,13 @@ def explain_alert(alert_id: int):
             recent_deployment is not None,
         ])
         confidence = "high" if signal_count >= 2 else ("medium" if signal_count == 1 else "low")
+
+        signals = [name for name, present in (
+            ("recent AWS change", bool(cloud_events)), ("monitoring config change", bool(config_changes)),
+            ("dependent resources", in_degree > 0), ("related alerts", related is not None),
+            ("recent deployment", recent_deployment is not None)) if present]
+        confidence_reason = (f"{len(signals)} supporting signal(s): {', '.join(signals)}." if signals
+                             else "No corroborating signal (AWS change, deployment, dependents or related alerts) was found.")
 
         summary_parts = []
         if is_flapping:
@@ -538,6 +599,8 @@ def explain_alert(alert_id: int):
                     f"by {top['username'] or 'an unknown user'} at {top['event_time']}. "
                     f"This is the most likely trigger, though not confirmed."
                 )
+        if persistence:
+            summary_parts.append(persistence)
         summary_parts.append(trend["description"])
         if capacity_forecast:
             summary_parts.append(_forecast_sentence(capacity_forecast))
@@ -556,10 +619,17 @@ def explain_alert(alert_id: int):
                 "double-checking this isn't a false alarm from a threshold edit."
             )
         if not cloud_events and not config_changes and not in_degree and not related and not is_flapping and not recent_deployment:
-            summary_parts.append(
-                "No related AWS activity, configuration change, or dependent resource was found "
-                "in the surrounding window \u2014 this may be an isolated fluctuation."
-            )
+            if is_persistent:
+                summary_parts.append(
+                    "No related AWS activity, configuration change, or dependent resource was found around when "
+                    "it started. Because it has not cleared, check whether this level is the new normal (and "
+                    "adjust the threshold) or an unaddressed fault."
+                )
+            else:
+                summary_parts.append(
+                    "No related AWS activity, configuration change, or dependent resource was found "
+                    "in the surrounding window \u2014 this may be an isolated fluctuation."
+                )
 
         deterministic_summary = " ".join(summary_parts)
 
@@ -604,6 +674,9 @@ def explain_alert(alert_id: int):
             "alert_id": alert_id,
             "resource_id": resource_id,
             "confidence": confidence,
+            "confidence_reason": confidence_reason,     # audit H1: why this confidence level
+            "open_minutes": int(open_minutes) if open_minutes is not None else None,
+            "recurrences_30d": recurrences,
             "summary": summary,
             "summary_source": summary_source,
             # ALWAYS the raw deterministic template text, never the

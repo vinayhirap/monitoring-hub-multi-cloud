@@ -498,7 +498,7 @@ export default function ServiceDetail() {
         <div className="detail-header-right">
           <button className="btn-back" onClick={() => navigate(`/accounts/${id}/services`)}><ArrowLeftIcon size={13} /> Back</button>
           <button className="btn-aws" onClick={() => openAccountConsole(id, rawService, { region })}>
-            <CloudIcon size={13} /> Open Console <ExternalLinkIcon size={12} />
+            <CloudIcon size={13} /> Open in cloud console <ExternalLinkIcon size={12} />
           </button>
         </div>
       </div>

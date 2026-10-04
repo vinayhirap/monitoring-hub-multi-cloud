@@ -1,8 +1,9 @@
 // src/pages/overview/panels.jsx -- Overview dashboard sections. Presentation only: every value
 // arrives pre-derived from utils/dashboardModel.js (real endpoint data, nothing estimated).
 import { Panel, Badge, StatusBeacon, KpiStrip, KpiCard, DataTable, EmptyState, AiChip, SeverityBadge } from "../../components/ui";
-import { ageLabel, serviceLabel, FRESH_MIN, STALE_MIN } from "../../utils/dashboardModel";
+import { ageLabel, serviceLabel, FRESH_MIN, STALE_MIN, serviceLabelFor } from "../../utils/dashboardModel";
 import { metricLabel } from "../../utils/metricLabels";
+import { formatDaysLeftShort } from "../../utils/forecastFormat";
 
 const TONE = { crit: "crit", warn: "warn", info: "info", ok: "ok", critical: "crit", warning: "warn", healthy: "ok", unknown: "mute" };
 const LEVEL_TEXT = { critical: "Critical", warning: "Warning", healthy: "Healthy", unknown: "No data" };
@@ -171,7 +172,7 @@ export function TopResourcesPanel({ rows, onGo }) {
   const cols = [
     { key: "name", header: "Resource", render: r => (
       <span className="dash-res"><span className="dash-res-name" title={r.resource}>{r.name}</span>
-        <span className="dash-res-sub">{serviceLabel(r.service)} · {r.account_name}{r.region ? ` · ${r.region}` : ""}</span></span>) },
+        <span className="dash-res-sub">{serviceLabelFor(r.service, r.resource)} · {r.account_name}{r.region ? ` · ${r.region}` : ""}</span></span>) },
     { key: "sev", header: "Alerts", sort: r => r.crit * 1000 + r.warn, render: r => (
       <span className="dash-sevs">{r.crit > 0 && <Badge tone="crit">{r.crit} crit</Badge>}{r.warn > 0 && <Badge tone="warn">{r.warn} warn</Badge>}{r.info > 0 && <Badge tone="info">{r.info}</Badge>}</span>) },
     { key: "metric", header: "Metric", render: r => <span title={r.metrics.map(metricLabel).join(", ")}>{metricLabel(r.metrics[0])}{r.metrics.length > 1 ? ` +${r.metrics.length - 1}` : ""}</span> },
@@ -231,7 +232,7 @@ export function IntelligencePanel({ anomalies, fleet, kpi, now, onGo }) {
           <li key={`${c.aws_account_id}-${c.resource_id}-${c.metric_name}`}><button type="button" className="mini-row" onClick={() => onGo(`/alerts?tab=active&q=${encodeURIComponent(c.resource_id || "")}`)}>
             <span className="mini-main">{c.resource_name || c.resource_id}</span>
             <span className="mini-sub">{metricLabel(c.metric_name)}{Number.isFinite(Number(c.current_value)) && c.current_value !== null ? ` ${Number(c.current_value).toFixed(0)}%` : ""}</span>
-            <Badge mode="predicted" title="Linear-trend forecast, not a measurement">{Math.round(Number(c.days_to_exhaustion))}d left</Badge></button></li>))}</ul>
+            <Badge mode="predicted" title="Linear-trend forecast, not a measurement">{formatDaysLeftShort(c.days_to_exhaustion)}</Badge></button></li>))}</ul>
       )}
       {kpi.flapping > 0 && <div className="dash-note"><button type="button" className="mx-name" onClick={() => onGo("/alerts?tab=tuning")}>{kpi.flapping} alert{kpi.flapping === 1 ? " is" : "s are"} flapping and being auto-tuned</button></div>}
     </Panel>

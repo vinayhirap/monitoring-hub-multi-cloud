@@ -42,6 +42,17 @@ const sum = (rows, k) => rows.reduce((n, r) => n + (Number(r[k]) || 0), 0);
 export const SERVICE_LABEL = { ec2: "EC2", ebs: "EBS", rds: "RDS", s3: "S3", lambda: "Lambda", elb: "ELB", ecs: "ECS" };
 export const serviceLabel = k => SERVICE_LABEL[k] || String(k || "other").toUpperCase();
 
+/** "elb" is one resource_type for three products. The ARN tells them apart (loadbalancer/app/ vs /net/ vs /gwy/), so
+ *  an Application Load Balancer is called ALB everywhere instead of ELB on Overview/Alerts and ALB on Settings. */
+export function serviceLabelFor(service, resourceId) {
+  if (String(service || "").toLowerCase() !== "elb") return serviceLabel(service);
+  const id = String(resourceId || "");
+  if (id.includes("loadbalancer/app/")) return "ALB";
+  if (id.includes("loadbalancer/net/")) return "NLB";
+  if (id.includes("loadbalancer/gwy/")) return "GWLB";
+  return serviceLabel("elb");                                    // classic LB, or no ARN to go on
+}
+
 export function summarize({ rows, firing, resolved, incidents, events, fleet, now = Date.now(), scopeIds = null }) {
   const inScope = id => !scopeIds || scopeIds.has(id);
   const R = rows.filter(r => inScope(r.id));

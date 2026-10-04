@@ -16,6 +16,7 @@ import { buildInsights } from "../utils/intelligence";
 import { fmtMetricValue } from "../utils/metricFormat";
 import { metricLabel, formatMetricValue } from "../utils/metricLabels";
 import "./ResourceEvidence.css";
+import { formatDaysLeft } from "../utils/forecastFormat";
 
 const SEV_TONE = { CRITICAL: "crit", WARNING: "warn", INFO: "info", ERROR: "crit", RESOLVED: "ok" };
 
@@ -108,7 +109,7 @@ export default function ResourceEvidence({ accountId, resourceIds, resourceId, s
           <div className="rev-k">Capacity {st.forecast && st.forecast.length > 0 && <AiChip method="trend fit" />}</div>
           {st.forecast === undefined ? <div className="rev-v">…</div> : st.forecast === null ? <div className="rev-na">Not available for your role</div> : st.forecast.length ? (
             <>
-              <div className="rev-v">~{Math.min(...st.forecast.map(f => f.days_to_exhaustion))}<span> days</span></div>
+              <div className="rev-v">{formatDaysLeft(Math.min(...st.forecast.map(f => f.days_to_exhaustion)))}</div>
               <div className="rev-s">{st.forecast[0].metric_name}{st.forecast.length > 1 ? ` +${st.forecast.length - 1} more` : ""} trending to its limit</div>
             </>
           ) : <><div className="rev-v">—</div><div className="rev-s">No metric trending to exhaustion</div></>}

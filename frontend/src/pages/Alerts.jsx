@@ -16,6 +16,7 @@ import AlertInvestigation from "../components/AlertInvestigation";
 import { PageHeader, KpiStrip, KpiCard, SegmentedControl, EmptyState } from "../components/ui";
 import { clearAllCached } from "../utils/dataCache";
 import { redirectToSignIn } from "../utils/loginFlow";
+import { serviceLabelFor } from "../utils/dashboardModel";
 
 
 // Tab order: what needs a person first, then the lifecycle states, then history.
@@ -598,7 +599,7 @@ export default function Alerts() {
                       <td className="alert-metric">
                         <div>{metricLabel(a.metric_name)}</div>
                         <div style={{fontSize:"11px", color:"var(--text-muted)"}}>
-                          {(a.service || "").toUpperCase()}
+                          {serviceLabelFor(a.service, a.resource)}
                         </div>
                         {(a.needs_attention || a.auto_tuning) && (
                           <div className="alert-tags">
