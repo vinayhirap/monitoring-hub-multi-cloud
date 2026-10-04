@@ -190,6 +190,11 @@ def run_once(tier="standard"):
             log_event("synthetic_prune_failed",
                       f"prune_synthetic_results failed (non-fatal): {e}", severity="WARNING")
         try:
+            from app.collector.retention import run_retention
+            run_retention()          # resolved alerts (default 400 d) + notification log (90 d); audit D3/D9
+        except Exception as e:
+            log_event("retention_failed", f"run_retention failed (non-fatal): {e}", severity="WARNING")
+        try:
             from app.aws.cloudtrail_collector import prune_cloud_events
             prune_cloud_events()
         except Exception as e:

@@ -101,7 +101,7 @@ DEFAULT_THRESHOLDS = {
     'ExecutionTime': (1000, 3000, '>'),
     'ExecutionsFailed': (1, 5, '>'),
     'ExecutionsSucceeded': (1000000, 5000000, '>'),
-    'ExecutionsTimedOut': (1000000, 5000000, '>'),
+    'ExecutionsTimedOut': (1, 5, '>'),               # audit F1: a timed-out Step Functions execution is a failure
     'FailedInvocations': (1, 5, '>'),
     'FaultRequestCount': (1, 5, '>'),                 # audit F1: DAX faults are errors
     'FirstByteLatency': (1000, 3000, '>'),
