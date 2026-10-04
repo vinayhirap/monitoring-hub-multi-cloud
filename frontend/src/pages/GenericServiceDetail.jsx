@@ -58,6 +58,7 @@ import ChartToolbar, { AUTO_REFRESH_MS } from "../components/ChartToolbar";
 import { useMetricMeta } from "../hooks/useMetricMeta";
 import { useInsightsRegistry } from "../hooks/useInsightsRegistry";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
+import { formatStamp, zoneLabel } from "../utils/timeFormat";
 
 const TIME_RANGES = [
   { label: "1H",  hours: 1 },
@@ -251,7 +252,7 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
           </td>
         )}
         <td style={{ padding: "10px 14px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
-          {r.created_at ? new Date(r.created_at).toLocaleString("en-US", { timeZone: ianaName }) : "—"}
+          {formatStamp(r.created_at, ianaName, zoneLabel(ianaName))}
         </td>
         <td style={{ padding: "10px 14px", textAlign: "right" }}>
           <button

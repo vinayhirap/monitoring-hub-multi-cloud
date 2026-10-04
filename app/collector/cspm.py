@@ -142,6 +142,24 @@ def _check_public_s3_buckets(session) -> list:
     return findings
 
 
+def format_sg_ports(protocol, from_port, to_port) -> str:
+    """Human wording for one security-group rule's port span (audit B8). boto reports 'all traffic' (protocol -1) with
+    no FromPort/ToPort and ICMP with type/code in the port fields, which rendered as 'Ports None-None',
+    'Ports -1--1' and 'Ports 0-0'."""
+    proto = str(protocol if protocol is not None else "-1").lower()
+    if proto in ("-1", "all") or (from_port is None and to_port is None):
+        return "All traffic, all ports"
+    if proto in ("icmp", "1", "icmpv6", "58"):
+        label = "ICMPv6" if proto in ("icmpv6", "58") else "ICMP"
+        return f"{label}, all types" if from_port in (None, -1) else f"{label} type {from_port}"
+    name = {"6": "TCP", "17": "UDP"}.get(proto, proto.upper())
+    if from_port == 0 and to_port == 65535:
+        return f"All {name} ports"
+    if from_port == to_port:
+        return f"{name} port {from_port}"
+    return f"{name} ports {from_port}-{to_port}"
+
+
 def _check_open_security_groups(session, region: str) -> list:
     findings = []
     ec2 = session.client("ec2", region_name=region, config=STANDARD_RETRY)
@@ -164,7 +182,7 @@ def _check_open_security_groups(session, region: str) -> list:
                 "severity": "HIGH" if hits_sensitive else "LOW",
                 "title": f"Security group '{sg.get('GroupName', sg['GroupId'])}' allows traffic from the internet",
                 "description": (
-                    f"Ports {from_port}-{to_port} open to {', '.join(open_ranges)}"
+                    f"{format_sg_ports(perm.get('IpProtocol'), from_port, to_port)} open to {', '.join(open_ranges)}"
                     + (" -- includes a sensitive port (SSH/RDP/DB)." if hits_sensitive else ".")
                 ),
             })

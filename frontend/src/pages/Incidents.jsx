@@ -16,6 +16,7 @@ import { getIncidents, getIncidentDetail, getResourceHealth } from "../api/api";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { RotateCcwIcon, AlertOctagonIcon, AlertTriangleIcon } from "../components/icons";
 import "./Incidents.css";
+import { formatStamp, formatShort, formatDay, zoneLabel } from "../utils/timeFormat";
 
 function SeverityBadge({ sev }) {
   const cls = sev === "CRITICAL" ? "inc-sev inc-sev-critical" : "inc-sev inc-sev-warning";
@@ -63,12 +64,10 @@ function IncidentRow({ incident, ianaName, accountId }) {
         </div>
         <div className="inc-time">
           <div className="inc-ts">
-            {new Date(incident.started_at).toLocaleTimeString("en-US", {
-              hour: "2-digit", minute: "2-digit", hour12: false, timeZone: ianaName,
-            })}
+            {formatShort(incident.started_at, ianaName, zoneLabel(ianaName))}
           </div>
           <div className="inc-date">
-            {new Date(incident.started_at).toLocaleDateString("en-GB", { timeZone: ianaName })}
+            {formatDay(incident.started_at, ianaName)}
           </div>
         </div>
         <span className="inc-expand">{expanded ? "▲" : "▼"}</span>
@@ -110,7 +109,7 @@ function IncidentRow({ incident, ianaName, accountId }) {
                         {detail.rca.cloud_events.map((e, i) => (
                           <li key={i}>
                             <code>{e.event_name}</code> by {e.username || "unknown"} at{" "}
-                            {new Date(e.event_time).toLocaleString("en-US", { timeZone: ianaName })}
+                            {formatStamp(e.event_time, ianaName, zoneLabel(ianaName))}
                           </li>
                         ))}
                       </ul>

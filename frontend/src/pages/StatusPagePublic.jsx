@@ -40,6 +40,13 @@ export default function StatusPagePublic() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const { timezone, setTimezone, formatDateTime, formatTime } = useTimezone();
+  // Tab title (audit B15): this public page sits outside the Layout that normally sets it, so it showed the generic
+  // "CloudOps | Aurionpro" fallback. Say what the page is, and restore on leave.
+  useEffect(() => {
+    const previous = document.title;
+    document.title = "Service status \u00b7 CloudOps";
+    return () => { document.title = previous; };
+  }, []);
 
   const load = useCallback(() => {
     fetch("/api/status-page")

@@ -9,6 +9,7 @@ import {
   SettingsIcon, RefreshCwIcon, SaveIcon, ClipboardIcon, RotateCcwIcon,
   DownloadIcon, AlertTriangleIcon,
 } from "../components/icons";
+import { formatStamp } from "../utils/timeFormat";
 
 const ACTION_ICONS = {
   "Viewed resource detail":  SearchIcon,
@@ -57,30 +58,6 @@ function getIcon(action) {
 // "IST"/"UTC" label, so the suffix always matches what's actually
 // selected instead of a string literal that would go stale the moment
 // someone picked IST.
-function formatTs(iso, ianaName, tzLabel) {
-  try {
-    const d = new Date(iso);
-    const s = d.toLocaleString("en-US", {
-      timeZone: ianaName,
-      year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-    });
-    // en-US gives "MM/DD/YYYY, HH:MM:SS" -- reorder to the
-    // "YYYY-MM-DD HH:MM:SS" shape this column always showed.
-    const [datePart, timePart] = s.split(", ");
-    const [mm, dd, yyyy] = datePart.split("/");
-    return `${yyyy}-${mm}-${dd} ${timePart} ${tzLabel}`;
-  } catch { return iso ?? "—"; }
-}
-
-function formatDate(iso, ianaName) {
-  try {
-    return new Date(iso).toLocaleDateString("en-US", {
-      month: "numeric", day: "numeric", year: "numeric", timeZone: ianaName,
-    });
-  } catch { return ""; }
-}
-
 function AuditRow({ log, ianaName, tzLabel }) {
   const [expanded, setExpanded] = useState(false);
   const action = log.action ?? "System action";
@@ -94,8 +71,7 @@ function AuditRow({ log, ianaName, tzLabel }) {
       onClick={() => setExpanded(x => !x)}
     >
       <div className="ar-time">
-        <div className="ar-ts">{formatTs(log.created_at, ianaName, tzLabel)}</div>
-        <div className="ar-date">{formatDate(log.created_at, ianaName)}</div>
+        <div className="ar-ts">{formatStamp(log.created_at, ianaName, tzLabel)}</div>
       </div>
       <div className="ar-icon-wrap">{(() => { const Icon = getIcon(action); return <Icon size={15} />; })()}</div>
       <div className="ar-body">
@@ -176,7 +152,7 @@ export default function Compliance() {
     const rows = [
       ["Timestamp", "Action", "Actor", "Detail", "Role", "Source IP", "User agent", "Request ID"],
       ...logs.map(l => [
-        l.created_at ? formatTs(l.created_at, ianaName, timezone) : "",
+        l.created_at ? formatStamp(l.created_at, ianaName, timezone, "") : "",
         l.action ?? "",
         l.actor  ?? "",
         l.payload?.detail ?? "",

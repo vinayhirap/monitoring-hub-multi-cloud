@@ -22,6 +22,7 @@ import {
 import { useTimezone } from "../contexts/TimezoneContext";
 import { ShieldIcon, AlertOctagonIcon, ExternalLinkIcon } from "../components/icons";
 import "./SecurityFindings.css";
+import { formatStamp, zoneLabel } from "../utils/timeFormat";
 
 const CHECK_LABELS = {
   s3_bucket_public: "Public S3 bucket",
@@ -176,7 +177,7 @@ export default function SecurityFindings() {
                     <div>{f.account_name}</div>
                     <ProviderBadge provider={f.account_provider} />
                   </td>
-                  <td className="mono">{new Date(f.last_seen_at).toLocaleString("en-US", { timeZone: ianaName })}</td>
+                  <td className="mono">{formatStamp(f.last_seen_at, ianaName, zoneLabel(ianaName))}</td>
                   <td>
                     <button
                       className="btn-console-sec"

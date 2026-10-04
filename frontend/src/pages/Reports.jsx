@@ -18,6 +18,7 @@ import {
   describeRequest, filterLibrary, expiryState, fmtSize,
 } from "../utils/reportPlan";
 import "./Reports.css";
+import { formatStamp, formatDay, zoneLabel } from "../utils/timeFormat";
 
 const JOBS_KEY = "reports:jobs";
 const STATUS_TONE = { QUEUED: "mute", PROCESSING: "info", COMPLETE: "ok", FAILED: "crit", UNKNOWN: "warn" };
@@ -135,8 +136,8 @@ export default function Reports() {
   if (!hasFeature("reports")) return <div className="reports-page"><PageHeader title="Reports" /><EmptyState title="Reports is not enabled on this environment" /></div>;
   if (!hasPermission("reports.view")) return <div className="reports-page"><PageHeader title="Reports" /><EmptyState title="You do not have access to Reports" /></div>;
 
-  const fmt = d => new Date(d).toLocaleString("en-GB", { timeZone: ianaName, day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
-  const fmtD = d => new Date(d).toLocaleDateString("en-GB", { timeZone: ianaName, day: "2-digit", month: "short", year: "numeric" });
+  const fmt = d => formatStamp(d, ianaName, zoneLabel(ianaName));      // was unlabelled: 08:04 here vs 13:34 IST in the audit log
+  const fmtD = d => formatDay(d, ianaName);
   const rows = library ? filterLibrary(library, lf) : [];
   const typeChips = [{ key: "all", label: "All", count: library?.length }, ...["WEEKLY", "MONTHLY", "QUARTERLY", "CUSTOM"].map(k => ({ key: k, label: k[0] + k.slice(1).toLowerCase(), count: library?.filter(r => r.report_type === k).length }))];
   const libAccounts = library ? [...new Map(library.filter(r => r.account_id != null).map(r => [r.account_id, accountOptions.find(a => a.id === r.account_id)?.account_name || `Account ${r.account_id}`])).entries()] : [];

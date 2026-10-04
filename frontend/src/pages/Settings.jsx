@@ -497,12 +497,10 @@ export default function Settings() {
           <div style={{ padding: "12px 20px 20px" }}>
             {(!selectedAccount || selectedAccount.provider === "aws") ? (
               <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "0 0 10px 0" }}>
-                AWS metrics for this account are collected automatically by
-                this app's own scheduler (app/collector/scheduler.py) --
-                Critical/Standard/Low tiers run built-in, direct
-                GetMetricData calls every 2/5/15 minutes respectively, with
-                no separate infrastructure to deploy. That's what actually
-                controls GetMetricData cost and polling frequency today.
+                AWS metrics for this account are collected automatically by the built-in
+                collector in three tiers (critical every 2 minutes, standard every 5, low every
+                15), with no separate infrastructure to deploy. The tiers control CloudWatch
+                request cost and polling frequency.
               </p>
             ) : (
               <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "0 0 10px 0" }}>

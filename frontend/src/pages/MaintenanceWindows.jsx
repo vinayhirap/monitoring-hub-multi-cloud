@@ -10,6 +10,7 @@ import { getMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow
 import { PlusIcon, TrashIcon, AlertOctagonIcon, ToolIcon } from "../components/icons";
 import { useTimezone } from "../contexts/TimezoneContext";
 import "./MaintenanceWindows.css";
+import { formatStamp, zoneLabel } from "../utils/timeFormat";
 
 function toLocalInputValue(d) {
   const pad = (n) => String(n).padStart(2, "0");
@@ -138,7 +139,7 @@ export default function MaintenanceWindows() {
                   <td className="mono">{w.resource_id}</td>
                   <td>{w.reason}</td>
                   <td className="mono mw-window">
-                    {new Date(w.starts_at).toLocaleString("en-US", { timeZone: ianaName })} → {new Date(w.ends_at).toLocaleString("en-US", { timeZone: ianaName })}
+                    {formatStamp(w.starts_at, ianaName, "")} → {formatStamp(w.ends_at, ianaName, zoneLabel(ianaName))}
                   </td>
                   <td>{w.silence_downstream ? "Resource + dependents" : "Resource only"}</td>
                   <td>

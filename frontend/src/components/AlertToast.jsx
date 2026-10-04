@@ -47,7 +47,9 @@ export default function AlertToast() {
   if (toasts.length === 0) return null;
 
   return (
-    <div style={{
+    // role=status + aria-live: new-alert popups are announced to screen readers (audit B13). Polite, so a burst of
+    // alerts queues instead of interrupting whatever the person is reading.
+    <div role="status" aria-live="polite" aria-atomic="false" style={{
         position: "fixed",
         bottom: "min(24px, 4vh)", right: "min(24px, 4vw)",
         display: "flex", flexDirection: "column", gap: 10,

@@ -10,6 +10,7 @@ import { searchAlerts } from "../api/api";
 import { SearchIcon, AlertOctagonIcon } from "../components/icons";
 import { useTimezone } from "../contexts/TimezoneContext";
 import "./Search.css";
+import { formatStamp, zoneLabel } from "../utils/timeFormat";
 
 function SevBadge({ sev }) {
   return <span className={`srch-sev srch-sev-${sev.toLowerCase()}`}>● {sev}</span>;
@@ -113,7 +114,7 @@ export default function Search() {
                     <td>{a.resource_name || a.aws_resource_id}</td>
                     <td className="mono" title={a.metric_name}>{metricLabel(a.metric_name)}</td>
                     <td>{a.account_name}</td>
-                    <td className="mono">{new Date(a.created_at).toLocaleString("en-US", { timeZone: ianaName })}</td>
+                    <td className="mono">{formatStamp(a.created_at, ianaName, zoneLabel(ianaName))}</td>
                     <td>{a.status}</td>
                   </tr>
                 ))}
