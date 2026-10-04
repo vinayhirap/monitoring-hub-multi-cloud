@@ -377,6 +377,21 @@ def _build_summary_user_content(facts: dict, deterministic_summary: str) -> str:
     )
 
 
+def _model_digest(host: str, model: str):
+    """First 12 hex chars of the local model's digest from Ollama's /api/tags, or None on any
+    failure (never raises -- this is observability only)."""
+    try:
+        response = requests.get(f"{host}/api/tags", timeout=10)
+        response.raise_for_status()
+        for m in (response.json() or {}).get("models", []):
+            if m.get("name") == model or m.get("model") == model:
+                digest = str(m.get("digest") or "")
+                return digest.replace("sha256:", "")[:12] or None
+    except Exception:
+        return None
+    return None
+
+
 def refresh_ollama_model() -> bool:
     """
     Re-pulls the currently-configured OLLAMA_MODEL tag once a day (see
@@ -414,12 +429,18 @@ def refresh_ollama_model() -> bool:
     """
     if not is_enabled() or _provider() != "ollama":
         return False
+    # Pin mode (2026-10-03): once a model has been validated on real alerts, set
+    # OLLAMA_AUTO_REFRESH=false so a publisher update to the same tag can never silently change
+    # the wording of every summary. Default stays true (unchanged behaviour).
+    if os.getenv("OLLAMA_AUTO_REFRESH", "true").strip().lower() == "false":
+        return False
 
     host = os.getenv("OLLAMA_HOST", _OLLAMA_DEFAULT_HOST).rstrip("/")
     model = os.getenv("OLLAMA_MODEL", _OLLAMA_DEFAULT_MODEL)
 
     def _do_pull():
         try:
+            before = _model_digest(host, model)
             response = requests.post(
                 f"{host}/api/pull",
                 json={"model": model, "stream": False},
@@ -427,7 +448,14 @@ def refresh_ollama_model() -> bool:
             )
             response.raise_for_status()
             status = (response.json() or {}).get("status", "unknown")
-            logger.info(f"[llm_summarizer] refreshed Ollama model '{model}': {status}")
+            after = _model_digest(host, model)
+            if before and after and before != after:
+                # The same tag now points at different weights. Visible on purpose (WARNING):
+                # summary wording/length can change with no deploy and no review.
+                logger.warning(f"[llm_summarizer] Ollama model '{model}' CHANGED upstream: digest {before} -> {after}. "
+                               f"Re-check a few summaries; set OLLAMA_AUTO_REFRESH=false to pin the current weights.")
+            logger.info(f"[llm_summarizer] refreshed Ollama model '{model}': {status}"
+                        + (f" (digest {after})" if after else ""))
         except requests.exceptions.ConnectionError:
             logger.warning(
                 f"[llm_summarizer] could not reach Ollama at {host} to refresh model '{model}' "

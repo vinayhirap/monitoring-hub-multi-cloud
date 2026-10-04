@@ -261,3 +261,77 @@ def test_pending_note_is_plain_text_near_the_top_not_a_trailing_asterisk_line(mo
     assert len(note) == 1 and "*" not in note[0]
     assert md.index(note[0]) < md.index("## Executive Summary")
     assert "being generated" not in md.split("## Timeline")[1]
+
+
+# -- model drift visibility / pin mode (2026-10-03) ---------------------------
+
+class _InlineThread:
+    """threading.Thread stand-in that runs the target synchronously, so the background pull is testable."""
+    def __init__(self, target=None, name=None, daemon=None, **kw):
+        self._target = target
+
+    def start(self):
+        self._target()
+
+
+def _tags(digest):
+    r = MagicMock()
+    r.raise_for_status.return_value = None
+    r.json.return_value = {"models": [{"name": "llama3.2:3b", "digest": "sha256:" + digest}]}
+    return r
+
+
+def _pull_ok():
+    r = MagicMock()
+    r.raise_for_status.return_value = None
+    r.json.return_value = {"status": "success"}
+    return r
+
+
+def test_refresh_warns_loudly_when_the_tag_now_points_at_different_weights(monkeypatch, caplog):
+    import logging
+    mod = _summ(monkeypatch)
+    monkeypatch.setattr(mod.threading, "Thread", _InlineThread)
+    digests = iter([_tags("a80c4f17acd5ffff"), _tags("b11d00e9f3a2eeee")])
+    monkeypatch.setattr(mod.requests, "get", lambda *a, **k: next(digests))
+    monkeypatch.setattr(mod.requests, "post", lambda *a, **k: _pull_ok())
+    with caplog.at_level(logging.INFO):
+        assert mod.refresh_ollama_model() is True
+    warned = [r for r in caplog.records if r.levelname == "WARNING" and "CHANGED upstream" in r.getMessage()]
+    assert len(warned) == 1 and "a80c4f17acd5 -> b11d00e9f3a2" in warned[0].getMessage()
+
+
+def test_refresh_logs_the_digest_quietly_when_nothing_changed(monkeypatch, caplog):
+    import logging
+    mod = _summ(monkeypatch)
+    monkeypatch.setattr(mod.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(mod.requests, "get", lambda *a, **k: _tags("a80c4f17acd5ffff"))
+    monkeypatch.setattr(mod.requests, "post", lambda *a, **k: _pull_ok())
+    with caplog.at_level(logging.INFO):
+        mod.refresh_ollama_model()
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("(digest a80c4f17acd5)" in r.getMessage() for r in caplog.records)
+
+
+def test_pin_mode_never_pulls(monkeypatch):
+    mod = _summ(monkeypatch, OLLAMA_AUTO_REFRESH="false")
+
+    def boom(*a, **k):
+        raise AssertionError("pin mode must not touch Ollama")
+    monkeypatch.setattr(mod.requests, "post", boom)
+    monkeypatch.setattr(mod.requests, "get", boom)
+    assert mod.refresh_ollama_model() is False
+
+
+def test_digest_lookup_failure_never_breaks_the_refresh(monkeypatch, caplog):
+    import logging
+    mod = _summ(monkeypatch)
+    monkeypatch.setattr(mod.threading, "Thread", _InlineThread)
+
+    def down(*a, **k):
+        raise mod.requests.exceptions.ConnectionError("no tags")
+    monkeypatch.setattr(mod.requests, "get", down)
+    monkeypatch.setattr(mod.requests, "post", lambda *a, **k: _pull_ok())
+    with caplog.at_level(logging.INFO):
+        assert mod.refresh_ollama_model() is True
+    assert any("refreshed Ollama model" in r.getMessage() for r in caplog.records)
