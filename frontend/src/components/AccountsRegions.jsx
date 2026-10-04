@@ -5,7 +5,7 @@
 // permission the server enforces on DELETE /api/admin/accounts/{id}, admin by default).
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { getLiveAccounts, deleteAccount } from "../api/api";
+import { getLiveAccounts, deleteAccount, downloadAccountHistory } from "../api/api";
 import { useAuth } from "../auth/AuthContext";
 import { setCached } from "../utils/dataCache";
 import { ConfirmDialog, Badge, EmptyState } from "./ui";
@@ -34,6 +34,14 @@ export default function AccountsRegions() {
     setCached(CACHE_KEY, { accounts: rest });
     window.dispatchEvent(new Event("mh:accounts-changed"));       // sidebar tree + scope switcher refresh immediately
     setMsg({ kind: "ok", text });
+  }
+  const [exporting, setExporting] = useState("");
+  useEffect(() => { setExporting(""); }, [target?.id]);      // fresh status for every dialog
+  async function exportHistory() {
+    if (!target || exporting === "busy") return;
+    setExporting("busy");
+    try { await downloadAccountHistory(target.id); setExporting("done"); }
+    catch (e) { setExporting(e.message || "Export failed"); }
   }
   async function confirmRemove() {
     if (!target || busy) return;
@@ -79,11 +87,17 @@ export default function AccountsRegions() {
             </section>))}
       </div>
       <ConfirmDialog open={!!target} danger busy={busy} title={target ? `Remove ${target.account_name} · ${target.region}?` : ""}
-        confirmLabel="Remove permanently" typeToConfirm={target ? removalPhrase(target) : undefined} onConfirm={confirmRemove} onCancel={() => !busy && setTarget(null)}
+        confirmLabel="Remove permanently" typeToConfirm={target ? removalPhrase(target) : undefined} onConfirm={confirmRemove} onCancel={() => { if (!busy) { setTarget(null); setExporting(""); } }}
         body={<>
           <p>This stops monitoring this region and <b>permanently deletes</b> everything collected for it:</p>
           <ul className="ar-list"><li>alerts, metrics and discovered resources</li><li>incidents, health scores and cloud events</li><li>SLOs, synthetic checks, security findings, maintenance windows</li><li>escalation policies, status-page components and stored credentials</li></ul>
-          <p>Past generated reports are kept. This cannot be undone; the account can only be onboarded again from scratch.</p></>} />
+          <p>Past generated reports are kept. This cannot be undone; the account can only be onboarded again from scratch.</p>
+          <p>
+            <button type="button" className="ui-btn" onClick={exportHistory} disabled={exporting === "busy"}>
+              {exporting === "busy" ? "Preparing…" : "Download history first (JSON)"}
+            </button>{" "}
+            <span className="ui-sub">{exporting === "done" ? "Downloaded." : exporting && exporting !== "busy" ? exporting : "Alerts, incidents and resources; no credentials."}</span>
+          </p></>} />
     </div>
   );
 }

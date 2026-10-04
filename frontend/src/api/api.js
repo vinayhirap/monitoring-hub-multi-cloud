@@ -61,6 +61,17 @@ export const getAccount       = (id) => apiFetch(`/api/admin/accounts/${id}`);
 export const addAccount       = (data) => apiFetch("/api/admin/accounts", { method:"POST", body: JSON.stringify(data) });
 export const discoverAccount  = (id)   => apiFetch(`/api/admin/accounts/${id}/discover`, { method:"POST" });
 export const deleteAccount    = (id)   => apiFetch(`/api/admin/accounts/${id}`, { method:"DELETE" });
+// Download the account's alert/incident/resource history as a JSON file (audit C7: export before removal).
+export async function downloadAccountHistory(id) {
+  const res = await fetch(`${BASE}/api/admin/accounts/${id}/export`, { credentials: "include" });
+  if (!res.ok) throw new Error(`Export failed (${res.status})`);
+  const blob = await res.blob();
+  const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "")?.[1] || `account-${id}-history.json`;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
 export const testRole         = (data) => apiFetch("/api/admin/accounts/test-role", { method:"POST", body: JSON.stringify(data) });
 export const testAzureCredentials = (data) => apiFetch("/api/admin/accounts/test-azure-credentials", { method:"POST", body: JSON.stringify(data) });
 export const testGcpCredentials   = (data) => apiFetch("/api/admin/accounts/test-gcp-credentials",   { method:"POST", body: JSON.stringify(data) });

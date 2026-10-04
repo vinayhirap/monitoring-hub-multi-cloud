@@ -104,6 +104,7 @@ export default function MetricChartCard({
       <span className="mc-titles">
         <span className="chart-title" title={description || meta?.description || shownTitle}>{shownTitle}</span>
         {meta && meta.metric_name !== shownTitle && <span className="mc-sub mono">{meta.metric_name}</span>}
+        {invert && <span className="mc-sub" title="Windows reports free space. CloudOps stores and alerts on used space (100 minus free), so alerts for this disk quote the used figure.">Free space shown; alerts use used % (= 100 − free)</span>}
       </span>
       {extra}
     </div>

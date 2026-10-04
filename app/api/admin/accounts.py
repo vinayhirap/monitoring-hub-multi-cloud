@@ -668,6 +668,35 @@ def add_account(payload: dict = Body(...), current_user: dict = Depends(require_
     return {"status": "added", "id": new_id, "account_name": account_name, "provider": provider_name}
 
 
+@router.get("/{account_id}/export")
+def export_account_history(account_id: int,
+                           current_user: dict = Depends(require_permission("accounts.delete"))):
+    """Download a JSON snapshot of the account's alert/incident/resource history. Meant to be taken just
+    before removal (audit C7). Same permission as removal. Contains no credentials."""
+    from fastapi.responses import Response
+    from app.account_data import build_export
+    # Scope check: an export is a full history of the account, so a scoped principal must not be able to pull
+    # one for an account outside their scope even if accounts.delete is ever delegated to them.
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is not None and account_id not in accessible:
+        raise HTTPException(status_code=403, detail="You do not have access to this account")
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        data = build_export(cursor, account_id)
+    finally:
+        conn.close()
+    if not data:
+        raise HTTPException(status_code=404, detail="Account not found")
+    _write_audit(current_user["username"], "Account history exported",
+                 f"{data['account'].get('account_name')} ({data['account'].get('account_id')}): "
+                 f"{len(data['alerts'])} alerts, {len(data['incidents'])} incidents, {len(data['resources'])} resources",
+                 role=current_user["role"].upper())
+    fname = f"account-{account_id}-history-{datetime.datetime.now(datetime.timezone.utc):%Y%m%d-%H%M}.json"
+    return Response(content=json.dumps(data, indent=1), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 @router.delete("/{account_id}")
 def delete_account(account_id: int, current_user: dict = Depends(require_permission("accounts.delete"))):
     # Admin-only: no existing permission code covers "delete an entire
@@ -720,6 +749,10 @@ def delete_account(account_id: int, current_user: dict = Depends(require_permiss
         account = cursor.fetchone()
         if not account:
             raise HTTPException(status_code=404, detail="Account not found")
+
+        # Record WHAT is about to be destroyed (audit C7): the audit entry used to say only "removed".
+        from app.account_data import count_account_data, format_counts
+        destroyed = count_account_data(cursor, account_id)
 
         cursor.execute(
             "UPDATE aws_accounts SET status = 'inactive' WHERE id = %s",
@@ -781,7 +814,8 @@ def delete_account(account_id: int, current_user: dict = Depends(require_permiss
     _bust_accounts_cache()
 
     _write_audit(current_user["username"], "Account removed",
-                 f"{account['account_name']} ({account['account_id']}) removed from monitoring",
+                 f"{account['account_name']} ({account['account_id']}) removed from monitoring; "
+                 f"deleted: {format_counts(destroyed)}",
                  role=current_user["role"].upper())
 
     return {"status": "removed", "id": account_id, "account_name": account["account_name"]}
