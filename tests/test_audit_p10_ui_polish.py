@@ -29,9 +29,12 @@ def test_security_group_port_wording():
 
 def test_finding_text_uses_the_formatter_and_severity_logic_is_unchanged():
     src = (ROOT / "app/collector/cspm.py").read_text()
-    assert "format_sg_ports(perm.get('IpProtocol'), from_port, to_port)" in src
+    fn = src[src.index("def _check_open_security_groups("):src.index("def _check_unattached_ebs(")]
+    assert "format_sg_ports(perm.get(\"IpProtocol\"), from_port, to_port)" in fn
     assert 'f"Ports {from_port}-{to_port}' not in src
-    assert 'hits_sensitive = port_span is None or bool(port_span & SENSITIVE_PORTS)' in src
+    # sensitivity rule is the same as before D7 (a rule with no ports, or any port in SENSITIVE_PORTS)
+    assert "port_span is None or bool(port_span & SENSITIVE_PORTS)" in fn
+    assert '"severity": "HIGH" if sensitive else "LOW"' in fn
 
 
 def test_pages_use_the_shared_time_formatter_not_us_style_dates():

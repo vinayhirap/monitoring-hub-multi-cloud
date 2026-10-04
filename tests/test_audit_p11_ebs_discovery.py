@@ -105,3 +105,67 @@ def test_check_is_registered_labelled_and_console_linked():
     assert 'run.run("ebs_unattached", _check_unattached_ebs' in (ROOT / "app/collector/cspm.py").read_text()
     assert "ebs_unattached" in (ROOT / "frontend/src/pages/SecurityFindings.jsx").read_text()
     assert 'check_id in ("ebs_unencrypted", "ebs_unattached")' in (ROOT / "app/api/security.py").read_text()
+
+
+# ── Audit D7: one finding per security group, worst severity, every rule listed ──
+
+class _SgPager:
+    def __init__(self, groups):
+        self.groups = groups
+    def paginate(self):
+        return iter([{"SecurityGroups": self.groups}])
+
+
+class _SgEc2:
+    def __init__(self, groups):
+        self.groups = groups
+    def get_paginator(self, name):
+        assert name == "describe_security_groups"
+        return _SgPager(self.groups)
+
+
+class _SgSession:
+    def __init__(self, groups):
+        self.groups = groups
+    def client(self, svc, region_name=None, config=None):
+        return _SgEc2(self.groups)
+
+
+def _perm(proto, lo, hi, cidr="0.0.0.0/0"):
+    p = {"IpProtocol": proto, "IpRanges": [{"CidrIp": cidr}], "Ipv6Ranges": []}
+    if lo is not None:
+        p["FromPort"], p["ToPort"] = lo, hi
+    return p
+
+
+def test_group_with_ssh_and_http_open_is_one_high_finding_listing_both_rules():
+    m = _cspm()
+    groups = [{"GroupId": "sg-1", "GroupName": "launch-wizard-16",
+               "IpPermissions": [_perm("tcp", 80, 80), _perm("tcp", 22, 22)]}]
+    out = m._check_open_security_groups(_SgSession(groups), "ap-south-1")
+    assert len(out) == 1                                          # was two findings sharing one key
+    f = out[0]
+    assert f["severity"] == "HIGH" and f["resource_id"] == "sg-1"
+    assert "TCP port 80" in f["description"] and "TCP port 22" in f["description"] and "sensitive port" in f["description"]
+
+
+def test_result_does_not_depend_on_rule_order():
+    m = _cspm()
+    a = m._check_open_security_groups(_SgSession([{"GroupId": "sg-1", "GroupName": "g",
+            "IpPermissions": [_perm("tcp", 22, 22), _perm("tcp", 80, 80)]}]), "r")
+    b = m._check_open_security_groups(_SgSession([{"GroupId": "sg-1", "GroupName": "g",
+            "IpPermissions": [_perm("tcp", 80, 80), _perm("tcp", 22, 22)]}]), "r")
+    assert a[0]["severity"] == b[0]["severity"] == "HIGH"
+
+
+def test_only_non_sensitive_open_rules_stay_low_and_closed_groups_report_nothing():
+    m = _cspm()
+    groups = [
+        {"GroupId": "sg-web", "GroupName": "web", "IpPermissions": [_perm("tcp", 80, 80), _perm("tcp", 443, 443)]},
+        {"GroupId": "sg-priv", "GroupName": "priv", "IpPermissions": [_perm("tcp", 22, 22, cidr="10.0.0.0/8")]},
+        {"GroupId": "sg-all", "GroupName": "all", "IpPermissions": [_perm("-1", None, None)]},
+    ]
+    out = {f["resource_id"]: f for f in m._check_open_security_groups(_SgSession(groups), "r")}
+    assert set(out) == {"sg-web", "sg-all"}                         # private-CIDR rule is not "open to world"
+    assert out["sg-web"]["severity"] == "LOW" and "TCP port 80; TCP port 443" in out["sg-web"]["description"]
+    assert out["sg-all"]["severity"] == "HIGH" and "All traffic, all ports" in out["sg-all"]["description"]

@@ -71,3 +71,35 @@ def test_forgot_password_stays_enumeration_safe_and_never_returns_the_token():
     assert "enforce_forgot_password_rate_limit(request)" in fn and "_token_hash(token)" in fn
     assert "Same response either way so usernames can't be enumerated." in fn
     assert not re.search(r'return\s*\{[^}]*token', fn)               # the token is never in the response body
+
+
+# ── Audit B14: stacked-card tables on phones ────────────────────────────────
+
+def _cells(src):
+    """(has_data_label, has_colspan) for every <td ...> opening tag in a source segment."""
+    return [("data-label=" in m, "colSpan" in m or "colspan" in m) for m in re.findall(r"<td\b[^>]*>", src)]
+
+
+def test_every_cell_in_the_card_tables_is_labelled_or_a_spanning_cell():
+    alerts = _t("pages/Alerts.jsx")
+    row = alerts[alerts.index("<tr className={`alert-row sev-row-"):alerts.index('<tr className="alert-explain-row">')]
+    cells = [c for c in _cells(row) if not c[1]]
+    assert len(cells) == 8 and all(c[0] for c in cells)                 # severity ... actions, all labelled
+    labels = re.findall(r'data-label="([^"]+)"', row)
+    assert labels == ["Severity", "Metric", "Value / threshold", "Resource", "Status", "Triggered", "Links", "Actions"]
+    sec = _t("pages/SecurityFindings.jsx")
+    body = sec[sec.index("{view.rows.map(f => ("):sec.index("</tbody>", sec.index("{view.rows.map(f => ("))]
+    sec_cells = [c for c in _cells(body) if not c[1]]
+    assert len([c for c in sec_cells if c[0]]) == 5 and len(sec_cells) == 6           # 5 labelled + the console-button cell
+    assert "tbl-cards" in alerts and "tbl-cards" in sec
+
+
+def test_card_css_only_applies_on_small_screens_and_keeps_the_header_for_screen_readers():
+    css = _t("styles/cards.css")
+    assert "@media (max-width: 640px)" in css
+    outside_media = css[:css.index("@media (max-width: 640px)")]
+    assert "{" not in outside_media.replace("/*", "").split("*/")[-1]          # nothing applies above 640px
+    head_rule = css[css.index("table.tbl-cards thead"):].split("}")[0]
+    assert "display: none" not in head_rule and "clip: rect(0 0 0 0)" in head_rule          # hidden visually, still readable
+    assert "td[data-label]::before" in css and "attr(data-label)" in css and "td[colspan]" in css
+    assert "styles/cards.css" in _t("main.jsx")

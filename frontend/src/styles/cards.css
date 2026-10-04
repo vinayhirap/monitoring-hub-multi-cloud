@@ -1,0 +1,36 @@
+/* Stacked-card tables on phones (audit B14).
+ *
+ * Opt-in: add class `tbl-cards` to a <table> and `data-label="..."` to each <td>. Above 640 px nothing changes. At or
+ * below it, every row becomes a card whose cells read "LABEL ........ value", instead of a 640 px-wide table that has to
+ * scroll sideways (Alerts had ~190 cells and Security ~5k DOM nodes per screen of horizontal scroll).
+ *
+ * - The header row stays in the DOM, visually hidden, so screen readers still get column names.
+ * - A cell with colspan (severity group headers, the expanded "why" panel, empty states) is shown as a plain block.
+ * - Selectors are specific on purpose: they must beat `.alerts-table { min-width: 640px }` without !important sprawl. */
+@media (max-width: 640px) {
+  table.tbl-cards,
+  table.tbl-cards tbody { display: block; width: 100%; min-width: 0 !important; }
+  table.tbl-cards thead {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+  }
+  table.tbl-cards tr {
+    display: block; margin: 0 0 10px; padding: 6px 12px;
+    border: 1px solid var(--line-2, #2a3548); border-radius: 8px; background: var(--surface-2, #131c2b);
+  }
+  table.tbl-cards td {
+    display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+    padding: 6px 0; border: 0; text-align: right; min-width: 0; overflow-wrap: anywhere;
+  }
+  table.tbl-cards td[data-label]::before {
+    content: attr(data-label); flex: 0 0 34%; text-align: left;
+    font: 600 11px var(--font-ui, system-ui); letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3, #94a3b8);
+  }
+  table.tbl-cards td[colspan] { display: block; text-align: left; }
+  table.tbl-cards tr.sev-group-row,
+  table.tbl-cards tr.alert-explain-row { padding: 6px 12px; }
+  /* Action cells hold several controls: let them wrap and sit on the right. */
+  table.tbl-cards td[data-label="Links"],
+  table.tbl-cards td[data-label="Actions"] { flex-wrap: wrap; }
+  table.tbl-cards .console-links,
+  table.tbl-cards .alert-actions { max-width: none; justify-content: flex-end; }
+}

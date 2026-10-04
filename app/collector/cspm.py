@@ -161,10 +161,18 @@ def format_sg_ports(protocol, from_port, to_port) -> str:
 
 
 def _check_open_security_groups(session, region: str) -> list:
+    """ONE finding per security group (audit D7).
+
+    A group often has several world-open rules (say SSH and HTTP). Each rule used to become its own finding with the
+    same (account, check_id, resource_id) key, so the upsert kept whichever rule was processed last: the same group
+    flipped between HIGH ("port 22") and LOW ("port 80") from one scan to the next and only ever described one rule.
+    Rules are now merged: severity is the worst across rules, and the description lists them all.
+    """
     findings = []
     ec2 = session.client("ec2", region_name=region, config=STANDARD_RETRY)
     for sg in (sg for page in ec2.get_paginator("describe_security_groups").paginate()
                for sg in page.get("SecurityGroups", [])):
+        rules, ranges, sensitive = [], [], False
         for perm in sg.get("IpPermissions", []):
             from_port = perm.get("FromPort")
             to_port = perm.get("ToPort")
@@ -174,18 +182,24 @@ def _check_open_security_groups(session, region: str) -> list:
                 continue
             # No FromPort/ToPort at all means "all ports" (e.g. -1 protocol).
             port_span = set(range(from_port, to_port + 1)) if from_port is not None and to_port is not None else None
-            hits_sensitive = port_span is None or bool(port_span & SENSITIVE_PORTS)
-            findings.append({
-                "check_id": "sg_open_to_world",
-                "resource_id": sg["GroupId"],
-                "region": region,
-                "severity": "HIGH" if hits_sensitive else "LOW",
-                "title": f"Security group '{sg.get('GroupName', sg['GroupId'])}' allows traffic from the internet",
-                "description": (
-                    f"{format_sg_ports(perm.get('IpProtocol'), from_port, to_port)} open to {', '.join(open_ranges)}"
-                    + (" -- includes a sensitive port (SSH/RDP/DB)." if hits_sensitive else ".")
-                ),
-            })
+            sensitive = sensitive or port_span is None or bool(port_span & SENSITIVE_PORTS)
+            label = format_sg_ports(perm.get("IpProtocol"), from_port, to_port)
+            if label not in rules:
+                rules.append(label)
+            ranges += [r for r in open_ranges if r not in ranges]
+        if not rules:
+            continue
+        findings.append({
+            "check_id": "sg_open_to_world",
+            "resource_id": sg["GroupId"],
+            "region": region,
+            "severity": "HIGH" if sensitive else "LOW",
+            "title": f"Security group '{sg.get('GroupName', sg['GroupId'])}' allows traffic from the internet",
+            "description": (
+                f"{'; '.join(rules)} open to {', '.join(ranges)}"
+                + (" -- includes a sensitive port (SSH/RDP/DB)." if sensitive else ".")
+            ),
+        })
     return findings
 
 

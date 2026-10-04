@@ -553,7 +553,7 @@ export default function Alerts() {
         </div>
       ) : (
         <div className="alerts-table-wrap">
-          <table className="alerts-table">
+          <table className="alerts-table tbl-cards">
             <thead>
               <tr>
                 <th>SEVERITY</th>
@@ -594,9 +594,9 @@ export default function Alerts() {
                     )}
                     <tr className={`alert-row sev-row-${sev.toLowerCase()}${selId === a.id ? " alert-row-sel" : ""}`} onClick={e => { if (!e.target.closest("button,a,select,input,.res-deeplink")) openAlert(a); }} style={{ cursor: "pointer" }}>
 
-                      <td><SevBadge sev={sev} /></td>
+                      <td data-label="Severity"><SevBadge sev={sev} /></td>
 
-                      <td className="alert-metric">
+                      <td className="alert-metric" data-label="Metric">
                         <div>{metricLabel(a.metric_name)}</div>
                         <div style={{fontSize:"11px", color:"var(--text-muted)"}}>
                           {serviceLabelFor(a.service, a.resource)}
@@ -617,13 +617,13 @@ export default function Alerts() {
                         )}
                       </td>
 
-                      <td className="mono small">
+                      <td className="mono small" data-label="Value / threshold">
                         <span className="alert-val" title={String(a.current_value ?? "")}>{formatMetricValue(a.metric_name, a.current_value)}</span>
                         <span className="alert-sep"> / </span>
                         <span className="alert-thr" title={String(a.threshold ?? "")}>{formatMetricValue(a.metric_name, a.threshold)}</span>
                       </td>
 
-                      <td className="alert-resource">
+                      <td className="alert-resource" data-label="Resource">
                         {route ? (
                           <span
                             className="res-deeplink"
@@ -644,9 +644,9 @@ export default function Alerts() {
                         )}
                       </td>
 
-                      <td><StatusBadge status={a.state || status} detail={a.silenced_reason || (a.muted_until ? `Muted until ${shortDateTime(a.muted_until, ianaName)}` : a.resolution_reason ? `Resolved: ${a.resolution_reason.replace(/_/g, " ")}` : "")} /></td>
+                      <td data-label="Status"><StatusBadge status={a.state || status} detail={a.silenced_reason || (a.muted_until ? `Muted until ${shortDateTime(a.muted_until, ianaName)}` : a.resolution_reason ? `Resolved: ${a.resolution_reason.replace(/_/g, " ")}` : "")} /></td>
 
-                      <td className="mono small">
+                      <td className="mono small" data-label="Triggered">
                         {a.triggered_at ? shortDateTime(a.triggered_at, ianaName) : "—"}
                         {a.stale && (
                           <div
@@ -659,7 +659,7 @@ export default function Alerts() {
                         )}
                       </td>
 
-                      <td>
+                      <td data-label="Links">
                         <div className="console-links">
                           {/* Primary action only; the rest live in the overflow menu (audit B6). */}
                           <button
@@ -681,7 +681,7 @@ export default function Alerts() {
                       </td>
 
                       {canAct && (
-                        <td>
+                        <td data-label="Actions">
                           <div className="alert-actions">
                             {status !== "acknowledged" && status !== "resolved" && (
                               <button

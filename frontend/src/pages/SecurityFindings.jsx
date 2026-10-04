@@ -177,7 +177,7 @@ export default function SecurityFindings() {
         ) : findings.length === 0 ? (
           <div className="sec-empty">No {status === "all" ? "" : status} findings — nice work, or checks haven't run yet (they need extra IAM permissions on the monitoring role, see the deployment notes).</div>
         ) : (
-          <div className="tbl-scroll"><table className="sec-table">
+          <div className="tbl-scroll"><table className="sec-table tbl-cards">
             <thead>
               <tr>
                 <th>Severity</th>
@@ -191,17 +191,17 @@ export default function SecurityFindings() {
             <tbody>
               {view.rows.map(f => (
                 <tr key={f.id}>
-                  <td><SeverityBadge severity={f.severity} /></td>
-                  <td>
+                  <td data-label="Severity"><SeverityBadge severity={f.severity} /></td>
+                  <td data-label="Finding">
                     <div className="sec-title">{CHECK_LABELS[f.check_id] || f.check_id}</div>
                     <div className="sec-desc">{f.description}</div>
                   </td>
-                  <td className="mono sec-resource">{f.resource_id}</td>
-                  <td>
+                  <td className="mono sec-resource" data-label="Resource">{f.resource_id}</td>
+                  <td data-label="Account">
                     <div>{f.account_name}</div>
                     <ProviderBadge provider={f.account_provider} />
                   </td>
-                  <td className="mono">{formatStamp(f.last_seen_at, ianaName, zoneLabel(ianaName))}</td>
+                  <td className="mono" data-label="Last seen">{formatStamp(f.last_seen_at, ianaName, zoneLabel(ianaName))}</td>
                   <td>
                     <button
                       className="btn-console-sec"
