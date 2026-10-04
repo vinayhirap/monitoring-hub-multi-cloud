@@ -216,4 +216,15 @@ def evaluate_escalations() -> int:
         except Exception:
             logger.exception(f"[escalation] notification failed for alert {row['alert_id']} "
                              f"(escalation itself is recorded)")
+        # Configured notification channels (Slack / Teams / webhook / team mailbox, audit C9),
+        # in addition to the group email above. Never raises; failures are in notification_log.
+        try:
+            from app.notifications.sender import notify_alert_event
+            notify_alert_event("escalated", {
+                "id": row["alert_id"], "severity": row["severity"], "metric_name": row["metric_name"],
+                "resource_id": row["resource_id"], "aws_account_id": row["aws_account_id"],
+                "group_name": row["group_name"], "silenced": False,
+            })
+        except Exception:
+            logger.exception(f"[escalation] channel notification failed for alert {row['alert_id']}")
     return len(claimed_rows)

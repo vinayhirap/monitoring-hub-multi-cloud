@@ -275,3 +275,15 @@ export const getAlertsForResource = (accountId, q, limit = 100) =>
 // Alert grouping / dedup view: open alerts sharing a group_key (same metric on many resources).
 export const getGroupedAlerts = () => apiFetch("/api/alerts/grouped");
 export const ackAlertGroup = (groupKey) => apiFetch(`/api/alerts/grouped/${encodeURIComponent(groupKey)}/ack`, { method: "POST" });
+
+// ── Notification channels (audit C9) ─────────────────────────────────
+export const getNotificationChannels  = () => apiFetch("/api/notifications/channels");
+export const createNotificationChannel = (data) =>
+  apiFetch("/api/notifications/channels", { method: "POST", body: JSON.stringify(data) });
+export const updateNotificationChannel = (id, data) =>
+  apiFetch(`/api/notifications/channels/${id}`, { method: "PUT", body: JSON.stringify(data) });
+export const deleteNotificationChannel = (id) =>
+  apiFetch(`/api/notifications/channels/${id}`, { method: "DELETE" });
+export const testNotificationChannel   = (id) =>
+  apiFetch(`/api/notifications/channels/${id}/test`, { method: "POST" });
+export const getNotificationLog        = () => apiFetch("/api/notifications/log");

@@ -1,6 +1,7 @@
 ﻿// monitoring-hub/frontend/src/pages/Settings.jsx
 import { useState, useEffect, useCallback } from "react";
 import MetricSelector from "../components/MetricSelector";
+import NotificationChannels from "../components/NotificationChannels";
 import AccountsRegions from "../components/AccountsRegions";
 import {
   getAccountMetrics, saveAccountMetrics,
@@ -72,11 +73,8 @@ export default function Settings() {
   const [saveMsg,     setSaveMsg]     = useState({});
   const [checkResult, setCheckResult] = useState(null);
   const [checking,    setChecking]    = useState(false);
-  const [emailOn,     setEmailOn]     = useState(false);
   const [showNoData,  setShowNoData]  = useState(false);
   const [hiddenNoDataCount, setHiddenNoDataCount] = useState(0);
-  const [email,       setEmail]       = useState("");
-  const [webhook,     setWebhook]     = useState("");
 
   const [metricCatalog,   setMetricCatalog]   = useState([]);
   const [metricSelected,  setMetricSelected]  = useState(new Set());
@@ -316,39 +314,9 @@ export default function Settings() {
         <p className="subtitle">Configure alert thresholds, notifications, and security for your NOC dashboard</p>
       </div>
 
-      {/* Email Notifications */}
-      <div className="settings-card">
-        <div className="card-header">
-          <div className="card-title-row">
-            <span className="card-icon"><MailIcon size={16}/></span>
-            <span className="card-title">EMAIL NOTIFICATIONS</span>
-          </div>
-          <label className="toggle">
-            <input type="checkbox" checked={emailOn} onChange={e => setEmailOn(e.target.checked)} />
-            <div className="toggle-track"><div className="toggle-thumb" /></div>
-            <span className={`toggle-label ${emailOn ? "on" : "off"}`}>{emailOn ? "ON" : "OFF"}</span>
-          </label>
-        </div>
-        <div className="email-fields">
-          <div className="efield">
-            <label>RECIPIENT EMAIL <span className="opt">*</span></label>
-            <input type="email" placeholder="ops@yourcompany.com" value={email}
-              onChange={e => setEmail(e.target.value)} disabled={!emailOn} />
-          </div>
-          <div className="efield">
-            <label>WEBHOOK URL <span className="opt">(optional)</span></label>
-            <input type="url" placeholder="https://hooks.zapier.com/…" value={webhook}
-              onChange={e => setWebhook(e.target.value)} disabled={!emailOn} />
-          </div>
-        </div>
-        <div className="delivery-notice">
-          <InfoIcon size={13}/> <strong>3-tier delivery:</strong>{" "}
-          <span className="tier">1</span> Backend /notify/email <ArrowRightIcon size={11}/>{" "}
-          <span className="tier">2</span> Webhook (Zapier/Make) <ArrowRightIcon size={11}/>{" "}
-          <span className="tier">3</span> Mail client fallback.
-          Deduplication: same alert suppressed for 10 minutes.
-        </div>
-      </div>
+      {/* Notification channels (audit C9). Replaces the old "Email notifications" card, which was wired to
+          nothing: its toggle/recipient/webhook state was never saved or sent anywhere (/notify/email does not exist). */}
+      {hasPermission("notifications.manage") && <NotificationChannels />}
 
       {/* Metric Thresholds */}
       <div className="settings-card">

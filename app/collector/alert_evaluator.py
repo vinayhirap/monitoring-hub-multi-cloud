@@ -934,4 +934,16 @@ def _evaluate_row(cursor, row, silenced_map, stats):
         account_name = account_name,
         region       = region,
     ))
+
+    def _notify_channels():
+        # Configured notification channels (audit C9). Runs after commit with the other publishes;
+        # a failure here is logged by the caller and can never affect evaluation.
+        from app.notifications.sender import notify_alert_event
+        notify_alert_event("opened", {
+            "id": new_alert_id, "severity": promoted_severity, "metric_name": metric_name,
+            "resource_id": aws_resource_id, "account_name": account_name,
+            "aws_account_id": aws_account_id, "value": metric_value, "threshold": threshold_value,
+            "silenced": False,
+        })
+    publishes.append(_notify_channels)
     return publishes

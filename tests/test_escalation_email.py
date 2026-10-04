@@ -6,6 +6,13 @@ wired to app/email/mailer.py's already-functional SMTP sender
 """
 import sys
 
+# escalation.py does `from app import alert_rules`. Import the real package and module up front so this file
+# does not depend on which test happened to import them first (it failed when run alone, or after
+# test_alert_sync_and_health_ring.py, and broke whenever the set of earlier test files changed).
+import app              # noqa: F401
+import app.auth         # noqa: F401
+import app.alert_rules  # noqa: F401
+
 sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
 from tests.conftest import load_module, install_stub, FakeCursor, FakeConn
 
@@ -36,12 +43,17 @@ def _install_stub(member_rows, is_configured=True, send_results=None):
         sent_calls.append((to_addr, subject, body))
         return send_results.get(to_addr, True)
 
-    install_stub(
+    mailer_stub = install_stub(
         "app.email.mailer",
         is_configured=lambda: is_configured,
         get_public_app_url=lambda: "https://cloudops.example.com",
         send_email=_fake_send_email,
     )
+    # `from app.email import mailer` prefers the package ATTRIBUTE over sys.modules. If any earlier test already
+    # imported the real mailer, that attribute points at the real one and the stub above is silently bypassed
+    # (sent_calls stays empty). Point the attribute at the stub too.
+    import app.email
+    app.email.mailer = mailer_stub
     return sent_calls
 
 
