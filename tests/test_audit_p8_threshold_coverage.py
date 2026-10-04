@@ -97,3 +97,30 @@ def test_api_and_ui_wiring():
     assert apply_fn.index("_require_account_access") < apply_fn.index("upgrade_placeholders")
     ui = (ROOT / "frontend/src/pages/Settings.jsx").read_text()
     assert "<ThresholdCoverage" in ui
+
+
+# ── per-mount disk metrics (found on prod: disk_used_percent__boot was blank and could never alert) ──
+
+def test_real_mounts_get_the_base_disk_default_but_pseudo_mounts_do_not():
+    assert tc.recommended("disk_used_percent__boot") == (80, 90, ">")
+    assert tc.recommended("disk_used_percent__data") == (80, 90, ">")
+    assert tc.recommended("mem_used_percent__x") == (80, 90, ">")
+    assert tc.recommended("disk_used_percent__snap_core20_1822") is None      # squashfs loopback: 100% by design
+    assert tc.recommended("disk_used_percent__run_lock") is None
+    assert tc.recommended("disk_used_percent__loop3") is None
+    assert tc.recommended("CPUCreditUsage") is None                           # unrelated volume metric unchanged
+
+
+def test_blank_mount_row_is_upgradable_and_a_set_one_is_left_alone():
+    assert tc.classify(_row(1, "disk_used_percent__boot", *PH, svc="ec2")) == "upgradable"
+    assert tc.classify(_row(2, "disk_used_percent__boot", 85, 95, svc="ec2")) == "alerting"
+    assert tc.classify(_row(3, "disk_used_percent__snap_core", *PH, svc="ec2")) == "collect_only"
+    cur = _Cur([_row(1, "disk_used_percent__boot", *PH, svc="ec2")])
+    out = tc.upgrade_placeholders(cur, 10, dry_run=False)
+    assert out["applied"] == 1 and cur.updates == [(1, 80, 90, ">")]
+
+
+def test_new_mounts_are_never_registered_blank():
+    src = (ROOT / "app/collector/disk_mounts.py").read_text()
+    assert "AND warning_value = 1000000 AND critical_value = 5000000 AND comparison = '>'" in src
+    assert src.index("if cloned:") < src.index("if not cloned:")

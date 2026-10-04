@@ -336,6 +336,17 @@ def ensure_disk_mount_metric_registered(aws_account_id: int, resource_type: str,
                 (BASE_METRIC_NAME, aws_account_id, resource_type),
                 overrides={"metric_id": metric_id},
             )
+            if cloned:
+                # Audit F1: the base row may itself be the blank placeholder (1,000,000 / 5,000,000), and the clone
+                # then inherits "no static line" - found on prod as disk_used_percent__boot that could never alert.
+                # A no-op whenever the cloned row already holds a real value.
+                w, c, comp = DEFAULT_THRESHOLDS.get(BASE_METRIC_NAME, (80, 90, ">"))
+                cursor.execute(
+                    """UPDATE thresholds SET warning_value = %s, critical_value = %s, comparison = %s
+                       WHERE aws_account_id = %s AND resource_type = %s AND metric_id = %s
+                         AND warning_value = 1000000 AND critical_value = 5000000 AND comparison = '>'""",
+                    (w, c, comp, aws_account_id, resource_type, metric_id),
+                )
             if not cloned:
                 warning, critical, comparison = DEFAULT_THRESHOLDS.get(BASE_METRIC_NAME, (80, 90, ">"))
                 cursor.execute(

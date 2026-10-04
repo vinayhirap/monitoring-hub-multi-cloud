@@ -17,7 +17,24 @@ Each enabled threshold row is classified:
 upgrade_placeholders() only ever rewrites rows that are EXACTLY the placeholder, so a value a person chose is
 never overwritten. use_dynamic / dynamic_k / enabled / evaluation_period are left untouched.
 """
-from app.threshold_defaults import DEFAULT_THRESHOLDS, PLACEHOLDER_THRESHOLD, is_placeholder_threshold
+from app.threshold_defaults import (
+    CAPACITY_PERCENT_METRICS, DEFAULT_THRESHOLDS, PLACEHOLDER_THRESHOLD, is_placeholder_threshold,
+)
+
+# Mount slugs that are pseudo/ephemeral filesystems. The collector no longer registers them (disk_mounts.IGNORED_*),
+# but rows registered before that cleanup may still exist, and a snap loopback sits at 100% by design.
+_PSEUDO_MOUNT_SLUGS = ("snap", "run", "dev", "loop", "proc", "sys", "tmp")
+
+
+def _capacity_base(metric_name):
+    """'disk_used_percent__boot' -> 'disk_used_percent' (a real mount); pseudo mounts and non-mounts -> None."""
+    name = (metric_name or "").lower()
+    for base in CAPACITY_PERCENT_METRICS:
+        prefix = base + "__"
+        if name.startswith(prefix):
+            slug = name[len(prefix):]
+            return None if slug.startswith(_PSEUDO_MOUNT_SLUGS) else base
+    return None
 
 SELECT_ROWS = """
     SELECT t.id, t.resource_type, t.warning_value, t.critical_value, t.comparison,
@@ -31,6 +48,9 @@ SELECT_ROWS = """
 def recommended(metric_name):
     """The shipped default for a metric if it is a real line, else None."""
     d = DEFAULT_THRESHOLDS.get(metric_name)
+    if d is None:
+        base = _capacity_base(metric_name)          # per-mount disk/mem family inherits the base metric's line
+        d = DEFAULT_THRESHOLDS.get(base) if base else None
     if d is None or is_placeholder_threshold(*d):
         return None
     return d
