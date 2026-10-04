@@ -1,4 +1,5 @@
 ﻿// monitoring-hub/frontend/src/pages/Alerts.jsx
+import RowMenu from "../components/RowMenu";
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { assertHttpUrl } from "../utils/safeUrl";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -659,30 +660,7 @@ export default function Alerts() {
 
                       <td>
                         <div className="console-links">
-                          {route && (
-                            <button
-                              className="btn-console-detail"
-                              onClick={e => { e.stopPropagation(); navigate(route); }}
-                              title="Open resource detail with CloudWatch charts"
-                            >
-                              <BarChartIcon size={12} className="ico-inline" />Metrics
-                            </button>
-                          )}
-                          {canOpenAws && (
-                            <button
-                              className="btn-console-aws"
-                              disabled={isOpeningAws}
-                              onClick={e => { e.stopPropagation(); openConsole(a.id); }}
-                              title="Open in cloud console (correct account)"
-                            >
-                              {isOpeningAws ? "Opening…" : <><CloudIcon size={12} className="ico-inline" />Console</>}
-                            </button>
-                          )}
-                          {/* Deep RCA (2026-09-14): plain-English probable-
-                              root-cause explanation for THIS alert, fetched
-                              lazily on first expand. Uses the app's own
-                              icon set (icons.jsx), not an emoji, matching
-                              the earlier fix on ServiceList's buttons. */}
+                          {/* Primary action only; the rest live in the overflow menu (audit B6). */}
                           <button
                             className="btn-console-detail"
                             onClick={e => { e.stopPropagation(); openAlert(a); }}
@@ -690,13 +668,14 @@ export default function Alerts() {
                           >
                             Investigate
                           </button>
-                          <button
-                            className="btn-console-detail"
-                            onClick={e => { e.stopPropagation(); toggleExplain(a.id); }}
-                            title="Why did this happen?"
-                          >
-                            <InfoIcon size={13} /> Why?
-                          </button>
+                          <RowMenu
+                            label={`More links for alert ${a.id}`}
+                            items={[
+                              route && { key: "metrics", label: "Metrics and charts", title: "Open resource detail with CloudWatch charts", onClick: () => navigate(route) },
+                              canOpenAws && { key: "console", label: isOpeningAws ? "Opening console…" : "Open in cloud console", disabled: isOpeningAws, title: "Open in cloud console (correct account)", onClick: () => openConsole(a.id) },
+                              { key: "why", label: "Why did this happen?", onClick: () => toggleExplain(a.id) },
+                            ]}
+                          />
                         </div>
                       </td>
 
@@ -712,52 +691,22 @@ export default function Alerts() {
                                 {isActing ? "…" : "Ack"}
                               </button>
                             )}
-                            {status !== "resolved" && (
-                              <button
-                                className="btn-resolve"
-                                disabled={isActing}
-                                onClick={e => { e.stopPropagation(); handleResolve(a.id); }}
-                              >
-                                {isActing ? "…" : "Resolve"}
-                              </button>
-                            )}
-                            {status !== "resolved" && a.state !== "suppressed" && (
-                              <button
-                                className="btn-ack"
-                                disabled={isActing}
-                                title="Mute for 1 hour: stops counting as critical/warning and stops escalating; not resolved"
-                                onClick={e => { e.stopPropagation(); handleMute(a.id, 60); }}
-                              >
-                                Mute 1h
-                              </button>
-                            )}
-                            {a.state === "suppressed" && a.muted_until && (
-                              <button
-                                className="btn-ack"
-                                disabled={isActing}
-                                onClick={e => { e.stopPropagation(); handleMute(a.id, 0); }}
-                              >
-                                Unmute
-                              </button>
-                            )}
-                            {/* Not-genuine feedback (2026-09-14) -- closes
-                                the loop with app/collector/
-                                threshold_tuning.py's manually_confirmed
-                                path: marking a chronic false alert here
-                                lets the system switch that threshold to
-                                dynamic faster than waiting for the
-                                automatic chronic-mean/chronic-noise
-                                detection alone. */}
-                            <button
-                              className={`btn-false-positive ${a.marked_false_positive ? "is-marked" : ""}`}
-                              disabled={isActing}
-                              title={a.marked_false_positive
-                                ? "Marked as not genuine — click to undo"
-                                : "This alert isn't a real issue (helps the system self-tune)"}
-                              onClick={e => { e.stopPropagation(); handleMarkFalsePositive(a.id, !a.marked_false_positive); }}
-                            >
-                              {a.marked_false_positive ? <><CheckIcon size={12} className="ico-inline" />Not genuine</> : "Not genuine?"}
-                            </button>
+                            <RowMenu
+                              label={`More actions for alert ${a.id}`}
+                              items={[
+                                status !== "resolved" && { key: "resolve", label: "Resolve", disabled: isActing, danger: true,
+                                  title: "Close this alert now. It re-opens by itself if the condition is still present.",
+                                  onClick: () => { if (window.confirm("Resolve this alert?\n\nIt is closed now and re-opens on its own if the condition is still present.")) handleResolve(a.id); } },
+                                status !== "resolved" && a.state !== "suppressed" && { key: "mute", label: "Mute for 1 hour", disabled: isActing,
+                                  title: "Stops counting as critical/warning and stops escalating; not resolved", onClick: () => handleMute(a.id, 60) },
+                                a.state === "suppressed" && a.muted_until && { key: "unmute", label: "Unmute", disabled: isActing, onClick: () => handleMute(a.id, 0) },
+                                // Not-genuine feedback (2026-09-14): lets the system switch a chronic false alert to a
+                                // dynamic threshold faster. Wording is the same here and in the investigation drawer.
+                                { key: "fp", label: a.marked_false_positive ? "Undo: not genuine" : "Mark as not genuine", disabled: isActing,
+                                  title: a.marked_false_positive ? "Marked as not genuine - click to undo" : "This alert isn't a real issue (helps the system self-tune)",
+                                  onClick: () => handleMarkFalsePositive(a.id, !a.marked_false_positive) },
+                              ]}
+                            />
                           </div>
                         </td>
                       )}

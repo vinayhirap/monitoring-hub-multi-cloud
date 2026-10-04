@@ -746,6 +746,11 @@ def _get_resources_for_account(account_id, tier):
               AND (instance_state IS NULL OR instance_state != 'terminated')
               AND (last_seen_at IS NULL OR last_seen_at >= DATE_SUB(NOW(), INTERVAL %s HOUR))
               AND NOT (resource_type = 'ec2' AND COALESCE(instance_state, '') != 'running')
+              -- Unattached EBS volumes (discovery registers them, audit B4) publish nothing useful; polling them
+              -- would add billed GetMetricData queries and permanent "no data" rows. COALESCE: a NULL tag must
+              -- keep the row (NOT (x AND NULL) is NULL, which would silently drop every other volume).
+              AND NOT (resource_type = 'ebs'
+                       AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(tags, '$._ebs_state')), '') = 'available')
         """, (account_id, STALE_RESOURCE_HOURS))
         rows = cursor.fetchall()
     finally:

@@ -7,6 +7,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { getAlertsByResource } from "../api/api";
 import { useAlertSync } from "./useAlertSync";
+import { visibleInterval } from "../utils/poll";
 
 // Safety net only: changes arrive instantly through useAlertSync.
 const POLL_MS = 15000;
@@ -25,8 +26,8 @@ export function useResourceAlerts(accountId, service) {
         .catch(() => {});   // keep last-known badges on a transient failure
     loadRef.current = load;
     load();
-    const t = setInterval(load, POLL_MS);
-    return () => { cancelled = true; clearInterval(t); loadRef.current = () => {}; };
+    const stop = visibleInterval(load, POLL_MS);          // audit C4: no background-tab polling
+    return () => { cancelled = true; stop(); loadRef.current = () => {}; };
   }, [accountId, service]);
 
   // refetch in the same tick as every other page when alert state changes

@@ -198,9 +198,9 @@ def test_correlate_creates_incident_from_two_topologically_connected_alerts():
     started close together in time, should seed one new incident with
     both attached."""
     loose_alerts = [
-        {"id": 101, "resource_id": "alb-1", "severity": "CRITICAL",
+        {"id": 101, "resource_id": "alb-1", "metric_name": "HealthyHostCount", "severity": "CRITICAL",
          "created_at": "2026-09-14 10:00:00", "aws_account_id": 1},
-        {"id": 102, "resource_id": "i-target-1", "severity": "WARNING",
+        {"id": 102, "resource_id": "i-target-1", "metric_name": "CPUUtilization", "severity": "WARNING",
          "created_at": "2026-09-14 10:02:00", "aws_account_id": 1},
     ]
 
@@ -210,7 +210,7 @@ def test_correlate_creates_incident_from_two_topologically_connected_alerts():
     class _Cursor(FakeCursor):
         def execute(self, sql, params=None):
             normalized = " ".join(sql.split())
-            if normalized.startswith("SELECT a.id, a.resource_id, a.severity"):
+            if normalized.startswith("SELECT a.id, a.resource_id, a.metric_name, a.severity"):
                 self._pending = loose_alerts
             elif normalized.startswith("SELECT DISTINCT i.id"):
                 self._pending = []  # no existing open incident to join
@@ -219,7 +219,9 @@ def test_correlate_creates_incident_from_two_topologically_connected_alerts():
                 # partner (the first, alb-1) -- simulates the real
                 # bidirectional topology-edge join.
                 if params[3] == 102:  # (res, res, account, alert_id, ...)
-                    self._pending = [{"other_alert_id": 101}]
+                    self._pending = [{"other_alert_id": 101, "other_severity": "CRITICAL",
+                                      "other_resource_id": "alb-1", "other_metric": "HealthyHostCount",
+                                      "other_triggered": "2026-09-14 10:00:00"}]
                 else:
                     self._pending = []
             elif normalized.startswith("INSERT INTO incidents"):
@@ -250,20 +252,25 @@ def test_correlate_creates_incident_from_two_topologically_connected_alerts():
     assert len(inserted_incident_alerts) == 2
     attached_alert_ids = {p[1] for p in inserted_incident_alerts}
     assert attached_alert_ids == {101, 102}
+    # Audit B3/F2: the loop holds alert 102 (10:02) but the EARLIEST breach is alb-1's (10:00), so that names
+    # the incident and sets its start time. (Previously: "Correlated breach on i-target-1", started 10:02.)
+    (_account, title, _severity, started_at) = inserted_incidents[0]
+    assert title == "HealthyHostCount breach on alb-1 and related resource(s)"
+    assert started_at == "2026-09-14 10:00:00"
 
 
 def test_correlate_leaves_standalone_alert_alone():
     """A single loose alert with no topologically-connected partner
     must NOT become an incident."""
     loose_alerts = [
-        {"id": 201, "resource_id": "standalone-1", "severity": "WARNING",
+        {"id": 201, "resource_id": "standalone-1", "metric_name": "CPUUtilization", "severity": "WARNING",
          "created_at": "2026-09-14 10:00:00", "aws_account_id": 1},
     ]
 
     class _Cursor(FakeCursor):
         def execute(self, sql, params=None):
             normalized = " ".join(sql.split())
-            if normalized.startswith("SELECT a.id, a.resource_id, a.severity"):
+            if normalized.startswith("SELECT a.id, a.resource_id, a.metric_name, a.severity"):
                 self._pending = loose_alerts
             elif normalized.startswith("SELECT DISTINCT i.id"):
                 self._pending = []

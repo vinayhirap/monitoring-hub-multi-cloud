@@ -135,6 +135,42 @@ def _discover_ec2(session, account, region, cursor):
         logger.error(f"  EC2 discovery failed [{account['account_name']}/{region}]: {e}")
 
 
+def _discover_ebs(session, account, region, cursor):
+    """Registers the EBS volumes EC2 discovery cannot see - unattached ones - so every volume is counted (audit B4).
+
+    _discover_ec2 only sees volumes that appear in an instance's BlockDeviceMappings, so unattached ("available")
+    volumes were never stored: U4RAD had 28 volumes in AWS (Overview, which counts live) but 15 in the database
+    (Services page). Unattached volumes are also the ones still being billed for nothing, so they must be visible.
+
+    State is kept in tags (`_ebs_state`) like the other per-resource metadata here, so no schema change. The metrics
+    collector skips volumes that are `available` (they publish no useful CloudWatch data), which means registering
+    them adds no GetMetricData cost.
+    """
+    try:
+        ec2 = session.client("ec2", region_name=region)
+        count = 0
+        for page in ec2.get_paginator("describe_volumes").paginate():
+            for vol in page.get("Volumes", []):
+                vid = vol["VolumeId"]
+                attachments = vol.get("Attachments") or []
+                if vol.get("State") == "in-use" and attachments:
+                    # Already stored by _discover_ec2 WITH THE INSTANCE'S TAGS, which is what the alert environment
+                    # (Production / Staging ...) is derived from. Overwriting them with the volume's own tags would
+                    # silently change that, so only add what EC2 discovery cannot see.
+                    continue
+                tags = {t["Key"]: t["Value"] for t in vol.get("Tags", [])}
+                name = tags.get("Name", vid)
+                tags["_ebs_state"] = vol.get("State", "")
+                tags["_ebs_size_gib"] = str(vol.get("Size", ""))
+                if attachments and attachments[0].get("InstanceId"):
+                    tags["parent_ec2"] = attachments[0]["InstanceId"]       # e.g. 'attaching' / 'detaching'
+                _upsert_resource(cursor, account["id"], "ebs", vid, name, tags, region)
+                count += 1
+        logger.info(f"  EBS: {count} volumes in {account['account_name']} / {region}")
+    except Exception as e:
+        logger.error(f"  EBS discovery failed [{account['account_name']}/{region}]: {e}")
+
+
 def _discover_rds(session, account, region, cursor):
     try:
         rds = session.client("rds", region_name=region)
@@ -359,6 +395,7 @@ def _discover_account(account):
         cursor = conn.cursor(dictionary=True)
         try:
             _discover_ec2(session, account, region, cursor)
+            _discover_ebs(session, account, region, cursor)   # after EC2: adds unattached volumes, keeps parent_ec2 for attached
             _discover_rds(session, account, region, cursor)
             _discover_elb(session, account, region, cursor)
             _discover_ecs(session, account, region, cursor)

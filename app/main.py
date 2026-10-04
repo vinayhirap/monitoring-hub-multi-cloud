@@ -13,6 +13,7 @@ import threading
 from app.api.alerts         import router as alerts_router
 from app.api.health         import router as health_router
 from app.api.notifications  import router as notifications_router
+from app.api.setup_status   import router as setup_router
 from app.api.admin.accounts import router as admin_accounts_router
 from app.api.auth           import router as auth_router
 from app.api.admin.users    import router as admin_users_router
@@ -376,6 +377,7 @@ _auth_dep = [Depends(get_current_user)]
 app.include_router(health_router)   # public live/ready; /detail enforces operations.view itself
 app.include_router(alerts_router,         prefix="/api", dependencies=_auth_dep)
 app.include_router(notifications_router,  dependencies=_auth_dep)   # prefix /api/notifications is on the router; permission notifications.manage
+app.include_router(setup_router,          dependencies=_auth_dep)   # first-run checklist data: counts only
 app.include_router(admin_accounts_router, dependencies=_auth_dep)
 app.include_router(auth_router)
 app.include_router(admin_users_router)

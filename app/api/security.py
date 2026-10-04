@@ -52,7 +52,7 @@ def _console_params_for_finding(check_id: str, resource_id: str):
     get_console_url already documents."""
     if check_id == "s3_bucket_public":
         return "s3", resource_id, None
-    if check_id == "ebs_unencrypted":
+    if check_id in ("ebs_unencrypted", "ebs_unattached"):
         return "ebs", resource_id, None
     if check_id == "sg_open_to_world":
         return "security_group", resource_id, None

@@ -23,11 +23,13 @@ import { useTimezone } from "../contexts/TimezoneContext";
 import { ShieldIcon, AlertOctagonIcon, ExternalLinkIcon } from "../components/icons";
 import "./SecurityFindings.css";
 import { formatStamp, zoneLabel } from "../utils/timeFormat";
+import { filterFindings, paginate, checkTypes } from "../utils/findingsView";
 
 const CHECK_LABELS = {
   s3_bucket_public: "Public S3 bucket",
   sg_open_to_world: "Security group open to internet",
   ebs_unencrypted: "Unencrypted EBS volume",
+  ebs_unattached: "Unattached EBS volume (billed, idle)",
   iam_user_no_mfa: "IAM user without MFA",
   iam_stale_access_key: "Stale IAM access key",
   azure_nsg_open_to_world: "NSG open to internet",
@@ -59,6 +61,9 @@ export default function SecurityFindings() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [openingConsole, setOpeningConsole] = useState(null);
+  const [q, setQ] = useState("");
+  const [checkId, setCheckId] = useState("");
+  const [page, setPage] = useState(1);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -92,6 +97,11 @@ export default function SecurityFindings() {
     }
   }
 
+  const labelOf = id => CHECK_LABELS[id] || id;
+  const filtered = filterFindings(findings, { q, checkId, label: labelOf });
+  const view = paginate(filtered, page);
+  const types = checkTypes(findings, labelOf);
+
   const totalOpen = summary.reduce((sum, s) => sum + s.total_open, 0);
   const totalHigh = summary.reduce((sum, s) => sum + (s.high_count || 0), 0);
 
@@ -113,7 +123,7 @@ export default function SecurityFindings() {
       <div className="sec-filters">
         <div className="sec-field">
           <label>Status</label>
-          <select aria-label="Filter by status" value={status} onChange={e => setStatus(e.target.value)}>
+          <select aria-label="Filter by status" value={status} onChange={e => { setStatus(e.target.value); setPage(1); }}>
             <option value="open">Open</option>
             <option value="resolved">Resolved</option>
             <option value="all">All</option>
@@ -121,7 +131,7 @@ export default function SecurityFindings() {
         </div>
         <div className="sec-field">
           <label>Severity</label>
-          <select aria-label="Filter by severity" value={severity} onChange={e => setSeverity(e.target.value)}>
+          <select aria-label="Filter by severity" value={severity} onChange={e => { setSeverity(e.target.value); setPage(1); }}>
             <option value="">All</option>
             <option value="HIGH">High</option>
             <option value="MEDIUM">Medium</option>
@@ -129,8 +139,20 @@ export default function SecurityFindings() {
           </select>
         </div>
         <div className="sec-field">
+          <label>Type</label>
+          <select aria-label="Filter by finding type" value={checkId} onChange={e => { setCheckId(e.target.value); setPage(1); }}>
+            <option value="">All types</option>
+            {types.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+        </div>
+        <div className="sec-field">
+          <label>Search</label>
+          <input type="search" aria-label="Search findings" placeholder="Resource, port, account…" value={q}
+                 onChange={e => { setQ(e.target.value); setPage(1); }} />
+        </div>
+        <div className="sec-field">
           <label>Account</label>
-          <select aria-label="Filter by account" value={accountId} onChange={e => setAccountId(e.target.value)}>
+          <select aria-label="Filter by account" value={accountId} onChange={e => { setAccountId(e.target.value); setPage(1); }}>
             <option value="">All accounts</option>
             {accounts.map(a => (
               <option key={a.account_id} value={a.account_id}>
@@ -145,11 +167,13 @@ export default function SecurityFindings() {
         <div className="sec-bar">
           <span className="bar-icon">▐</span>
           <span className="bar-title">FINDINGS</span>
-          <span className="bar-count">{findings.length}</span>
+          <span className="bar-count">{filtered.length === findings.length ? findings.length : `${filtered.length} of ${findings.length}`}</span>
         </div>
 
         {loading ? (
           <div className="sec-empty">Loading…</div>
+        ) : filtered.length === 0 && findings.length > 0 ? (
+          <div className="sec-empty">No findings match these filters. <button type="button" className="btn-console-sec" onClick={() => { setQ(""); setCheckId(""); setPage(1); }}>Clear filters</button></div>
         ) : findings.length === 0 ? (
           <div className="sec-empty">No {status === "all" ? "" : status} findings — nice work, or checks haven't run yet (they need extra IAM permissions on the monitoring role, see the deployment notes).</div>
         ) : (
@@ -165,7 +189,7 @@ export default function SecurityFindings() {
               </tr>
             </thead>
             <tbody>
-              {findings.map(f => (
+              {view.rows.map(f => (
                 <tr key={f.id}>
                   <td><SeverityBadge severity={f.severity} /></td>
                   <td>
@@ -194,6 +218,14 @@ export default function SecurityFindings() {
               ))}
             </tbody>
           </table></div>
+        )}
+        {!loading && view.pages > 1 && (
+          <div className="sec-pager" style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "flex-end", padding: "10px 14px" }}>
+            <span className="ui-sub">Showing {view.from}–{view.to} of {view.total}</span>
+            <button type="button" className="btn-console-sec" disabled={view.page <= 1} onClick={() => setPage(view.page - 1)}>Previous</button>
+            <span className="ui-sub">Page {view.page} of {view.pages}</span>
+            <button type="button" className="btn-console-sec" disabled={view.page >= view.pages} onClick={() => setPage(view.page + 1)}>Next</button>
+          </div>
         )}
       </div>
     </div>

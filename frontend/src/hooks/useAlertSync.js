@@ -15,6 +15,7 @@
 import { useEffect, useRef } from "react";
 import { getAlertsVersion } from "../api/api";
 import { useWebSocket } from "./useWebSocket";
+import { backoffSkips } from "../utils/poll";
 
 const POLL_MS = 5000;
 
@@ -22,9 +23,12 @@ const listeners = new Set();
 let lastVersion = null;
 let timer = null;
 let checking = false;
+let failures = 0;      // consecutive failed version checks
+let skip = 0;          // ticks still to skip before retrying (audit C4 back-off)
 
 async function check() {
   if (checking || document.hidden) return;   // hidden tabs re-check when shown
+  if (skip > 0) { skip--; return; }
   checking = true;
   try {
     const { version } = await getAlertsVersion();
@@ -32,14 +36,17 @@ async function check() {
       listeners.forEach(fn => { try { fn(version); } catch { /* one bad page must not stop the rest */ } });
     }
     lastVersion = version;
+    failures = 0;
   } catch {
-    /* transient failure: keep the last version, the next tick retries */
+    /* transient failure: keep the last version, back off (1, 3, then 7 ticks) so a struggling server is not hit every 5 s */
+    failures += 1;
+    skip = backoffSkips(failures);
   } finally {
     checking = false;
   }
 }
 
-function onVisible() { if (!document.hidden) check(); }
+function onVisible() { if (!document.hidden) { skip = 0; check(); } }       // coming back always retries at once
 
 function start() {
   if (timer) return;
@@ -54,6 +61,7 @@ function stop() {
   clearInterval(timer);
   timer = null;
   lastVersion = null;
+  failures = 0; skip = 0;
   document.removeEventListener("visibilitychange", onVisible);
   window.removeEventListener("focus", check);
 }

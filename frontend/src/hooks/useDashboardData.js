@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getAlertsList, getFleetSummary, getFleetDetail, getIncidents, getOpEvents } from "../api/api";
 import { useAlertSync } from "./useAlertSync";
 import { FIRING_LIMIT, RESOLVED_LIMIT } from "../utils/dashboardModel";
+import { visibleInterval } from "../utils/poll";
 
 const POLL_MS = 30000;
 const INCIDENT_ACCOUNT_CAP = 24;       // one request per account x region row, bounded
@@ -54,8 +55,8 @@ export function useDashboardData(rowIds) {
   useEffect(() => {
     if (!idKey) return undefined;                     // nothing to scope until accounts are known
     const first = setTimeout(load, 0);
-    const t = setInterval(load, POLL_MS);
-    return () => { clearTimeout(first); clearInterval(t); };
+    const stop = visibleInterval(load, POLL_MS);          // audit C4: no background-tab polling
+    return () => { clearTimeout(first); stop(); };
   }, [idKey, load]);
   useAlertSync(load);
 

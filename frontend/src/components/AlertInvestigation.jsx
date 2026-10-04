@@ -159,7 +159,7 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
             <h3>5 · Action</h3>
             <div className="ai-actions">
               {canAct && open && state !== "acknowledged" && <button className="ui-btn" disabled={busy} onClick={() => onAck(id)}>Acknowledge</button>}
-              {canAct && open && <button className="ui-btn" disabled={busy} onClick={() => onResolve(id)}>Resolve</button>}
+              {canAct && open && <button className="ui-btn" disabled={busy} onClick={() => { if (window.confirm("Resolve this alert?\n\nIt is closed now and re-opens on its own if the condition is still present.")) onResolve(id); }}>Resolve</button>}
               {canAct && open && (a.muted_until
                 ? <button className="ui-btn" disabled={busy} onClick={() => onMute(id, 0)}>Unmute</button>
                 : <span className="ai-mute">
@@ -168,7 +168,7 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
                     </select>
                     <button className="ui-btn" disabled={busy} onClick={() => onMute(id, Number(muteMin))}>Mute</button>
                   </span>)}
-              {canAct && <button className="ui-btn" onClick={() => onFalsePositive(id, !a.marked_false_positive)}>{a.marked_false_positive ? "Unmark not genuine" : "Not genuine"}</button>}
+              {canAct && <button className="ui-btn" onClick={() => onFalsePositive(id, !a.marked_false_positive)}>{a.marked_false_positive ? "Undo: not genuine" : "Mark as not genuine"}</button>}
               {!canAct && <span className="ai-dim">View-only access: ask an Admin or Editor to acknowledge or resolve.</span>}
             </div>
             <div className="ai-links">

@@ -189,6 +189,29 @@ def _check_open_security_groups(session, region: str) -> list:
     return findings
 
 
+def _check_unattached_ebs(session, region: str) -> list:
+    """Volumes in the 'available' state are attached to nothing but still billed per GiB-month (audit F4)."""
+    findings = []
+    ec2 = session.client("ec2", region_name=region, config=STANDARD_RETRY)
+    for vol in (v for page in ec2.get_paginator("describe_volumes").paginate()
+                for v in page.get("Volumes", [])):
+        if vol.get("State") != "available":
+            continue
+        size = vol.get("Size", "?")
+        created = vol.get("CreateTime")
+        age = f", created {created:%Y-%m-%d}" if hasattr(created, "strftime") else ""
+        findings.append({
+            "check_id": "ebs_unattached",
+            "resource_id": vol["VolumeId"],
+            "region": region,
+            "severity": "LOW",
+            "title": f"EBS volume '{vol['VolumeId']}' is not attached to any instance",
+            "description": (f"{size} GiB {vol.get('VolumeType', '')} volume{age}. Unattached volumes are billed in full. "
+                            "Snapshot and delete it if it is no longer needed."),
+        })
+    return findings
+
+
 def _check_unencrypted_ebs(session, region: str) -> list:
     findings = []
     ec2 = session.client("ec2", region_name=region, config=STANDARD_RETRY)
@@ -634,6 +657,7 @@ def _run_aws_checks(account: dict):
     for region in _aws_regions(session, account):
         run.run("sg_open_to_world", _check_open_security_groups, session, region, region=region)
         run.run("ebs_unencrypted", _check_unencrypted_ebs, session, region, region=region)
+        run.run("ebs_unattached", _check_unattached_ebs, session, region, region=region)
     run.run("iam_user_no_mfa", _check_iam_users_without_mfa, session)
     run.run("iam_stale_access_key", _check_stale_access_keys, session)
     return run

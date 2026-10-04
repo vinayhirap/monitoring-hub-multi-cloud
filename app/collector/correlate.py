@@ -37,6 +37,33 @@ logger = logging.getLogger(__name__)
 CORRELATION_WINDOW_MINUTES = 30
 
 
+def pick_root(alert: dict, partner: dict) -> dict:
+    """Of the two alerts seeding an incident, the one that breached FIRST is the probable root (audit B3/F2).
+
+    The title used to name whichever alert the loop happened to hold ("Correlated breach on vol-0952..." although the
+    earliest breach was disk_used_percent on i-046f...), and started_at took that alert's time rather than the
+    incident's real start. Tie-break: the more severe, then the lower alert id, so the choice is deterministic.
+    Returns {resource_id, metric_name, triggered_at}.
+    """
+    mine = {"resource_id": alert["resource_id"], "metric_name": alert.get("metric_name"),
+            "triggered_at": alert["created_at"], "severity": alert.get("severity"), "id": alert["id"]}
+    other = {"resource_id": partner.get("other_resource_id"), "metric_name": partner.get("other_metric"),
+             "triggered_at": partner.get("other_triggered"), "severity": partner.get("other_severity"),
+             "id": partner.get("other_alert_id")}
+    if other["resource_id"] is None or other["triggered_at"] is None:
+        return mine                                    # partner details unavailable: keep the old behaviour
+    rank = {"CRITICAL": 0, "WARNING": 1}
+    def key(a):
+        return (a["triggered_at"], rank.get(str(a["severity"] or "").upper(), 2), a["id"] if a["id"] is not None else 0)
+    return min((mine, other), key=key)
+
+
+def incident_title(root: dict) -> str:
+    metric = root.get("metric_name")
+    lead = f"{metric} breach" if metric else "Correlated breach"
+    return f"{lead} on {root['resource_id']} and related resource(s)"[:255]
+
+
 def correlate_alerts_into_incidents():
     """
     Attaches loose active alerts to an existing open incident where a
@@ -58,7 +85,7 @@ def correlate_alerts_into_incidents():
         # duplicate active incident. Hidden internal metrics
         # (multivariate_anomaly) never seed user-facing incidents.
         cursor.execute(f"""
-            SELECT a.id, a.resource_id, a.severity, a.triggered_at AS created_at,
+            SELECT a.id, a.resource_id, a.metric_name, a.severity, a.triggered_at AS created_at,
                    a.aws_account_id
             FROM alerts a
             WHERE a.status = 'active'
@@ -118,7 +145,9 @@ def correlate_alerts_into_incidents():
             #    topologically-connected, also-loose active alert to
             #    seed a NEW incident with?
             cursor.execute(f"""
-                SELECT a2.id AS other_alert_id, a2.severity AS other_severity
+                SELECT a2.id AS other_alert_id, a2.severity AS other_severity,
+                       a2.resource_id AS other_resource_id, a2.metric_name AS other_metric,
+                       a2.triggered_at AS other_triggered
                 FROM alerts a2
                 LEFT JOIN incident_alerts ia2 ON ia2.alert_id = a2.id
                 JOIN resource_relationships rel
@@ -138,19 +167,20 @@ def correlate_alerts_into_incidents():
             if not partner:
                 continue  # a standalone breach -- correctly stays a plain alert
 
+            root = pick_root(alert, partner)      # earliest breach names the incident and starts its clock
             cursor.execute("""
                 INSERT INTO incidents
                     (aws_account_id, title, severity, status, started_at, last_seen_at)
                 VALUES (%s, %s, %s, 'active', %s, NOW())
             """, (
                 alert["aws_account_id"],
-                f"Correlated breach on {alert['resource_id']} and related resource(s)"[:255],
+                incident_title(root),
                 # Worst of the two seeding alerts (was: the first alert's
                 # severity only, so a CRITICAL partner made a WARNING incident).
                 "CRITICAL" if "CRITICAL" in (str(alert["severity"]).upper(),
                                              str(partner.get("other_severity") or "").upper())
                 else alert["severity"],
-                alert["created_at"],
+                root["triggered_at"],
             ))
             incident_id = cursor.lastrowid
             incidents_created += 1
