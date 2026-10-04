@@ -9,6 +9,7 @@ import { useAuth } from "../../auth/AuthContext";
 import * as api from "../../api/access";
 import { PlusIcon, SearchIcon, ShieldIcon, CheckIcon, MinusIcon } from "../../components/icons";
 import { Badge, Modal, ConfirmDialog, Field, Banner, SkeletonRows, useToast, useAsync, useDebounced } from "./ui";
+import { plural } from "../../utils/plural";
 
 function NewRoleModal({ source, onClose, onCreated }) {
   const toast = useToast();
@@ -214,7 +215,7 @@ export default function RolesTab() {
               onClone={(r) => setModal({ source: r })}
               onDelete={(r) => setConfirm({
                 title: `Delete role "${r.name}"?`, confirmLabel: "Delete role", danger: true,
-                body: <p>{r.binding_count ? `${r.binding_count} binding(s) use this role and will block deletion — revoke them first.` : "This role is not used by any binding."}</p>,
+                body: <p>{r.binding_count ? `${plural(r.binding_count, "binding")} ${r.binding_count === 1 ? "uses" : "use"} this role and will block deletion — revoke ${r.binding_count === 1 ? "it" : "them"} first.` : "This role is not used by any binding."}</p>,
                 run: async () => { await api.deleteRole(r.id); toast(`Role "${r.name}" deleted`); setSelId(null); roles.reload(); },
               })} />}
           </div>

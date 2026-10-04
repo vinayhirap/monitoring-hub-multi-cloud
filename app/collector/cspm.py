@@ -197,7 +197,7 @@ def _check_open_security_groups(session, region: str) -> list:
             "title": f"Security group '{sg.get('GroupName', sg['GroupId'])}' allows traffic from the internet",
             "description": (
                 f"{'; '.join(rules)} open to {', '.join(ranges)}"
-                + (" -- includes a sensitive port (SSH/RDP/DB)." if sensitive else ".")
+                + (". Includes a sensitive port (SSH/RDP/DB)." if sensitive else ".")
             ),
         })
     return findings
@@ -317,7 +317,7 @@ def _check_iam_users_without_mfa(session) -> list:
                 "resource_id": username,
                 "severity": "HIGH",
                 "title": f"IAM user '{username}' has console access with no MFA device",
-                "description": "This user can sign in with just a password -- enable MFA to protect "
+                "description": "This user can sign in with just a password. Enable MFA to protect "
                                 "against credential-stuffing/phishing.",
             })
     return findings
@@ -412,7 +412,7 @@ def _check_azure_nsg_open_to_world(cred, subscription_id: str) -> list:
                 "description": (
                     f"Rule '{rule.name}' allows {rule.protocol} {', '.join(port_ranges)} "
                     f"from {', '.join(open_sources)}"
-                    + (" -- includes a sensitive port (SSH/RDP/DB)." if hits_sensitive else ".")
+                    + (". Includes a sensitive port (SSH/RDP/DB)." if hits_sensitive else ".")
                 ),
             })
     return findings
@@ -429,7 +429,7 @@ def _check_azure_storage_public_access(cred, subscription_id: str) -> list:
                 "resource_id": acct.id,
                 "severity": "HIGH",
                 "title": f"Storage account '{acct.name}' allows public blob access",
-                "description": "allowBlobPublicAccess is enabled at the account level -- any "
+                "description": "allowBlobPublicAccess is enabled at the account level. Any "
                                 "container/blob with a public access level set can be reached "
                                 "anonymously. Disable unless intentional.",
             })
@@ -447,7 +447,7 @@ def _check_azure_storage_insecure_transport(cred, subscription_id: str) -> list:
                 "resource_id": acct.id,
                 "severity": "MEDIUM",
                 "title": f"Storage account '{acct.name}' allows unencrypted (HTTP) access",
-                "description": "Secure transfer (HTTPS-only) is disabled -- data in transit to "
+                "description": "Secure transfer (HTTPS-only) is disabled, so data in transit to "
                                 "this storage account can be sent unencrypted over plain HTTP.",
             })
     return findings
@@ -526,7 +526,7 @@ def _check_gcp_firewall_open_to_world(creds, project_id: str) -> list:
             "title": f"Firewall rule '{rule.name}' allows ingress from the internet",
             "description": (
                 f"Allows {', '.join(a['ipProtocol'] for a in allowed)} from {', '.join(world_ranges)}"
-                + (" -- includes a sensitive port (SSH/RDP/DB)." if hits_sensitive else ".")
+                + (". Includes a sensitive port (SSH/RDP/DB)." if hits_sensitive else ".")
             ),
         })
     return findings

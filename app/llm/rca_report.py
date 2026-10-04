@@ -26,11 +26,13 @@ import logging
 import os
 import threading
 import time
+from datetime import datetime, timezone
 
 from app.db import get_connection
 from app.collector.rca import explain_alert
 from app.llm.summarizer import generate_rca_narrative, is_enabled
 from app.llm.aws_docs import get_references
+from app.metric_labels import metric_label, format_metric_value
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,7 @@ def _gather_facts(alert_id: int) -> dict:
         cursor.execute("""
             SELECT a.id, a.resource_id, a.metric_name, a.severity, a.status,
                    a.triggered_at, a.resolved_at, a.current_value, a.threshold,
+                   a.region, a.environment, acc.default_region, a.acked_at, a.acked_by,
                    r.name AS resource_name, r.resource_type, acc.account_name
             FROM alerts a
             JOIN resources r      ON r.resource_id = a.resource_id
@@ -81,7 +84,12 @@ def _gather_facts(alert_id: int) -> dict:
                 "time": str(ce["event_time"]),
                 "event": f"AWS activity: {ce['event_name']} by {ce['username'] or 'unknown'}",
             })
-        timeline.append({"time": str(alert["triggered_at"]), "event": f"Alert triggered: {alert['metric_name']} on {alert['resource_name'] or alert['resource_id']}"})
+        timeline.append({"time": str(alert["triggered_at"]),
+                         "event": f"Alert opened: {metric_label(alert['metric_name'])} on "
+                                  f"{alert['resource_name'] or alert['resource_id']}"})
+        if alert.get("acked_at"):
+            who = alert.get("acked_by")
+            timeline.append({"time": str(alert["acked_at"]), "event": f"Acknowledged{f' by {who}' if who else ''}"})
         if alert["resolved_at"]:
             timeline.append({"time": str(alert["resolved_at"]), "event": "Alert resolved"})
         timeline.sort(key=lambda e: e["time"])
@@ -103,6 +111,9 @@ def _gather_facts(alert_id: int) -> dict:
             "resource_type": alert["resource_type"],
             "account_name": alert["account_name"],
             "metric_name": alert["metric_name"],
+            "metric_label": metric_label(alert["metric_name"]),
+            "region": alert.get("region") or alert.get("default_region"),
+            "environment": alert.get("environment"),
             "severity": alert["severity"],
             "status": alert["status"],
             "triggered_at": str(alert["triggered_at"]),
@@ -112,6 +123,13 @@ def _gather_facts(alert_id: int) -> dict:
             "threshold": alert["threshold"],
             "threshold_delta_pct": threshold_delta_pct,
             "confidence": explanation.get("confidence"),
+            # NOT open_minutes: that changes every minute and would change the facts hash, i.e. throw away the
+            # cached AI narrative on every download. "Open for ..." is computed at render time instead.
+            "confidence_reason": explanation.get("confidence_reason"),
+            "persistence": explanation.get("persistence"),
+            "recurrences_30d": explanation.get("recurrences_30d"),
+            "dependents": explanation.get("dependents") or [],
+            "dependent_count": explanation.get("dependent_count"),
             "trend": explanation.get("trend"),
             "is_likely_flapping": explanation.get("is_likely_flapping"),
             "capacity_forecast": explanation.get("capacity_forecast"),
@@ -127,40 +145,256 @@ def _gather_facts(alert_id: int) -> dict:
         conn.close()
 
 
-def _fallback_narrative(facts: dict) -> str:
-    """Deterministic Executive Summary + Recommendations, used when the
-    LLM is disabled or its call fails -- see module docstring. Slightly
-    more detailed than a bare template_summary dump, but every added
-    sentence below is assembled from a fact already present in `facts`
-    (current_value/threshold/resource_type/account_name) -- nothing
-    here is invented, it's just surfacing numbers this app already
-    gathered but previously left out of the narrative."""
-    summary_parts = [facts["template_summary"] or "No summary available."]
+# ── presentation helpers (audit of the first real PDF: raw keys, unformatted numbers, no zone, no context) ────────
 
-    if facts.get("threshold_delta_pct") is not None:
-        direction = "above" if facts["threshold_delta_pct"] >= 0 else "below"
-        summary_parts.append(
-            f"The triggering value was {abs(facts['threshold_delta_pct'])}% {direction} "
-            f"the configured threshold for {facts['metric_name']} on this {facts['resource_type']} resource."
-        )
+_RESOURCE_TYPE_LABELS = {
+    "ec2": "EC2 instance", "ebs": "EBS volume", "rds": "RDS database", "s3": "S3 bucket", "lambda": "Lambda function",
+    "elb": "Load balancer", "alb": "Application Load Balancer", "nlb": "Network Load Balancer",
+    "natgateway": "NAT gateway", "dynamodb": "DynamoDB table", "sqs": "SQS queue", "sns": "SNS topic",
+    "ecs": "ECS service", "eks": "EKS cluster", "elasticache": "ElastiCache cluster", "cloudfront": "CloudFront distribution",
+    "apigateway": "API Gateway", "kms": "KMS key", "efs": "EFS file system", "redshift": "Redshift cluster",
+    "backup": "Backup vault", "events": "EventBridge bus", "logs": "CloudWatch log group",
+}
 
-    lines = ["## Executive Summary", "", " ".join(summary_parts), "", "## Recommendations", ""]
+
+def _type_label(resource_type) -> str:
+    t = str(resource_type or "").lower()
+    return _RESOURCE_TYPE_LABELS.get(t) or (t.upper() if t else "resource")
+
+
+def _fmt_utc(value) -> str:
+    """'2026-10-04 16:13:45' -> '04 Oct 2026, 16:13:45 UTC' (same shape as the app's own timestamps)."""
+    text = str(value or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%d %b %Y, %H:%M:%S") + " UTC"
+        except ValueError:
+            continue
+    return text or "-"
+
+
+def _minutes_text(minutes) -> str:
+    try:
+        m = int(round(float(minutes)))
+    except (TypeError, ValueError):
+        return "-"
+    if m < 1:
+        return "less than a minute"
+    if m < 60:
+        return f"{m} minute{'s' if m != 1 else ''}"
+    if m < 1440:
+        h, r = divmod(m, 60)
+        return f"{h} hour{'s' if h != 1 else ''}" + (f" {r} min" if r else "")
+    d, r = divmod(m, 1440)
+    h = r // 60
+    return f"{d} day{'s' if d != 1 else ''}" + (f" {h} hr" if h else "")
+
+
+def _open_minutes(facts: dict, now=None):
+    """Minutes the alert has been (or was) open. Active alerts use the current time, so this is render-time only."""
+    if facts.get("duration_minutes") is not None:
+        return facts["duration_minutes"]
+    text = str(facts.get("triggered_at") or "")
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            started = datetime.strptime(text, fmt)
+            break
+        except ValueError:
+            started = None
+    if started is None:
+        return None
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    return max(0, int((now - started).total_seconds() // 60))
+
+
+def _is_active(facts: dict) -> bool:
+    return not facts.get("resolved_at") and str(facts.get("status") or "").lower() != "resolved"
+
+
+def _reading(facts: dict, key: str) -> str:
+    return format_metric_value(facts.get("metric_name"), facts.get(key), grouped=True)
+
+
+def _over_text(facts: dict):
+    d = facts.get("threshold_delta_pct")
+    if d is None:
+        return None
+    return f"{abs(d):g}% {'over' if d >= 0 else 'under'}"
+
+
+def _forecast_text(cf: dict) -> str:
+    days = cf["days_to_exhaustion"]
+    when = "under a day" if days < 1 else (f"about {days:.1f} days" if days < 10 else f"about {round(days)} days")
+    if cf.get("counts_up", True):
+        return (f"At the recent growth rate (about {abs(cf['slope_per_day']):.1f} percentage points per day), "
+                f"usage is projected to reach 100% in {when}.")
+    return f"At the recent rate of decline, free space is projected to run out in {when}."
+
+
+def _lead(label: str, text: str) -> str:
+    return f"**{label}.** {text}"
+
+
+# Suggested first checks by metric family. Deliberately generic best practice, worded as suggestions: nothing here claims
+# to know the cause. Matched on the lower-cased stored metric name; first match wins.
+_GUIDANCE = (
+    (("volumeread", "volumewrite", "volumequeue", "volumeidle", "volumethroughput", "burstbalance", "volumeconsumed"),
+     "Suggested first checks: find which instance and process drives this volume's I/O, compare it with the volume's "
+     "provisioned IOPS and throughput, and look for a backup, batch job or index rebuild running at that time."),
+    (("disk_used_percent", "mem_used_percent", "freestoragespace", "diskspace", "freeablememory", "percentagediskspaceused"),
+     "Suggested first checks: identify what is consuming the space or memory (logs, temp files, database growth, a leaking "
+     "process), then clean up, restart the leaking service or extend capacity."),
+    (("cpuutilization", "cpucredit", "cpu_"),
+     "Suggested first checks: find which process or workload is driving CPU, compare it with recent load and deployments, "
+     "and check whether the instance size still fits the workload."),
+    (("networkin", "networkout", "networkpackets", "bytesin", "bytesout", "bytesinfromsource", "bytesouttodestination"),
+     "Suggested first checks: find which workload or client is generating the traffic and whether it matches a known "
+     "transfer, backup or release window."),
+    (("healthyhost", "unhealthyhost", "healthcheck"),
+     "Suggested first checks: look at the failing targets' health-check results and application logs, and at any recent "
+     "deployment to those targets."),
+    (("5xx", "errors5xx", "httpcode_target_5xx", "httpcode_elb_5xx", "faultrequest"),
+     "Suggested first checks: review application logs for the failing requests and any deployment shortly before the "
+     "errors began."),
+    (("throttle", "concurrentexecutions", "errors", "failed", "timedout", "deadletter"),
+     "Suggested first checks: look at the service's recent error logs, its concurrency or capacity limits, and the "
+     "downstream dependencies it calls."),
+    (("databaseconnections", "connections"),
+     "Suggested first checks: look for connection leaks and long-running queries, and compare against the connection "
+     "limit for this instance size."),
+    (("statuscheckfailed",),
+     "Suggested first checks: open the instance's status checks in the console; a failed system check usually means an "
+     "impaired host, which a stop and start (not a reboot) normally clears."),
+    (("daystoexpiry",),
+     "Suggested first checks: renew or replace the certificate before it expires, and confirm automatic renewal is "
+     "configured."),
+)
+
+
+def _metric_guidance(metric_name):
+    name = str(metric_name or "").lower()
+    for needles, text in _GUIDANCE:
+        if any(n in name for n in needles):
+            return text
+    return None
+
+
+def _build_summary_paragraphs(facts: dict) -> list:
+    label = facts.get("metric_label") or metric_label(facts.get("metric_name"))
+    rid = facts.get("resource_id")
+    name = facts.get("resource_name") or rid
+    where = f"{name} ({_type_label(facts.get('resource_type'))})" if name == rid else \
+        f"{name} ({_type_label(facts.get('resource_type'))}, {rid})"
+    account = facts.get("account_name")
+    d = facts.get("threshold_delta_pct")
+    verb = "crossed" if d is None else ("went above" if d >= 0 else "fell below")
+    over = _over_text(facts)
+    head = (f"{label} on {where}" + (f" in {account}" if account else "") +
+            f" {verb} its alert limit at {_fmt_utc(facts.get('triggered_at'))}: the reading was {_reading(facts, 'current_value')} "
+            f"against a limit of {_reading(facts, 'threshold')}" + (f" ({over})" if over else "") + ".")
+    if _is_active(facts):
+        om = _open_minutes(facts)
+        head += f" The alert is still active and has been open for {_minutes_text(om)}." if om is not None else \
+            " The alert is still active."
+    else:
+        head += f" It resolved after {_minutes_text(facts.get('duration_minutes'))}."
+    paras = [_lead("What happened", head)]
+
+    pattern = []
+    if facts.get("persistence"):
+        pattern.append(facts["persistence"])
+    elif facts.get("recurrences_30d") and facts["recurrences_30d"] >= 3:
+        pattern.append(f"This alert has triggered {facts['recurrences_30d']} other times in the last 30 days.")
+    trend = (facts.get("trend") or {}).get("description") if isinstance(facts.get("trend"), dict) else None
+    if trend:
+        pattern.append(trend)
+    if facts.get("is_likely_flapping"):
+        pattern.append("The metric's normal variability occasionally crosses the limit, so this looks more like noise "
+                       "than a genuine incident.")
+    cf = facts.get("capacity_forecast")
+    if cf and cf.get("days_to_exhaustion") is not None:
+        pattern.append(_forecast_text(cf))
+    if pattern:
+        paras.append(_lead("Pattern", " ".join(pattern)))
+
+    impact = []
+    n_dep = facts.get("dependent_count") or len(facts.get("dependents") or [])
+    if n_dep:
+        names = facts.get("dependents") or []
+        shown = ", ".join(names) + (f" and {n_dep - len(names)} more" if n_dep > len(names) and names else "")
+        impact.append(f"{n_dep} other {'resource relies' if n_dep == 1 else 'resources rely'} on this one"
+                      + (f" ({shown})" if shown else "") + ", so the impact may be wider than this single alert.")
+    n_rel = facts.get("related_alert_count") or 0
+    if n_rel:
+        impact.append(f"It is part of a wider incident with {n_rel} related {'alert' if n_rel == 1 else 'alerts'}.")
+    if impact:
+        paras.append(_lead("Impact", " ".join(impact)))
+
+    dep = facts.get("recent_deployment")
+    trig = facts.get("probable_trigger")
+    if dep:
+        paras.append(_lead("Probable cause",
+                           f"A deployment shortly before the alert is the most likely trigger, though not confirmed: "
+                           f"{dep.get('message')}."))
+    elif trig:
+        paras.append(_lead("Probable cause",
+                           f"A change on AWS shortly before the alert is the most likely trigger, though not confirmed: "
+                           f"{trig.get('event_name')} by {trig.get('username') or 'an unknown user'}."))
+    else:
+        paras.append(_lead("Probable cause",
+                           "No deployment or AWS change was found around when it started, so the cause cannot be "
+                           "determined from the signals available."))
+    return paras
+
+
+def _build_recommendations(facts: dict) -> list:
+    recs = []
     if facts.get("recent_deployment"):
-        lines.append("- Review the deployment listed in the timeline above for a possible causal link.")
+        recs.append("Review the deployment listed in the timeline above for a possible causal link.")
     cf = facts.get("capacity_forecast")
     if cf and cf.get("days_to_exhaustion") is not None and cf["days_to_exhaustion"] <= 30:
         days = cf["days_to_exhaustion"]
         when = "under a day" if days < 1 else (f"about {days:.1f} days" if days < 10 else f"about {round(days)} days")
-        lines.append(f"- Capacity: at the recent rate this resource reaches its limit in {when} -- clean up or extend storage before then.")
+        recs.append(f"Capacity: at the recent rate this resource reaches its limit in {when} - clean up or extend "
+                    f"storage before then.")
+    om = _open_minutes(facts) if _is_active(facts) else None
+    if om is not None and om >= 1440:
+        recs.append(f"Open for {_minutes_text(om)} with no sign of clearing: decide whether this level is the new normal "
+                    f"(then adjust the limit under Settings > Metric thresholds) or an unresolved fault.")
+    rec30 = facts.get("recurrences_30d") or 0
+    if rec30 >= 10:
+        recs.append(f"This alert has fired {rec30} other times in 30 days. If this level is normal for the workload, "
+                    f"raise the limit or mark the repeats as not genuine so auto-tuning can learn it; if it is not "
+                    f"normal, find what keeps driving it.")
     if facts.get("is_likely_flapping"):
-        lines.append("- Consider widening this metric's threshold -- this alert shows signs of flapping on normal variance.")
+        recs.append("Consider widening this metric's threshold - this alert shows signs of flapping on normal variance.")
+    names = facts.get("dependents") or []
+    n_dep = facts.get("dependent_count") or len(names)
+    if n_dep and names:
+        recs.append(f"Check the dependent {'resource' if n_dep == 1 else 'resources'} for impact: {', '.join(names)}"
+                    + (f" and {n_dep - len(names)} more." if n_dep > len(names) else "."))
     if facts.get("related_alert_count"):
-        lines.append("- This alert was part of a wider correlated incident -- review related alerts for a shared root cause.")
-    if not facts.get("resolved_at"):
-        lines.append("- This alert is still active -- prioritize resolution before drawing final conclusions.")
-    if len(lines) == 6:  # no bullets were added above
-        lines.append("- No specific recommendation could be derived automatically from the signals gathered for this alert.")
-    lines.append("- See References below for AWS's own documentation on this metric and how to investigate it further.")
+        recs.append("This alert was part of a wider correlated incident - review related alerts for a shared root cause.")
+    guidance = _metric_guidance(facts.get("metric_name"))
+    if guidance:
+        recs.append(guidance)
+    if not recs:
+        recs.append("No specific recommendation could be derived automatically from the signals gathered for this alert.")
+    return recs
+
+
+def _fallback_narrative(facts: dict) -> str:
+    """Deterministic Executive Summary + Recommendations, used when the LLM is disabled or its call fails (see the module
+    docstring). Every sentence is assembled from a fact already in `facts`; nothing is invented. Structured as short
+    labelled paragraphs (What happened / Pattern / Impact / Probable cause) so it can be scanned, not read as one block."""
+    paras = _build_summary_paragraphs(facts)
+    if not facts.get("metric_name") and facts.get("template_summary"):
+        paras = [facts["template_summary"]]                          # only reachable with stripped-down facts
+    lines = ["## Executive Summary", ""]
+    for p in paras:
+        lines += [p, ""]
+    lines += ["## Recommendations", ""]
+    lines += [f"- {r}" for r in _build_recommendations(facts)]
     return "\n".join(lines)
 
 
@@ -289,28 +523,75 @@ def generate_rca_report(alert_id: int) -> dict:
             "narrative_source": "template", "narrative_pending": False}
 
 
+def report_title(report: dict) -> str:
+    """Short, human title: 'Volume Read Operations above its limit'."""
+    f = report["facts"]
+    label = f.get("metric_label") or metric_label(f.get("metric_name"))
+    d = f.get("threshold_delta_pct")
+    tail = "alert" if d is None else ("above its limit" if d >= 0 else "below its limit")
+    return f"{label} {tail}"
+
+
+def report_kpis(report: dict) -> list:
+    """Four headline figures for the PDF's key-figures strip: [{label, value, note, tone}]."""
+    f = report["facts"]
+    d = f.get("threshold_delta_pct")
+    active = _is_active(f)
+    om = _open_minutes(f)
+    return [
+        {"label": "READING", "value": _reading(f, "current_value"), "note": f.get("metric_label") or "", "tone": "ink"},
+        {"label": "ALERT LIMIT", "value": _reading(f, "threshold"), "note": "limit that was crossed", "tone": "ink"},
+        {"label": "OVER LIMIT BY" if (d is None or d >= 0) else "UNDER LIMIT BY",
+         "value": "n/a" if d is None else f"{abs(d):g}%",
+         "note": "above the limit" if (d is None or d >= 0) else "below the limit", "tone": "severity"},
+        {"label": "OPEN FOR" if active else "DURATION",
+         "value": _minutes_text(om) if om is not None else "n/a",
+         "note": "still active" if active else "resolved", "tone": "ink"},
+    ]
+
+
 def render_markdown(report: dict) -> str:
     f = report["facts"]
-    duration = f"{f['duration_minutes']} minutes" if f["duration_minutes"] is not None else "still active"
-    lines = [
-        f"# RCA Report: {f['metric_name']} on {f['resource_name'] or f['resource_id']}",
-        "",
-        f"- **Account:** {f['account_name']}",
-        f"- **Resource:** {f['resource_name'] or f['resource_id']} ({f['resource_type']})",
-        f"- **Severity:** {f['severity']}",
-        f"- **Status:** {f['status']}",
-        f"- **Triggered:** {f['triggered_at']}",
-        f"- **Duration:** {duration}",
-        f"- **Current Value / Threshold:** {f['current_value']} / {f['threshold']}",
-        f"- **RCA confidence:** {f['confidence']}",
-        "",
+    label = f.get("metric_label") or metric_label(f.get("metric_name"))
+    rid = f["resource_id"]
+    name = f.get("resource_name") or rid
+    active = _is_active(f)
+    om = _open_minutes(f)
+    status = (f"Active, open for {_minutes_text(om)}" if om is not None else "Active") if active \
+        else f"Resolved after {_minutes_text(f.get('duration_minutes'))}"
+    over = _over_text(f)
+    rows = [
+        ("Alert", f"#{f['alert_id']}"),
+        ("Account", f.get("account_name")),
+        ("Resource", f"{name} ({_type_label(f.get('resource_type'))})"),
     ]
+    if name != rid:
+        rows.append(("Resource ID", rid))
+    if f.get("region"):
+        rows.append(("Region", f["region"]))
+    env = str(f.get("environment") or "")
+    if env and env.lower() not in ("unknown", "none"):
+        rows.append(("Environment", env.upper() if len(env) <= 4 else env.title()))
+    rows += [
+        ("Severity", str(f.get("severity") or "").title()),
+        ("Status", status),
+        ("Triggered", _fmt_utc(f.get("triggered_at"))),
+        ("Reading vs limit", f"{_reading(f, 'current_value')} against a limit of {_reading(f, 'threshold')}"
+                             + (f" ({over})" if over else "")),
+    ]
+    conf = str(f.get("confidence") or "").title()
+    reason = f.get("confidence_reason")
+    rows.append(("RCA confidence", f"{conf}. {reason}" if conf and reason else (conf or "-")))
+    rows.append(("Report generated", datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M:%S") + " UTC"))
+
+    lines = [f"# RCA Report: {label} on {name}", ""]
+    lines += [f"- **{k}:** {v}" for k, v in rows]
+    lines.append("")
     if report.get("narrative_pending"):
-        # Plain text on purpose: the PDF renderer prints any line it does not recognise
-        # literally, so markdown emphasis here showed up as stray asterisks (2026-10-03).
-        lines += ["Note: an AI-written Executive Summary and Recommendations are being generated "
-                  "for this alert. The summary below is the standard template version; download "
-                  "this report again in a couple of minutes for the AI-written one.", ""]
+        # Plain text on purpose: the PDF renderer prints any line it does not recognise literally, so markdown
+        # emphasis here showed up as stray asterisks (2026-10-03).
+        lines += ["Note: an AI-written summary is being generated for this alert. This copy shows the standard "
+                  "rule-based summary; download the report again in a couple of minutes for the AI-written version.", ""]
     lines += [
         report["narrative_markdown"],
         "",
@@ -318,13 +599,14 @@ def render_markdown(report: dict) -> str:
         "",
     ]
     for event in f["timeline"]:
-        lines.append(f"- **{event['time']}** \u2014 {event['event']}")
+        lines.append(f"- **{_fmt_utc(event['time'])}** \u2014 {event['event']}")
     if f.get("references"):
         lines += ["", "## References", ""]
         for ref in f["references"]:
             lines.append(f"- [{ref['title']}]({ref['url']})")
+    source = "AI-written" if report.get("narrative_source") == "llm" else "rule-based"
     lines += [
         "",
-        f"*Generated automatically ({report['narrative_source']} narrative) by AurionPro CloudOps -- verify before external distribution.*",
+        f"*Generated automatically by AurionPro CloudOps ({source} summary). Verify before external distribution.*",
     ]
     return "\n".join(lines)

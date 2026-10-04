@@ -13,6 +13,7 @@ import ResourceEvidence from "./ResourceEvidence";
 import { tsMs, ageText, lifecycle } from "../utils/evidence";
 import { metricLabel, formatMetricValue } from "../utils/metricLabels";
 import "./AlertInvestigation.css";
+import { plural } from "../utils/plural";
 
 const SEV_TONE = { CRITICAL: "crit", WARNING: "warn", INFO: "info" };
 
@@ -121,7 +122,7 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
             <h3>2 · Incident</h3>
             {inc === undefined ? <p className="ai-dim">Checking correlated incidents…</p>
               : inc === null ? <p className="ai-dim">Incidents are not available for your role.</p>
-              : inc.length === 0 ? <p className="ai-dim">Not part of a correlated incident{ex?.related_alert_count ? `, but ${ex.related_alert_count} other alert(s) are active alongside it` : ""}.</p>
+              : inc.length === 0 ? <p className="ai-dim">Not part of a correlated incident{ex?.related_alert_count ? `, but ${plural(ex.related_alert_count, "other alert")} ${ex.related_alert_count === 1 ? "is" : "are"} active alongside it` : ""}.</p>
               : inc.map(i => (
                 <button key={i.id} className="ai-inc" onClick={() => navigate(`/accounts/${a.account_id}/incidents`)}>
                   <Badge tone={SEV_TONE[String(i.severity).toUpperCase()] || "mute"}>{String(i.severity).toLowerCase()}</Badge>
@@ -149,7 +150,7 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
                   {ex.trend?.description && !String(ex.summary || "").toLowerCase().includes(String(ex.trend.description).toLowerCase().replace(/[.\s]+$/, "")) && <><dt>Behaviour</dt><dd>{ex.trend.description}</dd></>}      {/* the summary often already says it */}
                   {ex.probable_trigger && <><dt>Possible trigger</dt><dd><code>{ex.probable_trigger.event_name}</code> by {ex.probable_trigger.username || "unknown"}{ex.probable_trigger.event_time ? ` · ${fmt(ex.probable_trigger.event_time)}` : ""} <span className="ai-dim">(probable, not confirmed)</span></dd></>}
                   {ex.recent_deployment && <><dt>Recent deployment</dt><dd>{ex.recent_deployment.message || ex.recent_deployment.event_type || "Deployment event recorded shortly before"}</dd></>}
-                  {ex.related_alert_count > 0 && <><dt>Related</dt><dd>{ex.related_alert_count} other alert(s) active alongside</dd></>}
+                  {ex.related_alert_count > 0 && <><dt>Related</dt><dd>{plural(ex.related_alert_count, "other alert")} active alongside</dd></>}
                 </dl>
               </>
             )}

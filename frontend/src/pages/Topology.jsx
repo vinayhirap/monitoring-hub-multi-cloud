@@ -173,7 +173,7 @@ import "./Topology.css";
 const LAYERS = [
   {
     key: "network", label: "Network & Perimeter", icon: GlobeIcon, accent: "#3b82f6",
-    blurb: "Edge, DNS, gateways & traffic filtering -- every request crosses this first.",
+    blurb: "Edge, DNS, gateways & traffic filtering — every request crosses this first.",
     types: [
       // aws
       "elb", "alb", "nlb", "cloudfront", "apigateway", "route53",
@@ -195,7 +195,7 @@ const LAYERS = [
     // catalog key maps here today (GCP's catalog has no dedicated
     // KMS/Secret Manager entry), which is reality, not an omission.
     key: "security", label: "Security & Identity", icon: ShieldIcon, accent: "#ef4444",
-    blurb: "Keys, certificates & identity -- governs what every layer to the right can do.",
+    blurb: "Keys, certificates & identity — governs what every layer to the right can do.",
     types: ["kms", "certificatemanager", "cognito", "key_vault"],
   },
   {
@@ -212,7 +212,7 @@ const LAYERS = [
   },
   {
     key: "data", label: "Data & Storage", icon: DatabaseIcon, accent: "#10b981",
-    blurb: "Databases, object storage & block storage -- state that outlives a single request.",
+    blurb: "Databases, object storage & block storage — state that outlives a single request.",
     types: [
       // aws
       "ebs", "rds", "s3", "dynamodb", "elasticache", "efs", "redshift",
@@ -226,7 +226,7 @@ const LAYERS = [
   },
   {
     key: "messaging", label: "Messaging & Eventing", icon: MailIcon, accent: "#f59e0b",
-    blurb: "Queues, topics & event buses -- how compute talks to compute asynchronously.",
+    blurb: "Queues, topics & event buses — how compute talks to compute asynchronously.",
     types: [
       // aws
       "sqs", "sns", "kinesis", "firehose", "msk", "events",
@@ -245,7 +245,7 @@ const LAYERS = [
     // would misrepresent them as a downstream processing step instead
     // of an out-of-band concern.
     key: "governance", label: "Governance & Observability", icon: ClipboardIcon, accent: "#64748b",
-    blurb: "Backup, logs & data orchestration -- operates across every layer, not inside the request path.",
+    blurb: "Backup, logs & data orchestration — operates across every layer, not inside the request path.",
     types: [
       // aws
       "backup", "logs",
@@ -381,7 +381,7 @@ function PerimeterBoundary({ columns, height }) {
     <div
       className="topo-perimeter"
       style={{ left, width, height: height - 20, top: 10 }}
-      title="Network & security infrastructure -- foundational to every resource inside it, even without a discovered edge to each one"
+      title="Network & security infrastructure — foundational to every resource inside it, even without a discovered edge to each one"
     />
   );
 }

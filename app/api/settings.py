@@ -334,7 +334,8 @@ def upsert_threshold(payload: dict = Body(...), current_user: dict = Depends(req
         new_id = cur.lastrowid
 
     _write_audit(current_user["username"], "Threshold updated",
-                 f"account={account_id} metric_id={metric_id} warn={warning_value} crit={critical_value}",
+                 f"{account_label(account_id)}: {metric_name_label(metric_id)} set to warning {warning_value}, "
+                 f"critical {critical_value}",
                  role=current_user["role"].upper())
     return {"status": "saved", "id": new_id}
 
@@ -513,7 +514,8 @@ def apply_recommended_defaults(
         result = upgrade_placeholders(cur, account_id, dry_run=dry_run)
     if not dry_run:
         _write_audit(current_user["username"], "Recommended thresholds applied",
-                     f"account {account_id}: {result['applied']} metric threshold(s) set from defaults",
+                     f"{account_label(account_id)}: recommended defaults applied to {result['applied']} "
+                     f"metric {plural(result['applied'], 'threshold')}",
                      role=(current_user.get("role") or "").upper())
     return result
 
@@ -585,3 +587,4 @@ def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(re
 
 
 from app.audit import write_audit as _write_audit
+from app.account_names import account_label, metric_name_label, plural

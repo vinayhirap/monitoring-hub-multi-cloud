@@ -616,9 +616,19 @@ def get_rca_report(
             headers={"Content-Disposition": f'attachment; filename="{title}.md"'},
         )
 
+    from app.llm.rca_report import report_title, report_kpis
     from app.llm.rca_report_pdf import render_pdf
-    pdf_title = f"RCA Report: {report['facts']['metric_name']} on {report['facts']['resource_name'] or report['facts']['resource_id']}"
-    pdf_bytes = render_pdf(markdown_text, pdf_title, severity=report["facts"]["severity"])
+    f = report["facts"]
+    bits = [f.get("resource_name") or f.get("resource_id"), f.get("account_name"), f.get("region")]
+    pdf_bytes = render_pdf(
+        markdown_text,
+        report_title(report),
+        severity=f["severity"],
+        subtitle="  \u00b7  ".join(str(b) for b in bits if b),
+        status="Resolved" if f.get("resolved_at") or str(f.get("status")).lower() == "resolved" else str(f.get("status") or "").title(),
+        kpis=report_kpis(report),
+        alert_ref=f"Alert #{f['alert_id']}",
+    )
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

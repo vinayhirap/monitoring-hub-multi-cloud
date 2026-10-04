@@ -18,6 +18,7 @@ import {
   XIcon, ZapIcon,
 } from "../components/icons";
 import { redirectToSignIn } from "../utils/loginFlow";
+import { plural } from "../utils/plural";
 
 const BASE = "";
 
@@ -291,7 +292,7 @@ export default function Settings() {
       if (!res.ok) throw new Error(`${res.status}`);
       const d = await res.json().catch(() => ({}));
       setCheckResult(null);
-      alert(`${d.count ?? 0} alert(s) closed.`);
+      alert(`${plural(d.count ?? 0, "alert")} closed.`);
     } catch (e) {
       alert("Clear failed: " + e.message);
     }

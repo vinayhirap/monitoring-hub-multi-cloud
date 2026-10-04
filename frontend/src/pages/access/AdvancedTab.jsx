@@ -16,6 +16,7 @@ import { useAuth } from "../../auth/AuthContext";
 import * as api from "../../api/access";
 import { PlusIcon } from "../../components/icons";
 import { Badge, Modal, ConfirmDialog, Field, Banner, Empty, SkeletonRows, KebabMenu, useToast, useAsync, fmtDate, expiryLabel } from "./ui";
+import { plural } from "../../utils/plural";
 
 const toIsoEnd = (d) => (d ? new Date(`${d}T23:59:59`).toISOString() : undefined);
 const tomorrow = () => new Date(Date.now() + 86400000).toISOString().slice(0, 10);
@@ -80,7 +81,7 @@ function Scopes({ canManage, accounts }) {
                   {" · "}{s.binding_count} binding{s.binding_count === 1 ? "" : "s"}{s.override_count ? `, ${s.override_count} override${s.override_count === 1 ? "" : "s"}` : ""}</div></span>
               {canManage && !s.is_system && <button className="ac-link danger" onClick={() => setConfirm({
                 title: `Delete scope "${s.label}"?`, confirmLabel: "Delete scope", danger: true,
-                body: <p>{s.binding_count ? `${s.binding_count} binding(s) use this scope; revoke them first.` : "No binding uses this scope."}</p>,
+                body: <p>{s.binding_count ? `${plural(s.binding_count, "binding")} ${s.binding_count === 1 ? "uses" : "use"} this scope; revoke ${s.binding_count === 1 ? "it" : "them"} first.` : "No binding uses this scope."}</p>,
                 run: async () => { await api.deleteScope(s.id); toast("Scope deleted"); scopes.reload(); },
               })}>Delete</button>}
             </li>

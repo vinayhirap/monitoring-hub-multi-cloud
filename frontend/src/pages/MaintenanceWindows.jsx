@@ -70,7 +70,7 @@ export default function MaintenanceWindows() {
       <div className="c-header">
         <div>
           <h1>Maintenance <span className="hl">Windows</span></h1>
-          <p className="sub">Silence a resource (and everything that depends on it) for planned work -- alerts still record, but no page or email fires while a window is active</p>
+          <p className="sub">Silence a resource (and everything that depends on it) for planned work — alerts still record, but no page or email fires while a window is active</p>
         </div>
       </div>
 

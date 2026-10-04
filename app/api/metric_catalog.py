@@ -57,6 +57,7 @@ def _ser(obj):
 
 
 from app.audit import write_audit as _write_audit
+from app.account_names import account_label, plural
 # NOTE: previously a local copy hardcoding role="ADMIN" as the default.
 # The single call site below that didn't pass role explicitly
 # ("Applied default metric template") also hardcoded the actor as the
@@ -209,7 +210,8 @@ def enable_metrics_for_services(account_id: int, service_keys: set, provider: st
 
     if added:
         _write_audit("system", "Auto-detected services enabled",
-                      f"account={account_id} services={sorted(service_keys)} new_metrics={added}")
+                      f"{account_label(account_id)}: enabled {added} new {plural(added, 'metric')} for "
+                      f"{', '.join(sorted(service_keys))}")
 
     return {"added": added, "services": sorted(service_keys)}
 
@@ -451,7 +453,8 @@ def _set_account_metrics_internal(account_id: int, payload: dict, actor: str = "
         _sync_thresholds_for_selection(cur, account_id, to_add | to_enable, to_remove)
 
     _write_audit(actor, "Account metric selection updated",
-                 f"account={account_id} enabled={len(enabled_ids)} added={len(to_add)} removed={len(to_remove)}",
+                 f"{account_label(account_id)}: {len(enabled_ids)} metrics enabled "
+                 f"({len(to_add)} added, {len(to_remove)} removed)",
                  role=actor_role)
     return {"status": "saved", "enabled_count": len(enabled_ids)}
 
@@ -496,7 +499,7 @@ def apply_default_template(account_id: int, current_user: dict = Depends(require
         _sync_thresholds_for_selection(cur, account_id, default_ids, currently_enabled - default_ids)
 
     _write_audit(current_user["username"], "Applied default metric template",
-                 f"account={account_id} provider={provider}",
+                 f"{account_label(account_id)}: default {provider} metric template applied",
                  role=current_user["role"].upper())
     return {"status": "applied", "default_metric_count": count, "provider": provider}
 
@@ -698,7 +701,8 @@ def discover_namespace_metrics(account_id: int, namespace: str = Query(...), reg
             """, (service_key, namespace, display_service, metric_name, provider))
 
     _write_audit(current_user["username"], "Discovered namespace metrics",
-                 f"account={account_id} provider={provider} namespace={namespace} count={len(seen)}",
+                 f"{account_label(account_id)}: discovered {len(seen)} {provider} {plural(len(seen), 'metric')} "
+                 f"in namespace {namespace}",
                  role=current_user["role"].upper())
     return {"namespace": namespace, "discovered": len(seen), "metrics": sorted(seen)}
 

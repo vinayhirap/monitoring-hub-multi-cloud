@@ -14,6 +14,12 @@ import "./overview/dash.css";
 import { useTimezone } from "../contexts/TimezoneContext";
 import { getCached, setCached } from "../utils/dataCache";
 
+const EMPTY_FILTER_TEXT = {
+  Healthy:  "No accounts are fully healthy right now.",
+  Warning:  "No accounts have warnings right now.",
+  Critical: "No accounts are in a critical state right now.",
+};
+
 /** Group flat account rows by account_id */
 function groupByAccount(accounts) {
   const map = new Map();
@@ -273,7 +279,7 @@ export default function Overview() {
         <h2 style={{ fontSize: 17, fontWeight: 700 }}>
           Accounts
           <span style={{ fontWeight: 400, fontSize: 13, color: "var(--text-muted)", marginLeft: 8 }}>
-            ({filteredGroups.length})
+            ({filter === "All" ? filteredGroups.length : `${filteredGroups.length} of ${grouped.length}`})
           </span>
           {canManage && <Link to="/settings#accounts" className="ov-link" style={{ fontSize: 12, fontWeight: 600, marginLeft: 14 }}>Manage accounts &amp; regions →</Link>}
         </h2>
@@ -299,6 +305,13 @@ export default function Overview() {
         <div className="ov-empty">
           Couldn't reach the server just now — showing the last known state.{" "}
           <span className="ov-link" onClick={loadAll}>Retry →</span>
+        </div>
+      ) : filteredGroups.length === 0 && grouped.length > 0 ? (
+        // Accounts exist, the FILTER matches none of them. This used to say "No accounts found. Onboard an account",
+        // which is wrong: nothing is missing, nothing is critical.
+        <div className="ov-empty">
+          {EMPTY_FILTER_TEXT[filter] || "No accounts match this filter."}{" "}
+          <span className="ov-link" onClick={() => setFilter("All")}>Show all accounts →</span>
         </div>
       ) : filteredGroups.length === 0 ? (
         <div className="ov-empty">

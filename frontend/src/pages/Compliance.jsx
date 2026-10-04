@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect, useCallback } from "react";
-import { getAuditLogs } from "../api/api";
+import { getAuditLogs, getLiveAccounts } from "../api/api";
+import { humanizePayload } from "../utils/auditText";
 import { useAuth } from "../auth/AuthContext";
 import "./Compliance.css";
 import { useTimezone } from "../contexts/TimezoneContext";
@@ -104,7 +105,10 @@ export default function Compliance() {
   const loadLogs = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getAuditLogs(200);
+      // Account names, so rows that say "account 10" read as the account (older rows store the id as text).
+      const [data, accounts] = await Promise.all([getAuditLogs(200), getLiveAccounts().catch(() => [])]);
+      const nameById = {};
+      (Array.isArray(accounts) ? accounts : []).forEach(a => { if (a && a.id != null && a.account_name) nameById[a.id] = a.account_name; });
       if (Array.isArray(data)) {
         setLogs(data.map(l => {
           const payload = typeof l.payload === "string"
@@ -119,12 +123,12 @@ export default function Compliance() {
             ...l,
             action:  l.action  ?? payload?.action ?? "System action",
             actor:   l.actor   ?? payload?.actor  ?? "System",
-            payload: (l.ip_address || l.user_agent || l.request_id)
+            payload: humanizePayload((l.ip_address || l.user_agent || l.request_id)
               ? { ...payload,
                   ...(l.ip_address ? { ip_address: l.ip_address } : {}),
                   ...(l.user_agent ? { user_agent: l.user_agent } : {}),
                   ...(l.request_id ? { request_id: l.request_id } : {}) }
-              : payload,
+              : payload, nameById),
           };
         }));
         setLastFetch(new Date());

@@ -13,6 +13,10 @@ import time
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+# rca_report.py imports app.metric_labels (a real module). Import the real package first so the stubs the tests install
+# for app.db / app.llm.* do not turn `app` into a path-less namespace (same idiom as the audit tests).
+import app  # noqa: E402,F401
+import app.metric_labels  # noqa: E402,F401
 from conftest import load_module, install_stub, FakeConn, FakeCursor, contains  # noqa: E402
 
 FACTS = {"metric_name": "CPUUtilization", "resource_id": "i-0abc1234", "current_value": 91.3,

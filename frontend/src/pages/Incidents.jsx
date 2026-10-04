@@ -17,6 +17,7 @@ import { useTimezone } from "../contexts/TimezoneContext";
 import { RotateCcwIcon, AlertOctagonIcon, AlertTriangleIcon } from "../components/icons";
 import "./Incidents.css";
 import { formatStamp, formatShort, formatDay, zoneLabel } from "../utils/timeFormat";
+import { plural } from "../utils/plural";
 
 function SeverityBadge({ sev }) {
   const cls = sev === "CRITICAL" ? "inc-sev inc-sev-critical" : "inc-sev inc-sev-warning";
@@ -56,7 +57,7 @@ function IncidentRow({ incident, ianaName, accountId }) {
             <span className="inc-title">{incident.title}</span>
             <SeverityBadge sev={incident.severity} />
             <StatusBadge status={incident.status} />
-            <span className="inc-alert-count">{incident.alert_count} alert(s)</span>
+            <span className="inc-alert-count">{plural(incident.alert_count, "alert")}</span>
           </div>
           {incident.probable_cause && (
             <div className="inc-cause">{incident.probable_cause}</div>

@@ -110,7 +110,7 @@ export default function SecurityFindings() {
       <div className="c-header">
         <div>
           <h1>Security <span className="hl">Findings</span></h1>
-          <p className="sub">Public buckets, security groups open to the internet, unencrypted volumes, and IAM hygiene -- checked hourly across every onboarded account</p>
+          <p className="sub">Public buckets, security groups open to the internet, unencrypted volumes, and IAM hygiene, checked hourly across every onboarded account</p>
         </div>
         <div className="sec-summary-chip">
           <ShieldIcon size={16} />

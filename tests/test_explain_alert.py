@@ -13,7 +13,7 @@ from tests.conftest import load_module, install_stub, FakeCursor, FakeConn
 
 def _install_stub(alert_row, in_degree=0, cloud_events=None, config_changes=None,
                    trend_points=None, related=None, flapping_threshold=None, flapping_baseline=None,
-                   recurrences=0):
+                   recurrences=0, dependent_names=None):
     cloud_events = cloud_events or []
     config_changes = config_changes or []
     trend_points = trend_points if trend_points is not None else []
@@ -48,6 +48,9 @@ def _install_stub(alert_row, in_degree=0, cloud_events=None, config_changes=None
                 # _gather_deployment_signal()'s op_events lookup -- no
                 # recent deployment in these tests' windows.
                 self._pending = []
+            elif normalized.startswith("SELECT DISTINCT COALESCE(r.name, rel.source_resource_id)"):
+                # explain_alert()'s dependent-names lookup (only runs when something depends on the resource)
+                self._pending = [{"name": n} for n in (dependent_names or [])]
             elif normalized.startswith("SELECT COUNT(*) AS recurrences"):
                 # explain_alert()'s recurrence count (audit H1) - none unless a test says otherwise.
                 self._pending = [{"recurrences": recurrences}]
@@ -149,7 +152,7 @@ def test_explain_alert_high_confidence_with_cloud_event_and_dependents():
     assert result["confidence"] == "high"  # 2 signals: cloud event + in_degree
     assert "AuthorizeSecurityGroupIngress" in result["summary"]
     assert "vinay.hirap" in result["summary"]
-    assert "4 other resource(s)" in result["summary"]
+    assert "4 other resources rely on this one" in result["summary"]
     assert result["probable_trigger"]["event_name"] == "AuthorizeSecurityGroupIngress"
     # Plain-language check: no internal jargon like "topology in-degree"
     # or "incident" leaking into the customer-facing summary text.
@@ -164,7 +167,7 @@ def test_explain_alert_mentions_related_alerts_without_saying_incident():
     result = mod.explain_alert(42)
 
     assert result["related_alert_count"] == 2
-    assert "2 related alert(s)" in result["summary"]
+    assert "2 related alerts" in result["summary"]
     assert "incident" not in result["summary"].lower()
 
 
@@ -363,7 +366,7 @@ def test_confidence_reason_lists_the_signals_behind_the_level():
     mod = load_module("app/collector/rca.py")
     out = mod.explain_alert(42)
     assert out["confidence"] == "high"
-    assert "2 supporting signal(s)" in out["confidence_reason"] and "dependent resources" in out["confidence_reason"]
+    assert "2 supporting signals" in out["confidence_reason"] and "dependent resources" in out["confidence_reason"]
 
 
 # -- both features together: a long-running disk alert (H1 + capacity forecast) ---
@@ -381,3 +384,38 @@ def test_persistent_disk_alert_gets_duration_then_trend_then_days_to_full():
     assert s.index("breaching for 10 days") < s.index("reach 100%")          # how long first, how soon next
     assert "isolated fluctuation" not in s
     assert out["capacity_forecast"]["days_to_exhaustion"] == 6.2 and out["open_minutes"] == 14400
+
+
+# ── Audit of the first real RCA PDF: sentence fragment, plurals, named dependents ─────
+
+def test_recurrence_sentence_has_its_own_subject_when_it_comes_first():
+    """The first real report opened with 'It has also triggered 108 other times...' - an 'It' with nothing before it."""
+    _install_stub(_base_alert(status="active", open_minutes=3), recurrences=108)
+    mod = load_module("app/collector/rca.py")
+    s = mod.explain_alert(42)["summary"]
+    assert s.startswith("This alert has triggered 108 other times in the last 30 days.")
+    assert "It has also" not in s
+
+
+def test_recurrence_after_a_duration_sentence_still_reads_as_a_continuation():
+    _install_stub(_base_alert(status="active", open_minutes=14400), recurrences=5)
+    mod = load_module("app/collector/rca.py")
+    s = mod.explain_alert(42)["summary"]
+    assert "breaching for 10 days" in s and "It has also triggered 5 other times" in s
+
+
+def test_dependents_are_named_with_correct_singular_and_plural_grammar():
+    _install_stub(_base_alert(), in_degree=1, dependent_names=["U4RAD-PROD-APP"])
+    mod = load_module("app/collector/rca.py")
+    out = mod.explain_alert(42)
+    assert "1 other resource relies on this one (U4RAD-PROD-APP)" in out["summary"]
+    assert out["dependents"] == ["U4RAD-PROD-APP"] and "resource(s)" not in out["summary"]
+
+    _install_stub(_base_alert(), in_degree=5, dependent_names=["web-1", "web-2", "db-1"])
+    out = load_module("app/collector/rca.py").explain_alert(42)
+    assert "5 other resources rely on this one (web-1, web-2, db-1 and 2 more)" in out["summary"]
+
+
+def test_related_alert_plural_and_singular():
+    _install_stub(_base_alert(), related={"incident_id": 1, "other_count": 1})
+    assert "alongside 1 related alert around" in load_module("app/collector/rca.py").explain_alert(42)["summary"]

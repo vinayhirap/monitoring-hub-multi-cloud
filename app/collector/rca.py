@@ -242,7 +242,7 @@ def _trend_context(cursor, resource_id, metric_name, breach_time, aws_account_id
         return {
             "pattern": "sudden_spike",
             "description": (
-                f"This jumped sharply in the last {TREND_RECENT_WINDOW_MINUTES} minutes before the "
+                f"The reading jumped sharply in the last {TREND_RECENT_WINDOW_MINUTES} minutes before the "
                 f"alert, rather than building up gradually."
             ),
         }
@@ -250,11 +250,11 @@ def _trend_context(cursor, resource_id, metric_name, breach_time, aws_account_id
         direction = "climbing" if whole_slope > 0 else "declining"
         return {
             "pattern": "gradual_trend",
-            "description": f"This had been steadily {direction} over the last {TREND_LOOKBACK_HOURS} hours before the alert.",
+            "description": f"The reading had been steadily {direction} over the last {TREND_LOOKBACK_HOURS} hours before the alert.",
         }
     return {
         "pattern": "flat_then_breach",
-        "description": "This was stable beforehand and then crossed the threshold without a clear build-up.",
+        "description": "The reading was stable beforehand and then crossed its limit without a clear build-up.",
     }
 
 
@@ -410,7 +410,7 @@ def rank_probable_cause(incident_id: int):
         if recent_deployment:
             reason_parts.append(
                 f"A deployment was made shortly before this incident started "
-                f"({recent_deployment['message']}) -- this is the most likely trigger, "
+                f"({recent_deployment['message']}) \u2014 this is the most likely trigger, "
                 f"though not confirmed."
             )
         if in_degree:
@@ -423,7 +423,7 @@ def rank_probable_cause(incident_id: int):
             )
         if config_changes:
             reason_parts.append(
-                "A monitoring-hub config change was also made in this window -- "
+                "A monitoring-hub config change was also made in this window \u2014 "
                 "worth checking whether this is a real incident or a threshold/config edit."
             )
 
@@ -446,6 +446,40 @@ def rank_probable_cause(incident_id: int):
     finally:
         cursor.close()
         conn.close()
+
+
+def _plural(n, singular, plural=None):
+    return singular if n == 1 else (plural or singular + "s")
+
+
+def _join_names(names, total):
+    """['a','b'] -> 'a and b'; 3 shown of 5 -> 'a, b, c and 2 more'."""
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    extra = max(0, total - len(names))
+    if extra:
+        return ", ".join(names) + f" and {extra} more"
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _dependent_names(cursor, resource_id, aws_account_id=None, limit=3):
+    """Names of up to `limit` resources that depend on this one (best effort: never raises, [] on any problem)."""
+    try:
+        acct = " AND rel.aws_account_id = %s" if aws_account_id is not None else ""
+        cursor.execute(f"""
+            SELECT DISTINCT COALESCE(r.name, rel.source_resource_id) AS name
+            FROM resource_relationships rel
+            LEFT JOIN resources r ON r.resource_id = rel.source_resource_id
+                                 AND r.aws_account_id = rel.aws_account_id
+            WHERE rel.target_resource_id = %s{acct}
+            ORDER BY name
+            LIMIT {int(limit)}
+        """, (resource_id,) + ((aws_account_id,) if aws_account_id is not None else ()))
+        return [row["name"] for row in cursor.fetchall() if row.get("name")]
+    except Exception as e:
+        logger.warning(f"[rca] dependent names skipped for {resource_id}: {e}")
+        return []
 
 
 def persistence_phrase(open_minutes):
@@ -486,7 +520,10 @@ def persistence_sentence(open_minutes, status, recurrences):
     except (TypeError, ValueError):
         n = 0
     if n >= 3:
-        parts.append(f"It has also triggered {n} other time{'s' if n != 1 else ''} in the last 30 days.")
+        # "It has also..." only reads correctly after a sentence about the same alert; on its own (found in the first
+        # real PDF: the summary opened with "It has also triggered 108 other times") it needs its own subject.
+        lead = "It has also" if parts else "This alert has"
+        parts.append(f"{lead} triggered {n} other time{'s' if n != 1 else ''} in the last 30 days.")
     return " ".join(parts)
 
 
@@ -521,6 +558,7 @@ def explain_alert(alert_id: int):
                                aws_account_id=account_id)
         is_flapping = _check_flapping(cursor, alert["aws_account_id"], resource_id, alert["metric_name"])
         capacity_forecast = _capacity_forecast(account_id, resource_id, alert["metric_name"])
+        dependents = _dependent_names(cursor, resource_id, account_id) if in_degree else []
 
         # How often this exact condition has fired before (audit H1) - same account, resource and metric.
         cursor.execute("""
@@ -563,7 +601,7 @@ def explain_alert(alert_id: int):
             ("recent AWS change", bool(cloud_events)), ("monitoring config change", bool(config_changes)),
             ("dependent resources", in_degree > 0), ("related alerts", related is not None),
             ("recent deployment", recent_deployment is not None)) if present]
-        confidence_reason = (f"{len(signals)} supporting signal(s): {', '.join(signals)}." if signals
+        confidence_reason = (f"{len(signals)} supporting {_plural(len(signals), 'signal')}: {', '.join(signals)}." if signals
                              else "No corroborating signal (AWS change, deployment, dependents or related alerts) was found.")
 
         summary_parts = []
@@ -605,12 +643,15 @@ def explain_alert(alert_id: int):
         if capacity_forecast:
             summary_parts.append(_forecast_sentence(capacity_forecast))
         if in_degree:
+            who = _join_names(dependents, in_degree)
             summary_parts.append(
-                f"{in_degree} other resource(s) rely on this one, so the impact may be wider than this single alert."
+                f"{in_degree} other {_plural(in_degree, 'resource relies', 'resources rely')} on this one"
+                f"{f' ({who})' if who else ''}, so the impact may be wider than this single alert."
             )
         if related:
+            n_rel = related["other_count"]
             summary_parts.append(
-                f"This is happening alongside {related['other_count']} related alert(s) around the "
+                f"This is happening alongside {n_rel} related {_plural(n_rel, 'alert')} around the "
                 f"same time \u2014 likely part of the same underlying issue."
             )
         if config_changes:
@@ -677,6 +718,7 @@ def explain_alert(alert_id: int):
             "confidence_reason": confidence_reason,     # audit H1: why this confidence level
             "open_minutes": int(open_minutes) if open_minutes is not None else None,
             "recurrences_30d": recurrences,
+            "persistence": persistence,                 # bucketed wording, stable enough to be part of the report facts
             "summary": summary,
             "summary_source": summary_source,
             # ALWAYS the raw deterministic template text, never the
@@ -690,6 +732,8 @@ def explain_alert(alert_id: int):
             "trend": trend,
             "is_likely_flapping": is_flapping,
             "capacity_forecast": capacity_forecast,
+            "dependents": dependents,
+            "dependent_count": in_degree,
             "probable_trigger": cloud_events[0] if cloud_events else None,
             "recent_deployment": recent_deployment,
             "related_alert_count": related["other_count"] if related else 0,

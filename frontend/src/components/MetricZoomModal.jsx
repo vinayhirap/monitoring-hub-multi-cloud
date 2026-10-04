@@ -147,7 +147,7 @@ export default function MetricZoomModal({
                   onClick={() => setRangeHours(opt.hours)}
                   disabled={unreachable}
                   title={unreachable
-                    ? `Only ${formatSpan(availableSpanMs)} of data is loaded on this page right now -- ${opt.label} would show the same thing. Pick a wider range on the page itself (above the chart), then re-open this zoom.`
+                    ? `Only ${formatSpan(availableSpanMs)} of data is loaded on this page right now — ${opt.label} would show the same thing. Pick a wider range on the page itself (above the chart), then re-open this zoom.`
                     : undefined}
                 >
                   {opt.label}

@@ -4,6 +4,7 @@
 // a resource whose only alerts are stale, acknowledged or suppressed gets a
 // neutral chip instead, so "no data" never looks like "on fire" nor "fine".
 import { RedDotIcon, AlertTriangleIcon } from "./icons";
+import { plural } from "../utils/plural";
 
 const STYLES = {
   CRITICAL: { bg: "rgba(239,68,68,0.15)",  fg: "#ef4444", bd: "rgba(239,68,68,0.3)" },
@@ -34,8 +35,8 @@ export default function AlertBadge({ info }) {
       {info.worst}{n}
     </>, title);
   }
-  if (info.stale) return chip("NEUTRAL", "NO DATA", `${info.stale} alert(s) have had no fresh reading -- state unknown`);
-  if (info.acknowledged) return chip("NEUTRAL", "ACK", `${info.acknowledged} acknowledged alert(s)`);
+  if (info.stale) return chip("NEUTRAL", "NO DATA", `${info.stale} ${info.stale === 1 ? "alert has" : "alerts have"} had no fresh reading: state unknown`);
+  if (info.acknowledged) return chip("NEUTRAL", "ACK", `${plural(info.acknowledged, "acknowledged alert")}`);
   if (info.suppressed) return chip("NEUTRAL", "MUTED", `${info.suppressed} muted / in maintenance`);
   return null;
 }
