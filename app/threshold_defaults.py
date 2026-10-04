@@ -96,14 +96,14 @@ DEFAULT_THRESHOLDS = {
     'EBSWriteOps': (1000000, 5000000, '>'),
     'ErrorPortAllocation': (1, 5, '>'),
     'Errors': (1, 5, '>'),
-    'Evictions': (1000000, 5000000, '>'),
+    'Evictions': (1, 100, '>'),                       # audit F1: cache evictions mean memory pressure; any is worth a look
     'ExecutionThrottled': (1, 5, '>'),
     'ExecutionTime': (1000, 3000, '>'),
     'ExecutionsFailed': (1, 5, '>'),
     'ExecutionsSucceeded': (1000000, 5000000, '>'),
     'ExecutionsTimedOut': (1000000, 5000000, '>'),
     'FailedInvocations': (1, 5, '>'),
-    'FaultRequestCount': (1000000, 5000000, '>'),
+    'FaultRequestCount': (1, 5, '>'),                 # audit F1: DAX faults are errors
     'FirstByteLatency': (1000, 3000, '>'),
     'FreeStorageSpace': (2147483648, 536870912, '<'),
     'FreeableMemory': (536870912, 209715200, '<'),
@@ -181,7 +181,7 @@ DEFAULT_THRESHOLDS = {
     'QueryDuration': (100000, 500000, '>'),
     'ReadIOPS': (800000000, 950000000, '>'),
     'ReadLatency': (5, 15, '>'),
-    'ReadProvisionedThroughputExceeded': (1000000, 5000000, '>'),
+    'ReadProvisionedThroughputExceeded': (1, 5, '>'),   # audit F1: throttled reads are lost reads
     'ReadThrottleEvents': (1, 5, '>'),
     'RejectedConnectionCount': (1, 5, '>'),
     'ReplicaLag': (30, 60, '>'),
@@ -231,7 +231,7 @@ DEFAULT_THRESHOLDS = {
     'WLMQueueLength': (10, 30, '>'),
     'WriteIOPS': (800000000, 950000000, '>'),
     'WriteLatency': (5, 15, '>'),
-    'WriteProvisionedThroughputExceeded': (1000000, 5000000, '>'),
+    'WriteProvisionedThroughputExceeded': (1, 5, '>'),  # audit F1: throttled writes are lost writes
     'WriteThrottleEvents': (1, 5, '>'),
     'cluster_failed_node_count': (1, 3, '>'),
     'cluster_node_count': (1000000, 5000000, '>'),

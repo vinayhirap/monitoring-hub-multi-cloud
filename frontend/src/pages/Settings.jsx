@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from "react";
 import MetricSelector from "../components/MetricSelector";
 import NotificationChannels from "../components/NotificationChannels";
+import ThresholdCoverage from "../components/ThresholdCoverage";
 import AccountsRegions from "../components/AccountsRegions";
 import {
   getAccountMetrics, saveAccountMetrics,
@@ -364,6 +365,8 @@ export default function Settings() {
             )}
           </div>
         </div>
+
+        <ThresholdCoverage accountId={accountId} canConfigure={hasPermission("alerts.configure")} onApplied={load} />
 
         {hiddenNoDataCount > 0 && (
           <div style={{

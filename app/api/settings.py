@@ -489,6 +489,35 @@ def seed_default_thresholds(account_id: int = Query(3), current_user: dict = Dep
     return {"status": "seeded", "inserted": inserted}
 
 
+@router.get("/thresholds/coverage")
+def threshold_coverage(account_id: int = Query(3), current_user: dict = Depends(require_permission("alerts.view"))):
+    """Audit F1: how many enabled metrics can actually raise a static alert, per service, and which ones are
+    only blank because their row predates the shipped default (one click to fix)."""
+    _require_account_access(account_id, current_user)
+    from app.threshold_coverage import coverage
+    with get_db_cursor(dictionary=True, commit=False) as (_conn, cur):
+        return coverage(cur, account_id)
+
+
+@router.post("/thresholds/apply-defaults")
+def apply_recommended_defaults(
+    account_id: int = Query(3),
+    dry_run: bool = Query(True, description="true (default) only reports what would change"),
+    current_user: dict = Depends(require_permission("alerts.configure")),
+):
+    """Audit F1: replace placeholder (blank) thresholds with the shipped default for that metric. Rows a person
+    has already set are never touched. Defaults to a dry run; pass dry_run=false to apply."""
+    _require_account_access(account_id, current_user)
+    from app.threshold_coverage import upgrade_placeholders
+    with get_db_cursor(dictionary=True) as (_conn, cur):
+        result = upgrade_placeholders(cur, account_id, dry_run=dry_run)
+    if not dry_run:
+        _write_audit(current_user["username"], "Recommended thresholds applied",
+                     f"account {account_id}: {result['applied']} metric threshold(s) set from defaults",
+                     role=(current_user.get("role") or "").upper())
+    return result
+
+
 @router.get("/check")
 def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(require_permission("alerts.configure"))):
     # alerts.configure, not alerts.view (audit B07): check_and_write_alerts()

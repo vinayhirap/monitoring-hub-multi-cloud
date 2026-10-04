@@ -298,3 +298,9 @@ export const deleteNotificationChannel = (id) =>
 export const testNotificationChannel   = (id) =>
   apiFetch(`/api/notifications/channels/${id}/test`, { method: "POST" });
 export const getNotificationLog        = () => apiFetch("/api/notifications/log");
+
+// ── Threshold coverage / recommended defaults (audit F1) ─────────────
+export const getThresholdCoverage = (accountId) =>
+  apiFetch(`/api/settings/thresholds/coverage?account_id=${accountId}`);
+export const applyRecommendedThresholds = (accountId, dryRun = true) =>
+  apiFetch(`/api/settings/thresholds/apply-defaults?account_id=${accountId}&dry_run=${dryRun}`, { method: "POST" });
