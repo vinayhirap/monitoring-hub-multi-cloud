@@ -330,3 +330,12 @@ def test_legacy_incident_titles_are_renamed_after_where_the_incident_really_star
     # no cause line to read: fall back to the old cleanup rather than guessing
     assert eng.humanize_incident_title("Correlated breach on i-046f and related resource(s)", {"member_alerts": inc2["member_alerts"]}) \
         == "Correlated breach on U4RAD-UAT-REPORTINGBOT-TEST-ENV and related resources"
+
+
+def test_stale_report_script_loads_the_apps_env_file_before_importing_the_database_module():
+    """First run on dev: 'RuntimeError: DB_PASSWORD is not set' because the script never read .env."""
+    src = (ROOT / "scripts/report_stale_metrics.py").read_text()
+    assert 'load_dotenv(os.path.join(ROOT, ".env"))' in src
+    assert src.index("load_dotenv(") < src.index("from app.db import get_db_cursor")
+    for other in ("scripts/check_ec2_network_stat.py", "scripts/seed_metric_catalog.py"):
+        assert "load_dotenv()" in (ROOT / other).read_text()                # same convention as the existing scripts

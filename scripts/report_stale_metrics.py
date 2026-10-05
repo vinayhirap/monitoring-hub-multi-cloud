@@ -20,7 +20,13 @@ import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+# Same as migrate.py and the other scripts: read DB_* from the app's .env BEFORE app.db is imported (it refuses to start
+# without DB_PASSWORD). The path is explicit, so the script works from any directory, not only from the repo root.
+from dotenv import load_dotenv  # noqa: E402
+load_dotenv(os.path.join(ROOT, ".env"))
 
 from app.alert_rules import stale_minutes_sql  # noqa: E402
 from app.db import get_db_cursor  # noqa: E402
