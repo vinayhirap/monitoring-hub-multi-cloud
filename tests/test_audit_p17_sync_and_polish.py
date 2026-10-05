@@ -306,3 +306,27 @@ def test_rca_says_learned_limit_and_names_the_unit():
     assert "against a learned limit of" in rr.render_markdown(report)
     facts["limit_kind"] = "configured"
     assert "went above its alert limit" in rr._fallback_narrative(facts) and "raise the limit" in rr._fallback_narrative(facts)
+
+
+def test_legacy_incident_titles_are_renamed_after_where_the_incident_really_started():
+    """Weekly report: '#577 Correlated breach on U4RAD-PROD-ORTHANC' while its cause said it started with Request Count on u4rad-alb."""
+    install_stub("app.db", get_db_cursor=lambda *a, **k: None, get_connection=lambda: None)
+    eng = load_module("app/reports/engine.py")
+    arn = "arn:aws:elasticloadbalancing:ap-south-1:992382489399:loadbalancer/app/u4rad-alb/7825df3406bbe617"
+    inc = {"title": "Correlated breach on i-085a15af2d1524c7c and related resource(s)",
+           "probable_cause": f"Earliest breach in this incident: requestcount on {arn} at 2026-10-03 16:28:11.",
+           "member_alerts": [{"resource_id": "i-085a15af2d1524c7c", "resource_name": "U4RAD-PROD-ORTHANC"},
+                             {"resource_id": arn, "resource_name": "u4rad-alb"}]}
+    assert eng.incident_root(inc) == ("requestcount", arn)
+    assert eng.humanize_incident_title(inc["title"], inc) == "Request Count breach on u4rad-alb and related resources"
+    inc2 = {"title": "Correlated breach on vol-1 and related resources",
+            "probable_cause": "Earliest breach in this incident: disk_used_percent on i-046f at 2026-09-29 16:40:33.",
+            "member_alerts": [{"resource_id": "i-046f", "resource_name": "U4RAD-UAT-REPORTINGBOT-TEST-ENV"}]}
+    assert eng.humanize_incident_title(inc2["title"], inc2) == "Disk Utilization breach on U4RAD-UAT-REPORTINGBOT-TEST-ENV and related resources"
+    # a title that already names a metric (created after the correlator fix) is kept, only cleaned up
+    new = {"title": "disk_used_percent breach on i-046f and related resource(s)", "probable_cause": inc2["probable_cause"],
+           "member_alerts": inc2["member_alerts"]}
+    assert eng.humanize_incident_title(new["title"], new) == "disk_used_percent breach on U4RAD-UAT-REPORTINGBOT-TEST-ENV and related resources"
+    # no cause line to read: fall back to the old cleanup rather than guessing
+    assert eng.humanize_incident_title("Correlated breach on i-046f and related resource(s)", {"member_alerts": inc2["member_alerts"]}) \
+        == "Correlated breach on U4RAD-UAT-REPORTINGBOT-TEST-ENV and related resources"

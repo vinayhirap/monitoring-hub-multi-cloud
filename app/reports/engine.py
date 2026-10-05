@@ -378,10 +378,27 @@ def _names_by_id(inc: dict) -> dict:
     return out
 
 
+def incident_root(inc: dict):
+    """(metric, resource_id) the incident STARTED with, read from its own stored cause line, or None."""
+    m = _BREACH_RE.search(str(inc.get("probable_cause") or ""))
+    return (m.group("metric"), m.group("res")) if m else None
+
+
 def humanize_incident_title(title, inc: dict) -> str:
-    """'Correlated breach on vol-0952... and related resource(s)' -> a title with the resource's name and no '(s)'."""
+    """A title a reader can trust.
+
+    Incidents created before the correlator was fixed (0017) are called "Correlated breach on <X> and related resource(s)"
+    where X is whichever alert the loop happened to hold, NOT where the incident began: #577 was titled for U4RAD-PROD-ORTHANC
+    while its own cause line said it started with Request Count on u4rad-alb. For those generic titles the report now names the
+    incident after its real starting point. Titles that already name a metric are kept (ids and ARNs become names, "(s)" is
+    fixed)."""
     names = _names_by_id(inc)
-    t = (title or "Untitled incident").replace("resource(s)", "resources")
+    raw = (title or "").strip()
+    root = incident_root(inc)
+    if root and re.match(r"^Correlated breach on .+ and related resource\(?s?\)?$", raw):
+        metric, rid = root
+        return f"{metric_label(metric)} breach on {names.get(rid) or short_resource(rid)} and related resources"
+    t = (raw or "Untitled incident").replace("resource(s)", "resources")
     t = _ARN_RE.sub(lambda m: short_resource(m.group(0)), t)
     for rid, name in sorted(names.items(), key=lambda kv: -len(kv[0])):
         t = t.replace(rid, name)
