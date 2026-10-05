@@ -329,6 +329,8 @@ export const testNotificationChannel   = (id) =>
 export const getNotificationLog        = () => apiFetch("/api/notifications/log");
 
 // ── Threshold coverage / recommended defaults (audit F1) ─────────────
+// The limits actually in force (learned per-resource limits for dynamic / anomaly rows): see utils/thresholdLive.js.
+export const getEffectiveThresholds = (accountId) => apiFetch(`/api/settings/thresholds/effective?account_id=${accountId}`);
 export const getThresholdCoverage = (accountId) =>
   apiFetch(`/api/settings/thresholds/coverage?account_id=${accountId}`);
 export const applyRecommendedThresholds = (accountId, dryRun = true) =>

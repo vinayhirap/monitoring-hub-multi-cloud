@@ -4,9 +4,12 @@
 // The labels are GENERATED from the seed metric catalogues (app/aws|azure|gcp/metric_catalog_data.py) by
 // scripts/generate_metric_labels.py -> metricLabels.generated.js, so a metric added to a catalogue gets a
 // proper name (or a failing test) instead of a raw key reaching the UI. Do not hand-type labels here.
-import { GENERATED_METRIC_LABELS, GENERATED_PERCENT_METRICS } from "./metricLabels.generated.js";
+import { GENERATED_METRIC_LABELS, GENERATED_PERCENT_METRICS, GENERATED_INTEGER_METRICS } from "./metricLabels.generated.js";
 
 const PERCENT = new Set(GENERATED_PERCENT_METRICS);
+// COUNT metrics: a count is shown as a whole number, even where an older stored limit still carries decimals (4361.91).
+const INTEGER = new Set(GENERATED_INTEGER_METRICS);
+export const isIntegerMetric = name => INTEGER.has(String(name || "").toLowerCase());
 // per-mount disk series published by the CloudWatch agent: disk_used_percent__var_lib_mysql
 const MOUNT = /^(disk_used_percent)__(.+)$/;
 
@@ -51,8 +54,9 @@ export function metricUnit(name) {
 /** Compact, unit-aware number: 95.13 -> "95.13%" for CPU, 12100 -> "12.1K" for ops. */
 export function formatMetricValue(name, v) {
   if (v == null || v === "") return "—";
-  const n = parseFloat(v);
+  let n = parseFloat(v);
   if (Number.isNaN(n)) return String(v);
+  if (isIntegerMetric(name)) n = Math.round(n);
   const abs = Math.abs(n);
   let out;
   if (abs >= 1e12)      out = (n / 1e12).toFixed(2) + "T";

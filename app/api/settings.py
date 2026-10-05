@@ -297,6 +297,24 @@ def get_thresholds(
     return {"thresholds": [_ser(r) for r in out], "hidden_no_data_count": no_data_count}
 
 
+@router.get("/thresholds/effective")
+def get_effective_thresholds(
+    account_id: int = Query(...),
+    current_user: dict = Depends(require_permission("alerts.view")),
+):
+    """The limits actually IN FORCE for every threshold of the account (see app/threshold_effective.py).
+
+    Settings used to show only the typed numbers. For a dynamic row each resource really gets its own learned limit, and for
+    a "collected for anomaly detection only" row the typed 1,000,000 / 5,000,000 are placeholders nobody enforces. This
+    returns, per threshold, its mode, the spread of learned limits across resources right now, and the current stored
+    values, so the page can show the truth and stay in step while it is open (including when the auto-tuner flips a row).
+    Read-only; results are cached for 30 s and dropped whenever a threshold is saved or toggled."""
+    _require_account_access(account_id, current_user)
+    from app.collector import alert_evaluator as ev
+    with get_db_cursor(dictionary=True, commit=False) as (_conn, cur):
+        return threshold_effective.get_effective(cur, account_id, ev)
+
+
 @router.post("/thresholds")
 def upsert_threshold(payload: dict = Body(...), current_user: dict = Depends(require_permission("alerts.configure"))):
     account_id = _int_field(payload if isinstance(payload, dict) else {}, "account_id", 3)
@@ -337,6 +355,7 @@ def upsert_threshold(payload: dict = Body(...), current_user: dict = Depends(req
                  f"{account_label(account_id)}: {metric_name_label(metric_id)} set to warning {warning_value}, "
                  f"critical {critical_value}",
                  role=current_user["role"].upper())
+    threshold_effective.invalidate(account_id)
     return {"status": "saved", "id": new_id}
 
 
@@ -354,8 +373,9 @@ def toggle_threshold(threshold_id: int, payload: dict = Body(...), current_user:
     # Disabling a threshold silences alerting for every resource under it
     # -- was the only threshold mutation with no audit row.
     _write_audit(current_user["username"], "Threshold updated",
-                 f"threshold_id={threshold_id} enabled={enabled}",
+                 f"{threshold_label(threshold_id)}: alerting turned {'on' if enabled else 'off'}",
                  role=current_user["role"].upper())
+    threshold_effective.invalidate()
     return {"status": "updated", "enabled": enabled}
 
 
@@ -410,8 +430,9 @@ def toggle_dynamic_threshold(threshold_id: int, payload: dict = Body(...), curre
         )
 
     _write_audit(current_user["username"], "Threshold updated",
-                 f"threshold_id={threshold_id} use_dynamic={use_dynamic} dynamic_k={dynamic_k}",
+                 f"{threshold_label(threshold_id)}: " + (f"learned limits on (k={dynamic_k})" if use_dynamic else "back to fixed limits"),
                  role=current_user["role"].upper())
+    threshold_effective.invalidate()
     return {"status": "updated", "use_dynamic": bool(use_dynamic), "dynamic_k": dynamic_k}
 
 
@@ -487,6 +508,7 @@ def seed_default_thresholds(account_id: int = Query(3), current_user: dict = Dep
                 inserted += cur.rowcount
             except Exception as e:
                 logger.warning(f"Seed skip {m['metric_name']}: {e}")
+    threshold_effective.invalidate()
     return {"status": "seeded", "inserted": inserted}
 
 
@@ -517,6 +539,7 @@ def apply_recommended_defaults(
                      f"{account_label(account_id)}: recommended defaults applied to {result['applied']} "
                      f"metric {plural(result['applied'], 'threshold')}",
                      role=(current_user.get("role") or "").upper())
+        threshold_effective.invalidate(account_id)
     return result
 
 
@@ -587,4 +610,5 @@ def check_thresholds(account_id: int = Query(3), current_user: dict = Depends(re
 
 
 from app.audit import write_audit as _write_audit
-from app.account_names import account_label, metric_name_label, plural
+from app.account_names import account_label, metric_name_label, plural, threshold_label
+from app import threshold_effective

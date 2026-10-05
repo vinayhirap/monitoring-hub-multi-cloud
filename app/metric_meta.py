@@ -16,7 +16,9 @@ from app import alert_rules
 from app.db import get_db_cursor
 from app.metric_display import (METRIC_HISTORY_RETENTION_DAYS, display_spec, fmt_interval,
                                 polling_info, stats_available)
-from app.threshold_defaults import is_static_only_metric, is_placeholder_threshold, resolve_db_metric_name
+from app.threshold_defaults import (
+    is_static_only_metric, is_placeholder_threshold, resolve_db_metric_name, is_integer_metric, integerize_limit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,17 @@ _SEV_RANK = {"CRITICAL": 3, "WARNING": 2, "INFO": 1}
 def _catalog_services(service):
     s = (service or "").lower()
     return ["alb", "nlb", "elb"] if s in ("alb", "nlb", "elb") else [s]
+
+
+def stale_after_seconds(interval_seconds):
+    """Seconds a metric collected every `interval_seconds` may go without a new datapoint before it is late (None: unknown)."""
+    try:
+        from app.collector import polling_model as pm
+        table = pm.STALE_MIN_BY_INTERVAL
+        key = interval_seconds if interval_seconds in table else min(table, key=lambda k: abs(k - (interval_seconds or 0)))
+        return int(table[key]) * 60
+    except Exception:
+        return None
 
 
 def _effective_lines(cur, account_id, resource_id, row, db_name):
@@ -38,12 +51,16 @@ def _effective_lines(cur, account_id, resource_id, row, db_name):
         from app.collector import alert_evaluator as ev
         if is_placeholder_threshold(warning, critical, comparison):
             line = ev._anomaly_only_bound(cur, account_id, resource_id, db_name, row.get("dynamic_k") or 3.0)
+            if line is not None and is_integer_metric(row.get("unit"), db_name):
+                line = integerize_limit(line, comparison)           # count metrics: whole-number line, same as the evaluator
             return (line, line, "anomaly") if line is not None else (None, None, "anomaly")
         if row.get("use_dynamic") and not is_static_only_metric(db_name):
             dyn = ev._dynamic_bounds(cur, account_id, resource_id, db_name, comparison,
                                      row.get("dynamic_k") or 3.0, static_warning=warning, static_critical=critical)
             if dyn is not None:
                 w, c = ev.clamp_dynamic_bounds(dyn[0], dyn[1], warning, critical, comparison, row.get("unit"))
+                if is_integer_metric(row.get("unit"), db_name):
+                    w, c = integerize_limit(w, comparison), integerize_limit(c, comparison)
                 return w, c, "dynamic"
     except Exception as e:                       # overlay only -- never fail the page
         logger.debug(f"effective threshold fallback to static [{resource_id}/{db_name}]: {e}")
@@ -100,6 +117,10 @@ def build_metric_meta(account_id, provider, service, resource_ids):
                 "stats": stats_available(spec["native_stat"], spec["rate"]),
                 "description": r.get("description"),
                 "poll_seconds": poll["interval_seconds"], "poll_label": fmt_interval(poll["interval_seconds"]),
+                # How old the newest datapoint may be before it counts as late: the SAME table the alert engine uses to
+                # mark an alert's data stale (polling_model.STALE_MIN_BY_INTERVAL), so a chart and the alert engine can
+                # never disagree about "fresh". The chart used to guess from the CloudWatch period alone.
+                "stale_after_seconds": stale_after_seconds(poll["interval_seconds"]),
                 "period_seconds": poll.get("period_seconds"), "period_label": fmt_interval(poll.get("period_seconds")),
                 "tier": poll.get("tier"), "poll_source": poll.get("source"),
                 "threshold": None, "alert": None,

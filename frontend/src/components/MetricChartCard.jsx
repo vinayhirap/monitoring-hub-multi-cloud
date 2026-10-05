@@ -19,7 +19,7 @@ import { Maximize2Icon } from "./icons";
 import MetricZoomModal from "./MetricZoomModal";
 import "./MetricZoomModal.css";
 import { fmtMetricValue, fmtAxisValue, fmtPeriod, makeTickFormatter, timeTicks, niceAxis, fmtFullTime, STAT_FIELD } from "../utils/metricFormat";
-import { seriesStats, freshness, breachState, ageText } from "../utils/evidence";
+import { seriesStats, freshness, breachState, ageText, displayAge } from "../utils/evidence";
 import "./MetricChartCard.css";
 
 // value: { meta: {metricName: entry}, windowHours, bucketSecs, statOverride }
@@ -148,7 +148,7 @@ export default function MetricChartCard({
   const reportPts = pts.filter(p => p.v != null);
   // Analytics strip: trend, range and freshness derived only from the points on screen.
   const st = seriesStats(pts);
-  const fr = freshness(lastT, Date.now(), meta?.period_seconds || (meta?.poll_seconds || 0));
+  const fr = freshness(lastT, Date.now(), meta?.period_seconds, meta?.poll_seconds, meta?.stale_after_seconds);
   const breach = breachState(latest, warnLine, critLine, th?.comparison || ">");
   const frLabel = { fresh: "fresh", late: "late", stale: "stale", unknown: "last point", none: "no data" }[fr.state];
 
@@ -188,8 +188,12 @@ export default function MetricChartCard({
           </span>
         )}
         {st && <span className="mc-rng" title="Minimum / average / maximum of the points shown">min {fmt(st.min)} · avg {fmt(st.avg)} · max {fmt(st.max)}</span>}
-        <span className={`mc-fresh mc-f-${fr.state}`} title={lastT ? `Newest datapoint: ${fmtFullTime(lastT, ianaName)}` : "No datapoint in this window"}>
-          ● {frLabel}{fr.age != null ? ` · ${ageText(fr.age)} ago` : ""}
+        <span className={`mc-fresh mc-f-${fr.state}`} title={lastT
+          ? `Newest datapoint starts ${fmtFullTime(lastT, ianaName)}` +
+            (meta?.period_seconds ? ` and covers ${fmtPeriod(meta.period_seconds)}; it is stamped with the start of that period.` : ".") +
+            (meta?.poll_label ? ` CloudWatch publishes a point a few minutes after its period closes and this metric is collected every ${meta.poll_label}, so a reading up to ${Math.round((fr.allowanceMs || 0) / 60000)} min old is normal.` : "")
+          : "No datapoint in this window"}>
+          ● {frLabel}{fr.age != null ? ` · ${ageText(displayAge(fr.age, meta?.period_seconds))} ago` : ""}
         </span>
       </div>
       {stats.length > 0 && (

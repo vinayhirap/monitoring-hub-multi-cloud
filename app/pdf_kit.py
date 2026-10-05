@@ -395,6 +395,8 @@ def data_table(pdf, columns, rows, *, row_h=6.4, zebra=True):
     later column one slot to the right (status under 'Resource', resource under 'Metric', ...).
     """
     total_w = sum(c[1] for c in columns)
+    # never strand a header with one or two rows at the foot of a page: need the header and the first few rows to fit
+    ensure_room(pdf, row_h * (1 + min(len(rows), 4)) + 8)
 
     def header_row():
         ensure_room(pdf, row_h * 2)

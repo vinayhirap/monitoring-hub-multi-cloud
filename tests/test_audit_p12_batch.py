@@ -90,7 +90,7 @@ def test_every_cell_in_the_card_tables_is_labelled_or_a_spanning_cell():
     sec = _t("pages/SecurityFindings.jsx")
     body = sec[sec.index("{view.rows.map(f => ("):sec.index("</tbody>", sec.index("{view.rows.map(f => ("))]
     sec_cells = [c for c in _cells(body) if not c[1]]
-    assert len([c for c in sec_cells if c[0]]) == 5 and len(sec_cells) == 6           # 5 labelled + the console-button cell
+    assert len([c for c in sec_cells if c[0]]) == 6 and len(sec_cells) == 7           # 6 labelled (incl. Status) + the console-button cell
     assert "tbl-cards" in alerts and "tbl-cards" in sec
 
 

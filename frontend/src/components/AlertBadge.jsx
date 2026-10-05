@@ -7,10 +7,11 @@ import { RedDotIcon, AlertTriangleIcon } from "./icons";
 import { plural } from "../utils/plural";
 
 const STYLES = {
-  CRITICAL: { bg: "rgba(239,68,68,0.15)",  fg: "#ef4444", bd: "rgba(239,68,68,0.3)" },
-  WARNING:  { bg: "rgba(245,158,11,0.15)", fg: "#f59e0b", bd: "rgba(245,158,11,0.3)" },
-  INFO:     { bg: "rgba(59,130,246,0.15)", fg: "#60a5fa", bd: "rgba(59,130,246,0.3)" },
-  NEUTRAL:  { bg: "rgba(148,163,184,0.12)", fg: "#94a3b8", bd: "rgba(148,163,184,0.3)" },
+  // status tokens (tokens.css) so the chips stay readable in the light theme too
+  CRITICAL: { bg: "var(--crit-bg)", fg: "var(--crit-fg)", bd: "var(--crit-line)" },
+  WARNING:  { bg: "var(--warn-bg)", fg: "var(--warn-fg)", bd: "var(--warn-line)" },
+  INFO:     { bg: "var(--info-bg)", fg: "var(--info-fg)", bd: "var(--info-line)" },
+  NEUTRAL:  { bg: "var(--mute-bg)", fg: "var(--mute-fg)", bd: "var(--mute-line)" },
 };
 
 function chip(kind, children, title) {

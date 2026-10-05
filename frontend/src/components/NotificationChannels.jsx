@@ -2,6 +2,7 @@
 // Secrets: a Slack/Teams/webhook URL is write-only here. The API only returns the host, so an
 // edit leaves the stored URL untouched unless a new one is typed.
 import { useCallback, useEffect, useState } from "react";
+import "./NotificationChannels.css";
 import { Panel, Badge, ConfirmDialog, EmptyState } from "./ui";
 import {
   getNotificationChannels, createNotificationChannel, updateNotificationChannel,
@@ -79,33 +80,39 @@ export default function NotificationChannels() {
       <Panel title="Notification channels"
              subtitle="Send alerts to Slack, Teams, a webhook or a team mailbox. Maintenance-window alerts are never sent."
              actions={!form && <button type="button" className="ui-btn ui-btn-primary" onClick={() => { setErr(""); setForm({ ...BLANK }); }}>Add channel</button>}>
-        {err && <div role="alert" className="ui-sub" style={{ color: "var(--crit, #f87171)", marginBottom: 8 }}>{err}</div>}
+        {err && <div role="alert" className="ui-sub" style={{ color: "var(--crit-fg)", marginBottom: 8 }}>{err}</div>}
 
         {form && (
-          <div className="ui-panel-body" style={{ display: "grid", gap: 10, maxWidth: 560, marginBottom: 12 }}>
-            <label>Name<input className="ui-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Ops Slack" /></label>
-            <label>Type
+          <div className="nc-form">
+            <label className="nc-field">
+              <span className="nc-label">Name</span>
+              <input className="ui-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Ops Slack" />
+            </label>
+            <label className="nc-field">
+              <span className="nc-label">Type</span>
               <select className="ui-input" value={form.type} disabled={!!form.id} onChange={e => setForm({ ...form, type: e.target.value })}>
                 {TYPES.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
               </select>
             </label>
-            <label>{form.type === "email" ? "Recipients" : "Destination URL"}
+            <label className="nc-field nc-wide">
+              <span className="nc-label">{form.type === "email" ? "Recipients" : "Destination URL"}</span>
               <input className="ui-input" type={form.type === "email" ? "text" : "password"} autoComplete="off"
                      value={form.target} onChange={e => setForm({ ...form, target: e.target.value })}
                      placeholder={form.id ? "Leave blank to keep the saved destination" : typeInfo?.hint} />
             </label>
-            <label>Send
+            <label className="nc-field">
+              <span className="nc-label">Send</span>
               <select className="ui-input" value={form.min_severity} onChange={e => setForm({ ...form, min_severity: e.target.value })}>
                 <option value="CRITICAL">Critical alerts only</option>
                 <option value="WARNING">Warning and critical alerts</option>
               </select>
             </label>
-            <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-              <label><input type="checkbox" checked={form.opened} onChange={e => setForm({ ...form, opened: e.target.checked })} /> When an alert opens</label>
-              <label><input type="checkbox" checked={form.escalated} onChange={e => setForm({ ...form, escalated: e.target.checked })} /> When an alert is escalated</label>
-              <label><input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} /> Enabled</label>
+            <div className="nc-checks" role="group" aria-label="When to send">
+              <label className="nc-check"><input type="checkbox" checked={form.opened} onChange={e => setForm({ ...form, opened: e.target.checked })} /><span>When an alert opens</span></label>
+              <label className="nc-check"><input type="checkbox" checked={form.escalated} onChange={e => setForm({ ...form, escalated: e.target.checked })} /><span>When an alert is escalated</span></label>
+              <label className="nc-check"><input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} /><span>Enabled</span></label>
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div className="nc-actions">
               <button type="button" className="ui-btn ui-btn-primary" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save"}</button>
               <button type="button" className="ui-btn" disabled={busy} onClick={() => { setForm(null); setErr(""); }}>Cancel</button>
             </div>
@@ -120,7 +127,7 @@ export default function NotificationChannels() {
                 <strong>{r.name}</strong>{" "}
                 <Badge tone={r.enabled ? "ok" : "mute"}>{r.enabled ? "on" : "off"}</Badge>
                 <div className="ui-sub">{r.type} · {r.target_preview} · {r.min_severity === "CRITICAL" ? "critical only" : "warning+"} · {r.events.join(", ")}</div>
-                {note[r.id] && <div className="ui-sub" style={{ color: note[r.id].ok === false ? "var(--crit, #f87171)" : undefined }}>{note[r.id].text}</div>}
+                {note[r.id] && <div className="ui-sub" style={{ color: note[r.id].ok === false ? "var(--crit-fg)" : undefined }}>{note[r.id].text}</div>}
               </div>
               <button type="button" className="ui-btn" onClick={() => test(r)}>Test</button>
               <button type="button" className="ui-btn" onClick={() => { setErr(""); edit(r); }}>Edit</button>

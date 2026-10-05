@@ -157,3 +157,15 @@
   .thresh-actions   { flex-wrap: wrap; }
   .card-header      { flex-wrap: wrap; gap: 8px; }
 }
+
+
+/* Limits actually in force (dynamic / anomaly rows) and honest captions for the typed fallback values. */
+.learned-block { margin: 2px 0 8px; padding: 8px 10px; border-radius: 6px; background: rgba(43,179,172,.07);
+  border: 1px solid rgba(43,179,172,.25); border-left-width: 3px; }
+.learned-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--accent, #2bb3ac);
+  font-family: var(--font-mono); }
+.learned-detail { margin-top: 3px; font-size: 10.5px; line-height: 1.35; color: var(--text-muted); }
+.thresh-caption { margin: 0 0 6px; font-size: 10px; line-height: 1.3; color: var(--text-muted); font-style: italic; }
+.thresh-input.is-fallback { opacity: .6; }
+.thresh-input.is-fallback:focus { opacity: 1; }
+.dynamic-badge.is-anomaly { cursor: help; background: rgba(120,100,190,.14); color: #a89be0; border-color: rgba(120,100,190,.35); }

@@ -1,5 +1,5 @@
 ﻿// monitoring-hub/frontend/src/pages/Settings.jsx
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import MetricSelector from "../components/MetricSelector";
 import NotificationChannels from "../components/NotificationChannels";
 import ThresholdCoverage from "../components/ThresholdCoverage";
@@ -19,6 +19,9 @@ import {
 } from "../components/icons";
 import { redirectToSignIn } from "../utils/loginFlow";
 import { plural } from "../utils/plural";
+import { getEffectiveThresholds } from "../api/api";
+import { visibleInterval } from "../utils/poll";
+import { describeLimits, fixedValuesCaption, mergeLiveThresholds, markSaved, holdAfterSave, ageText } from "../utils/thresholdLive";
 
 const BASE = "";
 
@@ -73,6 +76,11 @@ export default function Settings() {
   const [loading,     setLoading]     = useState(true);
   const [saving,      setSaving]      = useState(null);
   const [saveMsg,     setSaveMsg]     = useState({});
+  // Limits actually in force, kept in step while the page is open (see utils/thresholdLive.js).
+  const [effective,   setEffective]   = useState(null);
+  const thresholdsRef = useRef([]);
+  const lastServerRef = useRef({});
+  const holdsRef      = useRef({});
   const [checkResult, setCheckResult] = useState(null);
   const [checking,    setChecking]    = useState(false);
   const [showNoData,  setShowNoData]  = useState(false);
@@ -190,7 +198,10 @@ export default function Settings() {
       const t = await guardedFetch(
         `/api/settings/thresholds?account_id=${accountId}&include_no_data=${showNoData}`
       ).then(r => r.json());
-      setThresholds(Array.isArray(t?.thresholds) ? t.thresholds : []);
+      const list = Array.isArray(t?.thresholds) ? t.thresholds : [];
+      lastServerRef.current = Object.fromEntries(list.map(x => [x.id, { warning_value: x.warning_value, critical_value: x.critical_value }]));
+      holdsRef.current = {};
+      setThresholds(list);
       setHiddenNoDataCount(t?.hidden_no_data_count || 0);
     } catch (e) {
       console.error("Settings load:", e);
@@ -200,6 +211,26 @@ export default function Settings() {
   }, [accountId, showNoData]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { thresholdsRef.current = thresholds; }, [thresholds]);
+
+  // Limits in force + any change made elsewhere (the auto-tuner switching a row to dynamic, another admin editing):
+  // fetched on load and every 60 s while the tab is visible. Read-only, and it never overwrites a value being typed.
+  const refreshEffective = useCallback(async () => {
+    if (!accountId) return;
+    try {
+      const data = await getEffectiveThresholds(accountId);
+      setEffective(data);
+      const merged = mergeLiveThresholds(thresholdsRef.current, data?.limits, lastServerRef.current, holdsRef.current);
+      lastServerRef.current = merged.lastServer;
+      setThresholds(merged.rows);
+    } catch { /* keep what is on screen; the next tick retries */ }
+  }, [accountId]);
+
+  useEffect(() => {
+    if (!accountId) return undefined;
+    refreshEffective();
+    return visibleInterval(refreshEffective, 60000);
+  }, [accountId, refreshEffective]);
 
   useEffect(() => {
     if (!loading && thresholds.length === 0 && accountId) {
@@ -230,6 +261,9 @@ export default function Settings() {
       if (!res.ok) throw new Error(await res.text());
       setSaveMsg(prev => ({ ...prev, [t.id]: "ok" }));
       setTimeout(() => setSaveMsg(prev => ({ ...prev, [t.id]: null })), 3000);
+      lastServerRef.current = markSaved(lastServerRef.current, t);
+      holdsRef.current = holdAfterSave(holdsRef.current, t);
+      refreshEffective();
     } catch (e) {
       setSaveMsg(prev => ({ ...prev, [t.id]: "err" }));
       console.error("Save failed:", e);
@@ -248,6 +282,7 @@ export default function Settings() {
         body: JSON.stringify({ enabled: newEnabled }),
       });
       if (!res.ok) throw new Error();
+      refreshEffective();
     } catch {
       setThresholds(prev => prev.map(x => x.id === t.id ? { ...x, enabled: t.enabled } : x));
     }
@@ -439,6 +474,7 @@ export default function Settings() {
               saving={saving}
               saveMsg={saveMsg}
               canConfigure={hasPermission("alerts.configure")}
+              effective={effective?.limits}
             />
           ))
         )}
@@ -528,7 +564,7 @@ export default function Settings() {
   );
 }
 
-function ServiceThresholdSection({ svc, items, onToggle, onUpdate, onSave, saving, saveMsg, canConfigure }) {
+function ServiceThresholdSection({ svc, items, onToggle, onUpdate, onSave, saving, saveMsg, canConfigure, effective }) {
   const Icon  = SVC_ICON[svc]  || BarChartIcon;
   const color = SVC_COLOR[svc] || "#2bb3ac";
   return (
@@ -552,6 +588,7 @@ function ServiceThresholdSection({ svc, items, onToggle, onUpdate, onSave, savin
             saving={saving === t.id}
             savedState={saveMsg[t.id]}
             canConfigure={canConfigure}
+            eff={effective ? effective[t.id] : null}
           />
         ))}
       </div>
@@ -559,7 +596,13 @@ function ServiceThresholdSection({ svc, items, onToggle, onUpdate, onSave, savin
   );
 }
 
-function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState, canConfigure }) {
+function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState, canConfigure, eff }) {
+  // What is really in force for this row (the server decides, with the evaluator's own rules): a row can carry
+  // use_dynamic=1 yet still be evaluated against fixed values (capacity / availability metrics), or be a placeholder
+  // that is not enforced at all (anomaly-only). The badge and the captions follow the server, not the raw flag.
+  const mode = eff?.mode ?? (t.use_dynamic ? "dynamic" : "static");
+  const live = describeLimits(eff, (t.metric_name || "").toLowerCase());
+  const caption = fixedValuesCaption(mode);
   // Auto-tune history (2026-09-14) -- lazy-fetched only when the badge
   // is clicked, so a page with many thresholds doesn't fire N extra
   // requests on load for something most rows won't have anyway.
@@ -608,13 +651,17 @@ function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState, canC
                 WHY, if app/collector/threshold_tuning.py auto-switched
                 it (vs an admin manually enabling dynamic mode via the
                 toggle below, which has no history to show). */}
-            {t.use_dynamic ? (
+            {mode === "dynamic" ? (
               <span
                 className="dynamic-badge"
                 onClick={toggleAutoTuneHistory}
                 title="This threshold uses a per-resource dynamic band instead of one fixed number. Click for why."
               >
                 <ZapIcon size={10} /> Dynamic
+              </span>
+            ) : mode === "anomaly" ? (
+              <span className="dynamic-badge is-anomaly" title="Volume metric: no fixed limit. An alert is raised only for a sustained, unusual spike compared with this resource's own history.">
+                <ZapIcon size={10} /> Learned
               </span>
             ) : null}
           </div>
@@ -653,6 +700,16 @@ function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState, canC
         </label>
       </div>
 
+      {live && (
+        <div className="learned-block" role="status" data-mode={live.mode}>
+          <div className="learned-head"><ZapIcon size={11} /> <span>{live.headline}</span></div>
+          <div className="learned-detail">
+            {live.detail}{live.updated ? ` Baseline updated ${ageText(live.updated)}.` : ""}
+          </div>
+        </div>
+      )}
+      {caption && <div className="thresh-caption">{caption}</div>}
+
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         <div className="thresh-input-row">
           <span style={{ fontSize: 10, color: "var(--green)", width: 16, display:"inline-flex" }}><CheckIcon size={12}/></span>
@@ -671,7 +728,7 @@ function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState, canC
           <div className="thresh-input-row">
             <span style={{ fontSize: 10, color: "var(--yellow)", width: 16, display:"inline-flex" }}><AlertTriangleIcon size={12}/></span>
             <span className="thresh-hint">Warn</span>
-            <input className="thresh-input" type="number" disabled={!t.enabled || !canConfigure}
+            <input className={`thresh-input${mode !== "static" ? " is-fallback" : ""}`} type="number" disabled={!t.enabled || !canConfigure}
               value={t.warning_value} min={minVal} max={maxVal}
               onChange={e => onUpdate("warning_value", clamp(e.target.value))} />
             <span className="thresh-unit">{t.unit || ideal.unit || ""}</span>
@@ -692,7 +749,7 @@ function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState, canC
         <div className="thresh-input-row">
           <span style={{ fontSize: 10, color: "var(--red)", width: 16, display:"inline-flex" }}><RedDotIcon size={12}/></span>
           <span className="thresh-hint">Crit</span>
-          <input className="thresh-input" type="number" disabled={!t.enabled || !canConfigure}
+          <input className={`thresh-input${mode !== "static" ? " is-fallback" : ""}`} type="number" disabled={!t.enabled || !canConfigure}
             value={t.critical_value} min={minVal} max={maxVal}
             onChange={e => onUpdate("critical_value", clamp(e.target.value))} />
           <span className="thresh-unit">{t.unit || ideal.unit || ""}</span>

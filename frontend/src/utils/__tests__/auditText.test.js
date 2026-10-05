@@ -35,3 +35,10 @@ test("non-strings pass through and payload keeps every other field", () => {
   assert.equal(p.detail.startsWith("account 10"), true);                                  // original untouched
   assert.equal(humanizePayload(null, names), null);
 });
+
+test("older threshold messages that only carried a row id read as sentences", () => {
+  assert.equal(humanizeAuditText("threshold_id=12 use_dynamic=1 dynamic_k=3.0", {}), "threshold #12: learned limits on (k=3.0)");
+  assert.equal(humanizeAuditText("threshold_id=12 use_dynamic=0 dynamic_k=3.0", {}), "threshold #12: back to fixed limits");
+  assert.equal(humanizeAuditText("threshold_id=7 enabled=0", {}), "threshold #7: alerting turned off");
+  assert.equal(humanizeAuditText("threshold_id=7 enabled=1", {}), "threshold #7: alerting turned on");
+});

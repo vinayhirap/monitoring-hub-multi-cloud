@@ -63,5 +63,27 @@ def metric_name_label(metric_id) -> str:
     return f"metric #{metric_id}"
 
 
+def threshold_label(threshold_id) -> str:
+    """'U4RAD: CPU Utilization' for a thresholds row (account name and metric label), or 'threshold #12' if unreadable."""
+    try:
+        from app.metric_labels import metric_label
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("""SELECT a.account_name, mc.metric_name FROM thresholds t
+                           LEFT JOIN aws_accounts a ON a.id = t.aws_account_id
+                           LEFT JOIN metric_catalog mc ON mc.id = t.metric_id WHERE t.id = %s""", (threshold_id,))
+            row = cur.fetchone()
+            if row:
+                name, metric = (row if not isinstance(row, dict) else (row.get("account_name"), row.get("metric_name")))
+                if name and metric:
+                    return f"{name}: {metric_label(metric)}"
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning(f"[account_names] threshold lookup failed for {threshold_id}: {exc}")
+    return f"threshold #{threshold_id}"
+
+
 def plural(n: int, singular: str, plural_form: str = None) -> str:
     return singular if n == 1 else (plural_form or singular + "s")

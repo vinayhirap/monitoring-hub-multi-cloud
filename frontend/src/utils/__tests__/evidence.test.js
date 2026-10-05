@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { seriesStats, freshness, breachState, alertsForResource, eventsForResource, buildTimeline, ageText, healthTone, tsMs } from "../evidence.js";
+import { seriesStats, freshness, displayAge, breachState, alertsForResource, eventsForResource, buildTimeline, ageText, healthTone, tsMs } from "../evidence.js";
 
 test("seriesStats ignores gaps and reports trend", () => {
   const pts = [10,10,10,10,null,20,20,20,20,20].map((v, i) => ({ t: i, v }));
@@ -17,14 +17,30 @@ test("flat series is flat", () => {
   const s = seriesStats(Array.from({ length: 12 }, (_, i) => ({ t: i, v: 50 + (i % 2) * 0.5 })));
   assert.equal(s.trend.dir, "flat");
 });
-test("freshness thresholds scale with the period", () => {
-  const now = 1e9;
-  assert.equal(freshness(now - 600e3, now, 300).state, "fresh");
-  assert.equal(freshness(now - 1200e3, now, 300).state, "late");
-  assert.equal(freshness(now - 3600e3, now, 300).state, "stale");
+test("freshness follows how often the metric is collected, not the CloudWatch period alone", () => {
+  const now = 1e9, min = 60e3;
+  // 5-minute metric collected every 5 min: up to ~13 min old is NORMAL. It used to flip to "late" at exactly 15 min.
+  assert.equal(freshness(now - 13 * min, now, 300, 300, 1200).state, "fresh");
+  assert.equal(freshness(now - 15 * min, now, 300, 300, 1200).state, "fresh");
+  assert.equal(freshness(now - 19 * min, now, 300, 300, 1200).state, "fresh");
+  assert.equal(freshness(now - 25 * min, now, 300, 300, 1200).state, "late");       // a missed collection
+  assert.equal(freshness(now - 50 * min, now, 300, 300, 1200).state, "stale");
+  // HOURLY metric (polled every 1 hr): 44 minutes old is perfectly normal, it was shown as "stale"
+  assert.equal(freshness(now - 44 * min, now, 300, 3600, 10800).state, "fresh");
+  assert.equal(freshness(now - 4 * 60 * min, now, 300, 3600, 10800).state, "late");
+  assert.equal(freshness(now - 7 * 60 * min, now, 300, 3600, 10800).state, "stale");
+  // without the server value the allowance is derived from the collection interval, then the period
+  assert.equal(freshness(now - 44 * min, now, 300, 3600).state, "fresh");
+  assert.equal(freshness(now - 19 * min, now, 300).state, "fresh");
   assert.equal(freshness(null, now, 300).state, "none");
-  assert.equal(freshness(now - 600e3, now, 0).state, "unknown");      // cadence unknown: age only, no stale verdict
+  assert.equal(freshness(now - 600e3, now, 0).state, "unknown");                    // cadence unknown: age only, no verdict
   assert.equal(freshness(now - 99999e3, now, null).state, "unknown");
+});
+test("the age shown is measured from the END of the datapoint's period", () => {
+  assert.equal(displayAge(15 * 60e3, 300), 10 * 60e3);        // stamped 11:45, covers 11:45-11:50, now 12:00 -> 10 min, not 15
+  assert.equal(displayAge(2 * 60e3, 300), 0);                 // period still open: never negative
+  assert.equal(displayAge(null, 300), null);
+  assert.equal(displayAge(5 * 60e3, 0), 5 * 60e3);
 });
 test("breachState handles both comparison directions", () => {
   assert.equal(breachState(95, 80, 90), "critical");

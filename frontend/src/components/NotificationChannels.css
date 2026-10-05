@@ -1,0 +1,17 @@
+/* Add / edit a notification channel: same field language as the rest of Settings (small mono labels above full-width
+   controls), not bare <label> elements that inherited the page's large text and put each input beside its label. */
+.nc-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; max-width: 760px;
+  margin: 4px 0 16px; padding: 16px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface-3); }
+.nc-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.nc-wide { grid-column: 1 / -1; }
+.nc-label { font: 600 10px var(--font-data); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+.nc-form .ui-input { width: 100%; min-width: 0; box-sizing: border-box; height: 36px; }
+.nc-checks { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+.nc-check { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border: 1px solid var(--line-2);
+  border-radius: 999px; background: var(--surface-2); color: var(--ink-1); font: 500 12px var(--font-ui); cursor: pointer;
+  transition: border-color var(--dur), background var(--dur); }
+.nc-check:hover { border-color: var(--line-3); }
+.nc-check:has(input:checked) { border-color: var(--brand-line); background: var(--brand-bg); }
+.nc-check input { accent-color: var(--brand); margin: 0; width: 14px; height: 14px; }
+.nc-actions { grid-column: 1 / -1; display: flex; gap: 8px; padding-top: 2px; }
+@media (max-width: 640px) { .nc-form { grid-template-columns: 1fr; } }

@@ -574,10 +574,10 @@ export default function ServiceDetail() {
 
 function NotImplState({ service, rawService, meta, region, accountId }) {
   return (
-    <div style={{ textAlign: "center", padding: "64px 32px", background: "rgba(13,22,39,0.5)", border: "1px solid rgba(99,130,190,0.1)", borderRadius: 12, marginTop: 8 }}>
+    <div style={{ textAlign: "center", padding: "64px 32px", background: "var(--surface-3)", border: "1px solid var(--line-1)", borderRadius: 12, marginTop: 8 }}>
       <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}><ServiceIcon icon={meta.icon} size={48} /></div>
-      <div style={{ fontSize: 16, fontWeight: 700, color: "#e2e8f0", marginBottom: 8 }}>{service} not configured</div>
-      <div style={{ fontSize: 12, color: "rgba(99,130,190,0.65)", lineHeight: 1.7, marginBottom: 20 }}>
+      <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ink-1)", marginBottom: 8 }}>{service} not configured</div>
+      <div style={{ fontSize: 12, color: "var(--ink-3)", lineHeight: 1.7, marginBottom: 20 }}>
         This app doesn't have a resource list view for {service.toLowerCase?.() || service} yet.
         You can still open it directly in the cloud console.
       </div>

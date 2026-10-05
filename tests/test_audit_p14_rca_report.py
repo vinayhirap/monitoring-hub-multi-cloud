@@ -73,7 +73,8 @@ def test_metric_labels_match_the_ui_wording():
 def test_value_formatting_is_unit_aware_and_never_prints_13_decimals():
     f = ml.format_metric_value
     assert f("cpuutilization", 95.134) == "95.13%"
-    assert f("volumereadops", 1116.1497530515035, grouped=True) == "1,116.15"
+    assert f("volumereadops", 1116.1497530515035, grouped=True) == "1,116"          # a COUNT metric: whole numbers
+    assert f("cpucreditbalance", 1116.1497530515035, grouped=True) == "1,116.15"    # a fractional gauge keeps its decimals
     assert f("volumereadops", 1267.0, grouped=True) == "1,267" and f("volumereadops", 1267.0) == "1267"
     assert f("networkin", 12100) == "12.1K" and f("networkin", 2_500_000) == "2.50M"
     assert f("x", 0.05) == "0.05" and f("x", None) == "-" and f("x", "n/a") == "n/a"
@@ -92,7 +93,7 @@ def test_summary_is_structured_formatted_and_has_no_fragment_or_raw_keys(rr):
     assert md.startswith("## Executive Summary\n\n**What happened.** Volume Read Operations on vol-033fecea4fe16e25d (EBS volume)")
     for lead in ("**Pattern.**", "**Impact.**", "**Probable cause.**"):
         assert lead in md
-    assert "1,267 against a limit of 1,116.15 (13.5% over)" in md
+    assert "1,267 against a limit of 1,116 (13.5% over)" in md
     assert "has been open for" in md and "UTC" in md
     for bad in ("It has also triggered 108", "resource(s)", "VolumeReadOps", "volumereadops", "1116.1497", "1267.0", " ebs "):
         assert bad not in md, bad
@@ -152,7 +153,7 @@ def test_markdown_metadata_is_complete_formatted_and_labelled_with_a_zone(rr):
     assert md.startswith("# RCA Report: Volume Read Operations on vol-033fecea4fe16e25d")
     for row in ("- **Alert:** #9467", "- **Resource:** vol-033fecea4fe16e25d (EBS volume)", "- **Region:** ap-south-1",
                 "- **Environment:** PROD", "- **Severity:** Warning", "- **Triggered:** 04 Oct 2026, 16:13:45 UTC",
-                "- **Reading vs limit:** 1,267 against a limit of 1,116.15 (13.5% over)",
+                "- **Reading vs limit:** 1,267 against a limit of 1,116 (13.5% over)",
                 "- **RCA confidence:** Medium. 1 supporting signal: dependent resources."):
         assert row in md, row
     assert re.search(r"- \*\*Status:\*\* Active, open for \d+ (minutes?|hours?)", md)
@@ -184,7 +185,7 @@ def test_pending_note_keeps_the_phrase_the_ui_and_tests_rely_on(rr):
 
 def test_key_figures(rr):
     k = {x["label"]: x for x in rr.report_kpis(_report(rr))}
-    assert k["READING"]["value"] == "1,267" and k["ALERT LIMIT"]["value"] == "1,116.15"
+    assert k["READING"]["value"] == "1,267" and k["ALERT LIMIT"]["value"] == "1,116"
     assert k["OVER LIMIT BY"]["value"] == "13.5%" and k["OVER LIMIT BY"]["tone"] == "severity"
     assert "OPEN FOR" in k
     under = {x["label"]: x for x in rr.report_kpis(_report(rr, {"threshold_delta_pct": -20.0, "resolved_at": "2026-10-04 17:00:00",
@@ -244,7 +245,7 @@ def test_pdf_text_has_the_new_content_if_pdftotext_is_available(rr, tmp_path):
     path.write_bytes(pdfm.render_pdf(rr.render_markdown(report), rr.report_title(report), severity="WARNING", status="Active",
                                      kpis=rr.report_kpis(report), alert_ref="Alert #9467"))
     text = subprocess.run(["pdftotext", "-layout", str(path), "-"], capture_output=True, text=True).stdout
-    for needle in ("Volume Read Operations above its limit", "OVER LIMIT BY", "13.5%", "1,116.15", "WHAT HAPPENED", "PROBABLE CAUSE",
+    for needle in ("Volume Read Operations above its limit", "OVER LIMIT BY", "13.5%", "1,116", "WHAT HAPPENED", "PROBABLE CAUSE",
                    "04 Oct 2026, 16:13:45 UTC", "CONFIDENTIAL", "Alert #9467", "being generated"):
         assert needle in text, needle
     for gone in ("1116.1497", "It has also triggered 108", "resource(s)", "still active -- prioritize"):

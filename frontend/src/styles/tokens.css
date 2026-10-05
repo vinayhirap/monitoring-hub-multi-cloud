@@ -90,3 +90,17 @@
 @media (prefers-reduced-motion: reduce) {
   :root { --dur: 0ms; }
 }
+
+
+/* ── Theme-correct native controls and chart fills (light-theme audit) ──────────────────────────────────────────────
+   color-scheme tells the browser which scheme to use for native widgets: <select> pop-up lists, scrollbars, date inputs.
+   Without it the pop-up stayed dark on a light page. Option lists also follow the surface tokens.                     */
+:root { color-scheme: dark; }
+[data-theme="light"] { color-scheme: light; }
+select option, select optgroup { background-color: var(--surface-2); color: var(--ink-1); }
+
+/* FILL colours for bars, dots and legend swatches. The -fg tokens are TEXT colours: in the light theme they are deliberately
+   dark (#985b00 amber, #0d793b green) to pass contrast on white, which made every chart bar look like brown mud. Fills
+   use these bright colours in both themes; text keeps using -fg. */
+:root           { --ok-fill: #22c55e; --warn-fill: #f59e0b; --crit-fill: #ef4444; --info-fill: #38bdf8; --mute-fill: #8ca0c4; }
+[data-theme="light"] { --ok-fill: #22a05a; --warn-fill: #f2a516; --crit-fill: #e5484d; --info-fill: #1d9bd8; --mute-fill: #9aa9c4; }

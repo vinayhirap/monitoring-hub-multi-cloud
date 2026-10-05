@@ -32,7 +32,7 @@ from app.db import get_connection
 from app.collector.rca import explain_alert
 from app.llm.summarizer import generate_rca_narrative, is_enabled
 from app.llm.aws_docs import get_references
-from app.metric_labels import metric_label, format_metric_value
+from app.metric_labels import metric_label, format_metric_value, metric_unit_name
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,16 @@ _failed_until = {}    # (alert_id, facts_hash) -> monotonic deadline
 _state_lock = threading.Lock()
 
 
+def _limit_kind(cursor, alert):
+    """'learned' when the limit comes from this resource's own history (dynamic / anomaly), 'configured' when a person typed it.
+    Best effort: the report is still produced without it."""
+    try:
+        from app.threshold_effective import limit_kind_for
+        return limit_kind_for(cursor, alert.get("aws_account_id"), alert.get("resource_type"), alert["metric_name"])
+    except Exception:
+        return None
+
+
 def _gather_facts(alert_id: int) -> dict:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -57,7 +67,7 @@ def _gather_facts(alert_id: int) -> dict:
         cursor.execute("""
             SELECT a.id, a.resource_id, a.metric_name, a.severity, a.status,
                    a.triggered_at, a.resolved_at, a.current_value, a.threshold,
-                   a.region, a.environment, acc.default_region, a.acked_at, a.acked_by,
+                   a.region, a.environment, acc.default_region, a.acked_at, a.acked_by, a.aws_account_id,
                    r.name AS resource_name, r.resource_type, acc.account_name
             FROM alerts a
             JOIN resources r      ON r.resource_id = a.resource_id
@@ -112,6 +122,8 @@ def _gather_facts(alert_id: int) -> dict:
             "account_name": alert["account_name"],
             "metric_name": alert["metric_name"],
             "metric_label": metric_label(alert["metric_name"]),
+            "metric_unit": metric_unit_name(alert["metric_name"]),
+            "limit_kind": _limit_kind(cursor, alert),
             "region": alert.get("region") or alert.get("default_region"),
             "environment": alert.get("environment"),
             "severity": alert["severity"],
@@ -297,9 +309,10 @@ def _build_summary_paragraphs(facts: dict) -> list:
     account = facts.get("account_name")
     d = facts.get("threshold_delta_pct")
     verb = "crossed" if d is None else ("went above" if d >= 0 else "fell below")
+    limit_word = "learned limit" if facts.get("limit_kind") == "learned" else "alert limit"
     over = _over_text(facts)
     head = (f"{label} on {where}" + (f" in {account}" if account else "") +
-            f" {verb} its alert limit at {_fmt_utc(facts.get('triggered_at'))}: the reading was {_reading(facts, 'current_value')} "
+            f" {verb} its {limit_word} at {_fmt_utc(facts.get('triggered_at'))}: the reading was {_reading(facts, 'current_value')} "
             f"against a limit of {_reading(facts, 'threshold')}" + (f" ({over})" if over else "") + ".")
     if _is_active(facts):
         om = _open_minutes(facts)
@@ -371,7 +384,11 @@ def _build_recommendations(facts: dict) -> list:
         recs.append(f"Open for {_minutes_text(om)} with no sign of clearing: decide whether this level is the new normal "
                     f"(then adjust the limit under Settings > Metric thresholds) or an unresolved fault.")
     rec30 = facts.get("recurrences_30d") or 0
-    if rec30 >= 10:
+    if rec30 >= 10 and facts.get("limit_kind") == "learned":
+        recs.append(f"This alert has fired {rec30} other times in 30 days against a limit learned from this resource's own "
+                    f"history. If this level is now normal for the workload, mark the repeats as not genuine so the "
+                    f"baseline absorbs it; if it is not normal, find what keeps driving it.")
+    elif rec30 >= 10:
         recs.append(f"This alert has fired {rec30} other times in 30 days. If this level is normal for the workload, "
                     f"raise the limit or mark the repeats as not genuine so auto-tuning can learn it; if it is not "
                     f"normal, find what keeps driving it.")
@@ -541,6 +558,13 @@ def report_title(report: dict) -> str:
     return f"{label} {tail}"
 
 
+def _reading_note(f: dict) -> str:
+    """'Network In (Bytes)': the metric name with its unit, so a bare 2.48M is never left to guesswork."""
+    label = f.get("metric_label") or metric_label(f.get("metric_name"))
+    unit = f.get("metric_unit") or ""
+    return f"{label} ({unit})" if unit and unit.lower() not in ("percent", "none") else label
+
+
 def report_kpis(report: dict) -> list:
     """Four headline figures for the PDF's key-figures strip: [{label, value, note, tone}]."""
     f = report["facts"]
@@ -548,8 +572,10 @@ def report_kpis(report: dict) -> list:
     active = _is_active(f)
     om = _open_minutes(f)
     return [
-        {"label": "READING", "value": _reading(f, "current_value"), "note": f.get("metric_label") or "", "tone": "ink"},
-        {"label": "ALERT LIMIT", "value": _reading(f, "threshold"), "note": "limit that was crossed", "tone": "ink"},
+        {"label": "READING", "value": _reading(f, "current_value"), "note": _reading_note(f), "tone": "ink"},
+        {"label": "LEARNED LIMIT" if f.get("limit_kind") == "learned" else "ALERT LIMIT", "value": _reading(f, "threshold"),
+         "note": "learned for this resource" if f.get("limit_kind") == "learned"
+                 else ("configured limit" if f.get("limit_kind") == "configured" else "limit that was crossed"), "tone": "ink"},
         {"label": "OVER LIMIT BY" if (d is None or d >= 0) else "UNDER LIMIT BY",
          "value": "n/a" if d is None else f"{abs(d):g}%",
          "note": "above the limit" if (d is None or d >= 0) else "below the limit", "tone": "severity"},
@@ -585,7 +611,8 @@ def render_markdown(report: dict) -> str:
         ("Severity", str(f.get("severity") or "").title()),
         ("Status", status),
         ("Triggered", _fmt_utc(f.get("triggered_at"))),
-        ("Reading vs limit", f"{_reading(f, 'current_value')} against a limit of {_reading(f, 'threshold')}"
+        ("Reading vs limit", f"{_reading(f, 'current_value')} against a "
+                             f"{'learned limit' if f.get('limit_kind') == 'learned' else 'limit'} of {_reading(f, 'threshold')}"
                              + (f" ({over})" if over else "")),
     ]
     conf = str(f.get("confidence") or "").title()

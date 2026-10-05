@@ -86,3 +86,15 @@
 .btn-console-sec:hover:not(:disabled) { background: rgba(43,179,172,0.15); }
 .btn-console-sec:disabled { opacity: .6; cursor: default; }
 .btn-console-sec svg { flex-shrink: 0; }
+
+
+/* Status of a finding (Open / Resolved) with when it opened or was fixed. */
+.sec-status { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 5px; border: 1px solid;
+  font: 700 10px var(--font-data); letter-spacing: .05em; text-transform: uppercase; }
+.sec-status.is-open     { background: var(--warn-bg); color: var(--warn-fg); border-color: var(--warn-line); }
+.sec-status.is-resolved { background: var(--ok-bg);   color: var(--ok-fg);   border-color: var(--ok-line); }
+.sec-status-note { margin-top: 5px; font-size: 11px; color: var(--ink-3); white-space: nowrap; }
+.sec-table tr.is-resolved .sec-title { color: var(--ink-2); }
+.sec-note { margin: 0; padding: 10px 16px; font-size: 12px; line-height: 1.5; color: var(--ink-2);
+  background: var(--brand-bg); border-bottom: 1px solid var(--brand-line); }
+.sec-note strong { color: var(--ink-1); }

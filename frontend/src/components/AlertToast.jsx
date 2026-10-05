@@ -66,26 +66,27 @@ export default function AlertToast() {
 
 function ToastItem({ toast, onClose }) {
   const isCrit  = toast.severity === "CRITICAL";
-  const color   = isCrit ? "#ef4444" : "#f59e0b";
-  const bg      = isCrit ? "rgba(239,68,68,0.12)" : "rgba(245,158,11,0.10)";
-  const border  = isCrit ? "rgba(239,68,68,0.4)"  : "rgba(245,158,11,0.3)";
+  // Theme tokens, not hard-coded dark-theme colours: the near-white text and translucent tint were unreadable on the light
+  // theme, and the see-through background let the table show through the words.
+  const color   = isCrit ? "var(--crit-fg)" : "var(--warn-fg)";
+  const fill    = isCrit ? "var(--crit-fill)" : "var(--warn-fill)";
+  const tint    = isCrit ? "var(--crit-bg)" : "var(--warn-bg)";
+  const border  = isCrit ? "var(--crit-line)" : "var(--warn-line)";
 
   return (
     <div style={{
-      background: bg,
+      background: `linear-gradient(${tint}, ${tint}), var(--surface-2)`,
       borderTop: `1px solid ${border}`, borderRight: `1px solid ${border}`, borderBottom: `1px solid ${border}`,
-      borderLeft: `4px solid ${color}`,
+      borderLeft: `4px solid ${fill}`,
       borderRadius: 10, padding: "14px 16px",
       display: "flex", gap: 12, alignItems: "flex-start",
-      boxShadow: `0 4px 16px ${color}18`,
-      backdropFilter: "blur(10px) saturate(140%)",
-      WebkitBackdropFilter: "blur(10px) saturate(140%)",
+      boxShadow: "0 8px 24px rgba(15, 28, 53, 0.22)",
       animation: isCrit ? "slideIn .25s ease, toastCriticalGlow 2.4s ease infinite" : "slideIn .25s ease",
     }}>
       <div style={{
         flexShrink: 0, color,
         width: 36, height: 36, borderRadius: 10,
-        background: `${color}1f`, border: `1px solid ${color}55`,
+        background: tint, border: `1px solid ${border}`,
         display: "flex", alignItems: "center", justifyContent: "center",
       }}>
         {isCrit ? <AlertOctagonIcon size={19} /> : <AlertTriangleIcon size={19} />}
@@ -94,16 +95,16 @@ function ToastItem({ toast, onClose }) {
         <div style={{ fontWeight: 800, fontSize: 14, color, marginBottom: 3, letterSpacing: "0.01em" }}>
           {toast.severity} ALERT
         </div>
-        <div style={{ fontSize: 13, color: "#dce6f5", marginBottom: 2 }}>
+        <div style={{ fontSize: 13, color: "var(--ink-1)", marginBottom: 2 }}>
           {metricLabel(toast.metric)} — <strong>{formatMetricValue(toast.metric, toast.value)}</strong> (threshold: {formatMetricValue(toast.metric, toast.threshold)})
         </div>
-        <div style={{ fontSize: 11, color: "#7c92b4" }}>
+        <div style={{ fontSize: 11, color: "var(--ink-3)" }}>
           {toast.account_name || `Account #${toast.account_id}`}
           {toast.region ? ` · ${toast.region}` : ""}
         </div>
       </div>
       <button className="toast-close-btn" onClick={onClose} style={{
-        background: "none", border: "none", color: "#7c92b4",
+        background: "none", border: "none", color: "var(--ink-3)",
         cursor: "pointer", padding: 4, lineHeight: 1, display: "flex",
       }}>
         <XIcon size={14} />

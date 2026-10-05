@@ -34,6 +34,7 @@ from app.alert_rules import (
 from app.threshold_defaults import (
     is_placeholder_threshold, AWS_METRIC_NAME_TO_DB_NAME, normalize_service_key,
     is_capacity_percent_metric, is_static_only_metric, alert_floor,
+    is_integer_metric, integerize_limit,
 )
 
 # 2026-09-15 fix: this background evaluator resolves alerts directly via SQL
@@ -186,7 +187,7 @@ def _baseline_bucket(cursor, aws_account_id, aws_resource_id, metric_name):
 
 
 def _dynamic_bounds(cursor, aws_account_id, aws_resource_id, metric_name, comparison, k,
-                     static_warning=None, static_critical=None):
+                     static_warning=None, static_critical=None, bucket=None):
     """
     Looks up this resource+metric's current hour-of-day/day-of-week
     bucket in metric_baseline (populated by app/collector/baseline.py) and
@@ -206,7 +207,11 @@ def _dynamic_bounds(cursor, aws_account_id, aws_resource_id, metric_name, compar
     NOTE: this returns the RAW band. Guard rails (clamp_dynamic_bounds) are
     applied by the caller so this function keeps its historical contract.
     """
-    bucket = _baseline_bucket(cursor, aws_account_id, aws_resource_id, metric_name)
+    # `bucket` lets a caller that already holds the (mean, stddev, samples) for this hour/weekday supply it, so the Settings
+    # page can compute the limits in force for a whole account from ONE batched query with exactly this arithmetic
+    # (app/threshold_effective.py) instead of keeping a second copy of the formula that could drift.
+    if bucket is None:
+        bucket = _baseline_bucket(cursor, aws_account_id, aws_resource_id, metric_name)
     if not bucket:
         return None
     mean, stddev, sample_count = bucket
@@ -281,10 +286,11 @@ ANOMALY_MIN_RATIO = 1.5      # must also exceed 1.5x the bucket mean
 ANOMALY_MIN_CYCLES = 3       # ~15 min sustained on the 5-min tier
 
 
-def _anomaly_only_bound(cursor, aws_account_id, aws_resource_id, metric_name, k):
+def _anomaly_only_bound(cursor, aws_account_id, aws_resource_id, metric_name, k, bucket=None):
     """Upper anomaly line for a volume metric, or None when there is not
     enough evidence to alert at all (cold start / low confidence / flat)."""
-    bucket = _baseline_bucket(cursor, aws_account_id, aws_resource_id, metric_name)
+    if bucket is None:
+        bucket = _baseline_bucket(cursor, aws_account_id, aws_resource_id, metric_name)
     if not bucket:
         return None
     mean, stddev, n = bucket
@@ -762,6 +768,13 @@ def _evaluate_row(cursor, row, silenced_map, stats):
             warning_value, critical_value = clamp_dynamic_bounds(
                 dynamic[0], dynamic[1], row["warning_value"], row["critical_value"],
                 comparison, row.get("unit"))
+
+    # Count metrics: a learned (dynamic / anomaly) line is shown and recorded as a whole number. Behaviour for whole-number
+    # readings is identical (threshold_defaults.integerize_limit); typed limits are never altered.
+    if (anomaly_only or (row.get("use_dynamic") and not is_static_only_metric(metric_name))) \
+            and is_integer_metric(row.get("unit"), metric_name):
+        warning_value = integerize_limit(warning_value, comparison)
+        critical_value = integerize_limit(critical_value, comparison)
 
     is_critical = compare(metric_value, critical_value, comparison) and severity_cap is None
     is_warning  = compare(metric_value, warning_value,  comparison)

@@ -473,3 +473,34 @@ def resolve_db_metric_name(resource_type, catalog_metric_name):
     if override is not None:
         return override
     return (catalog_metric_name or "").lower()
+
+
+# ── Count metrics get whole-number learned limits ───────────────────────────────────────────────
+# A dynamic / anomaly line is mean + k*stddev, so it came out as 11.31, 4361.91 or 1717.3 even for metrics that are COUNTS
+# (requests, operations, errors, connections): "19 / 11.31" is not a number anybody can act on. Rounded the right way the
+# behaviour is IDENTICAL for whole-number readings:
+#   '>'  : value > 11.31  <=>  value > 11   (floor)       '>=' : value >= 11.31 <=> value >= 12  (ceil)
+#   '<'  : value < 11.31  <=>  value < 12   (ceil)         '<=' : value <= 11.31 <=> value <= 11  (floor)
+# so the alert fires on exactly the same readings; only the number shown is whole. Fixed (typed) limits are never touched,
+# and gauges that are genuinely fractional averages (credit balance, queue length) keep their decimals.
+FRACTIONAL_COUNT_METRICS = frozenset({
+    "cpucreditbalance", "cpusurpluscreditbalance", "volumequeuelength", "diskqueuedepth", "wlmqueuelength",
+})
+
+
+def is_integer_metric(unit, metric_name=None) -> bool:
+    """True for catalogue unit 'Count' (not 'Count/Second', not Bytes / Percent / time), minus the fractional gauges."""
+    if str(unit or "").strip().lower() != "count":
+        return False
+    return str(metric_name or "").lower() not in FRACTIONAL_COUNT_METRICS
+
+
+def integerize_limit(value, comparison):
+    """Whole-number form of a learned limit with identical behaviour for whole-number readings (see above)."""
+    if value is None:
+        return None
+    import math
+    v = float(value)
+    if comparison in ("<", ">="):
+        return float(math.ceil(v - 1e-9))
+    return float(math.floor(v + 1e-9))               # '>' and '<='

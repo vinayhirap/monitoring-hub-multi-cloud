@@ -22,7 +22,7 @@ import {
 import { useTimezone } from "../contexts/TimezoneContext";
 import { ShieldIcon, AlertOctagonIcon, ExternalLinkIcon } from "../components/icons";
 import "./SecurityFindings.css";
-import { formatStamp, zoneLabel } from "../utils/timeFormat";
+import { formatStamp, formatDay, zoneLabel } from "../utils/timeFormat";
 import { filterFindings, paginate, checkTypes } from "../utils/findingsView";
 
 const CHECK_LABELS = {
@@ -164,6 +164,12 @@ export default function SecurityFindings() {
       </div>
 
       <div className="sec-card">
+        {status !== "open" && (
+          <div className="sec-note" role="note">
+            <strong>Resolved</strong> means the hourly scan no longer finds this issue: it was fixed, the resource was deleted,
+            or the check no longer applies. <strong>Last seen</strong> is the last scan that still found it.
+          </div>
+        )}
         <div className="sec-bar">
           <span className="bar-icon">▐</span>
           <span className="bar-title">FINDINGS</span>
@@ -184,13 +190,14 @@ export default function SecurityFindings() {
                 <th>Finding</th>
                 <th>Resource</th>
                 <th>Account</th>
+                <th>Status</th>
                 <th>Last seen</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {view.rows.map(f => (
-                <tr key={f.id}>
+                <tr key={f.id} className={f.status === "resolved" ? "is-resolved" : ""}>
                   <td data-label="Severity"><SeverityBadge severity={f.severity} /></td>
                   <td data-label="Finding">
                     <div className="sec-title">{CHECK_LABELS[f.check_id] || f.check_id}</div>
@@ -200,6 +207,16 @@ export default function SecurityFindings() {
                   <td data-label="Account">
                     <div>{f.account_name}</div>
                     <ProviderBadge provider={f.account_provider} />
+                  </td>
+                  <td data-label="Status">
+                    <span className={`sec-status is-${f.status === "resolved" ? "resolved" : "open"}`}>
+                      {f.status === "resolved" ? "Resolved" : "Open"}
+                    </span>
+                    <div className="sec-status-note">
+                      {f.status === "resolved"
+                        ? `Fixed ${formatDay(f.resolved_at || f.last_seen_at, ianaName)}`
+                        : `Open since ${formatDay(f.first_seen_at, ianaName)}`}
+                    </div>
                   </td>
                   <td className="mono" data-label="Last seen">{formatStamp(f.last_seen_at, ianaName, zoneLabel(ianaName))}</td>
                   <td>

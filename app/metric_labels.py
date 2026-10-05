@@ -71,6 +71,15 @@ def _generated():
         return {}, frozenset()
 
 
+def is_integer_metric_name(name) -> bool:
+    """A COUNT metric: its values and learned limits are whole numbers (see threshold_defaults.integerize_limit)."""
+    try:
+        from app import metric_labels_generated as g
+        return str(name or "").lower() in frozenset(getattr(g, "INTEGER_METRICS", ()))
+    except Exception:
+        return False
+
+
 def metric_label(name):
     if not name:
         return ""
@@ -83,6 +92,15 @@ def metric_label(name):
     if m and m.group(1) in labels:
         return f"{labels[m.group(1)]} (/{m.group(2).replace('_', '/')})"
     return humanize(raw)
+
+
+def metric_unit_name(name):
+    """Catalogue unit word for a metric ('Bytes', 'Count', 'Seconds', ...), '' when unknown."""
+    try:
+        from app import metric_labels_generated as g
+        return getattr(g, "UNITS", {}).get(str(name or "").lower(), "")
+    except Exception:
+        return ""
 
 
 def metric_unit(name):
@@ -103,6 +121,8 @@ def format_metric_value(name, v, grouped=False):
         n = float(v)
     except (TypeError, ValueError):
         return str(v)
+    if is_integer_metric_name(name):
+        n = float(round(n))                                # a count shows as a whole number (older rows hold 4361.91)
     a = abs(n)
     if a >= 1e12:
         out = f"{n / 1e12:.2f}T"

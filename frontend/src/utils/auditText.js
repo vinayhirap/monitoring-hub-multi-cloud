@@ -13,6 +13,11 @@ export function humanizeAuditText(text, nameById = {}) {
   out = out.replace(/\bmetric_id=(\d+)\s+warn=(\S+)\s+crit=(\S+)/g, "metric #$1 set to warning $2, critical $3");
   out = out.replace(/(\d+) metric threshold\(s\) set from defaults/g,
     (m, n) => `recommended defaults applied to ${n} metric ${Number(n) === 1 ? "threshold" : "thresholds"}`);
+  // older threshold-change messages that carried only a row id
+  out = out.replace(/\bthreshold_id=(\d+)\s+use_dynamic=1\s+dynamic_k=([\d.]+)/g, "threshold #$1: learned limits on (k=$2)");
+  out = out.replace(/\bthreshold_id=(\d+)\s+use_dynamic=0\s+dynamic_k=([\d.]+)/g, "threshold #$1: back to fixed limits");
+  out = out.replace(/\bthreshold_id=(\d+)\s+enabled=1\b/g, "threshold #$1: alerting turned on");
+  out = out.replace(/\bthreshold_id=(\d+)\s+enabled=0\b/g, "threshold #$1: alerting turned off");
   // "6 metric(s)" / "1 alert(s)": pick the right plural
   out = out.replace(/\b(\d+)\s+([A-Za-z]+)\(s\)/g, (m, n, word) => `${n} ${Number(n) === 1 ? word : word + "s"}`);
   return out;

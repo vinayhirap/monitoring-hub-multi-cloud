@@ -210,6 +210,7 @@ _TYPE_TITLES = {
 }
 _MAX_INCIDENT_CARDS = 10
 _MAX_TIMELINE_ROWS = 60
+_MAX_ROWS_PER_SOURCE = 5          # one noisy source (60 near-identical "Target 4xx Errors" rows) must not fill the whole log
 _TOP_N = 8
 
 _ARN_RE = re.compile(r"arn:aws[\w-]*:[^\s,)\]]+")
@@ -297,7 +298,10 @@ def summarize(data: dict) -> dict:
             bucket["critical"] += sev == "CRITICAL"
             bucket["warning"] += sev == "WARNING"
             bucket["open"] += _is_open(a.get("status"))
-    top_resources = sorted(by_res.values(), key=lambda x: (-x["open"], -x["critical"], -x["total"]))[:_TOP_N]
+    # "Most affected" means most alerts. (It used to sort still-open first, so the table read 27, 21, 117, 143, 204 and the
+    # summary named the 27- and 21-alert resources "most affected" ahead of one with 204.) Open ones have their own column
+    # and their own "Still open" line.
+    top_resources = sorted(by_res.values(), key=lambda x: (-x["total"], -x["critical"], -x["open"], x["name"]))[:_TOP_N]
     top_metrics = sorted(by_metric.values(), key=lambda x: (-x["total"], -x["critical"]))[:_TOP_N]
     daily = data.get("daily_counts") or {}
     busiest = max(daily.items(), key=lambda kv: kv[1]) if daily and max(daily.values()) > 0 else None
@@ -309,6 +313,28 @@ def summarize(data: dict) -> dict:
                                         a["triggered_at"]))
     return {"total": total, "resources": len(by_res), "top_resources": top_resources, "top_metrics": top_metrics,
             "busiest": busiest, "dominant": dominant, "open_alerts": open_alerts}
+
+
+def select_significant(alerts, limit=None, per_source=None):
+    """The alerts worth showing, most significant first (open, then severity, then newest), taking at most `per_source` per
+    (resource, metric) on the first pass so the log shows the BREADTH of what happened; remaining slots are then filled from
+    what was skipped. Returned in time order."""
+    limit = limit or _MAX_TIMELINE_ROWS
+    per_source = per_source or _MAX_ROWS_PER_SOURCE
+    ranked = sorted(alerts, key=lambda a: (0 if _is_open(a.get("status")) else 1,
+                                           {"CRITICAL": 0, "WARNING": 1}.get((a.get("severity") or "").upper(), 2),
+                                           -a["triggered_at"].timestamp()))
+    # Round-robin in waves: the first `per_source` alerts of EVERY source, then the next `per_source` of every source, and so on,
+    # keeping significance order inside a wave. (Topping up with "whatever was skipped" let the newest source fill the log again.)
+    counts, waves = {}, []
+    for idx, a in enumerate(ranked):
+        key = (a.get("resource_id"), (a.get("metric_name") or "").lower())
+        n = counts.get(key, 0)
+        counts[key] = n + 1
+        waves.append((n // per_source, idx, a))
+    waves.sort(key=lambda t: (t[0], t[1]))
+    chosen = [a for _, _, a in waves[:limit]]
+    return sorted(chosen, key=lambda a: a["triggered_at"])
 
 
 def summary_paragraphs(data: dict, summ: dict, period_start, period_end) -> list:
@@ -542,14 +568,9 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
     alerts = data.get("alerts") or []
     kit.section_header(pdf, "Most Significant Alerts" if len(alerts) > _MAX_TIMELINE_ROWS else "Alert Log")
     if alerts:
-        pool = alerts
-        if len(alerts) > _MAX_TIMELINE_ROWS:
-            pool = sorted(alerts, key=lambda a: (0 if _is_open(a.get("status")) else 1,
-                                                 {"CRITICAL": 0, "WARNING": 1}.get((a.get("severity") or "").upper(), 2),
-                                                 -a["triggered_at"].timestamp()))[:_MAX_TIMELINE_ROWS]
-        pool = sorted(pool, key=lambda a: a["triggered_at"])
-        kit.data_table(pdf, [("Time (UTC)", 28, "L"), ("Severity", 24, "C"), ("Status", 22, "C"), ("Resource", 46, "L"),
-                             ("Metric", 36, "L"), ("Value", 24, "R")],
+        pool = select_significant(alerts) if len(alerts) > _MAX_TIMELINE_ROWS else sorted(alerts, key=lambda a: a["triggered_at"])
+        kit.data_table(pdf, [("Time (UTC)", 26, "L"), ("Severity", 22, "C"), ("Status", 22, "C"), ("Resource", 54, "L"),
+                             ("Metric", 34, "L"), ("Value", 22, "R")],
                        [(_fmt_short(_naive(a["triggered_at"])),
                          ("chip", (a.get("severity") or "-").upper(), kit.SEVERITY_COLORS.get((a.get("severity") or "").upper(), kit.MUTED)),
                          ("chip", "OPEN" if _is_open(a.get("status")) else "RESOLVED",
@@ -557,7 +578,8 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
                          _name_of(a), metric_label(a.get("metric_name")),
                          format_metric_value(a.get("metric_name"), a.get("value"), grouped=True)) for a in pool])
         if len(pool) < len(alerts):
-            kit.plain_paragraph(pdf, f"Showing {len(pool)} of {len(alerts):,} alerts: still-open and highest severity first. "
+            kit.plain_paragraph(pdf, f"Showing {len(pool)} of {len(alerts):,} alerts: still-open and highest severity first, at most "
+                                     f"{_MAX_ROWS_PER_SOURCE} per resource and metric so one noisy source does not crowd out the rest. "
                                      f"The full alert history is in CloudOps or available through the API.",
                                 size=8.5, color=kit.MUTED, italic=True)
     else:

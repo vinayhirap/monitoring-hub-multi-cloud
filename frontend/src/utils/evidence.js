@@ -44,15 +44,36 @@ export function seriesStats(points) {
   return { n: nums.length, min, max, avg, latest, maxAt, trend };
 }
 
-/** Freshness of a metric's newest datapoint against its own collection cadence. */
-export function freshness(lastMs, nowMs, periodSecs) {
+/**
+ * Freshness of a metric's newest datapoint against how often it is actually COLLECTED.
+ *
+ * It used to judge from the CloudWatch period alone (5 min -> "late" after exactly 15 min), which got two things wrong:
+ *  - a 5-minute metric collected every 5 minutes is normally up to ~13 min old (the period must close, CloudWatch publishes it
+ *    a few minutes later, then the next collection picks it up), so "fresh" flipped to "late" at 15 min with nothing wrong;
+ *  - an HOURLY metric (polled every 1 hr) was called "stale" at 44 minutes.
+ * The allowance now comes from the server (stale_after_seconds: the same table the alert engine uses to mark data stale),
+ * else is derived from the collection interval. Fresh within the allowance, late within twice it, stale beyond.
+ */
+export function freshness(lastMs, nowMs, periodSecs, pollSecs = 0, staleAfterSecs = 0) {
   if (lastMs == null) return { state: "none", age: null };
   const age = Math.max(0, nowMs - lastMs);
-  if (!(periodSecs > 0)) return { state: "unknown", age };   // cadence not known: report the age, never a verdict
-  const per = Math.max(periodSecs, 60) * 1000;
-  // collection + CloudWatch publication lag: allow 3 periods before calling it late, 6 before stale
-  const state = age <= per * 3 ? "fresh" : age <= per * 6 ? "late" : "stale";
-  return { state, age };
+  let allow = 0;
+  if (staleAfterSecs > 0) allow = staleAfterSecs;
+  else if (pollSecs > 0) allow = Math.max(1200, pollSecs * 2.5);
+  else if (periodSecs > 0) allow = Math.max(1200, periodSecs * 4);
+  if (!(allow > 0)) return { state: "unknown", age };        // cadence not known: report the age, never a verdict
+  const lim = allow * 1000;
+  const state = age <= lim ? "fresh" : age <= lim * 2 ? "late" : "stale";
+  return { state, age, allowanceMs: lim };
+}
+
+/**
+ * Age to SHOW. A datapoint is stamped with the START of its period, so a 5-minute point stamped 11:45 only closes at 11:50:
+ * measuring from the start made every reading look 5 minutes older than it is. Show time since the period closed.
+ */
+export function displayAge(ageMs, periodSecs) {
+  if (ageMs == null) return null;
+  return Math.max(0, ageMs - Math.max(0, periodSecs || 0) * 1000);
 }
 
 /** Where the latest value sits against configured thresholds. comparison: ">" (default) or "<". */
