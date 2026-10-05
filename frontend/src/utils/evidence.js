@@ -52,9 +52,10 @@ export function seriesStats(points) {
  *    a few minutes later, then the next collection picks it up), so "fresh" flipped to "late" at 15 min with nothing wrong;
  *  - an HOURLY metric (polled every 1 hr) was called "stale" at 44 minutes.
  * The allowance now comes from the server (stale_after_seconds: the same table the alert engine uses to mark data stale),
- * else is derived from the collection interval. Fresh within the allowance, late within twice it, stale beyond.
+ * else is derived from the collection interval. Fresh within the allowance, late within twice it, stale beyond;
+ * "idle" instead for event-driven (sparse) metrics.
  */
-export function freshness(lastMs, nowMs, periodSecs, pollSecs = 0, staleAfterSecs = 0) {
+export function freshness(lastMs, nowMs, periodSecs, pollSecs = 0, staleAfterSecs = 0, sparse = false) {
   if (lastMs == null) return { state: "none", age: null };
   const age = Math.max(0, nowMs - lastMs);
   let allow = 0;
@@ -63,7 +64,10 @@ export function freshness(lastMs, nowMs, periodSecs, pollSecs = 0, staleAfterSec
   else if (periodSecs > 0) allow = Math.max(1200, periodSecs * 4);
   if (!(allow > 0)) return { state: "unknown", age };        // cadence not known: report the age, never a verdict
   const lim = allow * 1000;
-  const state = age <= lim ? "fresh" : age <= lim * 2 ? "late" : "stale";
+  let state = age <= lim ? "fresh" : age <= lim * 2 ? "late" : "stale";
+  // EVENT-DRIVEN metrics (Lambda, SQS, SNS, request-based load balancer metrics, ...) are published by AWS only when something
+  // happens. No new datapoint then means "no activity", not "the collector is behind", so it is never called late or stale.
+  if (sparse && state !== "fresh") state = "idle";
   return { state, age, allowanceMs: lim };
 }
 

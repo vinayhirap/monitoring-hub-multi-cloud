@@ -148,9 +148,9 @@ export default function MetricChartCard({
   const reportPts = pts.filter(p => p.v != null);
   // Analytics strip: trend, range and freshness derived only from the points on screen.
   const st = seriesStats(pts);
-  const fr = freshness(lastT, Date.now(), meta?.period_seconds, meta?.poll_seconds, meta?.stale_after_seconds);
+  const fr = freshness(lastT, Date.now(), meta?.period_seconds, meta?.poll_seconds, meta?.stale_after_seconds, !!meta?.sparse);
   const breach = breachState(latest, warnLine, critLine, th?.comparison || ">");
-  const frLabel = { fresh: "fresh", late: "late", stale: "stale", unknown: "last point", none: "no data" }[fr.state];
+  const frLabel = { fresh: "fresh", late: "late", stale: "stale", unknown: "last point", idle: "no recent activity", none: "no data" }[fr.state];
 
   const end = Math.max(Date.now(), lastT || 0);
   const start = end - windowHours * 3600 * 1000;

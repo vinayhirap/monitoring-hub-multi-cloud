@@ -339,3 +339,73 @@ def test_stale_report_script_loads_the_apps_env_file_before_importing_the_databa
     assert src.index("load_dotenv(") < src.index("from app.db import get_db_cursor")
     for other in ("scripts/check_ec2_network_stat.py", "scripts/seed_metric_catalog.py"):
         assert "load_dotenv()" in (ROOT / other).read_text()                # same convention as the existing scripts
+
+
+# ── Round 10: what the prod stale report showed ──────────────────────────────
+
+def test_cleanup_of_orphaned_metric_rows_is_batched_provider_scoped_and_valid_mysql():
+    """17 'stale' rows on prod: leftovers of resources discovery had not seen for 461 h. Only the cache is cleaned."""
+    install_stub("app.db", get_connection=lambda: None)
+    log, plan = [], [1000, 37]
+
+    class Cur:
+        rowcount = 0
+
+        def execute(self, sql, params=None):
+            log.append((" ".join(sql.split()), params))
+            self.rowcount = plan.pop(0) if plan else 0
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+        def commit(self):
+            pass
+        def close(self):
+            pass
+    install_stub("app.db", get_connection=lambda: Conn())
+    ret = load_module("app/collector/retention.py")
+    assert ret.prune_orphaned_metric_rows(sleep=lambda s: None) == 1037 and len(log) == 2
+    sql, params = log[0]
+    assert sql.startswith("DELETE FROM metrics WHERE id IN ( SELECT id FROM ( SELECT m.id FROM metrics m")
+    assert "LIMIT 1000" in sql and " DELETE m FROM" not in sql                 # MySQL rejects LIMIT on a multi-table DELETE
+    assert "a.provider = 'aws'" in sql and "r.instance_state = 'terminated'" in sql and params == (72,)
+    assert "FROM resources" not in sql.split("WHERE id IN")[0] and "DELETE FROM resources" not in sql      # the resources row is KEPT
+    src = (ROOT / "app/collector/retention.py").read_text()
+    assert '("orphaned_metric_rows", prune_orphaned_metric_rows)' in src
+
+
+def test_the_cleanup_window_can_never_be_shorter_than_the_collectors_own_gone_rule(monkeypatch):
+    install_stub("app.db", get_connection=lambda: None)
+    ret = load_module("app/collector/retention.py")
+    monkeypatch.delenv("ORPHAN_METRICS_HOURS", raising=False)
+    assert ret.orphan_metrics_hours() == 72
+    monkeypatch.setenv("ORPHAN_METRICS_HOURS", "5")
+    assert ret.orphan_metrics_hours() == 48                                  # floor: collector skips resources after 48 h
+    monkeypatch.setenv("ORPHAN_METRICS_HOURS", "240")
+    assert ret.orphan_metrics_hours() == 240
+
+
+@pytest.mark.parametrize("service,metric,sparse", [
+    ("lambda", "Duration", True), ("lambda", "concurrentexecutions", True), ("sqs", "approximateageofoldestmessage", True),
+    ("sns", "publishsize", True), ("events", "matchedevents", True), ("natgateway", "packetsdropcount", True),
+    ("elb", "responselatency", True), ("alb", "HTTPCode_Target_4XX_Count", True), ("elb", "requestcount", True),
+    ("ec2", "CPUUtilization", False), ("ec2", "NetworkIn", False), ("ebs", "VolumeReadOps", False),
+    ("rds", "DatabaseConnections", False), ("elb", "healthyhostcount", False), ("alb", "HealthyHostCount", False),
+])
+def test_event_driven_metrics_are_flagged_and_continuous_ones_are_not(service, metric, sparse):
+    install_stub("app.db", get_db_cursor=lambda *a, **k: None, get_connection=lambda: None)
+    mm = load_module("app/metric_meta.py")
+    assert mm.is_sparse_metric(service, metric) is sparse
+    assert '"sparse": is_sparse_metric(svc, name)' in (ROOT / "app/metric_meta.py").read_text()
+
+
+def test_chart_card_passes_the_sparse_flag_and_has_an_idle_style():
+    assert "!!meta?.sparse" in _t("components/MetricChartCard.jsx") and "no recent activity" in _t("components/MetricChartCard.jsx")
+    assert ".mc-f-idle" in _t("components/MetricChartCard.css")
+
+
+def test_stale_report_separates_gone_idle_and_really_stale_and_stays_read_only():
+    src = (ROOT / "scripts/report_stale_metrics.py").read_text()
+    assert 'r["kind"] = "gone" if r["gone"] else ("idle" if is_sparse_metric' in src and "Run with --all to see them" in src
+    for write in ("INSERT ", "UPDATE ", "DELETE ", "DROP ", "ALTER "):
+        assert write not in src, write

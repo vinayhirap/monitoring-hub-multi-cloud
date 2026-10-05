@@ -11,7 +11,8 @@ STALE_MIN_BY_INTERVAL: 20 min for 2/5-minute metrics, 45 for 15-minute, 180 for 
 flat 15 minutes. "late" is up to twice that allowance, "stale" beyond it.
 
 Read-only: it only runs SELECTs. Prints four sections:
-  1. last-value metrics that are stale / late        (the `metrics` cache the evaluator and the charts read)
+  1. live metrics that stopped arriving               (leftovers of deleted resources and idle event-driven metrics are
+                                                        separated out; --all shows them)
   2. resources the discovery job has not seen         (resources.last_seen_at)
   3. ACTIVE alerts waiting for data                   (the "Stale" tab on the Alerts page)
   4. accounts whose collection has stopped            (newest datapoint per account)
@@ -59,25 +60,36 @@ def main():
     acct_params = (args.account,) if args.account else ()
     allowance = stale_minutes_sql("r", "aa", "m.metric_name")
 
+    from app.metric_meta import is_sparse_metric  # noqa: E402
+
     with get_db_cursor(dictionary=True, commit=False) as (_c, cur):
-        stale = _rows(cur, f"""
+        rows = _rows(cur, f"""
             SELECT aa.account_name AS account, r.resource_type AS type, m.metric_name AS metric, COUNT(*) AS resources,
                    MAX(TIMESTAMPDIFF(MINUTE, m.metric_timestamp, UTC_TIMESTAMP())) AS oldest_min,
                    MAX({allowance}) AS allowed_min,
-                   CASE WHEN MAX(TIMESTAMPDIFF(MINUTE, m.metric_timestamp, UTC_TIMESTAMP())) > 2 * MAX({allowance})
-                        THEN 'STALE' ELSE 'late' END AS state
+                   (r.instance_state = 'terminated' OR r.last_seen_at < DATE_SUB(NOW(), INTERVAL 48 HOUR)) AS gone
             FROM metrics m
             JOIN resources r ON r.id = m.resource_id
             JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
             WHERE TIMESTAMPDIFF(MINUTE, m.metric_timestamp, UTC_TIMESTAMP()) > {allowance}
               {acct_sql}
-            GROUP BY aa.account_name, r.resource_type, m.metric_name
+            GROUP BY aa.account_name, r.resource_type, m.metric_name, gone
             ORDER BY oldest_min DESC
         """, acct_params)
-        if not args.all:
-            stale = [s for s in stale if s["state"] == "STALE"]
-        _print_table("Metrics with no new datapoint inside their allowance", stale,
-                     ["account", "type", "metric", "resources", "oldest_min", "allowed_min", "state"])
+        # Three different causes behind "no new datapoint", only the last is a problem:
+        #   gone  : the resource no longer exists in AWS; its cached row is a leftover (pruned daily after 72 h)
+        #   idle  : an event-driven metric (Lambda, SQS, SNS ...): AWS publishes nothing while there is no activity
+        #   STALE : a live resource whose metric should be arriving and is not
+        for r in rows:
+            r["kind"] = "gone" if r["gone"] else ("idle" if is_sparse_metric(r["type"], r["metric"]) else
+                        ("STALE" if r["oldest_min"] > 2 * r["allowed_min"] else "late"))
+        shown = rows if args.all else [r for r in rows if r["kind"] == "STALE"]
+        _print_table("Live metrics that stopped arriving (the ones to investigate)" if not args.all else "All metrics outside their allowance",
+                     shown, ["account", "type", "metric", "resources", "oldest_min", "allowed_min", "kind"])
+        hidden = {k: sum(1 for r in rows if r["kind"] == k) for k in ("gone", "idle", "late")}
+        if not args.all and any(hidden.values()):
+            print(f"   hidden: {hidden['gone']} from resources no longer in AWS, {hidden['idle']} event-driven metrics that publish "
+                  f"nothing while idle, {hidden['late']} slightly late. Run with --all to see them.")
 
         unseen = _rows(cur, f"""
             SELECT aa.account_name AS account, r.resource_type AS type, r.name AS name,

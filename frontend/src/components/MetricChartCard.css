@@ -35,4 +35,4 @@ span.mc-chip { cursor: default; }
 .mc-rng { font-family: var(--font-data); }
 .mc-fresh { margin-left: auto; white-space: nowrap; }
 .mc-f-fresh { color: var(--ok-fg); } .mc-f-late { color: var(--warn-fg); } .mc-f-stale { color: var(--crit-fg); } .mc-f-none { color: var(--text-muted); }
-.mc-f-unknown { color: var(--text-muted); }
+.mc-f-unknown { color: var(--text-muted); } .mc-f-idle { color: var(--ink-3); }

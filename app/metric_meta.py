@@ -30,6 +30,22 @@ def _catalog_services(service):
     return ["alb", "nlb", "elb"] if s in ("alb", "nlb", "elb") else [s]
 
 
+# Services whose CloudWatch metrics are published ONLY when something happens: a Lambda that was not invoked, an idle SQS queue
+# (AWS stops publishing after ~6 h), an SNS topic nobody published to, a NAT gateway with no traffic. For these "no new datapoint"
+# means "no activity", not "the collector is behind", so the UI says idle, never stale.
+SPARSE_SERVICES = frozenset({"lambda", "sqs", "sns", "events", "apigateway", "wafv2", "cloudfront", "s3", "dynamodb", "kinesis",
+                             "states", "logs", "backup", "natgateway"})
+_ELB_SPARSE_PREFIXES = ("httpcode", "requestcount", "responselatency", "targetresponsetime", "errors4xx", "errors5xx",
+                        "rejectedconnection", "targetconnectionerror", "newconnection", "activeconnection", "processedbytes")
+
+
+def is_sparse_metric(service, metric_name) -> bool:
+    svc, name = (service or "").lower(), (metric_name or "").lower()
+    if svc in ("alb", "nlb", "elb"):
+        return name.startswith(_ELB_SPARSE_PREFIXES)           # request-based ones only; HealthyHostCount etc. publish continuously
+    return svc in SPARSE_SERVICES
+
+
 def stale_after_seconds(interval_seconds):
     """Seconds a metric collected every `interval_seconds` may go without a new datapoint before it is late (None: unknown)."""
     try:
@@ -121,6 +137,7 @@ def build_metric_meta(account_id, provider, service, resource_ids):
                 # mark an alert's data stale (polling_model.STALE_MIN_BY_INTERVAL), so a chart and the alert engine can
                 # never disagree about "fresh". The chart used to guess from the CloudWatch period alone.
                 "stale_after_seconds": stale_after_seconds(poll["interval_seconds"]),
+                "sparse": is_sparse_metric(svc, name),
                 "period_seconds": poll.get("period_seconds"), "period_label": fmt_interval(poll.get("period_seconds")),
                 "tier": poll.get("tier"), "poll_source": poll.get("source"),
                 "threshold": None, "alert": None,

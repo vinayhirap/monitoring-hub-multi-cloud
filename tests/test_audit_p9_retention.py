@@ -85,7 +85,7 @@ def test_notification_log_prune_and_disable(monkeypatch):
 def test_run_retention_never_raises_and_reports_failure():
     install_stub("app.db", get_connection=lambda: (_ for _ in ()).throw(RuntimeError("db down")))
     m = load_module("app/collector/retention.py")
-    assert m.run_retention() == {"alerts": -1, "notification_log": -1}
+    assert m.run_retention() == {"alerts": -1, "notification_log": -1, "orphaned_metric_rows": -1}      # every step fails soft
 
 
 def test_wired_into_the_daily_block_and_audit_logs_are_not_pruned():

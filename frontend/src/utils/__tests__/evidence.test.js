@@ -83,3 +83,12 @@ test("lifecycle reflects only real alert fields", () => {
   const res = lifecycle({ triggered_at: "x", resolved_at: "2026-10-01T11:00:00Z", resolution_reason: "auto", status: "resolved" });
   assert.equal(res[2].done, true); assert.equal(res[2].why, "auto");
 });
+
+test("event-driven metrics are 'idle' when quiet, never late or stale", () => {
+  const now = 1e9, min = 60e3;
+  assert.equal(freshness(now - 6 * 60 * min, now, 300, 300, 1200, true).state, "idle");       // Lambda not invoked for 6 h
+  assert.equal(freshness(now - 27 * 60 * min, now, 300, 300, 1200, true).state, "idle");      // idle SQS queue
+  assert.equal(freshness(now - 5 * min, now, 300, 300, 1200, true).state, "fresh");           // recent activity is still fresh
+  assert.equal(freshness(now - 6 * 60 * min, now, 300, 300, 1200, false).state, "stale");     // a continuous metric really is stale
+  assert.equal(freshness(null, now, 300, 300, 1200, true).state, "none");
+});

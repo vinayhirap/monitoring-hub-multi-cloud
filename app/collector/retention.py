@@ -92,10 +92,44 @@ def prune_notification_log(sleep=time.sleep) -> int:
         (max(days, 7),), sleep)
 
 
+ORPHAN_METRICS_HOURS_DEFAULT = 72      # must stay above the collector's own 48 h "resource is gone" rule (runner.STALE_RESOURCE_HOURS)
+ORPHAN_METRICS_HOURS_MIN = 48
+
+
+def orphan_metrics_hours() -> int:
+    return max(_env_days("ORPHAN_METRICS_HOURS", ORPHAN_METRICS_HOURS_DEFAULT), ORPHAN_METRICS_HOURS_MIN)
+
+
+def prune_orphaned_metric_rows(sleep=time.sleep) -> int:
+    """Delete the cached last-value rows (`metrics`) of AWS resources that no longer exist.
+
+    The collector stops polling a resource once discovery has not re-confirmed it for 48 h (or it is terminated), but nothing
+    ever removed its last-value rows, so every deleted instance / volume / event bus kept "metrics" 24-30 days old forever.
+    They are not used for anything (the evaluator ignores them, charts show no data) and only showed up as stale. The
+    `resources` row itself is KEPT: old alerts and reports still read its name and type. History in metric_history is untouched.
+
+    MySQL does not allow LIMIT on a multi-table DELETE, hence the derived-table form (also what avoids "can't specify target
+    table"). Batched like the other pruning jobs."""
+    hours = orphan_metrics_hours()
+    return _delete_in_batches(
+        f"""DELETE FROM metrics WHERE id IN (
+                SELECT id FROM (
+                    SELECT m.id FROM metrics m
+                    JOIN resources r ON r.id = m.resource_id
+                    JOIN aws_accounts a ON a.id = r.aws_account_id AND a.provider = 'aws'
+                    WHERE r.instance_state = 'terminated'
+                       OR r.last_seen_at < DATE_SUB(NOW(), INTERVAL %s HOUR)
+                    LIMIT {BATCH_SIZE}
+                ) doomed
+            )""",
+        (hours,), sleep)
+
+
 def run_retention() -> dict:
     """Called from the daily (low-tier) scheduler block. Never raises."""
     out = {}
-    for name, fn in (("alerts", prune_resolved_alerts), ("notification_log", prune_notification_log)):
+    for name, fn in (("alerts", prune_resolved_alerts), ("notification_log", prune_notification_log),
+                     ("orphaned_metric_rows", prune_orphaned_metric_rows)):
         try:
             out[name] = fn()
         except Exception as exc:
