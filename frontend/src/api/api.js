@@ -1,6 +1,7 @@
 // src/api/api.js
 import { clearAllCached } from "../utils/dataCache";
 import { redirectToSignIn } from "../utils/loginFlow";
+import { filenameFromDisposition, safeFileName } from "../utils/download";
 
 const BASE = "";
 
@@ -35,6 +36,7 @@ export async function apiFetch(path, options = {}) {
     // "API /api/users/3 -> 409".
     const err = new Error(`API ${path} \u2192 ${res.status}`);
     err.status = res.status;
+    err.requestId = res.headers.get("x-request-id") || undefined;       // quoted in the friendly message so support can find the log line
     try { const body = await res.json(); err.detail = typeof body?.detail === "string" ? body.detail : undefined; } catch { /* non-JSON body */ }
     throw err;
   }
@@ -61,6 +63,33 @@ export const getAccount       = (id) => apiFetch(`/api/admin/accounts/${id}`);
 export const addAccount       = (data) => apiFetch("/api/admin/accounts", { method:"POST", body: JSON.stringify(data) });
 export const discoverAccount  = (id)   => apiFetch(`/api/admin/accounts/${id}/discover`, { method:"POST" });
 export const deleteAccount    = (id)   => apiFetch(`/api/admin/accounts/${id}`, { method:"DELETE" });
+/**
+ * Fetch a file and save it under the server's file name, WITHOUT opening a tab (see utils/download.js for why).
+ * Resolves to the saved name; rejects with an Error carrying status / detail / requestId like apiFetch does.
+ */
+export async function downloadFile(path, fallbackName = "download") {
+  const res = await fetch(`${BASE}${path}`, { credentials: "include" });
+  if (res.status === 401) {
+    clearAllCached();
+    redirectToSignIn();
+    throw new Error("Your session expired. Please sign in again.");
+  }
+  if (!res.ok) {
+    const err = new Error(`Download failed (${res.status})`);
+    err.status = res.status;
+    err.requestId = res.headers.get("x-request-id") || undefined;
+    try { const body = await res.json(); err.detail = typeof body?.detail === "string" ? body.detail : undefined; } catch { /* non-JSON */ }
+    throw err;
+  }
+  const blob = await res.blob();
+  const name = safeFileName(filenameFromDisposition(res.headers.get("Content-Disposition")), fallbackName);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name; a.rel = "noopener"; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  return name;
+}
+
 // Download the account's alert/incident/resource history as a JSON file (audit C7: export before removal).
 export async function downloadAccountHistory(id) {
   const res = await fetch(`${BASE}/api/admin/accounts/${id}/export`, { credentials: "include" });

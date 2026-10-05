@@ -13,6 +13,42 @@ class _Tasks(_FakeBackgroundTasks):
         self.added.append(a)
 
 
+class _StrictRules:
+    """Models mysql-connector's UNBUFFERED cursor: executing while a result set is unread raises InternalError.
+    The first idempotency version passed its tests with a forgiving fake and then returned HTTP 500 in production."""
+
+
+def _make_strict(mod):
+    """Wrap the module's scripted cursor class so an unread result set blocks the next execute()."""
+    real_get = mod.get_db_cursor
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def strict(*a, **k):
+        with real_get(*a, **k) as (conn, cur):
+            state = {"unread": False}
+            orig_execute, orig_fetchone, orig_fetchall = cur.execute, cur.fetchone, cur.fetchall
+
+            def execute(sql, params=None):
+                if state["unread"]:
+                    raise RuntimeError("Unread result found")           # mysql.connector.errors.InternalError
+                out = orig_execute(sql, params)
+                state["unread"] = sql.lstrip().upper().startswith("SELECT")
+                return out
+
+            def fetchone():
+                state["unread"] = False
+                return orig_fetchone()
+
+            def fetchall():
+                state["unread"] = False
+                return orig_fetchall()
+            cur.execute, cur.fetchone, cur.fetchall = execute, fetchone, fetchall
+            yield conn, cur
+    mod.get_db_cursor = strict
+
+
 def _gen(mod, tasks, **over):
     kw = dict(background_tasks=tasks, request=None, report_type="WEEKLY", scope_type="ACCOUNT",
               scope_id="10", account_id=10, period_start=None, period_end=None, current_user=_user("editor"))
@@ -27,6 +63,20 @@ def _script(existing):
         (contains("INSERT INTO report_jobs"), []),
         (contains("RELEASE_LOCK"), []),
     ]
+
+
+def test_every_result_set_is_read_before_the_next_statement_the_500_regression():
+    """Reports page showed 'API /reports/generate ... -> 500' on every click."""
+    tasks = _Tasks()
+    mod = _load_reports_module(_script([]))
+    _make_strict(mod)
+    assert _gen(mod, tasks)["status"] == "QUEUED"                          # new job: lock, check, insert, release
+    dup = _load_reports_module(_script([{"id": 41, "status": "COMPLETE"}]))
+    _make_strict(dup)
+    assert _gen(dup, _Tasks())["deduplicated"] is True                     # early return still releases the lock cleanly
+    src = (__import__("pathlib").Path(__file__).resolve().parent.parent / "app/api/reports.py").read_text()
+    fn = src[src.index("def generate_report"):src.index("def get_report_job") if "def get_report_job" in src else len(src)]
+    assert fn.count("cur.fetchone()") >= 2 and "GET_LOCK" in fn and "RELEASE_LOCK" in fn
 
 
 def test_duplicate_returns_existing_job_and_runs_nothing():

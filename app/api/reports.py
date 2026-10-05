@@ -48,6 +48,7 @@ from app.db import get_db_cursor
 from app.email import mailer
 from app.reports import s3_client
 from app.reports.worker import run_job
+from app.report_names import periodic_report_filename
 
 logger = logging.getLogger(__name__)
 def is_enabled() -> bool:
@@ -174,7 +175,11 @@ def generate_report(
         f"{report_type}|{scope_type}|{scope_id}|{account_id}|{current_user['username']}".encode()
     ).hexdigest()
     with get_db_cursor(dictionary=True) as (_, cur):
+        # Every result set MUST be read before the next statement: this app's cursors are not buffered, so an unread
+        # SELECT makes the next execute() raise "Unread result found". The first version of this block ran
+        # GET_LOCK without reading it, which turned every "Generate report" click into a 500 (Reports page error).
         cur.execute("SELECT GET_LOCK(%s, 3) AS got", (lock_name,))
+        cur.fetchone()
         try:
             existing = _find_duplicate_job(cur, report_type, scope_type, scope_id, account_id,
                                            current_user["username"], start, end)
@@ -191,6 +196,7 @@ def generate_report(
             job_id = cur.lastrowid
         finally:
             cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+            cur.fetchone()
 
     write_audit(current_user["username"], "Report generation requested",
                 f"{report_type} report for {scope_type}={scope_id}",
@@ -351,7 +357,9 @@ def download_report(
                 f"report_id={report_id} key={report['s3_key']}",
                 role=current_user.get("role"), request=request)
 
-    filename = report["s3_key"].rsplit("/", 1)[-1]
+    # A readable name (CloudOps-Weekly-Report-U4RAD-2026-09-26_to_2026-10-03.pdf), not the storage key
+    # (weekly_20260926-20261003_83ed45d4.pdf). The key stays internal and unchanged, so integrity checks still work.
+    filename = periodic_report_filename(report)
     return StreamingResponse(
         io.BytesIO(data),
         media_type=report["content_type"],

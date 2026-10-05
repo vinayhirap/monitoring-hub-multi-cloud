@@ -607,13 +607,20 @@ def get_rca_report(
         raise HTTPException(status_code=404, detail="Alert not found")
 
     markdown_text = render_markdown(report)
-    title = f"rca-report-alert-{alert_id}"
+    # A name a person can tell apart in a downloads folder:
+    # CloudOps-RCA-Alert-9467-Volume-Read-Operations-AuroGov-Mumbai-2026-10-04.pdf (was rca-report-alert-9467.pdf)
+    from app.report_names import rca_report_filename
+    _f = report["facts"]
+
+    def _filename(ext):
+        return rca_report_filename(alert_id, _f.get("metric_label") or _f.get("metric_name"), _f.get("account_name"),
+                                   str(_f.get("triggered_at") or "")[:10], ext)
 
     if format == "md":
         return Response(
             content=markdown_text,
             media_type="text/markdown",
-            headers={"Content-Disposition": f'attachment; filename="{title}.md"'},
+            headers={"Content-Disposition": f'attachment; filename="{_filename("md")}"'},
         )
 
     from app.llm.rca_report import report_title, report_kpis
@@ -632,7 +639,7 @@ def get_rca_report(
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{title}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="{_filename("pdf")}"'},
     )
 
 

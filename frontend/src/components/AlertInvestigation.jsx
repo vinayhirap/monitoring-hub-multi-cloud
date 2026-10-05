@@ -14,6 +14,7 @@ import { tsMs, ageText, lifecycle } from "../utils/evidence";
 import { metricLabel, formatMetricValue } from "../utils/metricLabels";
 import "./AlertInvestigation.css";
 import { plural } from "../utils/plural";
+import DownloadButton from "./DownloadButton";
 
 const SEV_TONE = { CRITICAL: "crit", WARNING: "warn", INFO: "info" };
 
@@ -175,7 +176,7 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
             <div className="ai-links">
               {route && <button className="rev-link" onClick={() => navigate(route)}>Open resource metrics →</button>}
               {canConsole && <button className="rev-link" onClick={() => onConsole(id)}>Open in cloud console →</button>}
-              <a className="rev-link" href={rcaReportUrl(id, "pdf")} target="_blank" rel="noreferrer">RCA report (PDF) ↓</a>
+              <DownloadButton className="rev-link" path={rcaReportUrl(id, "pdf")} fallbackName={`CloudOps-RCA-Alert-${id}.pdf`}>RCA report (PDF) ↓</DownloadButton>
               <button className="rev-link" onClick={() => navigator.clipboard?.writeText(`${window.location.origin}/alerts?tab=all&q=${encodeURIComponent(a.resource || "")}&alert=${id}`)}>Copy link</button>
             </div>
           </section>

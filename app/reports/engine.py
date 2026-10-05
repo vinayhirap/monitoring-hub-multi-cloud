@@ -9,86 +9,27 @@ scope_type branch here, not a new engine.
 Data sources (all already-existing tables -- no new collector needed):
   - aws_accounts / resources : account, cloud, region, resource identity
   - alerts                    : severity, status, start/created_at, metric+value
-  - metrics                   : last-value snapshot for a quick current-state table
-  - metric_history             : trend lines (avg/min/max per day in range)
+  - incidents / incident_alerts : the correlated incident narrative
 
-Incident-timeline / RCA narrative (app/collector/correlate.py,
-app/collector/rca.py) is intentionally NOT re-implemented here; a
-follow-up can feed correlate.py's output into this same
-`_gather_incident_timeline` seam once that data has a stable
-account-independent lookup. For now, alerts ARE the incident record --
-every alert row already carries severity/status/start-time/resource,
-which covers this phase's report content requirement.
-
-PDF design: branded to match this app's own design tokens
-(frontend/src/index.css's :root palette -- --accent #2bb3ac,
---accent-red/-yellow/-green, --bg-base navy) rather than an unthemed
-default, and uses the existing aslops_logo.png (repo root) as the
-cover-page / header mark. All charts are drawn as native PDF vector
-primitives (fpdf2 rect/line calls) -- no matplotlib/kaleido dependency
-added, matching this app's stated "avoid heavy/compiled dependencies
-where a light one does the job" convention (see requirements.txt's
-statsmodels/fpdf2 comments). Pillow (for the logo PNG) is already a
-transitive dependency of fpdf2 -- nothing new to install.
+Layout: the report is drawn with app/pdf_kit.py, the SAME design kit as the RCA report (header band, key figures,
+chips, tables, footer), so every PDF CloudOps produces looks like one product. All charts are native PDF vector
+primitives -- no matplotlib/kaleido dependency, matching this app's "avoid heavy/compiled dependencies" convention.
 """
 import logging
-import os
-from collections import Counter, OrderedDict
+import re
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 
-from fpdf import FPDF
-
+from app import pdf_kit as kit
 from app.db import get_db_cursor
+from app.metric_labels import metric_label, format_metric_value
 
 logger = logging.getLogger(__name__)
-
-# ── Brand palette (mirrors frontend/src/index.css :root tokens) ───────
-_NAVY        = (6, 11, 20)      # --bg-base
-_NAVY_CARD   = (14, 24, 41)     # --bg-card
-_TEAL        = (43, 179, 172)   # --accent
-_TEAL_DIM    = (223, 242, 241)  # light tint of --accent for row banding
-_RED         = (239, 68, 68)    # --accent-red
-_YELLOW      = (245, 158, 11)   # --accent-yellow
-_GREEN       = (34, 197, 94)    # --accent-green
-_GRAY_TEXT   = (74, 95, 128)    # --text-muted
-_GRAY_LINE   = (222, 227, 235)
-_WHITE       = (255, 255, 255)
-_INK         = (20, 26, 38)     # near-black body text, better print contrast than pure black
-
-_LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "cloudops_mark.png")
 
 # AUDIT FIX (b21/082, MEDIUM): safety-valve row cap for gather_report_data's
 # alerts/incidents queries -- see the comment at its alerts query for why.
 _MAX_QUERY_ROWS = 50000
 _MAX_QUERY_INCIDENTS = 5000
-
-_UNICODE_REPLACEMENTS = {
-    "\u2022": "-", "\u2014": "--", "\u2013": "-",
-    "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2026": "...",
-}
-
-
-def _safe(text) -> str:
-    text = "" if text is None else str(text)
-    for uni, ascii_equiv in _UNICODE_REPLACEMENTS.items():
-        text = text.replace(uni, ascii_equiv)
-    return text.encode("latin-1", errors="replace").decode("latin-1")
-
-
-def _severity_color(sev: str):
-    sev = (sev or "").upper()
-    if sev == "CRITICAL":
-        return _RED
-    if sev == "WARNING":
-        return _YELLOW
-    return _GRAY_TEXT
-
-
-def _status_color(status: str):
-    s = (status or "").lower()
-    if s in ("resolved", "closed"):
-        return _GREEN
-    return _RED
 
 
 # ── Data gathering ────────────────────────────────────────────────────
@@ -256,528 +197,390 @@ def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
     }
 
 
-# ── PDF rendering ─────────────────────────────────────────────────────
+# ── Content builders (pure: no DB, no PDF) ────────────────────────────
+#
+# Everything the report SAYS is decided here, so it can be unit-tested. The first real weekly report (U4RAD, 26 Sep to
+# 03 Oct) had: raw metric keys ("httpcode_target_4xx_count"), full ARNs inside sentences, "resource(s)", "--" dashes,
+# 2,429 rows of alert log, 40 near-identical "affected resource" lines, and justified text that stretched across the page
+# around those long ARNs. A reader got no answer to "what happened and what do I need to look at?"
 
-class ReportPDF(FPDF):
-    """Branded report shell: every page after the cover gets a slim
-    navy header band (logo + report title) and a footer (page number,
-    confidentiality line, generation timestamp) -- fpdf2 calls
-    header()/footer() automatically on every add_page()."""
+_TYPE_TITLES = {
+    "WEEKLY": "Weekly Operations Report", "MONTHLY": "Monthly Operations Review",
+    "QUARTERLY": "Quarterly Operations Review", "CUSTOM": "Operations Report",
+}
+_MAX_INCIDENT_CARDS = 10
+_MAX_TIMELINE_ROWS = 60
+_TOP_N = 8
 
-    def __init__(self, meta: dict, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._meta = meta
-        self.set_auto_page_break(auto=True, margin=22)
-
-    def header(self):
-        if self.page_no() == 1:
-            return  # cover page draws its own full-bleed design
-        self.set_fill_color(*_NAVY)
-        self.rect(0, 0, self.w, 16, style="F")
-        if os.path.exists(_LOGO_PATH):
-            try:
-                self.image(_LOGO_PATH, x=10, y=3.5, h=9)
-            except Exception as e:
-                # AUDIT FIX (b21/082, LOW): was a bare except: pass --
-                # a corrupt/unreadable logo file silently rendered every
-                # page header without one, with zero trace anywhere.
-                logger.warning(f"Report PDF: failed to draw header logo from {_LOGO_PATH}: {e}")
-        # "CloudOps" as real PDF text next to the mark, not baked into
-        # the logo image -- matches the app's own topbar treatment
-        # (icon + text, no boxed background) and stays crisp at any
-        # zoom level rather than being raster text inside a PNG.
-        self.set_xy(21, 4.5)
-        self.set_font("Helvetica", "B", 10)
-        self.set_text_color(*_WHITE)
-        self.cell(30, 7, _safe("CloudOps"))
-        self.set_xy(0, 5)
-        self.set_font("Helvetica", "B", 10)
-        self.cell(0, 6, _safe(self._meta["title"]), align="R", new_x="LMARGIN", new_y="NEXT")
-        self.set_y(20)
-        self.set_text_color(*_INK)
-
-    def footer(self):
-        if self.page_no() == 1:
-            return
-        self.set_y(-16)
-        self.set_draw_color(*_GRAY_LINE)
-        self.line(10, self.get_y(), self.w - 10, self.get_y())
-        self.set_font("Helvetica", "", 8)
-        self.set_text_color(*_GRAY_TEXT)
-        self.set_y(-13)
-        self.cell(0, 8, _safe(
-            f"CONFIDENTIAL -- prepared by Aurionpro CloudOps for \"{self._meta.get('scope_label') or 'the named client/account'}\" only"
-        ))
-        self.set_y(-13)
-        self.cell(0, 8, _safe(f"Page {self.page_no()}"), align="R")
-
-    # ── layout helpers ──────────────────────────────────────────────
-    def section_title(self, text: str):
-        self.ln(3)
-        self.set_fill_color(*_TEAL)
-        self.set_text_color(*_WHITE)
-        self.set_font("Helvetica", "B", 12)
-        self.cell(0, 9, "  " + _safe(text), fill=True, new_x="LMARGIN", new_y="NEXT")
-        self.set_text_color(*_INK)
-        self.ln(3)
-
-    def stat_card(self, x, y, w, h, label, value, color):
-        self.set_draw_color(*_GRAY_LINE)
-        self.set_fill_color(*_WHITE)
-        self.rect(x, y, w, h, style="DF")
-        self.set_fill_color(*color)
-        self.rect(x, y, w, 2.2, style="F")
-        self.set_xy(x, y + 5)
-        self.set_font("Helvetica", "B", 18)
-        self.set_text_color(*color)
-        self.cell(w, 10, _safe(str(value)), align="C", new_x="LMARGIN", new_y="NEXT")
-        self.set_x(x)
-        self.set_font("Helvetica", "", 8.5)
-        self.set_text_color(*_GRAY_TEXT)
-        self.cell(w, 5, _safe(label), align="C")
-        self.set_text_color(*_INK)
-
-    def pill(self, x, y, text, color, w=20, h=5.5):
-        self.set_fill_color(*color)
-        self.set_text_color(*_WHITE)
-        self.set_font("Helvetica", "B", 7.5)
-        self.set_xy(x, y)
-        self.cell(w, h, _safe(text), align="C", fill=True)
-        self.set_text_color(*_INK)
+_ARN_RE = re.compile(r"arn:aws[\w-]*:[^\s,)\]]+")
+_BREACH_RE = re.compile(
+    r"Earliest breach in this incident: (?P<metric>\S+) on (?P<res>\S+) at "
+    r"(?P<d>\d{4}-\d{2}-\d{2}) (?P<t>\d{2}:\d{2})(?::\d{2})?\.?")
+_DEPENDS_RE = re.compile(r"(\d+) other resource\(s\) depend on it in the topology graph\.?")
 
 
-    def incident_card(self, inc: dict):
-        """One incident's full narrative -- title, severity/status,
-        start/end + duration, cloud/account/region, probable cause
-        (impact), every alert/resource that makes up the incident, and
-        a plain-language resolution line. This is the section a client
-        actually reads; the raw alert table further down is backup
-        detail for whoever wants to verify it."""
-        # Keep a card from splitting right after its header if it
-        # barely fits -- force it onto a fresh page instead.
-        if self.get_y() > self.h - 70:
-            self.add_page()
-
-        started = inc["started_at"]
-        resolved = inc.get("resolved_at")
-        # DB datetimes (mysql-connector) come back naive; strip tzinfo
-        # defensively so this works the same whether the caller (or a
-        # test harness) passes naive or aware datetimes.
-        _naive = lambda dt: dt.replace(tzinfo=None) if dt and dt.tzinfo else dt
-        now_naive = datetime.utcnow()
-        duration = (_naive(resolved) or now_naive) - _naive(started)
-        status = (inc.get("status") or "").lower()
-        is_resolved = status in ("resolved", "closed")
-
-        y0 = self.get_y()
-        self.set_draw_color(*_GRAY_LINE)
-        self.set_fill_color(252, 252, 253)
-        card_x, card_w = self.l_margin, self.epw
-
-        self.set_font("Helvetica", "B", 10.5)
-        id_prefix = f"Incident #{inc['id']}: "
-        full_title = id_prefix + (inc.get("title") or "Untitled incident")
-        line1_w = card_w * 0.6 - 2   # line 1 shares the row with the pills
-        line2_w = card_w - 8          # line 2, if needed, has the full width
-        title_line1, title_line2 = _wrap_title(self, full_title, line1_w, line2_w)
-        band_h = 8 if title_line2 is None else 13
-
-        # Left accent bar colored by severity, card body below the title row(s).
-        self.rect(card_x, y0, card_w, band_h, style="DF")
-        self.set_fill_color(*_severity_color(inc.get("severity")))
-        self.rect(card_x, y0, 2.2, band_h, style="F")
-
-        self.set_xy(card_x + 4, y0 + 1)
-        self.set_text_color(*_INK)
-        self.cell(card_w * 0.6, 6, _safe(title_line1))
-        if title_line2:
-            self.set_xy(card_x + 4, y0 + 6.5)
-            self.set_font("Helvetica", "B", 9.5)
-            self.cell(card_w - 8, 5, _safe(title_line2))
-        sev_pill_x = card_x + card_w - 48
-        status_pill_x = sev_pill_x + 20 + 2  # 20mm severity pill + 2mm gap
-        self.pill(sev_pill_x, y0 + 1.2, inc.get("severity") or "-", _severity_color(inc.get("severity")), w=20)
-        self.pill(status_pill_x, y0 + 1.2, "RESOLVED" if is_resolved else "ACTIVE",
-                  _GREEN if is_resolved else _RED, w=24)
-        self.set_text_color(*_INK)
-        self.set_y(y0 + band_h + 1)
-
-        self.set_font("Helvetica", "", 9)
-        hours = duration.total_seconds() / 3600
-        dur_txt = f"{hours:.1f} hours" if hours < 48 else f"{hours/24:.1f} days"
-        # status (single source of truth for is_resolved, matches the
-        # pill above) can disagree with resolved_at's presence if the
-        # two were ever set non-atomically upstream -- e.g.
-        # status='resolved' with resolved_at still NULL. Rather than
-        # let that produce a pill saying RESOLVED right next to text
-        # saying "still open", resolved_txt always agrees with status.
-        if is_resolved:
-            resolved_txt = ("Resolved: " + resolved.strftime("%Y-%m-%d %H:%M") + " UTC") if resolved \
-                else "Resolved (exact time not recorded)"
-        else:
-            resolved_txt = "Status: still open"
-        self.set_x(card_x + 4)
-        self.cell(0, 5.5, _safe(
-            f"Started: {started:%Y-%m-%d %H:%M} UTC   {resolved_txt}   Duration: {dur_txt}"
-        ), new_x="LMARGIN", new_y="NEXT")
-
-        members = inc.get("member_alerts") or []
-        regions = sorted({m.get("region") for m in members if m.get("region")})
-        resource_names = sorted({(m.get("resource_name") or m.get("resource_id")) for m in members})
-        self.set_x(card_x + 4)
-        self.multi_cell(card_w - 8, 5.5, _safe(
-            f"Affected resources ({len(resource_names)}): " + (", ".join(resource_names) or "n/a") +
-            (f"   |   Region(s): {', '.join(regions)}" if regions else "")
-        ))
-
-        if inc.get("probable_cause"):
-            self.set_x(card_x + 4)
-            self.set_font("Helvetica", "B", 9)
-            self.cell(0, 5.5, _safe("Impact / probable cause:"), new_x="LMARGIN", new_y="NEXT")
-            self.set_x(card_x + 4)
-            self.set_font("Helvetica", "", 9)
-            self.multi_cell(card_w - 8, 5.5, _safe(inc["probable_cause"]))
-
-        self.set_x(card_x + 4)
-        self.set_font("Helvetica", "B", 9)
-        self.cell(0, 5.5, _safe("Resolution / current status:"), new_x="LMARGIN", new_y="NEXT")
-        self.set_x(card_x + 4)
-        self.set_font("Helvetica", "", 9)
-        if is_resolved:
-            note = (f"Resolved after {dur_txt} once all correlated metrics returned within threshold. "
-                    f"Last confirmed healthy at {inc['last_seen_at']:%Y-%m-%d %H:%M} UTC.")
-        else:
-            note = (f"Still active as of report generation ({dur_txt} and counting) -- "
-                    f"being tracked live in CloudOps; last activity {inc['last_seen_at']:%Y-%m-%d %H:%M} UTC.")
-        self.multi_cell(card_w - 8, 5.5, _safe(note))
-        self.ln(3)
+def report_title(report_type: str, scope_type: str) -> str:
+    st = (scope_type or "").upper()
+    if st == "INCIDENT":
+        return "Incident Report"
+    if st == "RESOURCE":
+        return "Resource Report"
+    base = _TYPE_TITLES.get((report_type or "").upper(), "Operations Report")
+    return base.replace("Operations Report", "Client Report").replace("Operations Review", "Client Review") \
+        if st == "CLIENT" else base
 
 
-def _fit_text(pdf: "ReportPDF", text: str, max_width: float) -> str:
-    """Truncates with an ellipsis to fit max_width at the pdf's
-    CURRENTLY SET font -- caller must set_font() before calling this.
-    fpdf2's cell() does not clip or wrap overflowing text by default;
-    it just prints past the cell boundary into whatever is positioned
-    next (in incident_card()'s case, straight into the severity/status
-    pills). Found on a real 267-incident account report where several
-    incident titles ran well past their allotted width."""
-    if pdf.get_string_width(text) <= max_width:
-        return text
-    ellipsis = "..."
-    while text and pdf.get_string_width(text + ellipsis) > max_width:
-        text = text[:-1]
-    return text.rstrip() + ellipsis
+def short_resource(text) -> str:
+    """'arn:aws:elasticloadbalancing:ap-south-1:1234:loadbalancer/app/u4rad-alb/7825df' -> 'u4rad-alb'. Plain ids and
+    names pass through unchanged."""
+    s = "" if text is None else str(text)
+    if not s.startswith("arn:"):
+        return s
+    tail = s.split(":", 5)[-1] if s.count(":") >= 5 else s
+    parts = [p for p in re.split(r"[/:]", tail) if p]          # ARN resource parts use '/' OR ':' ("function:Name")
+    if "loadbalancer" in parts:                      # loadbalancer/<app|net|gwy>/<name>/<hash>
+        i = parts.index("loadbalancer")
+        return parts[i + 2] if len(parts) > i + 2 else parts[-1]
+    return parts[-1] if parts else s
 
 
-# Reports with a genuinely large incident/alert history (a busy real
-# account can have hundreds of incidents and thousands of alerts in a
-# single week) must not try to render every one of them -- a report
-# that's hundreds of pages long is not "stakeholder-ready," it's
-# unusable, and generation time/S3 storage scale with page count too.
-# These caps keep the PDF to a size someone will actually read; the
-# full underlying data is always still queryable in CloudOps itself.
-_MAX_INCIDENT_CARDS = 20
-_MAX_TIMELINE_ROWS = 200
-_MAX_AFFECTED_RESOURCES_LISTED = 50
+def _fmt_day(dt) -> str:
+    return dt.strftime("%d %b %Y") if dt else "-"
+
+
+def _fmt_stamp(dt) -> str:
+    return dt.strftime("%d %b %Y, %H:%M UTC") if dt else "-"
+
+
+def _fmt_short(dt) -> str:
+    return dt.strftime("%d %b, %H:%M") if dt else "-"
+
+
+def _duration_text(delta) -> str:
+    hours = delta.total_seconds() / 3600
+    if hours < 1:
+        return f"{max(1, round(hours * 60))} min"
+    if hours < 48:
+        return f"{hours:.1f} hours"
+    return f"{hours / 24:.1f} days"
+
+
+def _naive(dt):
+    return dt.replace(tzinfo=None) if dt is not None and getattr(dt, "tzinfo", None) else dt
+
+
+def _is_open(status) -> bool:
+    return (status or "").lower() not in ("resolved", "closed")
+
+
+def _plural(n, one, many=None):
+    return one if n == 1 else (many or one + "s")
+
+
+def _name_of(a: dict) -> str:
+    return a.get("resource_name") or short_resource(a.get("resource_id"))
+
+
+def summarize(data: dict) -> dict:
+    """Rankings and headline facts used by the key figures, the summary text and the tables."""
+    alerts = data.get("alerts") or []
+    total = len(alerts)
+    by_res, by_metric = {}, {}
+    for a in alerts:
+        sev = (a.get("severity") or "").upper()
+        r = by_res.setdefault(a["resource_id"], {"name": _name_of(a), "type": a.get("resource_type") or "",
+                                                 "total": 0, "critical": 0, "warning": 0, "open": 0})
+        m = by_metric.setdefault((a.get("metric_name") or "").lower(),
+                                 {"label": metric_label(a.get("metric_name")), "total": 0, "critical": 0, "warning": 0, "open": 0})
+        for bucket in (r, m):
+            bucket["total"] += 1
+            bucket["critical"] += sev == "CRITICAL"
+            bucket["warning"] += sev == "WARNING"
+            bucket["open"] += _is_open(a.get("status"))
+    top_resources = sorted(by_res.values(), key=lambda x: (-x["open"], -x["critical"], -x["total"]))[:_TOP_N]
+    top_metrics = sorted(by_metric.values(), key=lambda x: (-x["total"], -x["critical"]))[:_TOP_N]
+    daily = data.get("daily_counts") or {}
+    busiest = max(daily.items(), key=lambda kv: kv[1]) if daily and max(daily.values()) > 0 else None
+    dominant = None
+    if total >= 20 and top_metrics and top_metrics[0]["total"] / total >= 0.5:
+        dominant = {"label": top_metrics[0]["label"], "share": round(100 * top_metrics[0]["total"] / total)}
+    open_alerts = sorted((a for a in alerts if _is_open(a.get("status"))),
+                         key=lambda a: ({"CRITICAL": 0, "WARNING": 1}.get((a.get("severity") or "").upper(), 2),
+                                        a["triggered_at"]))
+    return {"total": total, "resources": len(by_res), "top_resources": top_resources, "top_metrics": top_metrics,
+            "busiest": busiest, "dominant": dominant, "open_alerts": open_alerts}
+
+
+def summary_paragraphs(data: dict, summ: dict, period_start, period_end) -> list:
+    """[(lead, text)] for the Executive Summary. Every sentence is built from counted facts; nothing is inferred."""
+    sc = data["severity_counts"]
+    n_inc = len(data.get("incidents") or [])
+    if summ["total"] == 0:
+        return [("Overview", f"No alerts were raised between {_fmt_day(period_start)} and {_fmt_day(period_end)}.")]
+    out = [("Overview",
+            f"{summ['total']:,} {_plural(summ['total'], 'alert')} {_plural(summ['total'], 'was', 'were')} raised on "
+            f"{summ['resources']:,} {_plural(summ['resources'], 'resource')} between {_fmt_day(period_start)} and "
+            f"{_fmt_day(period_end)}, grouped into {n_inc:,} {_plural(n_inc, 'incident')}. "
+            f"{sc['CRITICAL']:,} {_plural(sc['CRITICAL'], 'was', 'were')} critical and {sc['WARNING']:,} "
+            f"{_plural(sc['WARNING'], 'was', 'were')} warnings. "
+            + (f"{data['open_count']:,} {_plural(data['open_count'], 'remains', 'remain')} open."
+               if data["open_count"] else "All have since been resolved."))]
+    if summ["busiest"]:
+        day, count = summ["busiest"]
+        out.append(("Busiest day", f"{day.strftime('%d %b')} had the most alerts ({count:,})."))
+    if summ["top_resources"]:
+        shown = summ["top_resources"][:3]
+        out.append(("Most affected", ", ".join(f"{r['name']} ({r['total']:,})" for r in shown) + "."))
+    if summ["dominant"]:
+        out.append(("Alert sources",
+                    f"{summ['dominant']['share']}% of all alerts came from one metric, {summ['dominant']['label']}. "
+                    f"If that level is normal for the workload, raise its limit or let auto-tuning learn it; "
+                    f"otherwise find what is driving it."))
+    if summ["open_alerts"]:
+        names = [f"{_name_of(a)} ({metric_label(a.get('metric_name'))})" for a in summ["open_alerts"][:3]]
+        more = len(summ["open_alerts"]) - len(names)
+        out.append(("Still open", ", ".join(names) + (f" and {more} more." if more > 0 else ".")))
+    return out
+
+
+def _names_by_id(inc: dict) -> dict:
+    out = {}
+    for m in inc.get("member_alerts") or []:
+        rid = m.get("resource_id")
+        if rid:
+            out[rid] = m.get("resource_name") or short_resource(rid)
+    return out
+
+
+def humanize_incident_title(title, inc: dict) -> str:
+    """'Correlated breach on vol-0952... and related resource(s)' -> a title with the resource's name and no '(s)'."""
+    names = _names_by_id(inc)
+    t = (title or "Untitled incident").replace("resource(s)", "resources")
+    t = _ARN_RE.sub(lambda m: short_resource(m.group(0)), t)
+    for rid, name in sorted(names.items(), key=lambda kv: -len(kv[0])):
+        t = t.replace(rid, name)
+    return t
+
+
+def humanize_cause(text, inc: dict) -> str:
+    """Rewrites the stored probable-cause sentence for a reader: metric labels, resource names, short times."""
+    if not text:
+        return ""
+    names = _names_by_id(inc)
+
+    def breach(m):
+        res = m.group("res")
+        name = names.get(res) or short_resource(res)
+        when = datetime.strptime(f"{m.group('d')} {m.group('t')}", "%Y-%m-%d %H:%M")
+        return f"Started with {metric_label(m.group('metric'))} on {name} at {_fmt_stamp(when)}."
+    out = _BREACH_RE.sub(breach, str(text))
+    out = _DEPENDS_RE.sub(lambda m: f"{m.group(1)} other {'resource depends' if m.group(1) == '1' else 'resources depend'} on it.", out)
+    out = _ARN_RE.sub(lambda m: short_resource(m.group(0)), out)
+    return out.replace("resource(s)", "resources")
+
+
+# ── Layout ────────────────────────────────────────────────────────────
+
+def _incident_card(pdf, inc: dict):
+    """One incident: severity bar, wrapped title, chips, a metadata line, then Impact and Status in plain left-aligned text."""
+    started, resolved = _naive(inc["started_at"]), _naive(inc.get("resolved_at"))
+    is_resolved = not _is_open(inc.get("status"))
+    duration = (resolved or datetime.now(timezone.utc).replace(tzinfo=None)) - started
+    dur = _duration_text(duration)
+    sev = (inc.get("severity") or "").upper()
+    members = inc.get("member_alerts") or []
+    names = sorted({m.get("resource_name") or short_resource(m.get("resource_id")) for m in members})
+    regions = sorted({m.get("region") for m in members if m.get("region")})
+    title = f"Incident #{inc['id']}: {humanize_incident_title(inc.get('title'), inc)}"
+    cause = humanize_cause(inc.get("probable_cause"), inc)
+    when = f"Started {_fmt_stamp(started)}"
+    when += f"  |  Resolved {_fmt_stamp(resolved)}" if (is_resolved and resolved) else ("" if is_resolved else "  |  Still open")
+    when += f"  |  Duration {dur}"
+    res_line = f"Resources ({len(names)}): " + (", ".join(names) or "n/a") + (f"  |  {', '.join(regions)}" if regions else "")
+    last = inc.get("last_seen_at")
+    if is_resolved:
+        status = f"Resolved after {dur}; all correlated metrics returned within their limits." + \
+                 (f" Last confirmed healthy {_fmt_stamp(_naive(last))}." if last else "")
+    else:
+        status = f"Still active after {dur}, tracked live in CloudOps." + (f" Last activity {_fmt_stamp(_naive(last))}." if last else "")
+
+    inner_w = pdf.w - 2 * kit.MARGIN - 9
+    chips_w = 52
+    pdf.set_font("Helvetica", "B", 10)
+    t_lines = pdf.multi_cell(inner_w - chips_w, 5.4, kit.latin1_safe(title), dry_run=True, output="LINES")
+    pdf.set_font("Helvetica", "", 8.5)
+    w_lines = len(pdf.multi_cell(inner_w, 4.8, kit.latin1_safe(when), dry_run=True, output="LINES"))
+    r_lines = len(pdf.multi_cell(inner_w, 4.8, kit.latin1_safe(res_line), dry_run=True, output="LINES"))
+    pdf.set_font("Helvetica", "", 9)
+    c_lines = len(pdf.multi_cell(inner_w, 5, kit.latin1_safe("Impact: " + cause), dry_run=True, output="LINES")) if cause else 0
+    s_lines = len(pdf.multi_cell(inner_w, 5, kit.latin1_safe("Status: " + status), dry_run=True, output="LINES"))
+    h = 3 + len(t_lines) * 5.4 + 1.5 + (w_lines + r_lines) * 4.8 + 1.5 + (c_lines + s_lines) * 5 + 3
+    kit.ensure_room(pdf, h + 4)
+    x, y = kit.MARGIN, pdf.get_y()
+    pdf.set_fill_color(252, 252, 254)
+    pdf.set_draw_color(*kit.BORDER)
+    pdf.rect(x, y, pdf.w - 2 * kit.MARGIN, h, "DF")
+    pdf.set_fill_color(*kit.SEVERITY_COLORS.get(sev, kit.MUTED))
+    pdf.rect(x, y, 1.6, h, "F")
+
+    right = pdf.w - kit.MARGIN - 3
+    st_text = "RESOLVED" if is_resolved else "ACTIVE"
+    pdf.set_font("Helvetica", "B", 7.5)
+    st_w, sv_w = 8 + pdf.get_string_width(st_text), 8 + pdf.get_string_width(sev or "-")
+    kit.chip(pdf, right - st_w, y + 2.6, st_text, kit.STATUS_COLORS["RESOLVED" if is_resolved else "OPEN"], st_w)
+    kit.chip(pdf, right - st_w - 3 - sv_w, y + 2.6, sev or "-", kit.SEVERITY_COLORS.get(sev, kit.MUTED), sv_w)
+
+    pdf.set_xy(x + 5, y + 3)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_text_color(*kit.INK)
+    pdf.multi_cell(inner_w - chips_w, 5.4, kit.latin1_safe(title), new_x="LMARGIN", new_y="NEXT", align="L")
+    pdf.set_font("Helvetica", "", 8.5)
+    pdf.set_text_color(*kit.MUTED)
+    pdf.set_xy(x + 5, pdf.get_y() + 1.5)
+    pdf.multi_cell(inner_w, 4.8, kit.latin1_safe(when), new_x="LMARGIN", new_y="NEXT", align="L")
+    pdf.set_x(x + 5)
+    pdf.multi_cell(inner_w, 4.8, kit.latin1_safe(res_line), new_x="LMARGIN", new_y="NEXT", align="L")
+    pdf.set_text_color(*kit.INK)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.set_xy(x + 5, pdf.get_y() + 1.5)
+    if cause:
+        pdf.multi_cell(inner_w, 5, kit.latin1_safe("Impact: " + cause), new_x="LMARGIN", new_y="NEXT", align="L")
+        pdf.set_x(x + 5)
+    pdf.multi_cell(inner_w, 5, kit.latin1_safe("Status: " + status), new_x="LMARGIN", new_y="NEXT", align="L")
+    pdf.set_xy(kit.MARGIN, y + h + 3)
 
 
 def _incident_sort_key(inc: dict):
-    """Highest priority first: still-open beats resolved, CRITICAL
-    beats WARNING beats everything else, and within a tier, most
-    recent first. Used only to pick which incidents make the cut when
-    there are more than _MAX_INCIDENT_CARDS -- the full count is
-    always stated regardless."""
+    """Highest priority first: still-open beats resolved, CRITICAL beats WARNING, then most recent."""
     sev_rank = {"CRITICAL": 2, "WARNING": 1}.get((inc.get("severity") or "").upper(), 0)
-    is_open = 0 if (inc.get("status") or "").lower() in ("resolved", "closed") else 1
     started = inc.get("started_at")
-    started_ts = started.timestamp() if started else 0
-    return (is_open, sev_rank, started_ts)
-
-
-def _wrap_title(pdf: "ReportPDF", text: str, line1_w: float, line2_w: float) -> tuple:
-    """Wraps onto at most 2 lines instead of truncating to one --
-    stakeholders flagged single-line ellipsis truncation ("Incident
-    #104: ...a...") as looking incomplete/unprofessional. Returns
-    (line1, line2_or_None). line2, if needed, still gets an ellipsis
-    if it alone doesn't fit line2_w -- two lines is the practical cap
-    for a summary card; the full title is never lost, though, since
-    the raw incident data is always available via CloudOps."""
-    if pdf.get_string_width(text) <= line1_w:
-        return text, None
-    words = text.split(" ")
-    line1_words = []
-    i = 0
-    while i < len(words) and pdf.get_string_width(" ".join(line1_words + [words[i]])) <= line1_w:
-        line1_words.append(words[i])
-        i += 1
-    if not line1_words:  # a single word longer than line1_w -- fall back to char truncation
-        return _fit_text(pdf, text, line1_w), None
-    line1 = " ".join(line1_words)
-    remainder = " ".join(words[i:])
-    if not remainder:
-        return line1, None
-    return line1, _fit_text(pdf, remainder, line2_w)
-
-
-def _draw_cover(pdf: ReportPDF, *, title: str, subtitle: str, meta_lines: list[str]):
-    pdf.add_page()
-    pdf.set_fill_color(*_NAVY)
-    pdf.rect(0, 0, pdf.w, pdf.h, style="F")
-    pdf.set_fill_color(*_TEAL)
-    pdf.rect(0, 0, pdf.w, 4, style="F")
-
-    if os.path.exists(_LOGO_PATH):
-        try:
-            mark_w = 34
-            pdf.image(_LOGO_PATH, x=(pdf.w - mark_w) / 2, y=40, w=mark_w)
-        except Exception as e:
-            logger.warning(f"Report PDF: failed to draw cover logo from {_LOGO_PATH}: {e}")
-
-    pdf.set_y(78)
-    pdf.set_font("Helvetica", "", 11)
-    pdf.set_text_color(180, 190, 205)
-    pdf.cell(0, 6, _safe("AURIONPRO"), align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "B", 18)
-    pdf.set_text_color(*_WHITE)
-    pdf.cell(0, 9, _safe("CloudOps"), align="C", new_x="LMARGIN", new_y="NEXT")
-
-    pdf.set_y(105)
-    pdf.set_font("Helvetica", "B", 26)
-    pdf.set_text_color(*_WHITE)
-    pdf.multi_cell(0, 12, _safe(title), align="C")
-    pdf.ln(2)
-    pdf.set_font("Helvetica", "", 14)
-    pdf.set_text_color(*_TEAL)
-    pdf.multi_cell(0, 8, _safe(subtitle), align="C")
-
-    pdf.ln(14)
-    pdf.set_font("Helvetica", "", 10.5)
-    pdf.set_text_color(*_WHITE)
-    for line in meta_lines:
-        pdf.cell(0, 6.5, _safe(line), align="C", new_x="LMARGIN", new_y="NEXT")
-
-    pdf.set_y(-30)
-    pdf.set_font("Helvetica", "I", 9)
-    pdf.set_text_color(180, 190, 205)
-    pdf.cell(0, 6, _safe("Confidential -- for the intended recipient only"), align="C")
-    # header()/footer() key off page_no()==1 for "is this the cover",
-    # so no flag needs resetting here.
-
-
-def _draw_trend_chart(pdf: ReportPDF, daily_counts: "OrderedDict"):
-    """Native vector bar chart (no image dependency): events/day across
-    the report period, teal bars against a light gridded panel."""
-    x0, y0 = pdf.get_x(), pdf.get_y()
-    w, h = pdf.epw, 42
-    pdf.set_draw_color(*_GRAY_LINE)
-    pdf.set_fill_color(250, 251, 252)
-    pdf.rect(x0, y0, w, h, style="DF")
-
-    values = list(daily_counts.values())
-    n = len(values)
-    max_v = max(values) if values and max(values) > 0 else 1
-    pad = 4
-    plot_w = w - 2 * pad
-    plot_h = h - 2 * pad
-    bar_gap = 1.2
-    bar_w = max((plot_w / n) - bar_gap, 0.8) if n else plot_w
-
-    # gridlines (0/50%/100% of max)
-    pdf.set_draw_color(235, 238, 242)
-    for frac in (0.0, 0.5, 1.0):
-        gy = y0 + pad + plot_h * (1 - frac)
-        pdf.line(x0 + pad, gy, x0 + w - pad, gy)
-
-    for i, v in enumerate(values):
-        bar_h = (v / max_v) * plot_h
-        bx = x0 + pad + i * (bar_w + bar_gap)
-        by = y0 + pad + (plot_h - bar_h)
-        # AUDIT FIX (b21/082, LOW): this used to set_fill_color() twice
-        # in a row -- the severity-graded computation (red/yellow/teal
-        # by volume) was immediately overwritten by the simpler
-        # teal-only line right after it, making the first line dead
-        # code with no effect on the rendered chart. This function's
-        # own docstring already describes the intended look as "teal
-        # bars", matching what was actually being drawn -- removed the
-        # dead computation rather than restoring the never-active one,
-        # so this is a no-op on the actual rendered PDF.
-        pdf.set_fill_color(*(_TEAL_DIM if v == 0 else _TEAL))
-        pdf.rect(bx, by, bar_w, max(bar_h, 0.6), style="F")
-
-    pdf.set_xy(x0, y0 + h + 1)
-    pdf.set_font("Helvetica", "", 7.5)
-    pdf.set_text_color(*_GRAY_TEXT)
-    dates = list(daily_counts.keys())
-    if dates:
-        pdf.cell(w / 2, 4, _safe(dates[0].strftime("%d %b")))
-        pdf.set_xy(x0 + w / 2, y0 + h + 1)
-        pdf.cell(w / 2, 4, _safe(dates[-1].strftime("%d %b")), align="R")
-    pdf.set_text_color(*_INK)
-    pdf.set_xy(x0, y0 + h + 6)
+    return (1 if _is_open(inc.get("status")) else 0, sev_rank, started.timestamp() if started else 0)
 
 
 def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
                        scope_label: str, period_start: datetime, period_end: datetime,
                        data: dict, generated_by: str) -> bytes:
-    title = "CloudOps Monitoring Report"
-    subtitle = f"{report_type.title()} Report -- {scope_type.title()}: {scope_label or scope_id}"
+    label = scope_label or scope_id
+    title = report_title(report_type, scope_type)
     now = datetime.now(timezone.utc)
-    meta_lines = [
-        f"Period: {period_start:%d %b %Y %H:%M} - {period_end:%d %b %Y %H:%M} UTC",
-        f"Generated: {now:%d %b %Y %H:%M} UTC by {generated_by}",
-    ]
-
-    pdf = ReportPDF({"title": title, "scope_label": scope_label or scope_id}, format="A4")
-    _draw_cover(pdf, title=title, subtitle=subtitle, meta_lines=meta_lines)
-
-    pdf.add_page()
-    account = data.get("account")
-
-    pdf.section_title("Account / Scope")
-    pdf.set_font("Helvetica", "", 10)
-    if account:
-        pdf.multi_cell(0, 6, _safe(
-            f"Account: {account['account_name']} ({account['account_id']})   "
-            f"Default region: {account.get('default_region') or 'n/a'}"
-        ))
-    else:
-        pdf.multi_cell(0, 6, _safe(f"Scope: {scope_type} = {scope_id}"))
-
-    pdf.section_title("Executive Summary")
+    summ = summarize(data)
     sc = data["severity_counts"]
-    card_w = pdf.epw / 4 - 3
-    y = pdf.get_y()
-    pdf.stat_card(pdf.l_margin, y, card_w, 22, "TOTAL EVENTS", data["total_count"], _TEAL)
-    pdf.stat_card(pdf.l_margin + card_w + 4, y, card_w, 22, "CRITICAL", sc["CRITICAL"], _RED)
-    pdf.stat_card(pdf.l_margin + 2 * (card_w + 4), y, card_w, 22, "WARNING", sc["WARNING"], _YELLOW)
-    pdf.stat_card(pdf.l_margin + 3 * (card_w + 4), y, card_w, 22, "OPEN NOW", data["open_count"], _GREEN if data["open_count"] == 0 else _RED)
-    pdf.set_y(y + 28)
-
-    pdf.section_title("Event Trend Over Period")
-    _draw_trend_chart(pdf, data["daily_counts"])
-
     incidents = data.get("incidents") or []
-    pdf.section_title(f"Incident Summary ({len(incidents)} incident{'s' if len(incidents) != 1 else ''} in period)")
+    pdf = kit.new_document(
+        band_subtitle=title, band_right=label, footer_ref=label,
+        title=f"{title} - {label}", subject=f"{title}, {_fmt_day(period_start)} to {_fmt_day(period_end)}",
+        keywords="CloudOps, monitoring report", cover=True)
+    kit.cover_page(
+        pdf, title=title, subtitle=f"{(scope_type or '').title()}: {label}",
+        meta_lines=[f"Period: {_fmt_stamp(period_start)} to {_fmt_stamp(period_end)}",
+                    f"Generated: {_fmt_stamp(now)} by {generated_by}"])
+
+    open_n = data["open_count"]
+    chips = [((report_type or "REPORT").upper(), kit.TEAL_DARK),
+             ((f"{open_n:,} OPEN" if open_n else "ALL RESOLVED"), kit.STATUS_COLORS["OPEN" if open_n else "RESOLVED"])]
+    kit.title_block(pdf, title, chips, f"{label}  \u00b7  {_fmt_day(period_start)} to {_fmt_day(period_end)} (UTC)")
+    kit.kpi_strip(pdf, [
+        {"label": "ALERTS RAISED", "value": f"{summ['total']:,}", "note": f"on {summ['resources']:,} resources", "tone": "ink"},
+        {"label": "CRITICAL", "value": f"{sc['CRITICAL']:,}", "note": "highest severity", "tone": "crit"},
+        {"label": "WARNING", "value": f"{sc['WARNING']:,}", "note": "needs attention", "tone": "warn"},
+        {"label": "INCIDENTS", "value": f"{len(incidents):,}", "note": "correlated groups", "tone": "ink"},
+        {"label": "OPEN NOW", "value": f"{open_n:,}", "note": "still firing" if open_n else "none", "tone": "crit" if open_n else "ok"},
+    ])
+
+    account = data.get("account")
+    rows = []
+    if account:
+        rows += [("Account", f"{account['account_name']} ({account['account_id']})"),
+                 ("Provider", (account.get("provider") or "aws").upper()),
+                 ("Default region", account.get("default_region") or "n/a")]
+    else:
+        rows.append(("Scope", f"{(scope_type or '').title()}: {label}"))
+    rows += [("Period", f"{_fmt_stamp(period_start)}  to  {_fmt_stamp(period_end)}"),
+             ("Generated", f"{_fmt_stamp(now)} by {generated_by}")]
+    kit.details_table(pdf, rows)
+
+    kit.section_header(pdf, "Executive Summary")
+    for lead, text in summary_paragraphs(data, summ, period_start, period_end):
+        kit.paragraph(pdf, lead, text)
+
+    if summ["total"]:
+        kit.section_header(pdf, "Alerts per Day")
+        daily = data["daily_counts"]
+        kit.bar_chart(pdf, [d.strftime("%d %b") for d in daily], list(daily.values()),
+                      caption="Number of alerts that started on each day (UTC).")
+
+        kit.section_header(pdf, "Most Affected Resources")
+        kit.data_table(pdf, [("Resource", 64, "L"), ("Type", 30, "L"), ("Alerts", 22, "R"), ("Critical", 22, "R"),
+                             ("Warning", 22, "R"), ("Open", 20, "R")],
+                       [(r["name"], r["type"].upper() or "-", f"{r['total']:,}", f"{r['critical']:,}",
+                         f"{r['warning']:,}", f"{r['open']:,}") for r in summ["top_resources"]])
+        if summ["resources"] > len(summ["top_resources"]):
+            kit.plain_paragraph(pdf, f"{summ['resources'] - len(summ['top_resources']):,} more resources had alerts in this "
+                                     f"period; the full list is in CloudOps.", size=8.5, color=kit.MUTED, italic=True)
+
+        kit.section_header(pdf, "Top Alert Sources")
+        kit.data_table(pdf, [("Metric", 74, "L"), ("Alerts", 24, "R"), ("Share", 22, "R"), ("Critical", 20, "R"),
+                             ("Warning", 20, "R"), ("Open", 20, "R")],
+                       [(m["label"], f"{m['total']:,}", f"{round(100 * m['total'] / summ['total'])}%", f"{m['critical']:,}",
+                         f"{m['warning']:,}", f"{m['open']:,}") for m in summ["top_metrics"]])
+
+    kit.section_header(pdf, f"Incidents ({len(incidents):,} in this period)")
     if incidents:
-        pdf.set_font("Helvetica", "", 9.5)
-        pdf.multi_cell(0, 5.5, _safe(
-            "Each incident below groups the correlated alerts CloudOps identified as one connected "
-            "event (see Incident Timeline for every individual alert)."
-        ))
-        pdf.ln(1)
+        kit.plain_paragraph(pdf, "Each incident groups the correlated alerts CloudOps identified as one connected event.",
+                            size=9.5, color=kit.MUTED)
         shown = sorted(incidents, key=_incident_sort_key, reverse=True)[:_MAX_INCIDENT_CARDS]
         for inc in shown:
-            pdf.incident_card(inc)
+            _incident_card(pdf, inc)
         if len(incidents) > len(shown):
-            pdf.set_font("Helvetica", "I", 9.5)
-            pdf.set_text_color(*_GRAY_TEXT)
-            pdf.multi_cell(0, 6, _safe(
-                f"+ {len(incidents) - len(shown)} more incident(s) occurred in this period and are not "
-                f"shown individually above (showing the {len(shown)} most significant -- still-open and/or "
-                "highest-severity first). The full incident history for this account is available in "
-                "CloudOps under Reports' Incident scope picker, or via the API."
-            ))
-            pdf.set_text_color(*_INK)
+            kit.plain_paragraph(pdf, f"{len(incidents) - len(shown):,} more {_plural(len(incidents) - len(shown), 'incident')} "
+                                     f"occurred in this period. Showing the {len(shown)} most significant: still-open first, "
+                                     f"then highest severity. The full history is in CloudOps (Reports, Incident scope).",
+                                size=8.5, color=kit.MUTED, italic=True)
     else:
-        pdf.set_font("Helvetica", "", 10)
-        pdf.multi_cell(0, 6, _safe(
-            "No correlated incidents were identified in this period. Individual alerts, if any, "
-            "are listed in the Incident Timeline below."
-        ))
+        kit.plain_paragraph(pdf, "No correlated incidents were identified in this period.")
 
-    pdf.section_title("Affected Resources")
-    pdf.set_font("Helvetica", "", 10)
-    resources_list = data["affected_resources"]
-    if resources_list:
-        shown_resources = resources_list[:_MAX_AFFECTED_RESOURCES_LISTED]
-        for i, r in enumerate(shown_resources):
-            fill = i % 2 == 0
-            pdf.set_fill_color(*_TEAL_DIM) if fill else None
-            pdf.cell(0, 6.5, _safe(f"  [{r['resource_type']}]  {r['name'] or r['resource_id']}  ({r['resource_id']})"),
-                     fill=fill, new_x="LMARGIN", new_y="NEXT")
-        if len(resources_list) > len(shown_resources):
-            pdf.set_font("Helvetica", "I", 9)
-            pdf.set_text_color(*_GRAY_TEXT)
-            pdf.multi_cell(0, 6, _safe(f"+ {len(resources_list) - len(shown_resources)} more resource(s) affected in this period."))
-            pdf.set_text_color(*_INK)
+    alerts = data.get("alerts") or []
+    kit.section_header(pdf, "Most Significant Alerts" if len(alerts) > _MAX_TIMELINE_ROWS else "Alert Log")
+    if alerts:
+        pool = alerts
+        if len(alerts) > _MAX_TIMELINE_ROWS:
+            pool = sorted(alerts, key=lambda a: (0 if _is_open(a.get("status")) else 1,
+                                                 {"CRITICAL": 0, "WARNING": 1}.get((a.get("severity") or "").upper(), 2),
+                                                 -a["triggered_at"].timestamp()))[:_MAX_TIMELINE_ROWS]
+        pool = sorted(pool, key=lambda a: a["triggered_at"])
+        kit.data_table(pdf, [("Time (UTC)", 28, "L"), ("Severity", 24, "C"), ("Status", 22, "C"), ("Resource", 46, "L"),
+                             ("Metric", 36, "L"), ("Value", 24, "R")],
+                       [(_fmt_short(_naive(a["triggered_at"])),
+                         ("chip", (a.get("severity") or "-").upper(), kit.SEVERITY_COLORS.get((a.get("severity") or "").upper(), kit.MUTED)),
+                         ("chip", "OPEN" if _is_open(a.get("status")) else "RESOLVED",
+                          kit.STATUS_COLORS["OPEN" if _is_open(a.get("status")) else "RESOLVED"]),
+                         _name_of(a), metric_label(a.get("metric_name")),
+                         format_metric_value(a.get("metric_name"), a.get("value"), grouped=True)) for a in pool])
+        if len(pool) < len(alerts):
+            kit.plain_paragraph(pdf, f"Showing {len(pool)} of {len(alerts):,} alerts: still-open and highest severity first. "
+                                     f"The full alert history is in CloudOps or available through the API.",
+                                size=8.5, color=kit.MUTED, italic=True)
     else:
-        pdf.multi_cell(0, 6, _safe("No resources with events in this period."))
+        kit.plain_paragraph(pdf, "No alerts were recorded in this period. A clean run.")
 
-    alerts_list = data["alerts"]
-    def _draw_timeline_header():
-        pdf.set_fill_color(*_NAVY_CARD)
-        pdf.set_text_color(*_WHITE)
-        pdf.set_font("Helvetica", "B", 8.5)
-        for w_, h_txt in zip(col_w, headers):
-            pdf.cell(w_, 7, _safe(h_txt), fill=True)
-        pdf.ln()
-        pdf.set_text_color(*_INK)
-        pdf.set_font("Helvetica", "", 8.5)
+    kit.section_header(pdf, "Resolution and Current Status")
+    resolved_n = data["total_count"] - open_n
+    pct = ""
+    if data["total_count"]:
+        # Floor while anything is still open: 2,423 of 2,429 is not "100%".
+        share = 100 if not open_n else min(99, (100 * resolved_n) // data["total_count"])
+        pct = f" ({share}%)"
+    kit.bullet(pdf, f"{resolved_n:,} of {data['total_count']:,} alerts were resolved by the time this report was generated{pct}.")
+    if open_n:
+        kit.bullet(pdf, f"{open_n:,} {_plural(open_n, 'alert remains', 'alerts remain')} open and "
+                        f"{_plural(open_n, 'is', 'are')} being tracked live in CloudOps:")
+        for a in summ["open_alerts"][:8]:
+            kit.bullet(pdf, f"{_name_of(a)}: {metric_label(a.get('metric_name'))}, "
+                            f"{format_metric_value(a.get('metric_name'), a.get('value'), grouped=True)} "
+                            f"({(a.get('severity') or '').title()}, since {_fmt_short(_naive(a['triggered_at']))} UTC)")
+    else:
+        kit.bullet(pdf, "Nothing remains open.")
 
-    pdf.section_title(f"Incident Timeline / Alerts & Events ({len(alerts_list)} total)")
-    col_w = [30, 20, 20, 45, 32, 43]
-    headers = ["Time (UTC)", "Severity", "Status", "Resource", "Metric", "Value"]
-    ROW_H = 6.5
-    _draw_timeline_header()
-    # Most severe/most recent first when there's more than the cap --
-    # a stakeholder skimming a huge table should see what matters most
-    # before hitting the truncation note, not just whatever happened
-    # to be chronologically first.
-    shown_alerts = alerts_list if len(alerts_list) <= _MAX_TIMELINE_ROWS else \
-        sorted(alerts_list, key=lambda a: (
-            0 if (a.get("status") or "").lower() not in ("resolved", "closed") else 1,
-            {"CRITICAL": 0, "WARNING": 1}.get((a.get("severity") or "").upper(), 2),
-        ))[:_MAX_TIMELINE_ROWS]
-    if len(shown_alerts) < len(alerts_list):
-        shown_alerts = sorted(shown_alerts, key=lambda a: a["triggered_at"])
-    for i, a in enumerate(shown_alerts):
-        # CRITICAL: check space and break BEFORE the row, not mid-row.
-        # fpdf2's auto_page_break fires independently on each cell()
-        # call -- with several cells per logical row positioned via
-        # absolute set_xy(..., row_y), a page break landing between
-        # two cells of the SAME row left the later cells stranded at
-        # the old row_y coordinate on the new page (right under the
-        # header band), producing pages with a single orphaned date
-        # or pill and nothing else. Found in the first real
-        # multi-hundred-row report ever generated -- and missed in my
-        # own stress test too, because I only checked 2 of 28 pages
-        # before calling it verified. Checking every page now.
-        if pdf.get_y() + ROW_H > pdf.page_break_trigger:
-            pdf.add_page()
-            _draw_timeline_header()
-        row_y = pdf.get_y()
-        if i % 2 == 0:
-            pdf.set_fill_color(248, 249, 251)
-            pdf.rect(pdf.l_margin, row_y, sum(col_w), ROW_H, style="F")
-        pdf.set_xy(pdf.l_margin, row_y)
-        pdf.cell(col_w[0], ROW_H, _safe(a["triggered_at"].strftime("%Y-%m-%d %H:%M")))
-        pdf.pill(pdf.get_x(), row_y + 0.4, a.get("severity") or "-", _severity_color(a.get("severity")), w=col_w[1] - 2)
-        pdf.set_xy(pdf.get_x() + col_w[1], row_y)
-        pdf.pill(pdf.get_x(), row_y + 0.4, a.get("status") or "-", _status_color(a.get("status")), w=col_w[2] - 2)
-        pdf.set_xy(pdf.get_x() + col_w[2], row_y)
-        pdf.set_font("Helvetica", "", 8.5)
-        resource_label = _fit_text(pdf, a.get("resource_name") or a["resource_id"], col_w[3] - 2)
-        pdf.cell(col_w[3], ROW_H, _safe(resource_label))
-        pdf.cell(col_w[4], ROW_H, _safe(a.get("metric_name") or "-"))
-        pdf.cell(col_w[5], ROW_H, _safe(a.get("value")), new_x="LMARGIN", new_y="NEXT")
-    if not alerts_list:
-        pdf.multi_cell(0, 6, _safe("No alerts/events recorded in this period -- clean run."))
-    elif len(shown_alerts) < len(alerts_list):
-        pdf.set_font("Helvetica", "I", 9)
-        pdf.set_text_color(*_GRAY_TEXT)
-        pdf.multi_cell(0, 6, _safe(
-            f"+ {len(alerts_list) - len(shown_alerts)} more event(s) in this period, not shown here "
-            f"(showing the {len(shown_alerts)} most significant). Full event history is queryable in "
-            "CloudOps or via the API."
-        ))
-        pdf.set_text_color(*_INK)
-
-    pdf.section_title("Resolution / Current Status")
-    pdf.set_font("Helvetica", "", 10)
-    resolved = data["total_count"] - data["open_count"]
-    pdf.multi_cell(0, 6, _safe(
-        f"{resolved} of {data['total_count']} events resolved as of report generation. "
-        f"{data['open_count']} remain open and are being actively tracked in CloudOps."
-    ))
-
-    return bytes(pdf.output(dest="S"))
+    kit.footnote(pdf, f"Generated automatically by AurionPro CloudOps for {label} on {_fmt_stamp(now)} (requested by "
+                      f"{generated_by}). Verify before external distribution.")
+    return bytes(pdf.output())

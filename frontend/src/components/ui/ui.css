@@ -103,3 +103,10 @@ button.ui-kpi:hover { border-color:var(--line-3); background:var(--surface-3); t
   .ui-input { min-width: 0; flex: 1 1 100%; }
   .ui-filterbar-right { margin-left: 0; }
 }
+
+
+/* In-place download buttons (components/DownloadButton.jsx): look like the link or button they replaced. */
+.dl-wrap { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.dl-err { font-size: 11px; line-height: 1.3; color: var(--crit-fg, #f87171); max-width: 260px; }
+button.link-btn { font: inherit; cursor: pointer; background: transparent; }
+button.link-btn:disabled, .dl-wrap button:disabled { opacity: .65; cursor: progress; }

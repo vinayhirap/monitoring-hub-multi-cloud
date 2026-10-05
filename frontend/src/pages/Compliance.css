@@ -78,6 +78,8 @@
   transition: all .15s;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  text-align: center;
   gap: 6px;
 }
 .c-btn-primary:disabled { opacity: .4; cursor: not-allowed; }

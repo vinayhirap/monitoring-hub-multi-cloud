@@ -17,6 +17,7 @@ import { PageHeader, KpiStrip, KpiCard, SegmentedControl, EmptyState } from "../
 import { clearAllCached } from "../utils/dataCache";
 import { redirectToSignIn } from "../utils/loginFlow";
 import { serviceLabelFor } from "../utils/dashboardModel";
+import DownloadButton from "../components/DownloadButton";
 
 
 // Tab order: what needs a person first, then the lifecycle states, then history.
@@ -736,15 +737,14 @@ export default function Alerts() {
                                     Generated summary
                                   </span>
                                 )}
-                                <a
-                                  className="explain-rca-report-link"
-                                  href={rcaReportUrl(a.id, "pdf")}
-                                  target="_blank"
-                                  rel="noreferrer"
+                                <DownloadButton
+                                  className="explain-rca-report-link link-btn"
+                                  path={rcaReportUrl(a.id, "pdf")}
+                                  fallbackName={`CloudOps-RCA-Alert-${a.id}.pdf`}
                                   title="Download a full RCA report (timeline, probable cause, recommendations) as a PDF"
                                 >
                                   <DownloadIcon size={12} /> RCA Report
-                                </a>
+                                </DownloadButton>
                               </div>
                               <p className="explain-summary">{explainCache[a.id].summary}</p>
                             </div>

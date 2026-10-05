@@ -19,6 +19,8 @@ import {
 } from "../utils/reportPlan";
 import "./Reports.css";
 import { formatStamp, formatDay, zoneLabel } from "../utils/timeFormat";
+import DownloadButton from "../components/DownloadButton";
+import { describeApiError } from "../utils/download";
 
 const JOBS_KEY = "reports:jobs";
 const STATUS_TONE = { QUEUED: "mute", PROCESSING: "info", COMPLETE: "ok", FAILED: "crit", UNKNOWN: "warn" };
@@ -122,7 +124,7 @@ export default function Reports() {
       });
       setJobs(l => trackJob(l, { job_id: resp.job_id, status: resp.status || "QUEUED", label: summary, requestedAt: Date.now() }));
       setNotice("Queued. It will appear in the library when it is ready.");
-    } catch (e) { setError(e.message || "Failed to queue the report"); } finally { setSubmitting(false); }
+    } catch (e) { setError(describeApiError(e, "queuing the report")); } finally { setSubmitting(false); }
   }
 
   async function handleEmail(id) {
@@ -152,7 +154,7 @@ export default function Reports() {
         return <Badge tone={e.state === "expired" ? "crit" : e.state === "soon" ? "warn" : "mute"}>{e.state === "expired" ? "expired" : e.state === "unknown" ? "—" : `${e.days}d left`}</Badge>; } },
     { key: "act", header: "", render: r => (
       <div className="rp-actions">
-        {hasPermission("reports.download") && expiryState(r.expires_at).state !== "expired" && <a className="ui-btn" href={reportDownloadUrl(r.id)} target="_blank" rel="noreferrer"><DownloadIcon size={12} /> Download</a>}
+        {hasPermission("reports.download") && expiryState(r.expires_at).state !== "expired" && <DownloadButton className="ui-btn" path={reportDownloadUrl(r.id)} fallbackName={`CloudOps-Report-${r.id}.pdf`}><DownloadIcon size={12} /> Download</DownloadButton>}
         {hasPermission("reports.email") && expiryState(r.expires_at).state !== "expired" && (
           <span className="rp-mail">
             <input type="email" aria-label={`Email report ${r.id} to`} placeholder="name@company.com" value={emailTo[r.id] || ""} onChange={e => setEmailTo({ ...emailTo, [r.id]: e.target.value })} />
