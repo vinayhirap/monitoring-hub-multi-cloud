@@ -295,8 +295,20 @@ def _capacity_forecast(aws_account_id, resource_id, metric_name):
     return None
 
 
+# A straight-line extrapolation is only worth quoting as a date when the date is near. Past this horizon
+# the slope is statistically close to zero (PROD 2026-10-05: 236 and 334 days at 0.15 and 0.05 percentage
+# points a day), and "reaches 100% in 334 days" reads as a precise prediction it is not.
+FORECAST_HORIZON_DAYS = 90
+
+
 def _forecast_sentence(f):
     days = f["days_to_exhaustion"]
+    if days > FORECAST_HORIZON_DAYS:
+        if f["counts_up"]:
+            return (f"Usage is growing only slowly (about {abs(f['slope_per_day']):.2f} percentage points per day), "
+                    f"so it is not projected to fill within the next {FORECAST_HORIZON_DAYS} days.")
+        return (f"Free space is shrinking only slowly, so it is not projected to run out within the "
+                f"next {FORECAST_HORIZON_DAYS} days.")
     when = "under a day" if days < 1 else (f"about {days:.1f} days" if days < 10 else f"about {round(days)} days")
     if f["counts_up"]:
         return (f"At the recent growth rate (about {abs(f['slope_per_day']):.1f} percentage points per day), "

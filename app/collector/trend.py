@@ -47,6 +47,38 @@ MIN_POINTS_FOR_TREND = 20
 MAX_REPORTABLE_DAYS = 365
 
 
+# A single abrupt move toward exhaustion (a big file or dump written at once) is a LEVEL SHIFT, not
+# growth. Fitting one straight line through "flat, jump, flat" gives a steep slope that describes
+# neither segment: PROD 2026-10-05, disk 70.9% -> 81.9% in ~90 minutes on 09-29 then ~0.45 points a
+# day since -- the 14-day fit said 1.38/day = full in 11.4 days; the growth after the jump says
+# ~35 days. We therefore fit only the points AFTER the last such step.
+LEVEL_SHIFT_FRACTION = 0.25     # one hour-to-hour move this large (share of the series range) is a step
+LEVEL_SHIFT_NOISE_MULT = 8.0    # ... and must also dwarf the series' own hourly noise (robust MAD)
+
+
+def _after_last_level_shift(timestamps_seconds, values, ceiling):
+    """Returns (timestamps, values) restricted to the points after the last abrupt step in the
+    exhaustion direction (up for percent-used metrics, down for free-space ones). Steps AWAY from
+    exhaustion (a cleanup) are deliberately left alone, so sawtooth disks (grow, purge, grow) keep their
+    old behaviour. A smooth ramp never trips this: each hourly move is a tiny share of the total range."""
+    x = np.asarray(timestamps_seconds, dtype=float)
+    y = np.asarray(values, dtype=float)
+    if len(y) < 3 or not np.all(np.isfinite(y)):
+        return x, y
+    span = float(np.max(y) - np.min(y))
+    if span <= 0:
+        return x, y
+    d = np.diff(y)
+    toward = d if ceiling > 0 else -d
+    noise = 1.4826 * float(np.median(np.abs(d - np.median(d))))
+    threshold = max(LEVEL_SHIFT_FRACTION * span, LEVEL_SHIFT_NOISE_MULT * noise)
+    steps = np.nonzero(toward >= threshold)[0]
+    if steps.size == 0:
+        return x, y
+    cut = int(steps[-1]) + 1            # first point after the step
+    return x[cut:], y[cut:]
+
+
 def _linear_trend(timestamps_seconds, values):
     """Returns (slope_per_day, intercept) via least-squares fit, or
     None if there isn't enough data to fit meaningfully."""
@@ -127,7 +159,11 @@ def compute_capacity_forecasts(aws_resource_id: str = None, aws_account_ids=None
                 by_resource.setdefault(row["rid"], []).append(row)
 
             for _rid, points in by_resource.items():
-                fit = _linear_trend([p["ts"] for p in points], [p["metric_value"] for p in points])
+                ts_fit, val_fit = _after_last_level_shift(
+                    [p["ts"] for p in points], [p["metric_value"] for p in points], ceiling)
+                # Right after a step there is too little history to know the growth rate: say nothing
+                # rather than publish the step itself as a trend (_linear_trend needs MIN_POINTS_FOR_TREND).
+                fit = _linear_trend(ts_fit, val_fit)
                 if fit is None:
                     continue
                 slope, _intercept = fit

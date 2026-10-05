@@ -222,8 +222,17 @@ def _over_text(facts: dict):
     return f"{abs(d):g}% {'over' if d >= 0 else 'under'}"
 
 
+_FORECAST_HORIZON_DAYS = 90     # same horizon as app/collector/rca.py: beyond it, say "slow", not a date
+
+
 def _forecast_text(cf: dict) -> str:
     days = cf["days_to_exhaustion"]
+    if days > _FORECAST_HORIZON_DAYS:
+        if cf.get("counts_up", True):
+            return (f"Usage is growing only slowly (about {abs(cf['slope_per_day']):.2f} percentage points per day), "
+                    f"so it is not projected to fill within the next {_FORECAST_HORIZON_DAYS} days.")
+        return (f"Free space is shrinking only slowly, so it is not projected to run out within the "
+                f"next {_FORECAST_HORIZON_DAYS} days.")
     when = "under a day" if days < 1 else (f"about {days:.1f} days" if days < 10 else f"about {round(days)} days")
     if cf.get("counts_up", True):
         return (f"At the recent growth rate (about {abs(cf['slope_per_day']):.1f} percentage points per day), "
