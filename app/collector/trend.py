@@ -54,6 +54,7 @@ MAX_REPORTABLE_DAYS = 365
 # ~35 days. We therefore fit only the points AFTER the last such step.
 LEVEL_SHIFT_FRACTION = 0.25     # one hour-to-hour move this large (share of the series range) is a step
 LEVEL_SHIFT_NOISE_MULT = 8.0    # ... and must also dwarf the series' own hourly noise (robust MAD)
+LEVEL_SHIFT_MIN_LEVEL_FRACTION = 0.05   # ... and be material in absolute terms: >= 5% of the series' own level
 
 
 def _after_last_level_shift(timestamps_seconds, values, ceiling):
@@ -71,7 +72,12 @@ def _after_last_level_shift(timestamps_seconds, values, ceiling):
     d = np.diff(y)
     toward = d if ceiling > 0 else -d
     noise = 1.4826 * float(np.median(np.abs(d - np.median(d))))
-    threshold = max(LEVEL_SHIFT_FRACTION * span, LEVEL_SHIFT_NOISE_MULT * noise)
+    # The absolute floor matters for near-flat series: with a 1-point total range, a 0.3-point blip is "30%
+    # of the range" yet is not a step in anything an operator would call a step (PROD 2026-10-05: after
+    # the first version of this rule, two flat disks lost their forecast to hourly blips that small).
+    level = float(np.mean(np.abs(y)))
+    threshold = max(LEVEL_SHIFT_FRACTION * span, LEVEL_SHIFT_NOISE_MULT * noise,
+                    LEVEL_SHIFT_MIN_LEVEL_FRACTION * level)
     steps = np.nonzero(toward >= threshold)[0]
     if steps.size == 0:
         return x, y

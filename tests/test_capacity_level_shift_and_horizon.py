@@ -124,3 +124,36 @@ def test_alert_summary_text_matches_the_report_wording():
         {"days_to_exhaustion": 236.1, "slope_per_day": 0.146, "counts_up": True})
     assert "projected to reach 100% in about 12 days" in rca._forecast_sentence(
         {"days_to_exhaustion": 11.8, "slope_per_day": 1.43, "counts_up": True})
+
+
+# -- absolute materiality (2026-10-05) ------------------------------------------
+
+def test_a_tiny_blip_on_a_near_flat_disk_is_not_a_level_shift_and_keeps_its_forecast():
+    """Reproduces what first-version 0010 did on PROD: a 0.3-point hourly blip on a disk that moves ~1 point in
+    two weeks counted as '30% of the range' and wiped the forecast."""
+    rng = np.random.default_rng(1)
+    days = np.arange(14 * 24) / 24.0
+    values = 83.0 + 0.05 * days + np.where(days > 13.7, 0.3, 0) + rng.normal(0, 0.004, days.size)
+    mod = _trend_module("disk_used_percent", _rows(values))
+    f = mod.compute_capacity_forecasts()
+    assert len(f) == 1 and 0.03 < f[0]["slope_per_day"] < 0.08, f
+    x, y = mod._after_last_level_shift(np.arange(values.size) * 3600.0, values, 100.0)
+    assert y.size == values.size
+
+
+def test_the_prod_shaped_jump_is_still_cut_with_the_absolute_floor_in_place():
+    series = _prod_like_series()
+    mod = _trend_module("disk_used_percent", _rows(series))
+    x, y = mod._after_last_level_shift(np.arange(series.size) * 3600.0, series, 100.0)
+    assert y.size < series.size / 2                                   # cut after the 10.9-point step
+    f = mod.compute_capacity_forecasts()[0]
+    assert 0.3 < f["slope_per_day"] < 0.6
+
+
+def test_a_two_point_jump_on_a_busy_disk_is_below_the_floor_but_a_five_point_one_is_not():
+    days = np.arange(14 * 24) / 24.0
+    for jump, expect_cut in ((2.0, False), (5.0, True)):
+        values = np.where(days < 9, 70.0, 70.0 + jump) + 0.3 * days
+        mod = _trend_module("disk_used_percent", _rows(values))
+        x, y = mod._after_last_level_shift(np.arange(values.size) * 3600.0, values, 100.0)
+        assert (y.size < values.size) is expect_cut, (jump, y.size)
