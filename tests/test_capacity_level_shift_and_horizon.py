@@ -99,7 +99,7 @@ def test_noise_alone_never_counts_as_a_step():
 def _rca():
     install_stub("app.db", get_connection=lambda: None)
     install_stub("app.collector.rca", explain_alert=lambda i: {})
-    install_stub("app.llm.summarizer", generate_rca_narrative=lambda f: None, is_enabled=lambda: False)
+    install_stub("app.llm.summarizer", generate_rca_summary=lambda f, d: None, is_enabled=lambda: False)
     install_stub("app.llm.aws_docs", get_references=lambda *a: [])
     return load_module("app/llm/rca_report.py")
 

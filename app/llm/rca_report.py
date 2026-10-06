@@ -24,13 +24,14 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timezone
 
 from app.db import get_connection
 from app.collector.rca import explain_alert
-from app.llm.summarizer import generate_rca_narrative, is_enabled
+from app.llm.summarizer import generate_rca_summary, is_enabled
 from app.llm.aws_docs import get_references
 from app.metric_labels import metric_label, format_metric_value, metric_unit_name
 
@@ -409,13 +410,20 @@ def _build_recommendations(facts: dict) -> list:
     return recs
 
 
-def _fallback_narrative(facts: dict) -> str:
-    """Deterministic Executive Summary + Recommendations, used when the LLM is disabled or its call fails (see the module
-    docstring). Every sentence is assembled from a fact already in `facts`; nothing is invented. Structured as short
-    labelled paragraphs (What happened / Pattern / Impact / Probable cause) so it can be scanned, not read as one block."""
+# What the AI may write is ONLY a short "In brief" lead paragraph (or, with LLM_RCA_SUMMARY_MODE=replace, the whole
+# summary section); the labelled paragraphs, every figure, the recommendations and the timeline are always rule-based.
+# 2026-10-05: the previous design let the model write Recommendations too; the stored 3B output for alert 7885 advised
+# reviewing a deployment history when none existed and adjusting the threshold of a full disk.
+def _summary_mode() -> str:
+    return "replace" if os.getenv("LLM_RCA_SUMMARY_MODE", "lead").strip().lower() == "replace" else "lead"
+
+
+def _compose_narrative(facts: dict, ai_summary: str = None) -> str:
     paras = _build_summary_paragraphs(facts)
     if not facts.get("metric_name") and facts.get("template_summary"):
         paras = [facts["template_summary"]]                          # only reachable with stripped-down facts
+    if ai_summary:
+        paras = [ai_summary] if _summary_mode() == "replace" else [_lead("In brief", ai_summary)] + paras
     lines = ["## Executive Summary", ""]
     for p in paras:
         lines += [p, ""]
@@ -424,8 +432,30 @@ def _fallback_narrative(facts: dict) -> str:
     return "\n".join(lines)
 
 
+def _fallback_narrative(facts: dict) -> str:
+    """Deterministic Executive Summary + Recommendations, used when the AI summary is disabled, pending or rejected.
+    Every sentence is assembled from a fact already in `facts`; nothing is invented. Structured as short labelled
+    paragraphs (What happened / Pattern / Impact / Probable cause) so it can be scanned, not read as one block."""
+    return _compose_narrative(facts, None)
+
+
+def _draft_for_llm(facts: dict) -> str:
+    """The rule-based summary as plain text (lead-ins turned into 'Label: text'), the only thing the model sees."""
+    out = []
+    for p in _build_summary_paragraphs(facts):
+        m = re.match(r"^\*\*(.+?)\.\*\*\s+(.*)$", p, re.S)
+        out.append(f"{m.group(1)}: {m.group(2)}" if m else p)
+    return "\n".join(out)
+
+
+# Bumping this orphans every cached row on purpose: rows written before 2026-10-05 hold a FULL AI narrative (summary AND
+# recommendations); rows written now hold only the AI summary paragraph. Same table, different meaning.
+_CACHE_VERSION = "summary-v1"
+
+
 def _facts_hash(facts: dict) -> str:
-    return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    payload = _CACHE_VERSION + json.dumps(facts, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _read_cache(alert_id: int, facts_hash: str):
@@ -476,9 +506,9 @@ def _write_cache(alert_id: int, facts_hash: str, narrative: str) -> None:
 def _generate_in_background(alert_id: int, facts: dict, facts_hash: str, done: threading.Event):
     key = (alert_id, facts_hash)
     try:
-        narrative = generate_rca_narrative(facts)
-        if narrative:
-            _write_cache(alert_id, facts_hash, narrative)
+        summary = generate_rca_summary(facts, _draft_for_llm(facts))
+        if summary:
+            _write_cache(alert_id, facts_hash, summary)
         else:
             with _state_lock:
                 _failed_until[key] = time.monotonic() + _FAILURE_COOLDOWN_SECONDS
@@ -529,7 +559,7 @@ def generate_rca_report(alert_id: int) -> dict:
     facts_hash = _facts_hash(facts)
     cached = _read_cache(alert_id, facts_hash)
     if cached:
-        return {"facts": facts, "narrative_markdown": cached,
+        return {"facts": facts, "narrative_markdown": _compose_narrative(facts, cached),
                 "narrative_source": "llm", "narrative_pending": False}
 
     event = _start_or_join(alert_id, facts, facts_hash)
@@ -538,7 +568,7 @@ def generate_rca_report(alert_id: int) -> dict:
         if event.wait(timeout=wait):
             cached = _read_cache(alert_id, facts_hash)
             if cached:
-                return {"facts": facts, "narrative_markdown": cached,
+                return {"facts": facts, "narrative_markdown": _compose_narrative(facts, cached),
                         "narrative_source": "llm", "narrative_pending": False}
             # finished but produced nothing usable (timeout, verifier rejection, ...)
             return {"facts": facts, "narrative_markdown": _fallback_narrative(facts),

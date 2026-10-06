@@ -47,7 +47,7 @@ FACTS = {
 def rr():
     install_stub("app.db", get_connection=lambda: None)
     install_stub("app.collector.rca", explain_alert=lambda i: {})
-    install_stub("app.llm.summarizer", generate_rca_narrative=lambda f: None, is_enabled=lambda: False)
+    install_stub("app.llm.summarizer", generate_rca_summary=lambda f, d: None, is_enabled=lambda: False)
     install_stub("app.llm.aws_docs", get_references=lambda *a: [])
     return load_module("app/llm/rca_report.py")
 
@@ -132,7 +132,10 @@ def test_a_long_running_alert_is_told_to_decide_between_new_normal_and_fault(rr,
     assert any("Open for 10 days" in r and "new normal" in r for r in recs)
 
 
-def test_no_signal_at_all_still_yields_one_honest_line(rr):
+def test_no_signal_at_all_still_yields_one_honest_line(rr, monkeypatch):
+    # Frozen clock: FACTS has a fixed triggered_at, so once the real clock passed 24 h after it the "open for N days"
+    # recommendation (correctly) appeared and this test started failing on its own (2026-10-05).
+    monkeypatch.setattr(rr, "_open_minutes", lambda facts, now=None: 45)
     recs = rr._build_recommendations(dict(FACTS, metric_name="some_unknown_metric", recurrences_30d=0,
                                           dependents=[], dependent_count=0))
     assert recs == ["No specific recommendation could be derived automatically from the signals gathered for this alert."]
@@ -148,7 +151,8 @@ def test_guidance_is_only_a_suggestion_and_covers_the_common_families(rr):
 
 # ── the markdown (also the .md download) ──────────────────────────────────────
 
-def test_markdown_metadata_is_complete_formatted_and_labelled_with_a_zone(rr):
+def test_markdown_metadata_is_complete_formatted_and_labelled_with_a_zone(rr, monkeypatch):
+    monkeypatch.setattr(rr, "_open_minutes", lambda facts, now=None: 45)      # frozen clock, see above
     md = rr.render_markdown(_report(rr))
     assert md.startswith("# RCA Report: Volume Read Operations on vol-033fecea4fe16e25d")
     for row in ("- **Alert:** #9467", "- **Resource:** vol-033fecea4fe16e25d (EBS volume)", "- **Region:** ap-south-1",

@@ -179,7 +179,7 @@ def _rca_module(monkeypatch, narrative_fn, cache=None, enabled=True):
     monkeypatch.setenv("LLM_RCA_WAIT_SECONDS", "0.3")
     install_stub("app.db", get_connection=lambda: None)
     install_stub("app.collector.rca", explain_alert=lambda i: {})
-    install_stub("app.llm.summarizer", generate_rca_narrative=narrative_fn, is_enabled=lambda: enabled)
+    install_stub("app.llm.summarizer", generate_rca_summary=narrative_fn, is_enabled=lambda: enabled)
     install_stub("app.llm.aws_docs", get_references=lambda *a: [])
     mod = load_module("app/llm/rca_report.py")
     facts = {"alert_id": 7, "metric_name": "CPUUtilization", "resource_type": "ec2", "resource_id": "i-1",
@@ -195,41 +195,44 @@ def _rca_module(monkeypatch, narrative_fn, cache=None, enabled=True):
     return mod, store
 
 
-def test_rca_report_serves_cached_narrative_without_calling_the_llm(monkeypatch):
+def test_rca_report_serves_the_cached_ai_summary_without_calling_the_llm(monkeypatch):
     calls = []
-    mod, store = _rca_module(monkeypatch, lambda f: calls.append(1) or "x")
-    store[(7, mod._facts_hash(mod._gather_facts(7)))] = "## Executive Summary\ncached\n\n## Recommendations\n- ok"
+    mod, store = _rca_module(monkeypatch, lambda f, d: calls.append(1) or "x")
+    store[(7, mod._facts_hash(mod._gather_facts(7)))] = "cached ai summary about web"
     rep = mod.generate_rca_report(7)
     assert rep["narrative_source"] == "llm" and rep["narrative_pending"] is False
-    assert "cached" in rep["narrative_markdown"] and calls == []
+    assert "**In brief.** cached ai summary about web" in rep["narrative_markdown"] and calls == []
+    # the recommendations are rule-based no matter what the cache holds
+    assert "## Recommendations" in rep["narrative_markdown"]
 
 
 def test_rca_report_returns_template_fast_then_cache_fills_in(monkeypatch):
     release = threading.Event()
 
-    def slow(facts):
+    def slow(facts, draft):
         release.wait(5)
-        return "## Executive Summary\nllm text\n\n## Recommendations\n- do x"
+        return "llm summary text for web"
     mod, store = _rca_module(monkeypatch, slow)
     t0 = time.time()
     rep = mod.generate_rca_report(7)
     assert time.time() - t0 < 2, "must not block for the whole LLM call"
     assert rep["narrative_source"] == "template" and rep["narrative_pending"] is True
     assert "being generated" in mod.render_markdown(rep)
+    assert "In brief" not in rep["narrative_markdown"]
 
     release.set()
     deadline = time.time() + 3
     while time.time() < deadline and not store:
         time.sleep(0.02)
     again = mod.generate_rca_report(7)
-    assert again["narrative_source"] == "llm" and "llm text" in again["narrative_markdown"]
+    assert again["narrative_source"] == "llm" and "llm summary text for web" in again["narrative_markdown"]
 
 
 def test_rca_report_does_not_start_duplicate_generations(monkeypatch):
     calls = []
     release = threading.Event()
 
-    def slow(facts):
+    def slow(facts, draft):
         calls.append(1)
         release.wait(5)
         return None
@@ -242,7 +245,7 @@ def test_rca_report_does_not_start_duplicate_generations(monkeypatch):
 
 def test_rca_report_failure_cools_down_and_falls_back(monkeypatch):
     calls = []
-    mod, _ = _rca_module(monkeypatch, lambda f: calls.append(1) or None)
+    mod, _ = _rca_module(monkeypatch, lambda f, d: calls.append(1) or None)
     first = mod.generate_rca_report(7)
     assert first["narrative_source"] == "template" and first["narrative_pending"] is False
     mod.generate_rca_report(7)  # within cooldown: no new LLM call
@@ -251,13 +254,13 @@ def test_rca_report_failure_cools_down_and_falls_back(monkeypatch):
 
 def test_rca_report_disabled_llm_never_starts_a_thread(monkeypatch):
     calls = []
-    mod, _ = _rca_module(monkeypatch, lambda f: calls.append(1), enabled=False)
+    mod, _ = _rca_module(monkeypatch, lambda f, d: calls.append(1), enabled=False)
     rep = mod.generate_rca_report(7)
     assert rep["narrative_source"] == "template" and rep["narrative_pending"] is False and calls == []
 
 
 def test_pending_note_is_plain_text_near_the_top_not_a_trailing_asterisk_line(monkeypatch):
-    mod, _ = _rca_module(monkeypatch, lambda f: None)
+    mod, _ = _rca_module(monkeypatch, lambda f, d: None)
     facts = mod._gather_facts(7)
     md = mod.render_markdown({"facts": facts, "narrative_markdown": "## Executive Summary\nx\n\n## Recommendations\n- y",
                               "narrative_source": "template", "narrative_pending": True})
@@ -344,7 +347,7 @@ def test_digest_lookup_failure_never_breaks_the_refresh(monkeypatch, caplog):
 # -- capacity forecast in the report (2026-10-04) -----------------------------
 
 def test_report_fallback_recommends_acting_when_a_disk_fills_within_30_days(monkeypatch):
-    mod, _ = _rca_module(monkeypatch, lambda f: None)
+    mod, _ = _rca_module(monkeypatch, lambda f, d: None)
     facts = mod._gather_facts(7)
     facts["capacity_forecast"] = {"days_to_exhaustion": 11.8, "slope_per_day": 1.43, "current_value": 83.0, "counts_up": True}
     md = mod._fallback_narrative(facts)
@@ -366,3 +369,121 @@ def test_rca_prompt_lets_the_model_cite_the_forecast_but_the_verifier_still_guar
     assert mod.generate_rca_narrative(facts) == good
     mod._call_llm = lambda *a, **k: bad
     assert mod.generate_rca_narrative(facts) is None
+
+
+# -- AI writes the SUMMARY only (2026-10-05) ----------------------------------
+
+DRAFT = ("What happened: Disk Used % on U4RAD-JUMP (EC2 instance) in U4RAD went above its alert limit at 29 Sep 2026, "
+         "15:58:55 UTC: the reading was 83.0% against a limit of 80% (3.8% over). The alert is still active.\n"
+         "Probable cause: No deployment or AWS change was found, so the cause cannot be determined.")
+SFACTS = {"resource_name": "U4RAD-JUMP", "resource_id": "i-0424cb66e22e05a21", "current_value": 83.047834,
+          "threshold": 80.0, "threshold_delta_pct": 3.8}
+GOOD = ("The Disk Used % alert on U4RAD-JUMP in U4RAD has been open since 29 Sep 2026, 15:58:55 UTC, with the disk at "
+        "83.0% against a limit of 80%, which is 3.8% over. No deployment or AWS change was found, so the cause "
+        "cannot be determined.")
+
+
+def test_clean_summary_accepts_a_grounded_plain_paragraph(monkeypatch):
+    mod = _summ(monkeypatch)
+    assert mod._clean_rca_summary(GOOD, SFACTS, DRAFT) == GOOD
+
+
+def test_clean_summary_rejects_recommendations_headings_and_bullets(monkeypatch):
+    mod = _summ(monkeypatch)
+    assert mod._clean_rca_summary(GOOD + " We recommend widening the threshold.", SFACTS, DRAFT) is None
+    assert mod._clean_rca_summary("## Executive Summary\n" + GOOD, SFACTS, DRAFT) is None
+    assert mod._clean_rca_summary(GOOD + "\n- Review the deployment history", SFACTS, DRAFT) is None
+    assert mod._clean_rca_summary("* " + GOOD, SFACTS, DRAFT) is None
+
+
+def test_clean_summary_rejects_invented_numbers_wrong_resource_and_bad_length(monkeypatch):
+    mod = _summ(monkeypatch)
+    assert mod._clean_rca_summary(GOOD.replace("83.0%", "91.7%"), SFACTS, DRAFT) is None
+    assert mod._clean_rca_summary(GOOD.replace("U4RAD-JUMP", "the server"), SFACTS, DRAFT) is None
+    assert mod._clean_rca_summary("Disk on U4RAD-JUMP is high.", SFACTS, DRAFT) is None        # < 80 chars
+    assert mod._clean_rca_summary(GOOD * 12, SFACTS, DRAFT) is None                           # > 900 chars
+    assert mod._clean_rca_summary(None, SFACTS, DRAFT) is None
+
+
+def test_clean_summary_collapses_whitespace_and_strips_stray_bold(monkeypatch):
+    mod = _summ(monkeypatch)
+    messy = "**" + GOOD.replace(". No deployment", ".\n\nNo deployment") + "**"
+    out = mod._clean_rca_summary(messy, SFACTS, DRAFT)
+    assert out == GOOD.replace("3.8% over. No", "3.8% over. No") and "\n" not in out and "**" not in out
+
+
+def test_generate_rca_summary_sends_only_the_fenced_draft_and_the_small_cap(monkeypatch):
+    mod = _summ(monkeypatch)
+    seen = {}
+
+    def fake(system_prompt, user_content, max_tokens=0, timeout=None):
+        seen.update(system=system_prompt, user=user_content, max_tokens=max_tokens, timeout=timeout)
+        return GOOD
+    mod._call_llm = fake
+    assert mod.generate_rca_summary(SFACTS, DRAFT) == GOOD
+    assert "<<<BEGIN_DRAFT>>>" in seen["user"] and DRAFT in seen["user"]
+    assert "current_value" not in seen["user"]                       # raw facts JSON is not sent
+    assert "no recommendations" in seen["system"].replace("advice or recommendations", "no recommendations")
+    assert seen["max_tokens"] == 160 and seen["timeout"] == 180.0
+
+
+def test_generate_rca_summary_is_none_when_disabled_or_the_draft_is_empty(monkeypatch):
+    mod = _summ(monkeypatch)
+    mod._call_llm = lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call"))
+    assert mod.generate_rca_summary(SFACTS, "") is None
+    mod2 = _summ(monkeypatch, LLM_SUMMARY_ENABLED="false")
+    mod2._call_llm = mod._call_llm
+    assert mod2.generate_rca_summary(SFACTS, DRAFT) is None
+
+
+def test_report_composes_in_brief_lead_plus_rule_based_sections(monkeypatch):
+    mod, _ = _rca_module(monkeypatch, lambda f, d: None)
+    facts = mod._gather_facts(7)
+    md = mod._compose_narrative(facts, "AI wrote this about web.")
+    assert md.index("**In brief.** AI wrote this about web.") < md.index("**What happened.**")
+    assert md.count("## Executive Summary") == 1 and "## Recommendations" in md
+    assert mod._compose_narrative(facts, None) == mod._fallback_narrative(facts)
+    assert "In brief" not in mod._fallback_narrative(facts)
+
+
+def test_replace_mode_swaps_the_labelled_paragraphs_for_the_ai_paragraph(monkeypatch):
+    monkeypatch.setenv("LLM_RCA_SUMMARY_MODE", "replace")
+    mod, _ = _rca_module(monkeypatch, lambda f, d: None)
+    md = mod._compose_narrative(mod._gather_facts(7), "AI wrote this about web.")
+    assert "AI wrote this about web." in md and "**What happened.**" not in md and "In brief" not in md
+    assert "## Recommendations" in md
+
+
+def test_recommendations_never_come_from_the_ai_and_are_identical_with_or_without_it(monkeypatch):
+    mod, _ = _rca_module(monkeypatch, lambda f, d: None)
+    facts = mod._gather_facts(7)
+    tail = lambda md: md.split("## Recommendations", 1)[1]
+    assert tail(mod._compose_narrative(facts, "x" * 100)) == tail(mod._compose_narrative(facts, None))
+
+
+def test_draft_for_llm_turns_lead_ins_into_plain_labels_and_has_no_markdown(monkeypatch):
+    mod, _ = _rca_module(monkeypatch, lambda f, d: None)
+    draft = mod._draft_for_llm(mod._gather_facts(7))
+    assert draft.startswith("What happened: ") and "**" not in draft and "Probable cause: " in draft
+
+
+def test_cache_version_orphans_rows_written_by_the_old_full_narrative_design(monkeypatch):
+    import hashlib, json
+    mod, _ = _rca_module(monkeypatch, lambda f, d: None)
+    facts = mod._gather_facts(7)
+    legacy = hashlib.sha256(json.dumps(facts, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    assert mod._facts_hash(facts) != legacy
+
+
+def test_background_job_caches_only_the_summary_paragraph(monkeypatch):
+    seen = {}
+
+    def summary(facts, draft):
+        seen["draft"] = draft
+        return "ai paragraph about web"
+    mod, store = _rca_module(monkeypatch, summary)
+    mod.generate_rca_report(7)
+    deadline = time.time() + 3
+    while time.time() < deadline and not store:
+        time.sleep(0.02)
+    assert list(store.values()) == ["ai paragraph about web"] and seen["draft"].startswith("What happened: ")

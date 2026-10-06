@@ -291,7 +291,7 @@ def test_most_affected_is_ordered_by_alert_count_and_the_log_shows_breadth():
 def test_rca_says_learned_limit_and_names_the_unit():
     install_stub("app.db", get_connection=lambda: None)
     install_stub("app.collector.rca", explain_alert=lambda i: {})
-    install_stub("app.llm.summarizer", generate_rca_narrative=lambda f: None, is_enabled=lambda: False)
+    install_stub("app.llm.summarizer", generate_rca_summary=lambda f, d: None, is_enabled=lambda: False)
     install_stub("app.llm.aws_docs", get_references=lambda *a: [])
     rr = load_module("app/llm/rca_report.py")
     facts = {"alert_id": 9501, "resource_id": "i-1", "resource_name": "Cloudops_Prod", "resource_type": "ec2", "account_name": "AuroGov Mumbai",

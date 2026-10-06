@@ -12,10 +12,11 @@ Ollama only rewrites facts the app has already computed deterministically:
 | Use | Code | Output cap | Timeout |
 |---|---|---|---|
 | Alert summary paragraph | `app/collector/llm_summarizer.py` -> `polish_summary` | 160 tokens | `LLM_SUMMARY_TIMEOUT_SECONDS` |
-| RCA report narrative (cached) | `app/llm/rca_report.py` -> `generate_rca_narrative` | 320 tokens | `LLM_RCA_TIMEOUT_SECONDS` (180) |
+| RCA report "In brief" paragraph (cached; summary only, recommendations are rule-based) | `app/llm/rca_report.py` -> `generate_rca_summary` | 160 tokens | `LLM_RCA_TIMEOUT_SECONDS` (180) |
 
-Every output is checked by `ungrounded_tokens()` (numbers/IDs/URLs must exist in the input facts)
-and falls back to the deterministic template if not. Detection, correlation, baselines,
+Every output is checked by `ungrounded_tokens()` (numbers/IDs/URLs must exist in the input facts); RCA summaries are
+also rejected if they contain headings, bullets or anything recommendation-like, or never name the resource.
+Rejected output falls back to the deterministic template. Detection, correlation, baselines,
 forecasting and NL search never call it.
 
 ## Install (fresh host)
@@ -65,8 +66,8 @@ Verify the override took effect: `systemctl show ollama -p Environment`.
 ## Measured behaviour (PROD, 2026-10-02)
 
 - `llama3.2:3b`, 4-bit: 2.0 GB on disk, ~2.4-2.6 GB resident, context 3072 after Phase 1 (was 4096).
-- ~3.5 tokens/s on 2 throttled vCPUs. Output length is therefore latency: 160 tokens ~ 45 s,
-  320 tokens ~ 90 s.
+- ~3.5 tokens/s on 2 vCPUs (measured with credits above zero, so this is the hardware, not throttling). Output length
+  is therefore latency: 160 tokens ~ 45 s.
 - A 7-8B model needs ~5 GB and would run at a fraction of that speed: not viable on this box.
 
 ## Choosing or changing the model
