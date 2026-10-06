@@ -321,7 +321,11 @@ def list_resource_health(
         conn.close()
 
 
-@router.get("/{account_id}/forecast/{resource_id}")
+# {resource_id:path} (not plain {resource_id}): ELB/target-group/etc. ids are
+# full ARNs containing "/". The frontend sends them as %2F, but the ASGI
+# server decodes %2F to "/" before routing, and a plain str path param
+# never matches a slash -> 404 from the router (not from this handler).
+@router.get("/{account_id}/forecast/{resource_id:path}")
 def get_capacity_forecast(
     account_id: int,
     resource_id: str,
