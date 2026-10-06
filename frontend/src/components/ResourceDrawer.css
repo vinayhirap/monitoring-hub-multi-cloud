@@ -1,0 +1,12 @@
+.rd-scrim { position: fixed; inset: 0; background: rgba(2,6,14,.55); z-index: var(--z-scrim, 200); }
+.rd { position: fixed; top: 0; right: 0; bottom: 0; width: min(860px, 100vw); background: var(--surface-1, var(--bg-card)); border-left: 1px solid var(--border); z-index: calc(var(--z-scrim, 200) + 1); display: flex; flex-direction: column; box-shadow: -12px 0 40px rgba(0,0,0,.35); padding-top: env(safe-area-inset-top, 0px); }
+.rd:focus { outline: none; }
+.rd-body { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: env(safe-area-inset-bottom, 0px); }
+/* the panel itself is no longer a card: the drawer is the container */
+.rd .inst-detail { background: none; border: 0; border-radius: 0; padding: 0 20px 28px; max-height: none; overflow: visible; }
+.rd .id-top { position: sticky; top: 0; z-index: 7; margin: 0 -20px 6px; padding: 14px 20px 0; background: var(--surface-1, var(--bg-card)); border-bottom: 1px solid var(--border); }
+.rd .id-top .id-header { border-bottom: 0; margin-bottom: 4px; padding-bottom: 0; }
+.rd .id-top .id-tabs { position: static; margin: 0; padding: 0; border-bottom: 0; background: none; }
+.rd .id-anchor { scroll-margin-top: 104px; }
+.id-tabs .id-badge { margin-left: 6px; font-size: 10px; padding: 1px 7px; border-radius: 999px; background: var(--warn-bg, rgba(245,158,11,.15)); color: var(--warn-fg, #f59e0b); border: 1px solid var(--warn-line, rgba(245,158,11,.4)); }
+.id-tabs .id-badge.crit { background: var(--crit-bg, rgba(248,113,113,.15)); color: var(--crit-fg, #f87171); border-color: var(--crit-line, rgba(248,113,113,.4)); }

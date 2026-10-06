@@ -288,7 +288,7 @@
 .idv-v { font-weight: 700; }
 .idv-v.mono { font-family: var(--font-mono); }
 .idv-v.c-green { color: var(--green); } .idv-v.c-red { color: var(--red); } .idv-v.c-yellow { color: var(--yellow, #f59e0b); }
-.id-tabs { position: sticky; top: 0; z-index: 6; display: flex; gap: 20px; margin: 0 -16px 14px; padding: 0 16px; background: var(--bg-card); border-bottom: 1px solid var(--border); }
+.id-tabs { position: static; display: flex; gap: 20px; margin: 0 -16px 14px; padding: 0 16px; background: var(--bg-card); border-bottom: 1px solid var(--border); }
 .id-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--text-muted); padding: 10px 0 8px; font-size: 12px; cursor: pointer; }
 .id-tabs button:hover, .id-tabs button:focus-visible { color: var(--text-primary); border-bottom-color: var(--accent, #2dd4bf); }
 .id-anchor { scroll-margin-top: 44px; }

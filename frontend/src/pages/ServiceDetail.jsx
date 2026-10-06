@@ -16,6 +16,7 @@ import AlertBadge from "../components/AlertBadge";
 import { useResourceAlerts } from "../hooks/useResourceAlerts";
 import MetricChartCard, { MetricPanelContext, AlertedMetricsStrip } from "../components/MetricChartCard";
 import ResourceEvidence from "../components/ResourceEvidence";
+import ResourceDrawer from "../components/ResourceDrawer";
 import { useInsightsRegistry } from "../hooks/useInsightsRegistry";
 import ChartToolbar, { AUTO_REFRESH_MS } from "../components/ChartToolbar";
 import { useMetricMeta } from "../hooks/useMetricMeta";
@@ -507,7 +508,7 @@ export default function ServiceDetail() {
         <NotImplState service={meta.label} rawService={rawService} meta={meta} region={region} accountId={id} />
       ) : (
         <div className="detail-layout">
-          <div className={`instance-panel ${selected ? "with-detail" : ""}`}>
+          <div className="instance-panel">
             <div className="inst-toolbar">
               <input
                 className="inst-search"
@@ -550,6 +551,7 @@ export default function ServiceDetail() {
             </div>
           </div>
           {selected && (
+            <ResourceDrawer label={`${service} resource details`} onClose={() => { selectedRef.current = null; setSelected(null); setMetrics(null); }}>
             <ServiceDetailPanel
               service={service}
               row={selected}
@@ -565,6 +567,7 @@ export default function ServiceDetail() {
               onSelectRelated={(row) => selectRow(row)}
               accountId={id}
             />
+            </ResourceDrawer>
           )}
         </div>
       )}
@@ -1057,6 +1060,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
 
   return (
     <div className="inst-detail">
+      <div className="id-top">
       <div className="id-header">
         <div>
           <div className="id-name">{name}</div>
@@ -1067,6 +1071,13 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
           <button className="id-close" onClick={onClose}><XIcon size={14} /></button>
         </div>
       </div>
+      {/* Section tabs: Metrics -> Details -> Health & alerts */}
+      <nav className="id-tabs" aria-label="Resource sections">
+        <button type="button" onClick={() => jumpTo("id-sec-metrics")}>Metrics</button>
+        <button type="button" onClick={() => jumpTo("id-sec-details")}>Details</button>
+        <button type="button" onClick={() => jumpTo("id-sec-evidence")}>Health &amp; alerts{evSum?.loaded && evSum.firing > 0 ? <span className={`id-badge${evSum.crit ? " crit" : ""}`}>{evSum.firing} firing</span> : null}</button>
+      </nav>
+      </div>
 
       {/* Vitals: one compact line instead of a grid of boxes */}
       <div className="id-vitals">
@@ -1074,13 +1085,6 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
           <span key={s.label} className="idv-item"><span className="idv-k">{s.label}</span> <b className={`idv-v${s.mono ? " mono" : ""}${s.color ? " c-" + s.color : ""}`}>{s.value}</b></span>
         ))}
       </div>
-
-      {/* Section tabs (sticky): Metrics -> Details -> Evidence */}
-      <nav className="id-tabs" aria-label="Resource sections">
-        <button type="button" onClick={() => jumpTo("id-sec-metrics")}>Metrics</button>
-        <button type="button" onClick={() => jumpTo("id-sec-details")}>Details</button>
-        <button type="button" onClick={() => jumpTo("id-sec-evidence")}>Evidence{evSum?.loaded ? (evSum.firing ? ` · ${evSum.firing} firing` : evSum.earlier ? ` · ${evSum.earlier} earlier` : "") : ""}</button>
-      </nav>
 
       <div id="id-sec-metrics" className="id-anchor">
       <div className="id-section">
@@ -1326,7 +1330,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
       </div>
 
       <div id="id-sec-evidence" className="id-anchor id-evidence">
-        <div className="id-section-title">EVIDENCE</div>
+        <div className="id-section-title">HEALTH &amp; ALERTS</div>
         <ResourceEvidence accountId={accountId} service={service} resourceId={resourceId} resourceIds={resourceIds} insights={insightsReg} onSummary={setEvSum} />
       </div>
     </div>
