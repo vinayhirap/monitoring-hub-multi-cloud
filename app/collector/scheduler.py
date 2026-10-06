@@ -500,6 +500,31 @@ def _next_anchor(last, now, interval):
     return nxt if (now - nxt) < interval else now
 
 
+# Standard (5-min) tier phase. CloudWatch 5-min windows end on :00/:05/:10... and
+# runner.py only reads a window once it is SETTLE_GRACE_SECONDS (180 s) old. Running the
+# tier at boundary + 190 s (180 s grace + 10 s margin) means each run reads the newest
+# completed window the moment it becomes eligible: data is ~3 min old at poll time and
+# at most ~8 min old before the next poll, instead of 3-13 min when the run time floats
+# with the 2-min loop ticks. SAME number of runs (one per 5 min), so no extra billed
+# GetMetricData calls.
+STANDARD_PHASE_SECONDS = 190
+STANDARD_MIN_GAP_SECONDS = 150   # never run again sooner than this after the previous run
+
+
+def _standard_due_at(last):
+    """Epoch of the next standard-tier run: the first grid point (t % 300 == PHASE) that is
+    at least STANDARD_MIN_GAP_SECONDS after the previous run. Never-run -> due now. At most one
+    run per grid slot, so the long-run cost is exactly one run per STANDARD_INTERVAL; a late
+    run is followed by an earlier grid point (no skipped slot, no burst)."""
+    if not last:
+        return 0.0
+    earliest = last + STANDARD_MIN_GAP_SECONDS
+    t = (earliest // STANDARD_INTERVAL) * STANDARD_INTERVAL + STANDARD_PHASE_SECONDS
+    while t < earliest:
+        t += STANDARD_INTERVAL
+    return float(t)
+
+
 class _LeadershipLost(Exception):
     """Raised between steps of one run_loop iteration once leader_event
     has been cleared -- see _require_leader()."""
@@ -561,6 +586,7 @@ def run_loop(leader_event=None):
     last_extended   = seed["extended"]
     last_slow_extended = seed["slow_extended"]
     cycle           = 0
+    next_critical_at = 0.0
 
     logger.info("Tiered scheduler started "
                 "(critical=2min, standard=5min, low=15min, extended=60min, slow_extended=24h)")
@@ -580,54 +606,59 @@ def run_loop(leader_event=None):
             now    = time.time()
             cycle += 1
 
-            _require_leader(leader_event)
-            # ── Critical tier (2 min) ─────────────────────────────
-            logger.info(f"[Cycle {cycle}] critical tier")
-            try:
-                run_once("critical")
-                _mark_tier_completed("critical")   # lets the UI show when the 2-min tier REALLY last ran
-            except Exception as e:
-                logger.error(f"Critical tier error: {e}")
+            # The loop also wakes at the standard-tier phase point (see _standard_due_at); the
+            # critical-tier blocks below must still run only every CRITICAL_INTERVAL.
+            if now >= next_critical_at:
+                next_critical_at = now + CRITICAL_INTERVAL
+                _require_leader(leader_event)
+                # ── Critical tier (2 min) ─────────────────────────────
+                logger.info(f"[Cycle {cycle}] critical tier")
+                try:
+                    run_once("critical")
+                    _mark_tier_completed("critical")   # lets the UI show when the 2-min tier REALLY last ran
+                except Exception as e:
+                    logger.error(f"Critical tier error: {e}")
 
-            # P1 alert evaluation on every critical tick (polling audit
-            # 2026-09-23): the 2-min critical tier only shortens detection
-            # if its metrics are evaluated at that cadence too. Restricted
-            # to polling_model.p1_metric_keys(); breach/healthy counters are
-            # time-gated in alert_evaluator so an extra evaluation never
-            # counts as an extra cycle.
-            try:
-                from app.collector.alert_evaluator import evaluate_alerts
-                evaluate_alerts(p1_only=True)
-            except Exception as e:
-                logger.error(f"P1 alert evaluation error: {e}")
+                # P1 alert evaluation on every critical tick (polling audit
+                # 2026-09-23): the 2-min critical tier only shortens detection
+                # if its metrics are evaluated at that cadence too. Restricted
+                # to polling_model.p1_metric_keys(); breach/healthy counters are
+                # time-gated in alert_evaluator so an extra evaluation never
+                # counts as an extra cycle.
+                try:
+                    from app.collector.alert_evaluator import evaluate_alerts
+                    evaluate_alerts(p1_only=True)
+                except Exception as e:
+                    logger.error(f"P1 alert evaluation error: {e}")
 
-            _require_leader(leader_event)
-            # Synthetic/uptime checks -- deliberately its own call, not
-            # inside run_once("critical"), since it has nothing to do with
-            # cloud-account metric collection (run_once's whole purpose).
-            # Only probes checks that are actually due (see synthetic.py's
-            # run_due_checks() docstring) -- cheap to call every 2-min tick
-            # even when nothing is due yet.
-            try:
-                from app.collector.synthetic import run_due_checks
-                run_due_checks()
-            except Exception as e:
-                logger.error(f"Synthetic check tier error: {e}")
+                _require_leader(leader_event)
+                # Synthetic/uptime checks -- deliberately its own call, not
+                # inside run_once("critical"), since it has nothing to do with
+                # cloud-account metric collection (run_once's whole purpose).
+                # Only probes checks that are actually due (see synthetic.py's
+                # run_due_checks() docstring) -- cheap to call every 2-min tick
+                # even when nothing is due yet.
+                try:
+                    from app.collector.synthetic import run_due_checks
+                    run_due_checks()
+                except Exception as e:
+                    logger.error(f"Synthetic check tier error: {e}")
 
-            _require_leader(leader_event)
-            # Maintenance-window silencing sync (2026-09-14) -- see
-            # app/collector/maintenance.py's module docstring. Runs every
-            # 2-min critical-tier tick so silencing activates/deactivates
-            # promptly at a window's exact start/end time.
-            try:
-                from app.collector.maintenance import sync_maintenance_silencing
-                sync_maintenance_silencing()
-            except Exception as e:
-                logger.error(f"Maintenance-window silencing sync error: {e}")
+                _require_leader(leader_event)
+                # Maintenance-window silencing sync (2026-09-14) -- see
+                # app/collector/maintenance.py's module docstring. Runs every
+                # 2-min critical-tier tick so silencing activates/deactivates
+                # promptly at a window's exact start/end time.
+                try:
+                    from app.collector.maintenance import sync_maintenance_silencing
+                    sync_maintenance_silencing()
+                except Exception as e:
+                    logger.error(f"Maintenance-window silencing sync error: {e}")
 
             _require_leader(leader_event)
             # ── Standard tier (5 min) ─────────────────────────────
-            if now - last_standard >= STANDARD_INTERVAL:
+            if time.time() >= _standard_due_at(last_standard):
+                std_started = time.time()
                 logger.info(f"[Cycle {cycle}] standard tier")
                 try:
                     run_once("standard")
@@ -641,7 +672,7 @@ def run_loop(leader_event=None):
                     # repeating its billed GetMetricData calls ~2.5x-30x too
                     # often. It now retries at its normal cadence. Only a
                     # SUCCESS is persisted via _mark_tier_completed().
-                    last_standard = _next_anchor(last_standard, now, STANDARD_INTERVAL)
+                    last_standard = std_started   # next run = next phase grid point (_standard_due_at)
 
             _require_leader(leader_event)
             # ── Extended tier (60 min) ─────────────────────────────
@@ -705,7 +736,8 @@ def run_loop(leader_event=None):
 
         # Sleep until next critical cycle
         elapsed = time.time() - now
-        sleep   = max(0, CRITICAL_INTERVAL - elapsed)
+        # Wake for whichever comes first: the next critical tick or the standard-tier phase point.
+        sleep   = max(0, min(next_critical_at - time.time(), _standard_due_at(last_standard) - time.time()))
         logger.info(f"[Cycle {cycle}] done in {elapsed:.1f}s — next in {sleep:.0f}s")
         _stop_event.wait(timeout=sleep)
 
