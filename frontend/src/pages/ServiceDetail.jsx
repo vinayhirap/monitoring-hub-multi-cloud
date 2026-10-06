@@ -961,9 +961,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
   const reloadMeta = metaState.reload;
   const insightsReg = useInsightsRegistry();
   const [evSum, setEvSum] = useState(null);      // {loaded, firing, earlier} reported by ResourceEvidence
-  const [evOpen, setEvOpen] = useState(null);      // null = auto (open while something fires), else the user's choice
   const jumpTo = id => {
-    if (id === "id-sec-evidence") setEvOpen(true);
     setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   };
   useEffect(() => { reloadMeta(); }, [lastUpdated, reloadMeta]);
@@ -1328,13 +1326,8 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
       </div>
 
       <div id="id-sec-evidence" className="id-anchor id-evidence">
-        <button type="button" className="id-ev-toggle" aria-expanded={(evOpen === null ? (!evSum?.loaded || evSum.firing > 0) : evOpen)} onClick={() => setEvOpen(!(evOpen === null ? (!evSum?.loaded || evSum.firing > 0) : evOpen))}>
-          <span className="id-section-title" style={{ marginBottom: 0 }}>EVIDENCE</span>
-          <span className="id-ev-sum">{evSum?.loaded ? `${evSum.firing} firing · ${evSum.earlier} earlier` : "loading…"} {(evOpen === null ? (!evSum?.loaded || evSum.firing > 0) : evOpen) ? "▾" : "▸"}</span>
-        </button>
-        <div hidden={!(evOpen === null ? (!evSum?.loaded || evSum.firing > 0) : evOpen)}>
-          <ResourceEvidence accountId={accountId} service={service} resourceId={resourceId} resourceIds={resourceIds} insights={insightsReg} onSummary={setEvSum} />
-        </div>
+        <div className="id-section-title">EVIDENCE</div>
+        <ResourceEvidence accountId={accountId} service={service} resourceId={resourceId} resourceIds={resourceIds} insights={insightsReg} onSummary={setEvSum} />
       </div>
     </div>
   );

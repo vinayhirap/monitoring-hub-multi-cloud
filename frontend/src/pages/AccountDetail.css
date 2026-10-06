@@ -44,7 +44,7 @@
 .detail-layout { display: flex; gap: 12px; }
 .instance-panel { flex: 1; min-width: 0; }
 .instance-panel.with-detail { flex: 0 0 55%; }
-.inst-detail { flex: 1; min-width: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; overflow-y: auto; max-height: calc(100vh - 200px); }
+.inst-detail { flex: 1; min-width: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; }
 
 /* ── Responsive (added: audit found this file had zero @media rules).
    Below 1000px the 55%/45% split leaves too little room for either
@@ -288,11 +288,10 @@
 .idv-v { font-weight: 700; }
 .idv-v.mono { font-family: var(--font-mono); }
 .idv-v.c-green { color: var(--green); } .idv-v.c-red { color: var(--red); } .idv-v.c-yellow { color: var(--yellow, #f59e0b); }
-.id-tabs { position: sticky; top: -16px; z-index: 6; display: flex; gap: 20px; margin: 0 -16px 14px; padding: 0 16px; background: var(--bg-card); border-bottom: 1px solid var(--border); }
+.id-tabs { position: sticky; top: 0; z-index: 6; display: flex; gap: 20px; margin: 0 -16px 14px; padding: 0 16px; background: var(--bg-card); border-bottom: 1px solid var(--border); }
 .id-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--text-muted); padding: 10px 0 8px; font-size: 12px; cursor: pointer; }
 .id-tabs button:hover, .id-tabs button:focus-visible { color: var(--text-primary); border-bottom-color: var(--accent, #2dd4bf); }
 .id-anchor { scroll-margin-top: 44px; }
-.id-ev-toggle { width: 100%; display: flex; justify-content: space-between; align-items: center; background: none; border: 0; border-top: 1px solid var(--border); padding: 12px 0; margin-bottom: 6px; color: inherit; cursor: pointer; }
-.id-ev-sum { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+.id-evidence { border-top: 1px solid var(--border); padding-top: 12px; }
 .id-aws { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 1px solid var(--border); color: var(--text-primary); border-radius: var(--radius); padding: 4px 10px; font-size: 11px; cursor: pointer; }
 .id-aws:hover { border-color: var(--border-bright); }
