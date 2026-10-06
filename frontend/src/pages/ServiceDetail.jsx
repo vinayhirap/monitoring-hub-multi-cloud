@@ -960,6 +960,12 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
   const metaState = useMetricMeta(accountId, service, resourceIds, !!service);
   const reloadMeta = metaState.reload;
   const insightsReg = useInsightsRegistry();
+  const [evSum, setEvSum] = useState(null);      // {loaded, firing, earlier} reported by ResourceEvidence
+  const [evOpen, setEvOpen] = useState(null);      // null = auto (open while something fires), else the user's choice
+  const jumpTo = id => {
+    if (id === "id-sec-evidence") setEvOpen(true);
+    setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  };
   useEffect(() => { reloadMeta(); }, [lastUpdated, reloadMeta]);
   const panelCtx = {
     meta: metaState.metrics, windowHours: metrics?.effective_hours || timeRange,
@@ -1058,86 +1064,27 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
           <div className="id-name">{name}</div>
           <div className="id-sub mono">{detailSubline(service, row)}</div>
         </div>
-        <button className="id-close" onClick={onClose}><XIcon size={14} /></button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button type="button" className="id-aws" onClick={() => openAccountConsole(accountId, service, { region, ...consoleParamsFor(service, row) })}><CloudIcon size={12} /> Open in AWS <ExternalLinkIcon size={11} /></button>
+          <button className="id-close" onClick={onClose}><XIcon size={14} /></button>
+        </div>
       </div>
 
-      <div className="id-stats">
+      {/* Vitals: one compact line instead of a grid of boxes */}
+      <div className="id-vitals">
         {detailStats(service, row).map(s => (
-          <QuickStat key={s.label} label={s.label} value={s.value} color={s.color} mono={s.mono} />
+          <span key={s.label} className="idv-item"><span className="idv-k">{s.label}</span> <b className={`idv-v${s.mono ? " mono" : ""}${s.color ? " c-" + s.color : ""}`}>{s.value}</b></span>
         ))}
       </div>
 
-      {/* Evidence strip: alerts, health score, events and capacity forecast for this resource
-          (supersedes the old health/forecast-only block; same endpoints, RBAC-aware). */}
-      <ResourceEvidence accountId={accountId} service={service} resourceId={resourceId} resourceIds={resourceIds} insights={insightsReg} />
+      {/* Section tabs (sticky): Metrics -> Details -> Evidence */}
+      <nav className="id-tabs" aria-label="Resource sections">
+        <button type="button" onClick={() => jumpTo("id-sec-metrics")}>Metrics</button>
+        <button type="button" onClick={() => jumpTo("id-sec-details")}>Details</button>
+        <button type="button" onClick={() => jumpTo("id-sec-evidence")}>Evidence{evSum?.loaded ? (evSum.firing ? ` · ${evSum.firing} firing` : evSum.earlier ? ` · ${evSum.earlier} earlier` : "") : ""}</button>
+      </nav>
 
-      {service === "S3" && (
-        <div className="id-section">
-          <div className="id-section-title"><PackageIcon size={12} /> BUCKET INFO</div>
-          <div className="id-stats" style={{ gridTemplateColumns: "1fr 1fr 1fr", marginBottom: 0 }}>
-            <QuickStat label="Size"    value={s3SizeDisplay} />
-            <QuickStat label="Objects" value={String(s3ObjCount)} />
-            <QuickStat label="Created" value={row.creation_date ? shortDate(row.creation_date) : "—"} />
-          </div>
-          {(s3SizeDisplay === "—" && s3ObjCount === "—") && (
-            <div style={{ fontSize: 11, color: "rgba(99,130,190,0.5)", marginTop: 8, fontStyle: "italic" }}>
-              ℹ S3 size/object metrics require CloudWatch Storage Lens or S3 bucket metrics enabled. CW reports daily, not real-time.
-            </div>
-          )}
-        </div>
-      )}
-
-      {service === "Lambda" && (
-        <div className="id-section">
-          <div className="id-section-title"><ZapIcon size={12} /> FUNCTION DETAILS</div>
-          <div className="id-stats" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 0 }}>
-            <QuickStat label="Handler"       value={row.handler      || "—"} mono />
-            <QuickStat label="Description"   value={row.description  || "—"} />
-            <QuickStat label="Last Modified" value={row.last_modified ? shortDate(row.last_modified) : "—"} />
-            <QuickStat label="Code Size"     value={row.code_size ? fmtBytes(row.code_size) : "—"} />
-          </div>
-          {!metrics && !mLoading && (
-            <div style={{ fontSize: 11, color: "rgba(99,130,190,0.5)", marginTop: 8, fontStyle: "italic" }}>
-              ℹ Lambda invocation metrics appear only after the function is invoked.
-            </div>
-          )}
-        </div>
-      )}
-
-      {service === "ECS" && (
-        <div className="id-section">
-          <div className="id-section-title"><PackageIcon size={12} /> SERVICE DETAILS</div>
-          <div className="id-stats" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 0 }}>
-            <QuickStat label="Desired"  value={String(row.desired_count  ?? "—")} />
-            <QuickStat label="Running"  value={String(row.running_count  ?? "—")} color={row.running_count === row.desired_count ? "green" : "yellow"} />
-            <QuickStat label="Pending"  value={String(row.pending_count  ?? "—")} />
-            <QuickStat label="Launch"   value={row.launch_type || "—"} mono />
-          </div>
-        </div>
-      )}
-
-      <ResourceRelationships
-        service={service}
-        row={row}
-        allRows={allRows}
-        onSelectRelated={onSelectRelated}
-        accountId={accountId}
-      />
-
-      {Object.keys(row.tags || {}).length > 0 && (
-        <div className="id-section">
-          <div className="id-section-title"><TagIcon size={12} /> TAGS</div>
-          <div className="id-tags">
-            {Object.entries(row.tags).map(([k, v]) => (
-              <div key={k} className="id-tag">
-                <span className="id-tag-key">{k}</span>
-                <span className="id-tag-val">{v}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
+      <div id="id-sec-metrics" className="id-anchor">
       <div className="id-section">
         <div className="id-section-title-row">
           <span className="id-section-title" style={{ marginBottom: 0 }}><BarChartIcon size={12} /> CLOUDWATCH METRICS</span>
@@ -1308,12 +1255,87 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
         )}
       </div>
 
-      <button
-        className="btn-open-aws"
-        onClick={() => openAccountConsole(accountId, service, { region, ...consoleParamsFor(service, row) })}
-      >
-        <CloudIcon size={13} /> Open in AWS <ExternalLinkIcon size={12} />
-      </button>
+      </div>
+
+      <div id="id-sec-details" className="id-anchor">
+      {service === "S3" && (
+        <div className="id-section">
+          <div className="id-section-title"><PackageIcon size={12} /> BUCKET INFO</div>
+          <div className="id-stats" style={{ gridTemplateColumns: "1fr 1fr 1fr", marginBottom: 0 }}>
+            <QuickStat label="Size"    value={s3SizeDisplay} />
+            <QuickStat label="Objects" value={String(s3ObjCount)} />
+            <QuickStat label="Created" value={row.creation_date ? shortDate(row.creation_date) : "—"} />
+          </div>
+          {(s3SizeDisplay === "—" && s3ObjCount === "—") && (
+            <div style={{ fontSize: 11, color: "rgba(99,130,190,0.5)", marginTop: 8, fontStyle: "italic" }}>
+              ℹ S3 size/object metrics require CloudWatch Storage Lens or S3 bucket metrics enabled. CW reports daily, not real-time.
+            </div>
+          )}
+        </div>
+      )}
+
+      {service === "Lambda" && (
+        <div className="id-section">
+          <div className="id-section-title"><ZapIcon size={12} /> FUNCTION DETAILS</div>
+          <div className="id-stats" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 0 }}>
+            <QuickStat label="Handler"       value={row.handler      || "—"} mono />
+            <QuickStat label="Description"   value={row.description  || "—"} />
+            <QuickStat label="Last Modified" value={row.last_modified ? shortDate(row.last_modified) : "—"} />
+            <QuickStat label="Code Size"     value={row.code_size ? fmtBytes(row.code_size) : "—"} />
+          </div>
+          {!metrics && !mLoading && (
+            <div style={{ fontSize: 11, color: "rgba(99,130,190,0.5)", marginTop: 8, fontStyle: "italic" }}>
+              ℹ Lambda invocation metrics appear only after the function is invoked.
+            </div>
+          )}
+        </div>
+      )}
+
+      {service === "ECS" && (
+        <div className="id-section">
+          <div className="id-section-title"><PackageIcon size={12} /> SERVICE DETAILS</div>
+          <div className="id-stats" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 0 }}>
+            <QuickStat label="Desired"  value={String(row.desired_count  ?? "—")} />
+            <QuickStat label="Running"  value={String(row.running_count  ?? "—")} color={row.running_count === row.desired_count ? "green" : "yellow"} />
+            <QuickStat label="Pending"  value={String(row.pending_count  ?? "—")} />
+            <QuickStat label="Launch"   value={row.launch_type || "—"} mono />
+          </div>
+        </div>
+      )}
+
+      <ResourceRelationships
+        service={service}
+        row={row}
+        allRows={allRows}
+        onSelectRelated={onSelectRelated}
+        accountId={accountId}
+      />
+
+      {Object.keys(row.tags || {}).length > 0 && (
+        <div className="id-section">
+          <div className="id-section-title"><TagIcon size={12} /> TAGS</div>
+          <div className="id-tags">
+            {Object.entries(row.tags).map(([k, v]) => (
+              <div key={k} className="id-tag">
+                <span className="id-tag-key">{k}</span>
+                <span className="id-tag-val">{v}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      </div>
+
+      <div id="id-sec-evidence" className="id-anchor id-evidence">
+        <button type="button" className="id-ev-toggle" aria-expanded={(evOpen === null ? (!evSum?.loaded || evSum.firing > 0) : evOpen)} onClick={() => setEvOpen(!(evOpen === null ? (!evSum?.loaded || evSum.firing > 0) : evOpen))}>
+          <span className="id-section-title" style={{ marginBottom: 0 }}>EVIDENCE</span>
+          <span className="id-ev-sum">{evSum?.loaded ? `${evSum.firing} firing · ${evSum.earlier} earlier` : "loading…"} {(evOpen === null ? (!evSum?.loaded || evSum.firing > 0) : evOpen) ? "▾" : "▸"}</span>
+        </button>
+        <div hidden={!(evOpen === null ? (!evSum?.loaded || evSum.firing > 0) : evOpen)}>
+          <ResourceEvidence accountId={accountId} service={service} resourceId={resourceId} resourceIds={resourceIds} insights={insightsReg} onSummary={setEvSum} />
+        </div>
+      </div>
     </div>
   );
 }

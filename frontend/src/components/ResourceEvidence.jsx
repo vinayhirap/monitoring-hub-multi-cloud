@@ -20,7 +20,7 @@ import { formatDaysLeft } from "../utils/forecastFormat";
 
 const SEV_TONE = { CRITICAL: "crit", WARNING: "warn", INFO: "info", ERROR: "crit", RESOLVED: "ok" };
 
-export default function ResourceEvidence({ accountId, resourceIds, resourceId, service, insights: registry, reloadKey, metricsRoute }) {
+export default function ResourceEvidence({ accountId, resourceIds, resourceId, service, insights: registry, reloadKey, metricsRoute, onSummary }) {
   const navigate = useNavigate();
   const { ianaName } = useTimezone();
   const ids = useMemo(() => [...new Set((resourceIds || []).filter(Boolean).map(String))], [resourceIds]);
@@ -51,6 +51,12 @@ export default function ResourceEvidence({ accountId, resourceIds, resourceId, s
   const firing = (alerts || []).filter(a => a.state === "firing");
   const crit = firing.filter(a => a.severity === "CRITICAL").length;
   const warn = firing.filter(a => a.severity === "WARNING").length;
+  // Lets a host page (resource detail panel) show a one-line summary on a collapsed Evidence section.
+  const earlierN = alerts ? Math.max(0, alerts.length - firing.length) : 0;
+  useEffect(() => {
+    if (onSummary) onSummary({ loaded: alerts !== undefined, firing: firing.length, crit, earlier: earlierN });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alerts === undefined, firing.length, crit, earlierN]);
   const h = st.health;
   const score = h && h.health_score != null ? Number(h.health_score) : null;
   const reason = h?.score_reason || {};
