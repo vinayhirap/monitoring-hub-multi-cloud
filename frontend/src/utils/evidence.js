@@ -55,7 +55,7 @@ export function seriesStats(points) {
  * else is derived from the collection interval. Fresh within the allowance, late within twice it, stale beyond;
  * "idle" instead for event-driven (sparse) metrics.
  */
-export function freshness(lastMs, nowMs, periodSecs, pollSecs = 0, staleAfterSecs = 0, sparse = false) {
+export function freshness(lastMs, nowMs, periodSecs, pollSecs = 0, staleAfterSecs = 0, sparse = false, collectedMs = null) {
   if (lastMs == null) return { state: "none", age: null };
   const age = Math.max(0, nowMs - lastMs);
   let allow = 0;
@@ -68,7 +68,20 @@ export function freshness(lastMs, nowMs, periodSecs, pollSecs = 0, staleAfterSec
   // EVENT-DRIVEN metrics (Lambda, SQS, SNS, request-based load balancer metrics, ...) are published by AWS only when something
   // happens. No new datapoint then means "no activity", not "the collector is behind", so it is never called late or stale.
   if (sparse && state !== "fresh") state = "idle";
-  return { state, age, allowanceMs: lim };
+  // COLLECTOR cadence (when our poller last actually ran, from the server). The datapoint's own age also contains the cloud
+  // provider's publish delay, so "7m ago" on a 5-min poll is normal and says nothing about whether polling is on schedule.
+  // This is the check that does: the collector is on time up to 1.5x the interval + 1 min (the scheduler wakes on a 2-min tick,
+  // so a 5-min tier fires 4-6 min apart), late up to 3x + 1 min, stale beyond. The verdict is the worse of data and collector.
+  let collectedAge = null, nextInMs = null;
+  if (collectedMs != null && Number.isFinite(collectedMs) && pollSecs > 0) {
+    collectedAge = Math.max(0, nowMs - collectedMs);
+    nextInMs = Math.max(0, pollSecs * 1000 - collectedAge);
+    const onTime = pollSecs * 1500 + 60e3, late = pollSecs * 3000 + 60e3;
+    const cs = collectedAge <= onTime ? "fresh" : collectedAge <= late ? "late" : "stale";
+    const rank = { fresh: 0, idle: 0, late: 1, stale: 2 };
+    if ((rank[cs] ?? 0) > (rank[state] ?? 0) && !(sparse && cs === "late")) state = cs;
+  }
+  return { state, age, allowanceMs: lim, collectedAge, nextInMs };
 }
 
 /**

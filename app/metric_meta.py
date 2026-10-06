@@ -57,6 +57,36 @@ def stale_after_seconds(interval_seconds):
         return None
 
 
+_TIER_RUN_CACHE = {"at": 0.0, "rows": {}}
+
+
+def tier_last_completed():
+    """{tier: unix seconds of the last COMPLETED collection of that tier}. Written by the scheduler
+    (scheduler._mark_tier_completed -> op_events 'scheduler_tier_<tier>_completed'). The newest datapoint's own
+    timestamp says when the cloud provider measured it; this says when OUR collector last actually polled, which is the
+    cadence the 'polled every N min' badge promises. Cached 20 s; best-effort ({} on any failure)."""
+    import time
+    now = time.time()
+    if now - _TIER_RUN_CACHE["at"] < 20:
+        return _TIER_RUN_CACHE["rows"]
+    rows = {}
+    try:
+        with get_db_cursor(dictionary=True, commit=False) as (_c, cur):
+            cur.execute("""SELECT event_type, UNIX_TIMESTAMP(MAX(created_at)) AS ts FROM op_events
+                           WHERE event_type IN ('scheduler_tier_critical_completed','scheduler_tier_standard_completed',
+                                                'scheduler_tier_low_completed','scheduler_tier_extended_completed',
+                                                'scheduler_tier_slow_extended_completed')
+                           GROUP BY event_type""")
+            for r in cur.fetchall():
+                if r["ts"] is not None:
+                    rows[r["event_type"][len("scheduler_tier_"):-len("_completed")]] = float(r["ts"])
+    except Exception as e:
+        logger.debug(f"tier_last_completed failed: {e}")
+        return _TIER_RUN_CACHE["rows"]
+    _TIER_RUN_CACHE.update(at=now, rows=rows)
+    return rows
+
+
 def _effective_lines(cur, account_id, resource_id, row, db_name):
     """-> (warning, critical, mode) mirroring alert_evaluator's resolution."""
     warning, critical = row["warning_value"], row["critical_value"]
@@ -89,6 +119,7 @@ def build_metric_meta(account_id, provider, service, resource_ids):
     rids = [r for r in (resource_ids or []) if r]
     is_nlb = any("loadbalancer/net/" in r for r in rids)
     out, unmatched = {}, []
+    tier_runs = tier_last_completed()
     with get_db_cursor(dictionary=True, commit=False) as (_c, cur):
         cur.execute(
             f"""SELECT mc.metric_name, mc.service, mc.unit, mc.statistic, mc.description,
@@ -140,6 +171,8 @@ def build_metric_meta(account_id, provider, service, resource_ids):
                 "sparse": is_sparse_metric(svc, name),
                 "period_seconds": poll.get("period_seconds"), "period_label": fmt_interval(poll.get("period_seconds")),
                 "tier": poll.get("tier"), "poll_source": poll.get("source"),
+                # When the collector LAST actually polled this metric's tier (unix s; None: not tracked, e.g. the 60 s describe poll).
+                "last_collected_ts": tier_runs.get(poll.get("tier")),
                 "threshold": None, "alert": None,
             }
             if r.get("warning_value") is not None and r.get("enabled"):

@@ -148,7 +148,8 @@ export default function MetricChartCard({
   const reportPts = pts.filter(p => p.v != null);
   // Analytics strip: trend, range and freshness derived only from the points on screen.
   const st = seriesStats(pts);
-  const fr = freshness(lastT, Date.now(), meta?.period_seconds, meta?.poll_seconds, meta?.stale_after_seconds, !!meta?.sparse);
+  const fr = freshness(lastT, Date.now(), meta?.period_seconds, meta?.poll_seconds, meta?.stale_after_seconds, !!meta?.sparse,
+    meta?.last_collected_ts ? meta.last_collected_ts * 1000 : null);
   const breach = breachState(latest, warnLine, critLine, th?.comparison || ">");
   const frLabel = { fresh: "fresh", late: "late", stale: "stale", unknown: "last point", idle: "no recent activity", none: "no data" }[fr.state];
 
@@ -191,9 +192,11 @@ export default function MetricChartCard({
         <span className={`mc-fresh mc-f-${fr.state}`} title={lastT
           ? `Newest datapoint starts ${fmtFullTime(lastT, ianaName)}` +
             (meta?.period_seconds ? ` and covers ${fmtPeriod(meta.period_seconds)}; it is stamped with the start of that period.` : ".") +
-            (meta?.poll_label ? ` CloudWatch publishes a point a few minutes after its period closes and this metric is collected every ${meta.poll_label}, so a reading up to ${Math.round((fr.allowanceMs || 0) / 60000)} min old is normal.` : "")
+            (meta?.poll_label ? ` "polled" is when the collector last ran for this metric (it runs every ${meta.poll_label}${fr.nextInMs != null ? `, next in about ${ageText(fr.nextInMs)}` : ""}). "data" is the age of the newest point: the provider publishes a point a few minutes after its period closes, so it is always older than the poll; up to ${Math.round((fr.allowanceMs || 0) / 60000)} min old is normal.` : "")
           : "No datapoint in this window"}>
-          ● {frLabel}{fr.age != null ? ` · ${ageText(displayAge(fr.age, meta?.period_seconds))} ago` : ""}
+          ● {frLabel}
+          {fr.collectedAge != null && ` · polled ${ageText(fr.collectedAge)} ago`}
+          {fr.age != null && ` · data ${ageText(displayAge(fr.age, meta?.period_seconds))} old`}
         </span>
       </div>
       {stats.length > 0 && (

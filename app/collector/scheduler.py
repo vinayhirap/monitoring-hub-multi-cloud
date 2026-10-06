@@ -484,6 +484,22 @@ def _mark_tier_completed(tier: str) -> None:
     log_event(f"scheduler_tier_{tier}_completed", f"{tier} tier completed", severity="INFO")
 
 
+def _next_anchor(last, now, interval):
+    """Anchored schedule: the new "last due" time after a tier ran at `now`.
+
+    The tier loop wakes every CRITICAL_INTERVAL (120 s). The old check
+    `now - last >= STANDARD_INTERVAL` followed by `last = now` could only fire on
+    a 120 s tick, so a "5 min" tier really ran every 6 min (ticks at +4 min are
+    too early, +6 min is the next one) while the UI said "polled every 5 min".
+    Advancing the anchor by exactly one interval instead of resetting it to `now`
+    keeps the long-run average at the configured interval (ticks fire 6, 4, 6, 4 ...
+    min apart for 5 min; exact for 60 min / 24 h) and removes the per-run drift.
+    If we are a whole interval or more behind (restart, long stall, first run) the
+    anchor jumps to `now` so the tier never fires a catch-up burst."""
+    nxt = last + interval
+    return nxt if (now - nxt) < interval else now
+
+
 class _LeadershipLost(Exception):
     """Raised between steps of one run_loop iteration once leader_event
     has been cleared -- see _require_leader()."""
@@ -569,6 +585,7 @@ def run_loop(leader_event=None):
             logger.info(f"[Cycle {cycle}] critical tier")
             try:
                 run_once("critical")
+                _mark_tier_completed("critical")   # lets the UI show when the 2-min tier REALLY last ran
             except Exception as e:
                 logger.error(f"Critical tier error: {e}")
 
@@ -624,7 +641,7 @@ def run_loop(leader_event=None):
                     # repeating its billed GetMetricData calls ~2.5x-30x too
                     # often. It now retries at its normal cadence. Only a
                     # SUCCESS is persisted via _mark_tier_completed().
-                    last_standard = now
+                    last_standard = _next_anchor(last_standard, now, STANDARD_INTERVAL)
 
             _require_leader(leader_event)
             # ── Extended tier (60 min) ─────────────────────────────
@@ -642,7 +659,7 @@ def run_loop(leader_event=None):
                     # repeating its billed GetMetricData calls ~2.5x-30x too
                     # often. It now retries at its normal cadence. Only a
                     # SUCCESS is persisted via _mark_tier_completed().
-                    last_extended = now
+                    last_extended = _next_anchor(last_extended, now, EXTENDED_INTERVAL)
 
             _require_leader(leader_event)
             # ── Slow-extended tier (24 h) ───────────────────────────
@@ -660,7 +677,7 @@ def run_loop(leader_event=None):
                     # repeating its billed GetMetricData calls ~2.5x-30x too
                     # often. It now retries at its normal cadence. Only a
                     # SUCCESS is persisted via _mark_tier_completed().
-                    last_slow_extended = now
+                    last_slow_extended = _next_anchor(last_slow_extended, now, SLOW_EXTENDED_INTERVAL)
 
                 # Daily Ollama model refresh (2026-09-15) -- re-pulls
                 # whatever model OLLAMA_MODEL names, picking up any weight

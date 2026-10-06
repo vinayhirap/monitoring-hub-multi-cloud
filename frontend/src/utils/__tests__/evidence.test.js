@@ -92,3 +92,18 @@ test("event-driven metrics are 'idle' when quiet, never late or stale", () => {
   assert.equal(freshness(now - 6 * 60 * min, now, 300, 300, 1200, false).state, "stale");     // a continuous metric really is stale
   assert.equal(freshness(null, now, 300, 300, 1200, true).state, "none");
 });
+
+test("freshness also judges the COLLECTOR cadence when the server says when it last polled", () => {
+  const now = 1e9, min = 60e3;
+  // data 7 min old, collector polled 2 min ago on a 5-min tier: fresh, and both ages are reported
+  const a = freshness(now - 12 * min, now, 300, 300, 1200, false, now - 2 * min);
+  assert.equal(a.state, "fresh"); assert.equal(a.collectedAge, 2 * min); assert.equal(a.nextInMs, 3 * min);
+  // 6 min since the last poll is still on time (2-min tick -> 4/6 min spacing); 10 min means a missed poll
+  assert.equal(freshness(now - 12 * min, now, 300, 300, 1200, false, now - 6 * min).state, "fresh");
+  assert.equal(freshness(now - 12 * min, now, 300, 300, 1200, false, now - 10 * min).state, "late");
+  assert.equal(freshness(now - 12 * min, now, 300, 300, 1200, false, now - 20 * min).state, "stale");
+  // without a collector time the old verdict is unchanged
+  assert.equal(freshness(now - 12 * min, now, 300, 300, 1200).collectedAge, null);
+  // an hourly metric polled 30 min ago is fine
+  assert.equal(freshness(now - 40 * min, now, 300, 3600, 10800, false, now - 30 * min).state, "fresh");
+});

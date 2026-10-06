@@ -201,7 +201,13 @@ def _load_scheduler():
     install_stub("app.collector.synthetic", run_due_checks=lambda: None)
     install_stub("app.collector.maintenance", sync_maintenance_silencing=lambda: None)
     install_stub("app.llm.summarizer", refresh_ollama_model=lambda: None)
-    return load_module("app/collector/scheduler.py")
+    mod = load_module("app/collector/scheduler.py")
+    # discovery + low tier run on their own threads now; here only the tier loop is under test, and those threads would
+    # consume the fake stop-event's waits (and advance the fake clock) out from under it.
+    import types
+    mod.threading = types.SimpleNamespace(**{k: getattr(threading, k) for k in dir(threading) if not k.startswith("__")})
+    mod.threading.Thread = lambda *a, **k: types.SimpleNamespace(start=lambda: None)   # module-local: the real threading is untouched
+    return mod
 
 
 def test_leadership_lost_mid_iteration_stops_remaining_tiers():
@@ -250,6 +256,40 @@ def test_failing_tier_retried_at_its_cadence_not_every_tick():
 
     assert ran.count("critical") == 3
     assert ran.count("standard") == 1   # was 3 (retried every 2-min tick)
+
+
+def test_standard_tier_averages_its_configured_5_min_not_6():
+    """The loop wakes every 120 s; `last = now` made the 5-min tier fire every 6 min. Anchored scheduling must average 300 s."""
+    mod = _load_scheduler()
+    ran_at = []
+    clock = {"t": 1_000_000.0}
+    mod.run_once = lambda tier: ran_at.append(clock["t"]) if tier == "standard" else None
+    mod.run_discovery_once = lambda: None
+    stop = _FakeStop(61)            # 60 ticks x 120 s = 2 h
+
+    def _wait(timeout=None):
+        clock["t"] += 120
+        _FakeStop.wait(stop, timeout)
+    stop.wait = _wait
+    mod._stop_event = stop
+    real_time = time.time
+    mod.time.time = lambda: clock["t"]
+    try:
+        mod.run_loop(None)
+    finally:
+        mod.time.time = real_time
+
+    gaps = [b - a for a, b in zip(ran_at, ran_at[1:])]
+    assert max(gaps) <= 360 and min(gaps) >= 240
+    assert abs(sum(gaps) / len(gaps) - 300) < 10      # was 360
+
+
+def test_next_anchor_never_bursts_after_a_stall():
+    mod = _load_scheduler()
+    assert mod._next_anchor(1000, 1300, 300) == 1300          # on time: advance exactly one interval
+    assert mod._next_anchor(1000, 1360, 300) == 1300          # a tick late: anchor stays on the grid
+    assert mod._next_anchor(1000, 5000, 300) == 5000          # long stall / restart: re-anchor to now, no catch-up burst
+    assert mod._next_anchor(0, 1_000_000, 300) == 1_000_000   # first run (seed 0)
 
 
 # ── metrics_writer ──────────────────────────────────────────────────
