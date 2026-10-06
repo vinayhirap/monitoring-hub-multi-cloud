@@ -20,7 +20,7 @@ import { formatDaysLeft } from "../utils/forecastFormat";
 
 const SEV_TONE = { CRITICAL: "crit", WARNING: "warn", INFO: "info", ERROR: "crit", RESOLVED: "ok" };
 
-export default function ResourceEvidence({ accountId, resourceIds, resourceId, service, insights: registry, reloadKey }) {
+export default function ResourceEvidence({ accountId, resourceIds, resourceId, service, insights: registry, reloadKey, metricsRoute }) {
   const navigate = useNavigate();
   const { ianaName } = useTimezone();
   const ids = useMemo(() => [...new Set((resourceIds || []).filter(Boolean).map(String))], [resourceIds]);
@@ -64,9 +64,13 @@ export default function ResourceEvidence({ accountId, resourceIds, resourceId, s
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [registry, registry?.version, primary, alerts, events, ianaName]);
 
+  // Jump to the metric's chart when this page has it. Hosts without charts (the Alerts drawer) pass
+  // metricsRoute so the link opens the resource's metrics page instead of silently doing nothing.
+  const hasChart = name => typeof document !== "undefined" && !!document.getElementById(metricAnchor(name));
   const focusMetric = name => {
     const el = document.getElementById(metricAnchor(name));
-    if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.classList.add("mc-flash"); setTimeout(() => el.classList.remove("mc-flash"), 1600); }
+    if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.classList.add("mc-flash"); setTimeout(() => el.classList.remove("mc-flash"), 1600); return; }
+    if (metricsRoute) navigate(metricsRoute);
   };
   const fmtT = ms => new Date(ms).toLocaleString("en-GB", { timeZone: ianaName, day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false });
 
@@ -156,7 +160,9 @@ export default function ResourceEvidence({ accountId, resourceIds, resourceId, s
                 <Badge tone={SEV_TONE[it.sev] || "mute"}><StatusBeacon tone={SEV_TONE[it.sev] || "mute"} />{it.kind === "alert" ? (it.label === "resolved" ? "resolved" : it.sev.toLowerCase()) : `event · ${it.sev.toLowerCase()}`}</Badge>
                 {it.kind === "alert" ? (
                   <span className="rev-body">
-                    <button className="rev-link" onClick={() => focusMetric(it.alert.metric_name)} title="Jump to this metric's chart">{metricLabel(it.alert.metric_name)}</button>
+                    {(metricsRoute || hasChart(it.alert.metric_name))
+                      ? <button className="rev-link" onClick={() => focusMetric(it.alert.metric_name)} title={hasChart(it.alert.metric_name) ? "Jump to this metric's chart" : "Open this resource's metrics"}>{metricLabel(it.alert.metric_name)}</button>
+                      : <b>{metricLabel(it.alert.metric_name)}</b>}
                     {it.label === "triggered" && (
                       /* Show the reading that actually breached (breach_value/breach_threshold, migration 077), never the live
                          current_value: that is overwritten by the healthy cycles an open alert needs to resolve, which printed

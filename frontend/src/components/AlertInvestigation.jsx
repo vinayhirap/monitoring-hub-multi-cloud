@@ -15,6 +15,7 @@ import { metricLabel, formatMetricValue } from "../utils/metricLabels";
 import "./AlertInvestigation.css";
 import { plural } from "../utils/plural";
 import DownloadButton from "./DownloadButton";
+import { copyText } from "../utils/copyText";
 
 const SEV_TONE = { CRITICAL: "crit", WARNING: "warn", INFO: "info" };
 
@@ -25,6 +26,7 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
   const [inc, setInc] = useState(undefined);        // undefined loading, null unavailable, [] none
   const [now, setNow] = useState(() => Date.now());
   const [muteMin, setMuteMin] = useState("60");
+  const [copied, setCopied] = useState(null);          // null | "ok" | "fail": feedback for Copy link
   const id = a?.id;
 
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(t); }, []);
@@ -135,7 +137,7 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
 
           <section className="ai-sec">
             <h3>3 · Evidence</h3>
-            <ResourceEvidence accountId={a.account_id} service={a.service} resourceId={a.resource} resourceIds={ids} reloadKey={`${a.state}|${a.acked_at}|${a.resolved_at}|${a.muted_until}`} />
+            <ResourceEvidence metricsRoute={route} accountId={a.account_id} service={a.service} resourceId={a.resource} resourceIds={ids} reloadKey={`${a.state}|${a.acked_at}|${a.resolved_at}|${a.muted_until}`} />
           </section>
 
           <section className="ai-sec">
@@ -177,7 +179,10 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
               {route && <button className="rev-link" onClick={() => navigate(route)}>Open resource metrics →</button>}
               {canConsole && <button className="rev-link" onClick={() => onConsole(id)}>Open in cloud console →</button>}
               <DownloadButton className="rev-link" path={rcaReportUrl(id, "pdf")} fallbackName={`CloudOps-RCA-Alert-${id}.pdf`}>RCA report (PDF) ↓</DownloadButton>
-              <button className="rev-link" onClick={() => navigator.clipboard?.writeText(`${window.location.origin}/alerts?tab=all&q=${encodeURIComponent(a.resource || "")}&alert=${id}`)}>Copy link</button>
+              <button className="rev-link" aria-live="polite" onClick={async () => {
+                const ok = await copyText(`${window.location.origin}/alerts?tab=all&q=${encodeURIComponent(a.resource || "")}&alert=${id}`);
+                setCopied(ok ? "ok" : "fail"); setTimeout(() => setCopied(null), 2000);
+              }}>{copied === "ok" ? "Link copied ✓" : copied === "fail" ? "Copy failed: select the address bar URL" : "Copy link"}</button>
             </div>
           </section>
 

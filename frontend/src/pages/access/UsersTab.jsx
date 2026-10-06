@@ -1,4 +1,5 @@
 // src/pages/access/UsersTab.jsx
+import { copyText } from "../../utils/copyText";
 import { useMemo, useState, useEffect } from "react";
 import { useAuth } from "../../auth/AuthContext";
 import * as api from "../../api/access";
@@ -137,7 +138,7 @@ function ResetResult({ result, username, onClose }) {
             <Banner tone="warn">No email was sent (the user has no email, or SMTP isn't configured). This link is shown once — copy it now and share it securely.</Banner>
             <div className="ac-inline">
               <input readOnly value={result.reset_link || ""} onFocus={(e) => e.target.select()} />
-              <button className="ac-btn ghost" onClick={async () => { await navigator.clipboard?.writeText(result.reset_link); setCopied(true); }}>{copied ? "Copied" : "Copy"}</button>
+              <button className="ac-btn ghost" onClick={async () => { setCopied(await copyText(result.reset_link)); }}>{copied ? "Copied" : "Copy"}</button>
             </div>
           </>}
     </Modal>
