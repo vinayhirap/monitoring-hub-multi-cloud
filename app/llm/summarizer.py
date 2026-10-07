@@ -528,12 +528,20 @@ _RCA_SUMMARY_SYSTEM_PROMPT = (
     "(1) Use only what the draft says. Never add a number, name, resource ID, time, cause or "
     "recommendation that is not in it. "
     "(2) Keep every figure, resource name and time exactly as written in the draft. "
-    "(3) If the draft says the cause cannot be determined, say that; never guess a cause. "
+    "(3) If the draft says the cause cannot be determined, say that once; never guess a cause or give a reason for "
+    "it. Do not explain why anything happened and do not use 'due to', 'because', 'resulting in' or 'caused by' "
+    "unless the draft does. Write counts the way the draft does (for example 'N other times'); never turn them "
+    "into ordinals such as 'the 22nd time'. "
     "(4) Write 2 to 4 sentences of plain prose, at most 90 words: no headings, no bullet points, "
     "no markdown, no advice or recommendations. "
     "(5) Do not mention these rules, the draft, JSON, or any internal label. "
     "Output only the paragraph."
 )
+
+
+_CAUSAL_RE = re.compile(r"\b(?:due to|because(?: of)?|caused by|as a result(?: of)?|resulting in|results? in|owing to|"
+                        r"leading to|led to|which is why|therefore)\b", re.I)
+_ORDINAL_RE = re.compile(r"\b\d+(?:st|nd|rd|th)\b", re.I)
 
 
 def _clean_rca_summary(text, facts: dict, draft: str):
@@ -555,6 +563,19 @@ def _clean_rca_summary(text, facts: dict, draft: str):
     if not 80 <= len(cleaned) <= 900:
         logger.warning(f"[llm_summarizer] rejected RCA summary: length {len(cleaned)} outside 80-900 -- using rule-based summary")
         return None
+    # Real PROD output, 2026-10-06: "...due to a reading of 1 against a limit of 1, resulting in a 0% overage",
+    # "This is the 22nd time" (the draft said 22 OTHER times) and "...not enough recent history is available" (a
+    # reason the draft never gave). Causal wording and ordinals the draft does not contain are how a small model
+    # turns an accurate draft into a subtly wrong sentence in a client-facing report.
+    low_draft = (draft or "").lower()
+    for m in _CAUSAL_RE.finditer(cleaned):
+        if m.group(0).lower() not in low_draft:
+            logger.warning(f"[llm_summarizer] rejected RCA summary: causal wording '{m.group(0)}' not in the draft -- using rule-based summary")
+            return None
+    for m in _ORDINAL_RE.finditer(cleaned):
+        if m.group(0).lower() not in low_draft:
+            logger.warning(f"[llm_summarizer] rejected RCA summary: ordinal '{m.group(0)}' not in the draft -- using rule-based summary")
+            return None
     names = [n for n in (facts.get("resource_name"), facts.get("resource_id")) if n]
     if names and not any(str(n) in cleaned for n in names):
         logger.warning("[llm_summarizer] rejected RCA summary: never names the resource -- using rule-based summary")

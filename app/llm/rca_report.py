@@ -552,7 +552,7 @@ def generate_rca_report(alert_id: int) -> dict:
     if facts is None:
         return None
 
-    if not is_enabled():
+    if not is_enabled() or os.getenv("LLM_RCA_SUMMARY_ENABLED", "true").strip().lower() == "false":
         return {"facts": facts, "narrative_markdown": _fallback_narrative(facts),
                 "narrative_source": "template", "narrative_pending": False}
 

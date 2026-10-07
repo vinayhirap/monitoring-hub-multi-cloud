@@ -487,3 +487,76 @@ def test_background_job_caches_only_the_summary_paragraph(monkeypatch):
     while time.time() < deadline and not store:
         time.sleep(0.02)
     assert list(store.values()) == ["ai paragraph about web"] and seen["draft"].startswith("What happened: ")
+
+
+# -- tightened gate, from the first two real PROD summaries (2026-10-06) -------
+
+PROD_9643 = ("A status check failed on CloudOps-AI-Assistant, an EC2 instance, due to a reading of 1 against a limit "
+             "of 1, resulting in a 0% overage. The alert has been active for 1 minute and is still open. This is the "
+             "22nd time the alert has triggered in the last 30 days, but not enough recent history is available to "
+             "determine the cause. The probable cause cannot be determined from available signals.")
+DRAFT_9643 = ("What happened: Status Check Failed on CloudOps-AI-Assistant (EC2 instance) went above its alert limit at "
+              "06 Oct 2026, 10:29:00 UTC: the reading was 1 against a limit of 1 (0% over). The alert is still active "
+              "and has been open for 1 minute.\nPattern: This alert has triggered 22 other times in the last 30 days.\n"
+              "Probable cause: No deployment or AWS change was found around when it started, so the cause cannot be "
+              "determined from the signals available.")
+FACTS_9643 = {"resource_name": "CloudOps-AI-Assistant", "resource_id": "i-0cc", "current_value": 1, "threshold": 1}
+
+PROD_9641 = ("An alert was triggered for a volume read operation on EBS volume vol-02851f71ed435086f in AuroGov Mumbai. "
+             "The reading exceeded its limit of 83.4K by 50.5% at 06 Oct 2026, 10:18:51 UTC. This alert has occurred "
+             "132 times in the last 30 days, with a sharp increase in the last 15 minutes. The probable cause of the "
+             "alert cannot be determined due to a lack of information.")
+DRAFT_9641 = ("What happened: Volume Read Operations on vol-02851f71ed435086f (EBS volume) in AuroGov Mumbai went above "
+              "its learned limit at 06 Oct 2026, 10:18:51 UTC: the reading was 125K against a limit of 83.4K (50.5% "
+              "over).\nPattern: This alert has triggered 132 other times in the last 30 days. The reading jumped "
+              "sharply in the last 15 minutes before the alert.\nProbable cause: No deployment or AWS change was found "
+              "around when it started, so the cause cannot be determined from the signals available.")
+FACTS_9641 = {"resource_name": "vol-02851f71ed435086f", "resource_id": "vol-02851f71ed435086f", "current_value": 125000}
+
+
+def test_the_real_9643_summary_is_now_rejected_for_causal_wording_and_an_ordinal(monkeypatch, caplog):
+    import logging
+    mod = _summ(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        assert mod._clean_rca_summary(PROD_9643, FACTS_9643, DRAFT_9643) is None
+    assert any("causal wording" in r.getMessage() for r in caplog.records)
+
+
+def test_the_real_9641_summary_is_now_rejected_for_due_to_a_lack_of_information(monkeypatch):
+    mod = _summ(monkeypatch)
+    assert mod._clean_rca_summary(PROD_9641, FACTS_9641, DRAFT_9641) is None
+
+
+def test_a_faithful_rewrite_of_the_same_drafts_is_still_accepted(monkeypatch):
+    mod = _summ(monkeypatch)
+    ok_9643 = ("CloudOps-AI-Assistant, an EC2 instance, failed a status check: the reading was 1 against a limit of 1, "
+               "and the alert is still active after 1 minute. It has triggered 22 other times in the last 30 days. "
+               "No deployment or AWS change was found, so the cause cannot be determined.")
+    assert mod._clean_rca_summary(ok_9643, FACTS_9643, DRAFT_9643) == ok_9643
+    ok_9641 = ("Volume Read Operations on vol-02851f71ed435086f in AuroGov Mumbai went above its learned limit of 83.4K "
+               "at 06 Oct 2026, 10:18:51 UTC (50.5% over), after a sharp jump in the last 15 minutes. It has triggered "
+               "132 other times in the last 30 days. No deployment or AWS change was found, so the cause cannot be "
+               "determined.")
+    assert mod._clean_rca_summary(ok_9641, FACTS_9641, DRAFT_9641) == ok_9641
+
+
+def test_causal_or_ordinal_words_the_draft_itself_contains_are_allowed(monkeypatch):
+    mod = _summ(monkeypatch)
+    draft = DRAFT_9643 + " The change was made because of a deployment on the 3rd."
+    text = ("CloudOps-AI-Assistant failed a status check with a reading of 1 against a limit of 1 and it is still "
+            "active; this is because of a deployment on the 3rd, per the report.")
+    assert mod._clean_rca_summary(text, FACTS_9643, draft) == text
+
+
+def test_the_prompt_forbids_reasons_and_ordinals(monkeypatch):
+    mod = _summ(monkeypatch)
+    assert "due to" in mod._RCA_SUMMARY_SYSTEM_PROMPT and "ordinals" in mod._RCA_SUMMARY_SYSTEM_PROMPT
+
+
+def test_rca_ai_summary_can_be_switched_off_without_touching_alert_summaries(monkeypatch):
+    monkeypatch.setenv("LLM_RCA_SUMMARY_ENABLED", "false")
+    calls = []
+    mod, _ = _rca_module(monkeypatch, lambda f, d: calls.append(1), enabled=True)
+    rep = mod.generate_rca_report(7)
+    assert rep["narrative_source"] == "template" and rep["narrative_pending"] is False and calls == []
+    assert "In brief" not in rep["narrative_markdown"] and "being generated" not in mod.render_markdown(rep)
