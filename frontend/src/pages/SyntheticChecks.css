@@ -85,3 +85,14 @@
   cursor: pointer; transition: all .15s;
 }
 .syn-btn-delete:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,.08); }
+
+/* HTTPS / TLS (migration 082) */
+.syn-field-check { min-width: 190px; }
+.syn-checkline { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary);
+  text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-weight: 500; cursor: pointer; padding: 8px 0; }
+.syn-checkline input { width: 15px; height: 15px; padding: 0; accent-color: var(--accent); }
+.syn-tag { margin-left: 8px; font-size: 10px; color: var(--text-muted); border: 1px solid var(--border-md); border-radius: 3px; padding: 1px 5px; }
+.syn-cert-ok   { color: var(--green); }
+.syn-cert-warn { color: var(--warn-fg); font-weight: 700; }
+.syn-cert-crit { color: var(--red); font-weight: 700; }
+.syn-err { margin-top: 4px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--red); }

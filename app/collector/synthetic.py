@@ -1,6 +1,6 @@
 # app/collector/synthetic.py
 """
-Synthetic/uptime (blackbox) monitoring -- active HTTP/TCP/DNS probes
+Synthetic/uptime (blackbox) monitoring -- active HTTP/HTTPS/TCP/DNS probes
 run FROM this app AGAINST a configured target, on a schedule. See
 db/migrations/031_synthetic_monitoring.sql's module docstring for why
 this exists (this app is otherwise 100% passive) and the integration
@@ -18,12 +18,14 @@ tick; the tick is just how often this module LOOKS for due work.
 import ipaddress
 import json
 import logging
+import math
 import os
 import socket
+import ssl
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-from datetime import datetime, timedelta
-from urllib.parse import urlsplit
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -55,6 +57,44 @@ MIN_TIMEOUT_SECONDS = 1
 MAX_TIMEOUT_SECONDS = 60
 MAX_REDIRECTS = 5
 MAX_BODY_BYTES = 1_000_000  # keyword search reads at most this much
+
+# ── TLS certificate expiry alerting ('https' checks) ────────────────
+# Fires its own alert (metric_name 'synthetic_cert_expiry') on the check's
+# synthetic resource, separate from the 'synthetic_uptime' outage alert.
+# Constants rather than rows in `thresholds`: that mechanism evaluates the
+# `metrics` table, which synthetic checks never write to. Override per
+# deployment with SYNTHETIC_CERT_WARN_DAYS / SYNTHETIC_CERT_CRIT_DAYS
+# (whole days; CRIT must be smaller than WARN or both fall back).
+CERT_ALERT_METRIC = "synthetic_cert_expiry"
+_DEFAULT_CERT_WARN_DAYS = 30
+_DEFAULT_CERT_CRIT_DAYS = 7
+
+
+def _load_cert_thresholds():
+    def _env(name, default):
+        raw = (os.getenv(name) or "").strip()
+        if not raw:
+            return default
+        try:
+            v = int(raw)
+        except ValueError:
+            v = 0
+        if v < 1:
+            logger.warning(f"[synthetic] ignoring invalid {name}={raw!r}")
+            return default
+        return v
+    warn = _env("SYNTHETIC_CERT_WARN_DAYS", _DEFAULT_CERT_WARN_DAYS)
+    crit = _env("SYNTHETIC_CERT_CRIT_DAYS", _DEFAULT_CERT_CRIT_DAYS)
+    if crit >= warn:
+        logger.warning("[synthetic] SYNTHETIC_CERT_CRIT_DAYS must be smaller than SYNTHETIC_CERT_WARN_DAYS -- using defaults")
+        return _DEFAULT_CERT_WARN_DAYS, _DEFAULT_CERT_CRIT_DAYS
+    return warn, crit
+
+
+CERT_WARN_DAYS, CERT_CRIT_DAYS = _load_cert_thresholds()
+
+_TLS_FIELDS = ("cert_days_left", "cert_not_after", "cert_subject", "cert_issuer",
+               "tls_version", "tls_cipher", "handshake_ms", "cert_valid")
 
 # ── SSRF guard (audit b20) ───────────────────────────────────────────
 # Probes are created by any synthetic.manage holder and run from inside
@@ -164,20 +204,148 @@ class _GuardedHTTPSPool(HTTPSConnectionPool):
 
 
 class _GuardedAdapter(HTTPAdapter):
+    def __init__(self, *args, https_pool_cls=None, **kwargs):
+        # set BEFORE super().__init__(): it calls init_poolmanager()
+        self._https_pool_cls = https_pool_cls or _GuardedHTTPSPool
+        super().__init__(*args, **kwargs)
+
     def init_poolmanager(self, *args, **kwargs):
         super().init_poolmanager(*args, **kwargs)
         self.poolmanager.pool_classes_by_scheme = {
-            "http": _GuardedHTTPPool, "https": _GuardedHTTPSPool,
+            "http": _GuardedHTTPPool, "https": self._https_pool_cls,
         }
 
 
-def _guarded_session() -> requests.Session:
+# ── TLS inspection (https checks) ────────────────────────────────────
+# Reads version / cipher / peer certificate from the SAME connection the
+# probe uses (no second handshake). Subclasses the guarded connection, so
+# the SSRF guard (pre-validated IP dial) and certificate + hostname
+# verification are exactly the ones the plain probe uses: nothing here
+# relaxes either. A failed verification raises out of connect() as before;
+# the exception is only noted (per host) so the probe can report WHY.
+
+def _sink_key(host) -> str:
+    return (host or "").strip().strip("[]").rstrip(".").lower()
+
+
+def _dn_short(rdns, prefer=("commonName", "organizationName")) -> str:
+    """peercert subject/issuer ((('commonName','x'),), ...) -> one short label."""
+    flat = {}
+    for rdn in rdns or ():
+        for k, v in rdn:
+            flat.setdefault(k, v)
+    for k in prefer:
+        if flat.get(k):
+            return str(flat[k])[:120]
+    return ""
+
+
+def _summarize_peercert(cert: dict, now_ts: float = None) -> dict:
+    """getpeercert() dict -> the cert_* result fields. Never raises: a field
+    that can't be read is None."""
+    out = {"cert_days_left": None, "cert_not_after": None, "cert_subject": None, "cert_issuer": None}
+    if not cert:
+        return out
+    try:
+        not_after_ts = ssl.cert_time_to_seconds(cert.get("notAfter"))
+        now_ts = time.time() if now_ts is None else now_ts
+        out["cert_days_left"] = math.floor((not_after_ts - now_ts) / 86400)
+        out["cert_not_after"] = datetime.fromtimestamp(not_after_ts, timezone.utc).replace(tzinfo=None)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    subject = _dn_short(cert.get("subject"))
+    if not subject:
+        sans = [v for k, v in (cert.get("subjectAltName") or ()) if k == "DNS"]
+        subject = (sans[0] if sans else "")[:120]
+    out["cert_subject"] = subject or None
+    out["cert_issuer"] = _dn_short(cert.get("issuer")) or None
+    return out
+
+
+def _tls_info_from_socket(sock, handshake_ms=None) -> dict:
+    info = {k: None for k in _TLS_FIELDS}
+    try:
+        info["tls_version"] = sock.version()
+        cipher = sock.cipher()
+        info["tls_cipher"] = (cipher[0] if cipher else None)
+        info.update(_summarize_peercert(sock.getpeercert()))
+    except (ssl.SSLError, ValueError, OSError, AttributeError):
+        pass
+    info["handshake_ms"] = handshake_ms
+    return info
+
+
+# OpenSSL X509_V_ERR_* codes -> wording (ssl.SSLCertVerificationError.verify_code)
+_X509_EXPIRED, _X509_NOT_YET_VALID = 10, 9
+_X509_SELF_SIGNED = (18, 19)
+_X509_NO_ISSUER = (20, 21)
+_X509_HOSTNAME_MISMATCH = (62, 64)
+
+
+def _describe_tls_error(exc, host: str):
+    """ssl exception from the handshake -> (specific message, cert_valid).
+    cert_valid is False for a verification failure, None for any other
+    handshake failure (no verdict on the certificate)."""
+    host = host or "the host"
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        code = getattr(exc, "verify_code", None)
+        msg = str(getattr(exc, "verify_message", None) or exc)
+        if code == _X509_EXPIRED:
+            return "TLS: certificate has expired", False
+        if code == _X509_NOT_YET_VALID:
+            return "TLS: certificate is not yet valid", False
+        if code in _X509_HOSTNAME_MISMATCH or (code is None and ("hostname" in msg.lower() or "doesn't match" in msg.lower())):
+            return f"TLS: certificate is not valid for '{host}' (hostname mismatch)", False
+        if code in _X509_SELF_SIGNED:
+            return "TLS: self-signed certificate (not trusted)", False
+        if code in _X509_NO_ISSUER:
+            return "TLS: cannot verify the certificate chain (unknown issuer or missing intermediate certificate)", False
+        return f"TLS: certificate verification failed: {msg}"[:490], False
+    if isinstance(exc, ssl.SSLError):
+        reason = getattr(exc, "reason", None) or str(exc)
+        return f"TLS handshake failed: {reason}"[:490], None
+    return f"TLS handshake failed: {exc}"[:490], None
+
+
+def _make_inspecting_https_pool(sink: dict):
+    """Per-probe pool class that records, per hostname, the first connection's
+    TLS facts (or the handshake error) into `sink`. First-wins on purpose: a
+    redirect to another host must not overwrite the configured target's cert."""
+
+    class _InspectingHTTPSConnection(_GuardedHTTPSConnection):
+        def _new_conn(self):
+            sock = super()._new_conn()
+            self._synth_tcp_done = time.monotonic()
+            return sock
+
+        def connect(self):
+            self._synth_tcp_done = None
+            key = _sink_key(self.host)
+            try:
+                super().connect()
+            except ssl.SSLError as e:
+                sink.setdefault(key, {"error": e})
+                raise
+            done = self._synth_tcp_done
+            handshake_ms = int((time.monotonic() - done) * 1000) if done else None
+            sink.setdefault(key, {"info": _tls_info_from_socket(self.sock, handshake_ms)})
+
+    class _InspectingHTTPSPool(HTTPSConnectionPool):
+        ConnectionCls = _InspectingHTTPSConnection
+
+    return _InspectingHTTPSPool
+
+
+def _guarded_session(tls_sink: dict = None) -> requests.Session:
     session = requests.Session()
     # Never route probes through an env-configured proxy: the guard
     # would validate the proxy's address instead of the real target.
     session.trust_env = False
     session.max_redirects = MAX_REDIRECTS
-    adapter = _GuardedAdapter(max_retries=0)
+    adapter = _GuardedAdapter(
+        max_retries=0,
+        https_pool_cls=_make_inspecting_https_pool(tls_sink) if tls_sink is not None else None,
+    )
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     return session
@@ -199,20 +367,38 @@ def _split_tcp_target(target: str):
     return host, port
 
 
-def validate_target(check_type: str, target: str) -> None:
+def validate_target(check_type: str, target: str, strict_scheme: bool = False) -> None:
     """API-side validation (create/update). Raises ValueError with a
     user-safe message. A hostname that doesn't resolve yet is accepted
     (the connect-time guard still applies on every probe); one that
-    resolves to a blocked address is rejected."""
+    resolves to a blocked address is rejected.
+
+    'https' needs an https:// URL. 'http' keeps accepting http:// AND https://
+    (existing checks rely on it); strict_scheme=True -- used by the API on
+    CREATE only -- additionally steers a new https:// URL to the 'https' type."""
     target = (target or "").strip()
     if not target:
         raise ValueError("target is required")
     if len(target) > 500:
         raise ValueError("target must be at most 500 characters")
-    if check_type == "http":
+    if check_type == "https":
+        parts = urlsplit(target)
+        if parts.scheme != "https" or not parts.hostname:
+            raise ValueError(
+                "HTTPS checks need a full https:// URL "
+                "(use the HTTP type for http:// URLs)")
+        try:
+            host, port = parts.hostname, parts.port or 443
+        except ValueError:
+            raise ValueError("https target has an invalid port")
+    elif check_type == "http":
         parts = urlsplit(target)
         if parts.scheme not in ("http", "https") or not parts.hostname:
             raise ValueError("http checks need a full URL (http:// or https://)")
+        if strict_scheme and parts.scheme == "https":
+            raise ValueError(
+                "This is an https:// URL - choose the 'HTTPS (with certificate check)' "
+                "check type (the HTTP type is for http:// URLs)")
         try:
             host, port = parts.hostname, parts.port or (443 if parts.scheme == "https" else 80)
         except ValueError:
@@ -233,6 +419,20 @@ def validate_target(check_type: str, target: str) -> None:
         pass
 
 
+def validate_https_redirect_option(check_type: str, target: str) -> None:
+    """expect_https_redirect: only for https checks on the default port, since
+    the plain-HTTP counterpart URL is derived by swapping scheme (port 80)."""
+    if check_type != "https":
+        raise ValueError("expect_https_redirect is only available for HTTPS checks")
+    parts = urlsplit((target or "").strip())
+    try:
+        port = parts.port
+    except ValueError:
+        raise ValueError("https target has an invalid port")
+    if parts.scheme != "https" or port not in (None, 443):
+        raise ValueError("expect_https_redirect needs an https:// target on the default port (443)")
+
+
 def _clamp_timeout(timeout) -> int:
     try:
         timeout = int(timeout)
@@ -248,9 +448,14 @@ _DNS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="synthetic-
 
 
 def _probe_http(target: str, timeout: int, expected_status: int, expected_keyword: str):
+    return _probe_http_impl(target, timeout, expected_status, expected_keyword)
+
+
+def _probe_http_impl(target: str, timeout: int, expected_status: int, expected_keyword: str,
+                     tls_sink: dict = None):
     timeout = _clamp_timeout(timeout)
     start = time.monotonic()
-    session = _guarded_session()
+    session = _guarded_session(tls_sink)
     try:
         resp = session.get(
             target, timeout=timeout, allow_redirects=True, stream=True,
@@ -293,6 +498,85 @@ def _probe_http(target: str, timeout: int, expected_status: int, expected_keywor
         session.close()
 
 
+def _probe_https_redirect(target: str, timeout: int):
+    """expect_https_redirect: GET the plain-HTTP twin of an https:// target
+    WITHOUT following redirects and require a 3xx to an https:// Location.
+    One extra request per probe, only for checks that opted in; same SSRF
+    guard as every other probe. Returns (ok, error)."""
+    parts = urlsplit(target)
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    url = urlunsplit(("http", host, parts.path or "/", parts.query, ""))
+    session = _guarded_session()
+    try:
+        resp = session.get(url, timeout=timeout, allow_redirects=False, stream=True,
+                           headers={"User-Agent": _HTTP_USER_AGENT})
+        try:
+            status = resp.status_code
+            location = resp.headers.get("Location", "")
+        finally:
+            resp.close()
+        if status in (301, 302, 303, 307, 308):
+            if urlsplit(urljoin(url, location)).scheme == "https":
+                return True, None
+            return False, f"expected HTTP->HTTPS redirect from {url}, but it redirects to {location or 'nowhere'}"[:490]
+        return False, f"expected HTTP->HTTPS redirect from {url}, got status {status} (no redirect)"[:490]
+    except UnsafeTargetError as e:
+        return False, f"blocked: {e}"[:490]
+    except requests.exceptions.Timeout:
+        return False, f"HTTP->HTTPS redirect check timed out after {timeout}s"
+    except requests.exceptions.RequestException as e:
+        return False, f"expected HTTP->HTTPS redirect, but {url} is not reachable: {e}"[:490]
+    finally:
+        session.close()
+
+
+def _probe_https(target: str, timeout: int, expected_status: int, expected_keyword: str,
+                 expect_redirect: bool = False):
+    """HTTP probe + TLS facts from the same connection. Returns
+    (success, elapsed_ms, status_code, error, tls) where `tls` always has
+    every key in _TLS_FIELDS (None when no TLS session was reached).
+
+    A certificate that is valid but near expiry is NOT a probe failure -- the
+    separate cert-expiry alert covers it. A handshake / expired / hostname /
+    chain failure IS a failure, with specific text."""
+    timeout = _clamp_timeout(timeout)
+    start = time.monotonic()
+    sink = {}
+    success, elapsed_ms, status_code, error = _probe_http_impl(
+        target, timeout, expected_status, expected_keyword, tls_sink=sink)
+
+    host = _sink_key(urlsplit(target).hostname)
+    tls = {k: None for k in _TLS_FIELDS}
+    entry = sink.get(host)
+    if entry and "info" in entry:
+        tls.update(entry["info"])
+        tls["cert_valid"] = 1          # reached only if chain + hostname verified
+    elif entry and "error" in entry:
+        msg, valid = _describe_tls_error(entry["error"], host)
+        tls["cert_valid"] = None if valid is None else int(valid)
+        success, error = False, msg
+
+    if success and expect_redirect:
+        remaining = max(MIN_TIMEOUT_SECONDS, int(timeout - (time.monotonic() - start)))
+        ok, redirect_error = _probe_https_redirect(target, remaining)
+        if not ok:
+            success, error = False, redirect_error
+    return success, elapsed_ms, status_code, error, tls
+
+
+def _cert_alert_level(days_left):
+    """days until expiry -> ('CRITICAL'|'WARNING', threshold_days) or None."""
+    if days_left is None:
+        return None
+    if days_left <= CERT_CRIT_DAYS:
+        return "CRITICAL", CERT_CRIT_DAYS
+    if days_left <= CERT_WARN_DAYS:
+        return "WARNING", CERT_WARN_DAYS
+    return None
+
+
 def _probe_tcp(target: str, timeout: int):
     timeout = _clamp_timeout(timeout)
     start = time.monotonic()
@@ -330,6 +614,10 @@ def _probe_dns(target: str, timeout: int):
 
 
 def _run_probe(check: dict):
+    if check["check_type"] == "https":
+        return _probe_https(check["target"], check["timeout_seconds"],
+                            check["expected_status_code"], check["expected_keyword"],
+                            bool(check.get("expect_https_redirect")))[:4]
     if check["check_type"] == "http":
         return _probe_http(check["target"], check["timeout_seconds"],
                             check["expected_status_code"], check["expected_keyword"])
@@ -399,17 +687,95 @@ def _write_or_update_alert(cursor, resource_id: str, check: dict, error_message:
     )
 
 
-def _resolve_alert(cursor, resource_id: str, account_id=None):
+def _resolve_alert(cursor, resource_id: str, account_id=None, metric_name: str = "synthetic_uptime"):
     scope = "AND aws_account_id = %s" if account_id is not None else ""
-    params = (resource_id,) + ((account_id,) if account_id is not None else ())
+    params = (resource_id,) + ((account_id,) if account_id is not None else ()) + (metric_name,)
     cursor.execute(f"""
         UPDATE alerts SET status = 'resolved', resolved_at = UTC_TIMESTAMP(), last_seen_at = UTC_TIMESTAMP(),
                           resolution_reason = 'recovered', resolved_by = 'system'
-        WHERE resource_id = %s {scope} AND metric_name = 'synthetic_uptime'
+        WHERE resource_id = %s {scope} AND metric_name = %s
           AND status IN ('active', 'acknowledged')
     """, params)
     if cursor.rowcount:
-        logger.info(f"[synthetic] {resource_id} recovered -- resolved its active alert")
+        logger.info(f"[synthetic] {resource_id} recovered -- resolved its active {metric_name} alert")
+
+
+def _write_or_update_cert_alert(cursor, resource_id: str, check: dict, days_left: int,
+                                severity: str, threshold_days: int):
+    """Opens / refreshes the cert-expiry alert. Fires immediately (no
+    consecutive-failure gate: the expiry date is a fact, not a flaky probe).
+    Severity follows the days left; a worsening acknowledged alert is reopened,
+    same rule as the threshold evaluator."""
+    account_id = check["aws_account_id"]
+    cursor.execute("""
+        SELECT id, severity, status FROM alerts
+        WHERE aws_account_id = %s AND resource_id = %s AND metric_name = %s
+          AND status IN ('active', 'acknowledged')
+        LIMIT 1
+    """, (account_id, resource_id, CERT_ALERT_METRIC))
+    existing = cursor.fetchone()
+    if existing:
+        fields = ["current_value = %s", "threshold = %s", "breach_value = %s",
+                  "breach_threshold = %s", "last_seen_at = UTC_TIMESTAMP()"]
+        params = [days_left, threshold_days, days_left, threshold_days]
+        if existing["severity"] != severity:
+            fields.append("severity = %s")
+            params.append(severity)
+            if severity == "CRITICAL" and existing["status"] == "acknowledged":
+                fields += ["status = 'active'", "acked = 0", "acked_by = NULL", "acked_at = NULL"]
+        params.append(existing["id"])
+        cursor.execute(f"UPDATE alerts SET {', '.join(fields)} WHERE id = %s", params)
+        return
+
+    group_key = f"{account_id}:synthetic_check:{CERT_ALERT_METRIC}"
+    cursor.execute("""
+        INSERT INTO alerts
+            (aws_account_id, resource_id, metric_name, severity, environment, group_key, status,
+             triggered_at, last_seen_at, healthy_streak, current_value, threshold,
+             breach_value, breach_threshold)
+        VALUES (%s, %s, %s, %s, %s, %s, 'active',
+                UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0, %s, %s, %s, %s)
+    """, (
+        account_id, resource_id, CERT_ALERT_METRIC, severity, check["environment"], group_key,
+        days_left, threshold_days, days_left, threshold_days,
+    ))
+    logger.warning(
+        f"[synthetic] check '{check['name']}' (id={check['id']}): TLS certificate expires in "
+        f"{days_left} day(s) -- {severity}"
+    )
+
+
+def _apply_cert_alert(cursor, resource_id: str, check: dict, tls: dict):
+    """Cert-expiry alert state for an https check, from this probe's TLS facts.
+    No certificate seen this probe (handshake failed, host down): leave any
+    open alert exactly as it is -- unknown is not 'renewed'."""
+    days_left = (tls or {}).get("cert_days_left")
+    if days_left is None:
+        return
+    level = _cert_alert_level(days_left)
+    if level is None:
+        _resolve_alert(cursor, resource_id, check["aws_account_id"], CERT_ALERT_METRIC)
+    else:
+        _write_or_update_cert_alert(cursor, resource_id, check, days_left, level[0], level[1])
+
+
+def _insert_result(cursor, check: dict, success, elapsed_ms, status_code, error, tls=None):
+    if tls is None:
+        # http / tcp / dns: the original statement, unchanged
+        cursor.execute("""
+            INSERT INTO synthetic_check_results
+                (check_id, checked_at, success, response_time_ms, status_code, error_message)
+            VALUES (%s, NOW(), %s, %s, %s, %s)
+        """, (check["id"], success, elapsed_ms, status_code, error))
+        return
+    cursor.execute("""
+        INSERT INTO synthetic_check_results
+            (check_id, checked_at, success, response_time_ms, status_code, error_message,
+             cert_days_left, cert_not_after, cert_subject, cert_issuer,
+             tls_version, tls_cipher, handshake_ms, cert_valid)
+        VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """, (check["id"], success, elapsed_ms, status_code, error,
+          *(tls.get(k) for k in _TLS_FIELDS)))
 
 
 def run_due_checks() -> int:
@@ -424,9 +790,9 @@ def run_due_checks() -> int:
     try:
         cursor.execute("""
             SELECT id, aws_account_id, name, check_type, target,
-                   expected_status_code, expected_keyword, timeout_seconds,
-                   interval_seconds, consecutive_failure_threshold, environment,
-                   consecutive_failures, current_status
+                   expected_status_code, expected_keyword, expect_https_redirect,
+                   timeout_seconds, interval_seconds, consecutive_failure_threshold,
+                   environment, consecutive_failures, current_status
             FROM synthetic_checks
             WHERE enabled = 1 AND (next_check_at IS NULL OR next_check_at <= NOW())
             ORDER BY next_check_at IS NULL DESC, next_check_at ASC
@@ -436,13 +802,15 @@ def run_due_checks() -> int:
 
         for check in due:
             try:
-                success, elapsed_ms, status_code, error = _run_probe(check)
+                tls = None
+                if check["check_type"] == "https":
+                    success, elapsed_ms, status_code, error, tls = _probe_https(
+                        check["target"], check["timeout_seconds"], check["expected_status_code"],
+                        check["expected_keyword"], bool(check.get("expect_https_redirect")))
+                else:
+                    success, elapsed_ms, status_code, error = _run_probe(check)
 
-                cursor.execute("""
-                    INSERT INTO synthetic_check_results
-                        (check_id, checked_at, success, response_time_ms, status_code, error_message)
-                    VALUES (%s, NOW(), %s, %s, %s, %s)
-                """, (check["id"], success, elapsed_ms, status_code, error))
+                _insert_result(cursor, check, success, elapsed_ms, status_code, error, tls)
 
                 if success:
                     new_consecutive_failures = 0
@@ -472,6 +840,9 @@ def run_due_checks() -> int:
                     _write_or_update_alert(cursor, resource_id, check, error)
                 elif new_status == "up" and check["current_status"] == "down":
                     _resolve_alert(cursor, resource_id, check["aws_account_id"])
+
+                if tls is not None:
+                    _apply_cert_alert(cursor, resource_id, check, tls)
 
                 # Commit per check: keeps row locks on alerts/
                 # synthetic_checks short (probes are slow network I/O)

@@ -74,7 +74,7 @@ STALE_AFTER_MINUTES = STALE_MINUTES["core"]
 
 # Internal, non-threshold alert sources: never auto-resolved for "threshold
 # disabled", they have their own lifecycle in their own module.
-SYSTEM_METRICS = ("multivariate_anomaly", "synthetic_uptime")
+SYSTEM_METRICS = ("multivariate_anomaly", "synthetic_uptime", "synthetic_cert_expiry")
 
 
 def _in(values):

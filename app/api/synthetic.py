@@ -13,13 +13,14 @@ from app.db import get_connection
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
 from app.collector.synthetic import (
-    validate_target, MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS,
+    validate_target, validate_https_redirect_option,
+    MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, CERT_ALERT_METRIC,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/synthetic-checks", tags=["Synthetic Monitoring"])
 
-_VALID_CHECK_TYPES = ("http", "tcp", "dns")
+_VALID_CHECK_TYPES = ("http", "https", "tcp", "dns")
 _MAX_INTERVAL_SECONDS = 86400
 
 
@@ -69,6 +70,11 @@ def _validate_common(payload: dict) -> dict:
         out["name"] = name
     if "enabled" in payload:
         out["enabled"] = bool(payload.get("enabled"))
+    if "expect_https_redirect" in payload:
+        flag = payload.get("expect_https_redirect")
+        if flag not in (True, False, 0, 1, None):
+            raise HTTPException(status_code=400, detail="expect_https_redirect must be true or false")
+        out["expect_https_redirect"] = 1 if flag else 0
     return out
 
 
@@ -98,6 +104,17 @@ def _get_check_type(check_id: int):
         cur.close(); conn.close()
 
 
+def _get_check_row(check_id: int):
+    conn = get_connection(); cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT check_type, target, expect_https_redirect FROM synthetic_checks WHERE id = %s",
+            (check_id,))
+        return cur.fetchone()
+    finally:
+        cur.close(); conn.close()
+
+
 @router.get("")
 def list_checks(current_user: dict = Depends(require_permission("synthetic.view"))):
     """
@@ -106,6 +123,12 @@ def list_checks(current_user: dict = Depends(require_permission("synthetic.view"
     frontend's list view for the single number people actually look at
     first (Pingdom/UptimeRobot's own list views lead with the same
     number for the same reason).
+
+    For 'https' checks also returns the latest TLS facts (cert_days_left,
+    cert_not_after, cert_subject, cert_issuer, tls_version, tls_cipher,
+    handshake_ms, cert_valid, tls_checked_at) taken from the most recent result
+    that reached a TLS session, and for every check `last_error` (NULL when the
+    latest probe succeeded) so the specific failure text is visible.
     """
     accessible = get_accessible_account_ids(current_user)
     conn = get_connection(); cur = conn.cursor(dictionary=True)
@@ -115,9 +138,20 @@ def list_checks(current_user: dict = Depends(require_permission("synthetic.view"
                    (SELECT ROUND(100 * AVG(r.success), 1)
                     FROM synthetic_check_results r
                     WHERE r.check_id = c.id
-                      AND r.checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)) AS uptime_pct_24h
+                      AND r.checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)) AS uptime_pct_24h,
+                   (SELECT r.error_message FROM synthetic_check_results r
+                    WHERE r.check_id = c.id
+                    ORDER BY r.checked_at DESC, r.id DESC LIMIT 1) AS last_error,
+                   lt.checked_at AS tls_checked_at, lt.cert_days_left, lt.cert_not_after,
+                   lt.cert_subject, lt.cert_issuer, lt.tls_version, lt.tls_cipher,
+                   lt.handshake_ms, lt.cert_valid
             FROM synthetic_checks c
             JOIN aws_accounts acc ON acc.id = c.aws_account_id
+            LEFT JOIN synthetic_check_results lt
+                   ON c.check_type = 'https'
+                  AND lt.id = (SELECT r2.id FROM synthetic_check_results r2
+                               WHERE r2.check_id = c.id AND r2.tls_version IS NOT NULL
+                               ORDER BY r2.checked_at DESC, r2.id DESC LIMIT 1)
             ORDER BY c.name
         """)
         rows = cur.fetchall()
@@ -142,7 +176,9 @@ def get_check_results(
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
-            SELECT checked_at, success, response_time_ms, status_code, error_message
+            SELECT checked_at, success, response_time_ms, status_code, error_message,
+                   cert_days_left, cert_not_after, cert_subject, cert_issuer,
+                   tls_version, tls_cipher, handshake_ms, cert_valid
             FROM synthetic_check_results
             WHERE check_id = %s AND checked_at >= DATE_SUB(NOW(), INTERVAL %s HOUR)
             ORDER BY checked_at ASC
@@ -178,11 +214,16 @@ def create_check(payload: dict = Body(...), current_user: dict = Depends(require
         "expected_keyword": payload.get("expected_keyword"),
         "environment": payload.get("environment", "prod"),
         "enabled": payload.get("enabled", True),
+        "expect_https_redirect": payload.get("expect_https_redirect", False),
     })
 
     target = (payload.get("target") or "").strip() if isinstance(payload.get("target"), str) else ""
     try:
-        validate_target(check_type, target)
+        # strict_scheme: a NEW https:// URL must use the 'https' type (existing
+        # 'http' checks with https:// URLs keep running; see validate_target)
+        validate_target(check_type, target, strict_scheme=True)
+        if fields["expect_https_redirect"]:
+            validate_https_redirect_option(check_type, target)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -191,12 +232,13 @@ def create_check(payload: dict = Body(...), current_user: dict = Depends(require
         cur.execute("""
             INSERT INTO synthetic_checks
                 (aws_account_id, name, check_type, target, expected_status_code,
-                 expected_keyword, timeout_seconds, interval_seconds,
+                 expected_keyword, expect_https_redirect, timeout_seconds, interval_seconds,
                  consecutive_failure_threshold, environment, enabled, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             int(account_id), fields["name"], check_type, target,
             fields["expected_status_code"], fields["expected_keyword"],
+            fields["expect_https_redirect"],
             fields["timeout_seconds"], fields["interval_seconds"],
             fields["consecutive_failure_threshold"],
             fields["environment"], fields["enabled"],
@@ -222,21 +264,29 @@ def update_check(check_id: int, payload: dict = Body(...), current_user: dict = 
     editable_fields = (
         "name", "target", "expected_status_code", "expected_keyword",
         "timeout_seconds", "interval_seconds", "consecutive_failure_threshold",
-        "environment", "enabled",
+        "environment", "enabled", "expect_https_redirect",
     )
     raw = {k: v for k, v in payload.items() if k in editable_fields}
     if not raw:
         raise HTTPException(status_code=400, detail="No editable fields provided")
     updates = _validate_common(raw)
-    if "target" in raw:
-        # SSRF: a PATCH must pass the same target validation as create.
-        check_type = _get_check_type(check_id)
-        target = raw["target"].strip() if isinstance(raw["target"], str) else ""
-        try:
-            validate_target(check_type, target)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        updates["target"] = target
+    if "target" in raw or "expect_https_redirect" in raw:
+        row = _get_check_row(check_id)
+        check_type = row["check_type"]
+        if "target" in raw:
+            # SSRF: a PATCH must pass the same target validation as create.
+            target = raw["target"].strip() if isinstance(raw["target"], str) else ""
+            try:
+                validate_target(check_type, target)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            updates["target"] = target
+        # the redirect flag must stay valid for whatever the target ends up being
+        if updates.get("expect_https_redirect", row["expect_https_redirect"]):
+            try:
+                validate_https_redirect_option(check_type, updates.get("target", row["target"]))
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
 
     set_clause = ", ".join(f"{k} = %s" for k in updates)
     conn = get_connection(); cur = conn.cursor()
@@ -266,9 +316,10 @@ def delete_check(check_id: int, current_user: dict = Depends(require_permission(
         cur.execute("""
             UPDATE alerts SET status = 'resolved', resolved_at = UTC_TIMESTAMP(), last_seen_at = UTC_TIMESTAMP(),
                               resolution_reason = 'check_deleted', resolved_by = %s
-            WHERE aws_account_id = %s AND resource_id = %s AND metric_name = 'synthetic_uptime'
+            WHERE aws_account_id = %s AND resource_id = %s
+              AND metric_name IN ('synthetic_uptime', %s)
               AND status IN ('active', 'acknowledged')
-        """, (current_user["username"], account_id, f"synthetic-{check_id}"))
+        """, (current_user["username"], account_id, f"synthetic-{check_id}", CERT_ALERT_METRIC))
         cur.execute("DELETE FROM synthetic_checks WHERE id = %s", (check_id,))
         # F25: drop the auto-created resources row too (collector's
         # _ensure_resource_row), otherwise every deleted check left an

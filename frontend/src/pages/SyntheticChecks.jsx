@@ -1,5 +1,5 @@
 // src/pages/SyntheticChecks.jsx
-// Synthetic / uptime (blackbox) monitoring -- active HTTP/TCP/DNS
+// Synthetic / uptime (blackbox) monitoring -- active HTTP/HTTPS/TCP/DNS
 // probes run from the backend against a configured target, on a
 // schedule. See app/collector/synthetic.py's module docstring: a
 // failing check becomes a normal alert against an auto-created
@@ -19,7 +19,35 @@ import "./SyntheticChecks.css";
 const EMPTY_FORM = {
   aws_account_id: "", name: "", check_type: "http", target: "",
   interval_seconds: 300, consecutive_failure_threshold: 2,
+  expect_https_redirect: false,
 };
+
+const TYPE_LABEL = { http: "HTTP", https: "HTTPS", tcp: "TCP", dns: "DNS" };
+// Same thresholds the backend alerts on (app/collector/synthetic.py: WARNING <= 30d, CRITICAL <= 7d).
+// Display tone only; the alert itself is raised server-side.
+const CERT_WARN_DAYS = 30, CERT_CRIT_DAYS = 7;
+
+function certTone(days) {
+  if (days == null) return "";
+  if (days <= CERT_CRIT_DAYS) return "syn-cert-crit";
+  if (days <= CERT_WARN_DAYS) return "syn-cert-warn";
+  return "syn-cert-ok";
+}
+
+function CertCell({ c }) {
+  if (c.check_type !== "https") return <>—</>;
+  if (c.cert_days_left == null) return <span title="No successful TLS handshake recorded yet">—</span>;
+  const d = c.cert_days_left;
+  const tip = [
+    c.cert_subject && `Subject: ${c.cert_subject}`,
+    c.cert_issuer && `Issuer: ${c.cert_issuer}`,
+    c.cert_not_after && `Expires: ${String(c.cert_not_after).replace("T", " ")} UTC`,
+    c.tls_cipher && `Cipher: ${c.tls_cipher}`,
+    c.handshake_ms != null && `TLS handshake: ${c.handshake_ms} ms`,
+    c.cert_valid != null && `Chain + hostname verified: ${c.cert_valid ? "yes" : "no"}`,
+  ].filter(Boolean).join("\n");
+  return <span className={certTone(d)} title={tip}>{d < 0 ? "expired" : `${d} day${d === 1 ? "" : "s"}`}</span>;
+}
 
 function StatusBadge({ status }) {
   const label = status === "up" ? "Up" : status === "down" ? "Down" : "Unknown";
@@ -49,6 +77,7 @@ export default function SyntheticChecks() {
         aws_account_id: Number(form.aws_account_id),
         interval_seconds: Number(form.interval_seconds),
         consecutive_failure_threshold: Number(form.consecutive_failure_threshold),
+        expect_https_redirect: form.check_type === "https" && !!form.expect_https_redirect,
       });
       setForm(EMPTY_FORM);
       load();
@@ -78,7 +107,7 @@ export default function SyntheticChecks() {
       <div className="c-header">
         <div>
           <h1>Synthetic <span className="hl">Checks</span></h1>
-          <p className="sub">Active HTTP/TCP/DNS probes run on a schedule -- a failing check becomes a normal alert, correlated and escalated like anything else</p>
+          <p className="sub">Active HTTP/HTTPS/TCP/DNS probes run on a schedule -- a failing check becomes a normal alert, correlated and escalated like anything else</p>
         </div>
       </div>
 
@@ -101,6 +130,7 @@ export default function SyntheticChecks() {
           <label>Type</label>
           <select aria-label="Type" value={form.check_type} onChange={e => setForm(f => ({ ...f, check_type: e.target.value }))}>
             <option value="http">HTTP</option>
+            <option value="https">HTTPS (with certificate check)</option>
             <option value="tcp">TCP</option>
             <option value="dns">DNS</option>
           </select>
@@ -108,13 +138,23 @@ export default function SyntheticChecks() {
         <div className="syn-field syn-field-wide">
           <label>Target</label>
           <input aria-label="Target" value={form.target} onChange={e => setForm(f => ({ ...f, target: e.target.value }))}
-                 placeholder={form.check_type === "http" ? "https://api.example.com/health" : form.check_type === "tcp" ? "db.example.com:5432" : "example.com"} required />
+                 placeholder={form.check_type === "https" ? "https://api.example.com/health" : form.check_type === "http" ? "http://example.com/health" : form.check_type === "tcp" ? "db.example.com:5432" : "example.com"} required />
         </div>
         <div className="syn-field syn-field-narrow">
           <label>Interval (sec)</label>
           <input aria-label="Interval (sec)" type="number" min="60" value={form.interval_seconds}
                  onChange={e => setForm(f => ({ ...f, interval_seconds: e.target.value }))} />
         </div>
+        {form.check_type === "https" && (
+          <div className="syn-field syn-field-check">
+            <label>Redirect</label>
+            <label className="syn-checkline" title="Also request the http:// version once per probe and require a redirect to https:// (default port 443 only)">
+              <input aria-label="Expect HTTP to HTTPS redirect" type="checkbox" checked={!!form.expect_https_redirect}
+                     onChange={e => setForm(f => ({ ...f, expect_https_redirect: e.target.checked }))} />
+              Expect HTTP→HTTPS redirect
+            </label>
+          </div>
+        )}
         <button type="submit" className="syn-btn-add" disabled={saving}>
           <PlusIcon size={13} /> {saving ? "Adding…" : "Add check"}
         </button>
@@ -138,6 +178,8 @@ export default function SyntheticChecks() {
                 <th>Target</th>
                 <th>Status</th>
                 <th>Uptime (24h)</th>
+                <th>Cert expires in</th>
+                <th>TLS</th>
                 <th>Interval</th>
                 <th>Enabled</th>
                 <th></th>
@@ -147,10 +189,18 @@ export default function SyntheticChecks() {
               {checks.map(c => (
                 <tr key={c.id}>
                   <td>{c.name}</td>
-                  <td className="mono">{c.check_type.toUpperCase()}</td>
+                  <td className="mono">
+                    {TYPE_LABEL[c.check_type] || c.check_type.toUpperCase()}
+                    {!!c.expect_https_redirect && <span className="syn-tag" title="Expects http:// to redirect to https://">↪ redirect</span>}
+                  </td>
                   <td className="syn-target mono">{c.target}</td>
-                  <td><StatusBadge status={c.current_status} /></td>
+                  <td>
+                    <StatusBadge status={c.current_status} />
+                    {c.last_error && <div className="syn-err" title={c.last_error}>{c.last_error}</div>}
+                  </td>
                   <td className="mono">{c.uptime_pct_24h != null ? `${c.uptime_pct_24h}%` : "—"}</td>
+                  <td className="mono"><CertCell c={c} /></td>
+                  <td className="mono">{c.check_type === "https" ? (c.tls_version || "—") : "—"}</td>
                   <td className="mono">{c.interval_seconds}s</td>
                   <td>
                     <label className="syn-toggle">
