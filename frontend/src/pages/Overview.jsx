@@ -263,72 +263,78 @@ export default function Overview() {
         <>
           <StatusHero verdict={view.verdict} kpi={view.kpi} fetchedAt={showSnap ? snap.ts : dash.fetchedAt} now={now} revalidating={revalidating || showSnap} pending={pend} />
           <KpiRow kpi={view.kpi} onGo={go} pending={pend} />
-          <div className="dash-grid">
-            <div className="span-7">{pend.firing ? <PanelSkeleton title="Alert activity, last 24 hours" /> : <ActivityPanel activity={view.activity} tz={ianaName} />}</div>
-            <div className="span-5">{pend.firing || pend.resolved ? <PanelSkeleton title="Recent changes" /> : <FeedPanel feed={view.feed} total={view.feedTotal} now={now} onGo={go} />}</div>
-            <div className="span-7">{pend.firing ? <PanelSkeleton title="Where it is happening" /> : <MatrixPanel matrix={view.matrix} onGo={go} />}</div>
-            <div className="span-5">{pend.firing ? <PanelSkeleton title="Top problematic resources" /> : <TopResourcesPanel rows={view.topResources} onGo={go} />}</div>
-            <div className="span-4">{pend.incidents ? <PanelSkeleton title="Active incidents" rows={3} /> : <IncidentsPanel incidents={view.incidents} capped={dash.incidentsCapped} now={now} onGo={go} />}</div>
-            <div className="span-4">{pend.firing || pend.fleet ? <PanelSkeleton title="Anomalies and forecasts" rows={3} /> : <IntelligencePanel anomalies={view.anomalies} fleet={showSnap ? snap.model.fleetView ?? null : dash.fleet} kpi={view.kpi} now={now} onGo={go} />}</div>
-            <div className="span-4"><CoveragePanel freshness={view.freshness} kpi={view.kpi} onGo={go} /></div>
-          </div>
         </>
       )}
 
-      <div className="ov-section-bar">
-        <h2 style={{ fontSize: 17, fontWeight: 700 }}>
-          Accounts
-          <span style={{ fontWeight: 400, fontSize: 13, color: "var(--text-muted)", marginLeft: 8 }}>
-            ({filter === "All" ? filteredGroups.length : `${filteredGroups.length} of ${grouped.length}`})
-          </span>
-          {canManage && <Link to="/settings#accounts" className="ov-link" style={{ fontSize: 12, fontWeight: 600, marginLeft: 14 }}>Manage accounts &amp; regions →</Link>}
-        </h2>
-        <div className="filter-row">
-          <span style={{ fontSize: 13, color: "var(--text-muted)", marginRight: 6 }}>Filter:</span>
-          {["All", "Healthy", "Warning", "Critical"].map(f => (
-            <button
-              key={f}
-              className={`f-btn ${filter === f ? "f-active" : ""}`}
-              onClick={() => setFilter(f)}
-            >
-              {f}
-            </button>
-          ))}
+      {/* Accounts: directly under the KPI row; keeps its own skeleton while loading */}
+      <div className="ov-accounts">
+        <div className="ov-section-bar">
+          <h2 style={{ fontSize: 17, fontWeight: 700 }}>
+            Accounts
+            <span style={{ fontWeight: 400, fontSize: 13, color: "var(--text-muted)", marginLeft: 8 }}>
+              ({filter === "All" ? filteredGroups.length : `${filteredGroups.length} of ${grouped.length}`})
+            </span>
+            {canManage && <Link to="/settings#accounts" className="ov-link" style={{ fontSize: 12, fontWeight: 600, marginLeft: 14 }}>Manage accounts &amp; regions →</Link>}
+          </h2>
+          <div className="filter-row">
+            <span style={{ fontSize: 13, color: "var(--text-muted)", marginRight: 6 }}>Filter:</span>
+            {["All", "Healthy", "Warning", "Critical"].map(f => (
+              <button
+                key={f}
+                className={`f-btn ${filter === f ? "f-active" : ""}`}
+                onClick={() => setFilter(f)}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
         </div>
+
+        {loading ? (
+          <div className="accounts-grid">
+            <SkeletonAccountCard /><SkeletonAccountCard /><SkeletonAccountCard />
+          </div>
+        ) : filteredGroups.length === 0 && loadError ? (
+          <div className="ov-empty">
+            Couldn't reach the server just now — showing the last known state.{" "}
+            <span className="ov-link" onClick={loadAll}>Retry →</span>
+          </div>
+        ) : filteredGroups.length === 0 && grouped.length > 0 ? (
+          // Accounts exist, the FILTER matches none of them. This used to say "No accounts found. Onboard an account",
+          // which is wrong: nothing is missing, nothing is critical.
+          <div className="ov-empty">
+            {EMPTY_FILTER_TEXT[filter] || "No accounts match this filter."}{" "}
+            <span className="ov-link" onClick={() => setFilter("All")}>Show all accounts →</span>
+          </div>
+        ) : filteredGroups.length === 0 ? (
+          <div className="ov-empty">
+            No accounts found.{" "}
+            <span className="ov-link" onClick={() => navigate("/onboarding")}>Onboard an account →</span>
+          </div>
+        ) : (
+          <div className="accounts-grid">
+            {filteredGroups.map(group => (
+              <AccountGroupCard
+                key={group.account_id}
+                group={group}
+                expanded={expandedIds.has(group.account_id)}
+                onToggle={() => toggleExpand(group.account_id)}
+                onRegionClick={(regionRow) => navigate(`/accounts/${regionRow.id}/services`)}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
-      {loading ? (
-        <div className="accounts-grid">
-          <SkeletonAccountCard /><SkeletonAccountCard /><SkeletonAccountCard />
-        </div>
-      ) : filteredGroups.length === 0 && loadError ? (
-        <div className="ov-empty">
-          Couldn't reach the server just now — showing the last known state.{" "}
-          <span className="ov-link" onClick={loadAll}>Retry →</span>
-        </div>
-      ) : filteredGroups.length === 0 && grouped.length > 0 ? (
-        // Accounts exist, the FILTER matches none of them. This used to say "No accounts found. Onboard an account",
-        // which is wrong: nothing is missing, nothing is critical.
-        <div className="ov-empty">
-          {EMPTY_FILTER_TEXT[filter] || "No accounts match this filter."}{" "}
-          <span className="ov-link" onClick={() => setFilter("All")}>Show all accounts →</span>
-        </div>
-      ) : filteredGroups.length === 0 ? (
-        <div className="ov-empty">
-          No accounts found.{" "}
-          <span className="ov-link" onClick={() => navigate("/onboarding")}>Onboard an account →</span>
-        </div>
-      ) : (
-        <div className="accounts-grid">
-          {filteredGroups.map(group => (
-            <AccountGroupCard
-              key={group.account_id}
-              group={group}
-              expanded={expandedIds.has(group.account_id)}
-              onToggle={() => toggleExpand(group.account_id)}
-              onRegionClick={(regionRow) => navigate(`/accounts/${regionRow.id}/services`)}
-            />
-          ))}
+      {!loading && (
+        <div className="dash-grid">
+          <div className="span-7">{pend.firing ? <PanelSkeleton title="Alert activity, last 24 hours" /> : <ActivityPanel activity={view.activity} tz={ianaName} />}</div>
+          <div className="span-5">{pend.firing || pend.resolved ? <PanelSkeleton title="Recent changes" /> : <FeedPanel feed={view.feed} total={view.feedTotal} now={now} onGo={go} />}</div>
+          <div className="span-7">{pend.firing ? <PanelSkeleton title="Where it is happening" /> : <MatrixPanel matrix={view.matrix} onGo={go} />}</div>
+          <div className="span-5">{pend.firing ? <PanelSkeleton title="Top problematic resources" /> : <TopResourcesPanel rows={view.topResources} onGo={go} />}</div>
+          <div className="span-4">{pend.incidents ? <PanelSkeleton title="Active incidents" rows={3} /> : <IncidentsPanel incidents={view.incidents} capped={dash.incidentsCapped} now={now} onGo={go} />}</div>
+          <div className="span-4">{pend.firing || pend.fleet ? <PanelSkeleton title="Anomalies and forecasts" rows={3} /> : <IntelligencePanel anomalies={view.anomalies} fleet={showSnap ? snap.model.fleetView ?? null : dash.fleet} kpi={view.kpi} now={now} onGo={go} />}</div>
+          <div className="span-4"><CoveragePanel freshness={view.freshness} kpi={view.kpi} onGo={go} /></div>
         </div>
       )}
     </div>
