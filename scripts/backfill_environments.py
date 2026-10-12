@@ -20,7 +20,13 @@ import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+
+# app.db refuses to import without DB_PASSWORD; the service gets it from .env, so a standalone
+# script must load the same file (migrate.py does the same).
+from dotenv import load_dotenv  # noqa: E402
+load_dotenv(os.path.join(_ROOT, ".env"))
 
 from app.collector.env_sync import sync_resource_environments  # noqa: E402
 
