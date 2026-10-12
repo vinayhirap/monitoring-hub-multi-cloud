@@ -12,7 +12,7 @@ import { useAuth } from "../auth/AuthContext";
 import "./Environments.css";
 
 const PAGE = 50;
-const SOURCE_LABEL = { manual: "Manual", tag: "Tag", name: "Name", account: "Account default", unknown: "Unknown" };
+const SOURCE_LABEL = { manual: "Manual", tag: "Tag", name: "Name", related: "Attached resource", account: "Account default", unknown: "Unknown" };
 const ENV_LABEL = { prod: "Prod", uat: "UAT", dev: "Dev", unknown: "Unknown", ignore: "Ignored" };
 
 function EnvBadge({ env }) {

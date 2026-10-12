@@ -333,3 +333,4 @@
   .ob-actions { padding: 16px 18px; flex-wrap: wrap; }
 }
 
+.ob-success-link { color: inherit; font-weight: 700; text-decoration: underline; }

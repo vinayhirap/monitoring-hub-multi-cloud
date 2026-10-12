@@ -13,7 +13,7 @@ import { Breadcrumb, LiveChip, UserMenu, ScopeSwitcher, NotificationBell, Comman
 import { useAccountsIndex } from "../hooks/useAccountsIndex";
 import { StatusBeacon } from "./ui";
 import { useSearchHotkey } from "../hooks/useSearchHotkey";
-import { getAlertCounts } from "../api/api";
+import { getAlertCounts, getEnvironmentSummary } from "../api/api";
 import { useAlertSync } from "../hooks/useAlertSync";
 
 // Role-based nav visibility:
@@ -32,7 +32,7 @@ const NAV_ITEMS = [
   { group: "Overview", to: "/overview", label: "Overview", icon: OverviewIcon, roles: ["admin","editor","viewer"] },
   // Infrastructure (the per-account/region tree is injected live from the accounts index)
   { group: "Infrastructure", to: "/onboarding", label: "Account Onboarding", icon: OnboardIcon, roles: ["admin","editor"] },
-  { group: "Infrastructure", to: "/environments", label: "Environments", icon: EnvironmentsIcon, roles: ["admin","editor","viewer"], perm: "environments.view" },
+  { group: "Infrastructure", to: "/environments", label: "Environments", icon: EnvironmentsIcon, roles: ["admin","editor","viewer"], perm: "environments.view", envBadge: true },
   // Monitoring
   { group: "Monitoring", to: "/slos",                label: "SLOs",                icon: SloIcon,         roles: ["admin","editor","viewer"], perm: "slo.view" },
   { group: "Monitoring", to: "/synthetic-checks",    label: "Synthetic Checks",    icon: SyntheticIcon,   roles: ["admin","editor","viewer"], perm: "synthetic.view" },
@@ -68,6 +68,7 @@ export default function Layout() {
   const role              = (user?.role || "viewer").toLowerCase();
   const [now, setNow]     = useState(new Date());
   const [alertCount, setAlertCount] = useState(0);
+  const [envQueue, setEnvQueue] = useState(0);   // resources waiting in Environments > Needs classification
   const [dark, setDark]   = useState(() => localStorage.getItem("theme") !== "light");
   // Sidebar: >=1280px opens expanded (persisted choice), 900-1279 opens as the icon rail,
   // <900 is an off-canvas drawer that always starts closed.
@@ -125,6 +126,19 @@ export default function Layout() {
     const t = setInterval(fetchCount, 15000);   // safety net; changes arrive via useAlertSync
     return () => clearInterval(t);
   }, []);
+
+  // Needs-classification count for the Environments nav item. Only for users who can open that
+  // page, once a minute, and a failure just leaves the previous number (it is a hint, not data).
+  const canSeeEnvQueue = hasPermission("environments.view");
+  useEffect(() => {
+    if (!canSeeEnvQueue) return undefined;
+    let live = true;
+    const tick = () => getEnvironmentSummary()
+      .then(d => { if (live) setEnvQueue(d.needs_classification ?? 0); }).catch(() => {});
+    tick();
+    const t = setInterval(tick, 60000);
+    return () => { live = false; clearInterval(t); };
+  }, [canSeeEnvQueue]);
 
   // same-tick refresh with every other page when alert state changes
   useAlertSync(() => refreshBadgeRef.current());
@@ -207,7 +221,7 @@ export default function Layout() {
                   <span className="nav-label">All accounts ({new Set(infraRows.map(r => r.account_id)).size})</span>
                 </NavLink>
               )}
-              {g.items.map(({ to, label, icon: Icon, badge }) => (
+              {g.items.map(({ to, label, icon: Icon, badge, envBadge }) => (
                 <NavLink
                   key={to}
                   to={to}
@@ -219,6 +233,9 @@ export default function Layout() {
                   <span className="nav-label">{label}</span>
                   {badge && alertCount > 0 && (
                     <span className="nav-badge">{alertCount}</span>
+                  )}
+                  {envBadge && envQueue > 0 && (
+                    <span className="nav-badge" title="Resources waiting to be classified">{envQueue}</span>
                   )}
                 </NavLink>
               ))}

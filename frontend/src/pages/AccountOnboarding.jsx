@@ -1,5 +1,6 @@
 ﻿// monitoring-hub/frontend/src/pages/AccountOnboarding.jsx
 import { useState, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import MetricSelector from "../components/MetricSelector";
 import { getMetricCatalog, testAzureCredentials, testGcpCredentials, testRole } from "../api/api";
 import "./AccountOnboarding.css";
@@ -487,6 +488,8 @@ export default function AccountOnboarding() {
               <polyline points="20 6 9 17 4 12"/>
             </svg>
             <strong>{success}</strong> onboarded successfully!
+            {" "}Next: <Link to="/environments" className="ob-success-link">classify its resources as prod, uat or dev</Link>.
+            They appear there after the first discovery run (a few minutes); anything unclassified is alerted at prod strength until then.
             <button onClick={() => setSuccess(null)} aria-label="Dismiss"><XIcon size={13} /></button>
           </div>
         )}

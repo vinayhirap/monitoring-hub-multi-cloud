@@ -10,8 +10,11 @@ Resolution order, first match wins:
     1. manual   a user-saved override (resource_env_overrides)
     2. tag      Environment / Env / Stage ... tag with a recognised value
     3. name     a recognised token in the resource NAME, then its ID
-    4. account  the account's admin-set default (aws_accounts.default_env)
-    5. unknown  nothing matched
+    4. related  the environment of the resource it is ATTACHED TO (an EBS volume
+                follows its EC2 instance), only when that parent's own
+                environment rests on a manual choice, a tag or a name
+    5. account  the account's admin-set default (aws_accounts.default_env)
+    6. unknown  nothing matched
 
 Canonical results: "prod", "uat" (uat / pre-prod / stage / staging / qa),
 "dev" (dev / development / test / sandbox), "unknown", and "ignore" (manual
@@ -43,7 +46,10 @@ PROD, UAT, DEV, UNKNOWN, IGNORE = "prod", "uat", "dev", "unknown", "ignore"
 
 TIERS = (PROD, UAT, DEV)
 MANUAL_CHOICES = (PROD, UAT, DEV, IGNORE)          # what a user may save
-SOURCES = ("manual", "tag", "name", "account", "unknown")
+SOURCES = ("manual", "tag", "name", "related", "account", "unknown")
+# A parent only lends its environment when that rests on evidence about the parent itself.
+# Account defaults, unknowns and other inherited values are never passed down the chain.
+RELATED_PARENT_SOURCES = ("manual", "tag", "name")
 
 Resolution = namedtuple("Resolution", "env source reason")
 
@@ -168,8 +174,22 @@ def _from_name(name, resource_id):
     return None
 
 
+def _from_related(related):
+    """related: iterable of (Resolution, label) for the resources this one is attached to."""
+    usable = [(r, label) for r, label in (related or [])
+              if r.env in TIERS and r.source in RELATED_PARENT_SOURCES]
+    if not usable:
+        return None
+    envs = sorted({r.env for r, _ in usable})
+    if len(envs) > 1:
+        detail = ", ".join(f"{label}={r.env}" for r, label in usable)
+        return Resolution(UNKNOWN, "unknown", _clip(f"attached resources disagree: {detail}"))
+    r, label = usable[0]
+    return Resolution(r.env, "related", _clip(f"attached to {label} ({r.env}, by {r.source})"))
+
+
 def resolve_environment(*, override=None, tags=None, name=None, resource_id=None,
-                        account_default=None):
+                        account_default=None, related=None):
     """Resolve one resource. See the module docstring for the order."""
     if override:
         o = str(override).strip().lower()
@@ -180,12 +200,19 @@ def resolve_environment(*, override=None, tags=None, name=None, resource_id=None
     if hit:
         return hit
 
-    # A name that contradicts itself comes back as UNKNOWN and is returned as
-    # is: it must not fall through to the account default and pass for a
-    # confident answer.
+    # A name that contradicts itself comes back as UNKNOWN. It may still be settled by the
+    # resource it is attached to (a person or a tag decided that), but it must never fall
+    # through to the account default and pass for a confident answer.
     hit = _from_name(name, resource_id)
-    if hit:
+    if hit and hit.env != UNKNOWN:
         return hit
+    name_conflict = hit
+
+    rel = _from_related(related)
+    if rel:
+        return rel
+    if name_conflict:
+        return name_conflict
 
     if account_default:
         d = str(account_default).strip().lower()

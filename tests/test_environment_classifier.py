@@ -247,3 +247,68 @@ def test_flag_default_off_and_on(monkeypatch):
     assert ec.flag_enabled() is True
     monkeypatch.setenv("ENV_AWARE_CLASSIFICATION", "no")
     assert ec.flag_enabled() is False
+
+
+# -- related (attached-to) inheritance -------------------------------------------
+
+R = ec.Resolution
+
+
+def _parent(env, source="manual", label="ec2 i-0abc"):
+    return (R(env, source, "x"), label)
+
+
+def test_unnamed_child_follows_its_parent():
+    r = resolve(name="data-vol", related=[_parent("prod", "name", "ec2 HCS-PROD-MD-01")])
+    assert (r.env, r.source) == ("prod", "related")
+    assert "ec2 HCS-PROD-MD-01" in r.reason and "by name" in r.reason
+
+
+def test_childs_own_tag_and_name_beat_the_parent():
+    assert resolve(tags={"Environment": "dev"}, related=[_parent("prod")]).env == "dev"
+    r = resolve(name="uat-vol", related=[_parent("prod")])
+    assert (r.env, r.source) == ("uat", "name")
+
+
+def test_manual_override_beats_the_parent():
+    assert resolve(override="dev", related=[_parent("prod")]).env == "dev"
+
+
+def test_parent_beats_account_default():
+    r = resolve(name="vol", account_default="prod", related=[_parent("dev", "tag")])
+    assert (r.env, r.source) == ("dev", "related")
+
+
+def test_conflicting_child_name_is_settled_by_a_trusted_parent():
+    r = resolve(name="TEST-U4RAD-PROD-ORTHANC", related=[_parent("dev", "manual")])
+    assert (r.env, r.source) == ("dev", "related")
+
+
+def test_conflicting_child_name_without_a_parent_stays_unknown_even_with_account_default():
+    r = resolve(name="TEST-U4RAD-PROD-ORTHANC", account_default="prod")
+    assert (r.env, r.source) == ("unknown", "unknown")
+    r = resolve(name="TEST-U4RAD-PROD-ORTHANC", account_default="prod",
+                related=[_parent("prod", "account"), _parent("unknown", "unknown")])
+    assert (r.env, r.source) == ("unknown", "unknown")
+
+
+def test_only_evidence_based_parents_are_inherited_from():
+    for src in ("account", "unknown", "related"):
+        r = resolve(name="vol", related=[_parent("prod", src)])
+        assert (r.env, r.source) == ("unknown", "unknown"), src
+    assert resolve(name="vol", related=[_parent("ignore", "manual")]).env == "unknown"
+
+
+def test_parents_that_disagree_give_unknown_not_a_guess():
+    r = resolve(name="vol", account_default="prod",
+                related=[_parent("prod", "tag", "ec2 a"), _parent("dev", "tag", "ec2 b")])
+    assert (r.env, r.source) == ("unknown", "unknown") and "disagree" in r.reason
+
+
+def test_two_parents_that_agree_inherit():
+    r = resolve(name="vol", related=[_parent("uat", "tag"), _parent("uat", "name")])
+    assert (r.env, r.source) == ("uat", "related")
+
+
+def test_related_is_a_known_source():
+    assert "related" in ec.SOURCES
