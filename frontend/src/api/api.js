@@ -335,3 +335,15 @@ export const getThresholdCoverage = (accountId) =>
   apiFetch(`/api/settings/thresholds/coverage?account_id=${accountId}`);
 export const applyRecommendedThresholds = (accountId, dryRun = true) =>
   apiFetch(`/api/settings/thresholds/apply-defaults?account_id=${accountId}&dry_run=${dryRun}`, { method: "POST" });
+
+// ── Environment classification (phase 4a) ─────────────────────────────────
+export const getEnvironmentSummary = () => apiFetch("/api/environments/summary");
+export const getEnvironmentResources = (params = {}) => {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== "" && v != null) qs.set(k, v); });
+  return apiFetch(`/api/environments/resources?${qs.toString()}`);
+};
+export const classifyResources = (resource_ids, env) =>
+  apiFetch("/api/environments/classify", { method: "POST", body: JSON.stringify({ resource_ids, env }) });
+export const setAccountDefaultEnv = (accountId, env) =>
+  apiFetch(`/api/environments/accounts/${accountId}/default`, { method: "PUT", body: JSON.stringify({ env }) });

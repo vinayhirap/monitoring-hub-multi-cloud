@@ -1,0 +1,331 @@
+# app/api/environments.py
+"""
+Environment classification API (phase 4a).
+
+  GET  /api/environments/summary                 counts per env / source, per account
+  GET  /api/environments/resources               the Needs-classification queue, or every resource
+  POST /api/environments/classify                mark one or many resources prod|uat|dev|ignore|clear
+  PUT  /api/environments/accounts/{id}/default   set / clear an account's default environment
+
+Permissions: environments.view (read), environments.manage (write), migration
+083. Every row is additionally checked against the caller's account scope
+(get_accessible_account_ids): a write that names even ONE resource outside that
+scope is rejected as a whole, and reads only ever return in-scope accounts.
+Changing an account default affects every unclassified resource in it, so it
+needs the same scope check as a single resource.
+
+Every change is written to audit_logs (app/audit.py): who, what, how many, which
+accounts, and the before/after environment counts.
+
+"ignore" means "stop asking me about this resource". It does NOT suppress alerts:
+an ignored resource is prod-like for alerting (environment_classifier.is_prod_like),
+exactly like an unknown one. Nothing in this module can silence a resource.
+"""
+import logging
+from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+
+from app import environment_classifier as ec
+from app.audit import write_audit
+from app.auth.authorization import get_accessible_account_ids
+from app.auth.permissions import require_permission
+from app.collector.env_sync import (NON_ALERTABLE_TYPES, STALE_RESOURCE_HOURS,
+                                    sync_resource_environments)
+from app.db import get_connection
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/environments", tags=["Environments"])
+
+MAX_BULK = 500
+AUDIT_ID_SAMPLE = 100
+_CHOICES = ec.MANUAL_CHOICES + ("clear",)
+_QUEUE_WHERE = "(r.env_source = 'unknown' OR r.env_source IS NULL)"
+_LIVE_WHERE = (
+    "(r.instance_state IS NULL OR r.instance_state != 'terminated') "
+    "AND (r.last_seen_at IS NULL OR r.last_seen_at >= DATE_SUB(NOW(), INTERVAL %s HOUR)) "
+    "AND r.resource_type NOT IN ({types})"
+).format(types=", ".join(["%s"] * len(NON_ALERTABLE_TYPES)))
+
+
+def _live_params():
+    return [STALE_RESOURCE_HOURS, *NON_ALERTABLE_TYPES]
+
+
+def _scope(current_user):
+    """-> (sql_fragment, params). Empty set of accounts matches nothing."""
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is None:
+        return "", []
+    if not accessible:
+        return " AND 1 = 0", []
+    ids = sorted(accessible)
+    return " AND r.aws_account_id IN (" + ", ".join(["%s"] * len(ids)) + ")", ids
+
+
+def _require_account_access(current_user, account_ids):
+    accessible = get_accessible_account_ids(current_user)
+    if accessible is None:
+        return
+    denied = sorted(set(account_ids) - set(accessible))
+    if denied:
+        raise HTTPException(status_code=403, detail="You do not have access to one or more of these accounts")
+
+
+def _iso(v):
+    return v.isoformat() + "Z" if isinstance(v, datetime) else v
+
+
+@router.get("/summary")
+def summary(current_user: dict = Depends(require_permission("environments.view"))):
+    scope_sql, scope_params = _scope(current_user)
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(f"""
+                SELECT aa.id AS account_id, aa.account_name, aa.default_env,
+                       COUNT(r.id) AS total,
+                       SUM(CASE WHEN {_QUEUE_WHERE} THEN 1 ELSE 0 END) AS needs_classification
+                FROM aws_accounts aa
+                LEFT JOIN resources r ON r.aws_account_id = aa.id AND {_LIVE_WHERE}{scope_sql}
+                WHERE aa.status = 'active'
+                GROUP BY aa.id, aa.account_name, aa.default_env
+                ORDER BY aa.account_name
+            """, _live_params() + scope_params)
+            accounts = cur.fetchall()
+            cur.execute(f"""
+                SELECT COALESCE(r.env_resolved, 'unclassified') AS env,
+                       COALESCE(r.env_source, 'none')           AS source,
+                       COUNT(*) AS n
+                FROM resources r
+                JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
+                WHERE {_LIVE_WHERE}{scope_sql}
+                GROUP BY env, source
+            """, _live_params() + scope_params)
+            breakdown = cur.fetchall()
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+    allowed = None
+    if scope_sql:
+        allowed = set(scope_params)
+    accounts = [a for a in accounts if allowed is None or a["account_id"] in allowed]
+    by_env, by_source = {}, {}
+    for b in breakdown:
+        by_env[b["env"]] = by_env.get(b["env"], 0) + int(b["n"])
+        by_source[b["source"]] = by_source.get(b["source"], 0) + int(b["n"])
+    for a in accounts:
+        a["total"] = int(a["total"] or 0)
+        a["needs_classification"] = int(a["needs_classification"] or 0)
+    return {
+        "needs_classification": sum(a["needs_classification"] for a in accounts),
+        "by_env": by_env,
+        "by_source": by_source,
+        "accounts": accounts,
+    }
+
+
+@router.get("/resources")
+def list_resources(
+    view: str = Query("needs_classification", pattern="^(needs_classification|all)$"),
+    env: Optional[str] = Query(None),
+    source: Optional[str] = Query(None),
+    account_id: Optional[int] = Query(None),
+    resource_type: Optional[str] = Query(None),
+    q: Optional[str] = Query(None, max_length=100),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    current_user: dict = Depends(require_permission("environments.view")),
+):
+    scope_sql, scope_params = _scope(current_user)
+    where = _LIVE_WHERE + scope_sql
+    params = _live_params() + scope_params
+    if view == "needs_classification":
+        where += f" AND {_QUEUE_WHERE}"
+    if env:
+        if env == "unclassified":
+            where += " AND r.env_resolved IS NULL"
+        elif env in (*ec.TIERS, ec.UNKNOWN, ec.IGNORE):
+            where += " AND r.env_resolved = %s"; params.append(env)
+        else:
+            raise HTTPException(status_code=400, detail="env must be prod, uat, dev, unknown, ignore or unclassified")
+    if source:
+        if source not in ec.SOURCES:
+            raise HTTPException(status_code=400, detail="source must be manual, tag, name, account or unknown")
+        where += " AND r.env_source = %s"; params.append(source)
+    if account_id is not None:
+        where += " AND r.aws_account_id = %s"; params.append(account_id)
+    if resource_type:
+        where += " AND r.resource_type = %s"; params.append(resource_type)
+    if q:
+        like = f"%{q}%"
+        where += " AND (r.name LIKE %s OR r.resource_id LIKE %s)"; params += [like, like]
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(f"""SELECT COUNT(*) AS n FROM resources r
+                            JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
+                            WHERE {where}""", params)
+            total = int(cur.fetchone()["n"])
+            cur.execute(f"""
+                SELECT r.id, r.aws_account_id AS account_id, aa.account_name, r.resource_type,
+                       r.resource_id, r.name, r.region,
+                       r.env_resolved AS env, r.env_source AS source, r.env_reason AS reason,
+                       r.env_override AS override, r.env_override_by AS override_by,
+                       r.env_override_at AS override_at
+                FROM resources r
+                JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
+                WHERE {where}
+                ORDER BY aa.account_name, r.resource_type, COALESCE(r.name, r.resource_id)
+                LIMIT %s OFFSET %s
+            """, params + [limit, offset])
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+    for r in rows:
+        r["override_at"] = _iso(r["override_at"])
+    return {"items": rows, "total": total, "limit": limit, "offset": offset}
+
+
+def _env_counts(cur, pks):
+    cur.execute("SELECT COALESCE(env_resolved, 'unclassified') AS env, COUNT(*) AS n "
+                "FROM resources WHERE id IN (" + ", ".join(["%s"] * len(pks)) + ") GROUP BY env", list(pks))
+    return {r["env"]: int(r["n"]) for r in cur.fetchall()}
+
+
+@router.post("/classify")
+def classify(request: Request, payload: dict = Body(...),
+             current_user: dict = Depends(require_permission("environments.manage"))):
+    env = str(payload.get("env", "")).strip().lower()
+    if env not in _CHOICES:
+        raise HTTPException(status_code=400, detail="env must be one of: prod, uat, dev, ignore, clear")
+    raw_ids = payload.get("resource_ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(status_code=400, detail="resource_ids must be a non-empty list")
+    if len(raw_ids) > MAX_BULK:
+        raise HTTPException(status_code=400, detail=f"At most {MAX_BULK} resources per request")
+    try:
+        if any(isinstance(i, bool) for i in raw_ids):
+            raise ValueError
+        pks = sorted({int(i) for i in raw_ids})
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="resource_ids must be integers")
+
+    marks = ", ".join(["%s"] * len(pks))
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(f"SELECT id, aws_account_id FROM resources WHERE id IN ({marks})", pks)
+            found = cur.fetchall()
+            if len(found) != len(pks):
+                raise HTTPException(status_code=404, detail="One or more resources do not exist")
+            accounts = sorted({r["aws_account_id"] for r in found})
+            _require_account_access(current_user, accounts)
+
+            before = _env_counts(cur, pks)
+            if env == "clear":
+                cur.execute(f"UPDATE resources SET env_override = NULL, env_override_by = NULL, "
+                            f"env_override_at = NULL WHERE id IN ({marks})", pks)
+            else:
+                cur.execute(f"UPDATE resources SET env_override = %s, env_override_by = %s, "
+                            f"env_override_at = UTC_TIMESTAMP() WHERE id IN ({marks})",
+                            [env, current_user["username"], *pks])
+            conn.commit()
+        except HTTPException:
+            raise
+        except Exception:
+            conn.rollback()
+            logger.exception("environment classify failed")
+            raise HTTPException(status_code=500, detail="Could not save the classification")
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+    # Re-resolve just these rows so env_resolved/env_source reflect the change now.
+    report = sync_resource_environments(resource_pks=pks)
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            after = _env_counts(cur, pks)
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+    write_audit(
+        current_user["username"],
+        "Environment classification changed",
+        role=str(current_user.get("role", "")).upper(),
+        payload={
+            "detail": f"{len(pks)} resource(s) set to '{env}'",
+            "env": env, "count": len(pks), "account_ids": accounts,
+            "resource_ids": pks[:AUDIT_ID_SAMPLE],
+            "resource_ids_truncated": len(pks) > AUDIT_ID_SAMPLE,
+            "before": before, "after": after,
+        },
+        request=request,
+    )
+    return {"status": "ok", "updated": len(pks), "env": env, "after": after,
+            "reclassified": report["applied"]}
+
+
+@router.put("/accounts/{account_id}/default")
+def set_account_default(account_id: int, request: Request, payload: dict = Body(...),
+                        current_user: dict = Depends(require_permission("environments.manage"))):
+    raw = payload.get("env")
+    if raw is None or str(raw).strip().lower() in ("", "none", "clear"):
+        new_default = None
+    else:
+        new_default = str(raw).strip().lower()
+        if new_default not in ec.TIERS:
+            raise HTTPException(status_code=400, detail="env must be prod, uat, dev or null")
+    _require_account_access(current_user, [account_id])
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute("SELECT id, account_name, default_env FROM aws_accounts WHERE id = %s", (account_id,))
+            acc = cur.fetchone()
+            if not acc:
+                raise HTTPException(status_code=404, detail="Account not found")
+            cur.execute("UPDATE aws_accounts SET default_env = %s WHERE id = %s", (new_default, account_id))
+            conn.commit()
+        except HTTPException:
+            raise
+        except Exception:
+            conn.rollback()
+            logger.exception("set account default env failed")
+            raise HTTPException(status_code=500, detail="Could not save the account default")
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+    report = sync_resource_environments(account_id=account_id)
+    write_audit(
+        current_user["username"],
+        "Account default environment changed",
+        role=str(current_user.get("role", "")).upper(),
+        payload={
+            "detail": f"{acc['account_name']}: default environment "
+                      f"{acc['default_env'] or 'none'} -> {new_default or 'none'}",
+            "account_id": account_id, "before": acc["default_env"], "after": new_default,
+            "reclassified": report["applied"], "by_env": report["by_env"],
+        },
+        request=request,
+    )
+    return {"status": "ok", "account_id": account_id, "default_env": new_default,
+            "reclassified": report["applied"]}

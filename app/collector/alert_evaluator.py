@@ -27,6 +27,7 @@ import json
 import logging
 import math
 from app.db import get_connection
+from app import environment_classifier as _envc
 from app.ws.publisher import publish_alert, publish_alert_resolved
 from app.alert_rules import (
     SYSTEM_METRICS, cadence_class_sql, eval_window_sql, hard_expiry_hours_sql,
@@ -106,6 +107,27 @@ def _environment_from_tags(raw_tags):
     env = tags.get("environment", tags.get("Environment", "prod"))
     env = str(env).strip().lower() if env is not None else "prod"
     return (env or "prod")[:ENVIRONMENT_MAX_LEN]
+
+
+def _classified_environment(row):
+    """Environment label for one reading when ENV_AWARE_CLASSIFICATION is on (phase 4a).
+
+    Uses the classification persisted on the resource (resources.env_resolved: manual
+    override > tag > name > account default, see app/environment_classifier.py). If the
+    resource has not been classified yet it is resolved here from its tags and ID, so the
+    first evaluation after enabling the flag never falls back to the old "default to prod".
+
+    Returns prod | uat | dev | unknown. "ignore" (a user dismissed the resource from the
+    Needs-classification queue) is reported as "unknown": still prod-like for severity, it
+    only means "stop asking". Nothing here can suppress an alert.
+    """
+    env = row.get("env_resolved")
+    if not env:
+        env = _envc.resolve_environment(
+            tags=row.get("tags"), resource_id=row.get("aws_resource_id")).env
+    if env == _envc.IGNORE:
+        env = _envc.UNKNOWN
+    return env[:ENVIRONMENT_MAX_LEN]
 
 
 def _select_threshold_rows(rows):
@@ -615,6 +637,11 @@ def _evaluate_alerts_body(conn, cursor, p1_only=False):
 
     silenced_map = _silenced_now(cursor)
 
+    # Phase 4a: only when the flag is on do we read the classification columns (migration 083),
+    # so a deploy that races the migration -- or a box that never enables the flag -- runs the
+    # exact query it always did.
+    env_cols = ", r.env_resolved, r.env_source" if _envc.flag_enabled() else ""
+
     # ── Latest metric per resource+metric ─────────────────────
     # `metrics` is a last-value cache with UNIQUE (resource_id, metric_name)
     # (migration 004), so no "latest per pair" self-join is needed.
@@ -626,7 +653,7 @@ def _evaluate_alerts_body(conn, cursor, p1_only=False):
             r.resource_id          AS aws_resource_id,
             r.resource_type,
             r.aws_account_id,
-            r.tags,
+            r.tags{env_cols},
             r.region,
             aa.account_name,
             aa.default_region,
@@ -733,7 +760,9 @@ def _evaluate_row(cursor, row, silenced_map, stats):
     # 5-minute "cycles" of the SAME reading would be meaningless.
     required_cycles = _required_cycles(row["evaluation_period"]) if cadence == "core" else 1
 
-    environment = _environment_from_tags(row.get("tags"))
+    env_aware = _envc.flag_enabled()
+    environment = (_classified_environment(row) if env_aware
+                   else _environment_from_tags(row.get("tags")))
 
     warning_value, critical_value = row["warning_value"], row["critical_value"]
     comparison = row["comparison"]
@@ -857,6 +886,9 @@ def _evaluate_row(cursor, row, silenced_map, stats):
     # ── Breaching ───────────────────────────────────────────
     if is_critical:
         severity = "CRITICAL"
+    elif env_aware:
+        # prod, unknown (and ignore) -> WARNING; uat / dev -> INFO. Unknown is never weaker than prod.
+        severity = _envc.severity_for(environment, False)
     elif environment in ("prod", "production"):
         severity = "WARNING"
     else:

@@ -27,6 +27,7 @@ const Topology = lazyWithRetry(() => import("./pages/Topology"));
 const Incidents = lazyWithRetry(() => import("./pages/Incidents"));
 const OpEvents = lazyWithRetry(() => import("./pages/OpEvents"));
 const EscalationPolicies = lazyWithRetry(() => import("./pages/EscalationPolicies"));
+const Environments = lazyWithRetry(() => import("./pages/Environments"));
 const SyntheticChecks = lazyWithRetry(() => import("./pages/SyntheticChecks"));
 const Slos = lazyWithRetry(() => import("./pages/Slos"));
 const SecurityFindings = lazyWithRetry(() => import("./pages/SecurityFindings"));
@@ -82,6 +83,7 @@ const ROUTE_ACCESS = {
   "access":              { roles: ["admin","editor","viewer"], perm: "users.view" },
   "compliance":          { roles: ["admin","editor","viewer"] },
   "escalation-policies": { roles: ["admin","editor","viewer"], perm: "escalation.view" },
+  "environments":        { roles: ["admin","editor","viewer"], perm: "environments.view" },
   "synthetic-checks":    { roles: ["admin","editor","viewer"], perm: "synthetic.view" },
   "slos":                { roles: ["admin","editor","viewer"], perm: "slo.view" },
   "security-findings":   { roles: ["admin","editor","viewer"], perm: "security.view" },
@@ -129,6 +131,7 @@ function AppRoutes() {
         <Route path="compliance"                element={<RequireAccess path="compliance"><Compliance /></RequireAccess>} />
         <Route path="op-events"                 element={<OpEvents />} />
         <Route path="escalation-policies"       element={<RequireAccess path="escalation-policies"><EscalationPolicies /></RequireAccess>} />
+        <Route path="environments"              element={<RequireAccess path="environments"><Environments /></RequireAccess>} />
         <Route path="synthetic-checks"          element={<RequireAccess path="synthetic-checks"><SyntheticChecks /></RequireAccess>} />
         <Route path="slos"                      element={<RequireAccess path="slos"><Slos /></RequireAccess>} />
         <Route path="security-findings"         element={<RequireAccess path="security-findings"><SecurityFindings /></RequireAccess>} />

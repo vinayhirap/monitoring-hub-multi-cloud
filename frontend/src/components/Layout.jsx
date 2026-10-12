@@ -32,6 +32,7 @@ const NAV_ITEMS = [
   { group: "Overview", to: "/overview", label: "Overview", icon: OverviewIcon, roles: ["admin","editor","viewer"] },
   // Infrastructure (the per-account/region tree is injected live from the accounts index)
   { group: "Infrastructure", to: "/onboarding", label: "Account Onboarding", icon: OnboardIcon, roles: ["admin","editor"] },
+  { group: "Infrastructure", to: "/environments", label: "Environments", icon: EnvironmentsIcon, roles: ["admin","editor","viewer"], perm: "environments.view" },
   // Monitoring
   { group: "Monitoring", to: "/slos",                label: "SLOs",                icon: SloIcon,         roles: ["admin","editor","viewer"], perm: "slo.view" },
   { group: "Monitoring", to: "/synthetic-checks",    label: "Synthetic Checks",    icon: SyntheticIcon,   roles: ["admin","editor","viewer"], perm: "synthetic.view" },
@@ -304,6 +305,7 @@ function SettingsIcon()    { return <svg width="16" height="16" viewBox="0 0 24 
 // phases 5/9) -- these pages existed with working routes but no nav
 // entry at all, so they were only reachable by typing the URL directly.
 function OpEventsIcon()    { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>; }
+function EnvironmentsIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="5" rx="1"/><rect x="3" y="11" width="18" height="5" rx="1"/><line x1="7" y1="19" x2="17" y2="19"/></svg>; }
 function EscalationIcon()  { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>; }
 function SyntheticIcon()   { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>; }
 function SloIcon()         { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="3" x2="12" y2="21"/><path d="M5 8 2 15a3 3 0 0 0 6 0Z"/><path d="M19 8l-3 7a3 3 0 0 0 6 0Z"/><path d="M7 8h10"/><path d="M12 3 7 8"/><path d="M12 3l5 5"/></svg>; }

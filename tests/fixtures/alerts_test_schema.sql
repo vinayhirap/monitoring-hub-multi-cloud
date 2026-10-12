@@ -98,6 +98,7 @@ CREATE TABLE `aws_accounts` (
   `onboarded_by` bigint DEFAULT NULL,
   `last_synced_at` timestamp NULL DEFAULT NULL,
   `last_discovered_at` timestamp NULL DEFAULT NULL,
+  `default_env` varchar(10) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_aws_accounts_last_discovered` (`last_discovered_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -119,6 +120,12 @@ CREATE TABLE `resources` (
   `instance_state` varchar(20) DEFAULT 'unknown',
   `monitoring_tier` enum('critical','standard','low') NOT NULL DEFAULT 'standard',
   `region` varchar(50) DEFAULT NULL,
+  `env_override` varchar(10) DEFAULT NULL,
+  `env_override_by` varchar(100) DEFAULT NULL,
+  `env_override_at` datetime DEFAULT NULL,
+  `env_resolved` varchar(10) DEFAULT NULL,
+  `env_source` varchar(10) DEFAULT NULL,
+  `env_reason` varchar(200) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uniq_resource_identity` (`aws_account_id`,`resource_type`,`resource_id`),
   KEY `idx_resources_tier` (`aws_account_id`,`monitoring_tier`,`instance_state`)

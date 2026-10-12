@@ -423,6 +423,11 @@ def _low_tier_loop(leader_event, last_low):
 def run_discovery_once():
     from app.collector.discovery.runner import run_discovery
     run_discovery()
+    # Phase 4a: (re)classify every resource's environment right after discovery, so changed
+    # tags/names are picked up and new resources reach the Needs-classification queue. Never
+    # raises; a no-op until migration 083 is applied. Labels only -- it changes no alerting.
+    from app.collector.env_sync import sync_after_discovery
+    sync_after_discovery()
 
 
 def _load_last_run_times() -> dict:

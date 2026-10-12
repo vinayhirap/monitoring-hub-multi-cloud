@@ -28,6 +28,7 @@ from app.api.metric_catalog import router as metric_catalog_router
 from app.api.topology       import router as topology_router
 from app.api.op_events      import router as op_events_router
 from app.api.escalation     import router as escalation_router
+from app.api.environments    import router as environments_router
 from app.api.incidents      import router as incidents_router
 from app.api.reports        import router as reports_router
 from app.api.nlquery        import router as nlquery_router
@@ -394,6 +395,7 @@ app.include_router(metric_catalog_router, dependencies=_auth_dep)
 app.include_router(topology_router,       dependencies=_auth_dep)
 app.include_router(op_events_router,      dependencies=_auth_dep)
 app.include_router(escalation_router,     dependencies=_auth_dep)
+app.include_router(environments_router,    dependencies=_auth_dep)   # permissions environments.view / environments.manage
 app.include_router(incidents_router,      dependencies=_auth_dep)
 app.include_router(reports_router,        dependencies=_auth_dep)
 app.include_router(nlquery_router,        prefix="/api", dependencies=_auth_dep)
