@@ -4,7 +4,7 @@
 // The labels are GENERATED from the seed metric catalogues (app/aws|azure|gcp/metric_catalog_data.py) by
 // scripts/generate_metric_labels.py -> metricLabels.generated.js, so a metric added to a catalogue gets a
 // proper name (or a failing test) instead of a raw key reaching the UI. Do not hand-type labels here.
-import { GENERATED_METRIC_LABELS, GENERATED_PERCENT_METRICS, GENERATED_INTEGER_METRICS } from "./metricLabels.generated.js";
+import { GENERATED_METRIC_LABELS, GENERATED_PERCENT_METRICS, GENERATED_INTEGER_METRICS, GENERATED_APP_UNITS } from "./metricLabels.generated.js";
 
 const PERCENT = new Set(GENERATED_PERCENT_METRICS);
 // COUNT metrics: a count is shown as a whole number, even where an older stored limit still carries decimals (4361.91).
@@ -51,7 +51,13 @@ export function metricUnit(name) {
   return PERCENT.has(n) || MOUNT.test(n) ? "%" : "";
 }
 
-/** Compact, unit-aware number: 95.13 -> "95.13%" for CPU, 12100 -> "12.1K" for ops. */
+// Metrics the app generates itself whose value is in a named unit (e.g. TLS certificate expiry, in days): "12 days", "1 day".
+function appUnitSuffix(name, n) {
+  const unit = GENERATED_APP_UNITS[String(name || "").toLowerCase()];
+  return unit ? ` ${Math.abs(n) === 1 ? unit : unit + "s"}` : "";
+}
+
+/** Compact, unit-aware number: 95.13 -> "95.13%" for CPU, 12100 -> "12.1K" for ops, 12 -> "12 days" for cert expiry. */
 export function formatMetricValue(name, v) {
   if (v == null || v === "") return "—";
   let n = parseFloat(v);
@@ -65,5 +71,5 @@ export function formatMetricValue(name, v) {
   else if (abs >= 1e4)  out = (n / 1e3).toFixed(1) + "K";
   else if (abs !== 0 && abs < 0.1) out = n.toPrecision(2);
   else out = n % 1 === 0 ? String(n) : n.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-  return out + metricUnit(name);
+  return out + metricUnit(name) + appUnitSuffix(name, n);
 }

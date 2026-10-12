@@ -321,6 +321,7 @@ export const GENERATED_METRIC_LABELS = {
   "successserverlatency": "Success Server Latency",
   "swapusage": "Swap Usage",
   "syncount": "SYN Count",
+  "synthetic_cert_expiry": "TLS Certificate Expiry",
   "synthetic_uptime": "Synthetic Check Availability",
   "systemerrors": "System Errors",
   "targetconnectionerrorcount": "Target Connection Error Count",
@@ -615,3 +616,9 @@ export const GENERATED_INTEGER_METRICS = [
   "writeprovisionedthroughputexceeded",
   "writethrottleevents",
 ];
+
+// Metrics the app generates itself whose value is in a named unit (singular noun, pluralised when shown).
+// Source: APP_UNITS in app/metric_labels.py.
+export const GENERATED_APP_UNITS = {
+  "synthetic_cert_expiry": "day",
+};

@@ -30,6 +30,13 @@ LOWER_WORDS = {"per", "of", "to", "and", "for", "by", "from"}
 WORD_MAP = {"ops": "Operations", "sec": "Second", "mem": "Memory", "avg": "Average", "num": "Number",
             "conns": "Connections", "conn": "Connection", "msgs": "Messages", "req": "Requests"}
 
+# Units for metrics the APP generates itself (in no catalogue) whose value is neither a percentage nor a count.
+# stored name -> unit noun, singular ("12 days", "1 day"). The generator copies this into the frontend
+# (GENERATED_APP_UNITS) and into UNITS, so the Alerts page, reports and RCA all say the same thing.
+APP_UNITS = {
+    "synthetic_cert_expiry": "day",      # TLS certificate days left (synthetic HTTPS checks)
+}
+
 _TOKEN = r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+[0-9]*|[0-9]+[A-Z]*(?![a-z])|[0-9]+[a-z]*"
 
 
@@ -110,6 +117,20 @@ def metric_unit(name):
     return "%" if n in percent or _MOUNT.match(n) else ""
 
 
+def app_unit_word(name):
+    """'Days' for an app-defined unit (catalogue-style plural word, as in UNITS), '' when the metric has none."""
+    unit = APP_UNITS.get(str(name or "").lower())
+    return f"{unit}s".capitalize() if unit else ""
+
+
+def _app_unit_suffix(name, n):
+    """' days' / ' day' (singular for exactly 1), '' for metrics without an app-defined unit."""
+    unit = APP_UNITS.get(str(name or "").lower())
+    if not unit:
+        return ""
+    return f" {unit if abs(n) == 1 else unit + 's'}"
+
+
 def format_metric_value(name, v, grouped=False):
     """Compact, unit-aware number (same rules as the UI's formatMetricValue).
 
@@ -138,4 +159,4 @@ def format_metric_value(name, v, grouped=False):
         out = f"{int(n):,}" if grouped else str(int(n))
     else:
         out = (f"{n:,.2f}" if grouped else f"{n:.2f}").rstrip("0").rstrip(".")
-    return out + metric_unit(name)
+    return out + metric_unit(name) + _app_unit_suffix(name, n)
