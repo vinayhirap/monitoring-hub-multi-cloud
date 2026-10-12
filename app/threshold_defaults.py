@@ -37,7 +37,7 @@ DEFAULT_THRESHOLDS = {
     # 2026-10-07 (Phase 3 WAF): BlockedRequests was a static (1, 5) -- any 6 blocked requests in a period was CRITICAL, which on
     # an internet-facing ACL is routine scanner noise. Now the placeholder, i.e. ANOMALY-ONLY (see PLACEHOLDER_THRESHOLD):
     # a sustained, confident spike vs this ACL's own baseline, never above WARNING, above the ALERT_MIN_ABSOLUTE floor.
-    # db/migrations/083_waf_blocked_requests_anomaly_only.sql moves rows still at the old untouched default.
+    # db/migrations/084_waf_blocked_requests_anomaly_only.sql moves rows still at the old untouched default.
     'BlockedRequests': (1000000, 5000000, '>'),
     'BlockRatio': (1000000, 5000000, '>'),                # derived %, anomaly-only; floor in ALERT_MIN_ABSOLUTE
     'CaptchaRequests': (1000000, 5000000, '>'),

@@ -1,4 +1,4 @@
--- 083_waf_blocked_requests_anomaly_only.sql
+-- 084_waf_blocked_requests_anomaly_only.sql
 --
 -- Phase 3 (AWS WAFv2). BlockedRequests used to default to a STATIC warning 1 / critical 5 ('>'): six blocked requests in a
 -- period was a CRITICAL alert, which on an internet-facing WebACL is routine scanner noise. The default is now the
