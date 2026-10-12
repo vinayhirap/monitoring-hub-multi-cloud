@@ -9,11 +9,11 @@
 // Built following the exact same shape as EscalationPolicies.jsx
 // (create-form-above-table CRUD) so this reads as "another config
 // screen in this app" rather than a bolted-on feature.
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getSyntheticChecks, createSyntheticCheck, updateSyntheticCheck, deleteSyntheticCheck, getAccounts,
 } from "../api/api";
-import { PlusIcon, TrashIcon, AlertOctagonIcon } from "../components/icons";
+import { PlusIcon, TrashIcon, EditIcon, AlertOctagonIcon } from "../components/icons";
 import "./SyntheticChecks.css";
 
 const EMPTY_FORM = {
@@ -51,9 +51,132 @@ function CertCell({ c }) {
   return <span className={certTone(d)} title={tip}>{d < 0 ? "expired" : `${d} day${d === 1 ? "" : "s"}`}</span>;
 }
 
-function StatusBadge({ status }) {
+// A failed probe does not flip the status until consecutive_failure_threshold probes in a row have failed
+// (app/collector/synthetic.py), so in between the stored status is still Up/Unknown. Show that as "Failing n/N".
+function StatusBadge({ status, failures, threshold, enabled = true }) {
+  const n = Number(failures) || 0, t = Number(threshold) || 0;
+  if (enabled && status !== "down" && n > 0 && t > 0) {
+    const was = status === "up" ? "Up" : "Unknown";
+    return (
+      <span className="syn-status syn-status-failing"
+            title={`${n} failed probe${n === 1 ? "" : "s"} in a row. Marked Down after ${t} in a row; a successful probe resets the count. Previous state: ${was}.`}>
+        ● Failing {Math.min(n, t)}/{t}
+      </span>
+    );
+  }
   const label = status === "up" ? "Up" : status === "down" ? "Down" : "Unknown";
   return <span className={`syn-status syn-status-${status || "unknown"}`}>● {label}</span>;
+}
+
+// apiFetch puts the backend's own `detail` on err.detail; err.message is only "API /path -> 400".
+const errText = (err) => err?.detail || err?.message || "Request failed";
+
+const intOrNull = (v) => (/^\s*-?\d+\s*$/.test(String(v ?? "")) ? Number(v) : null);
+
+// Editable fields = what PATCH /api/synthetic-checks/{id} accepts (type and account are not editable).
+// expected_status_code / expected_keyword only apply to http(s) probes.
+function editInitial(c) {
+  return {
+    name: c.name ?? "", target: c.target ?? "",
+    interval_seconds: String(c.interval_seconds ?? ""), timeout_seconds: String(c.timeout_seconds ?? ""),
+    consecutive_failure_threshold: String(c.consecutive_failure_threshold ?? ""),
+    expected_status_code: c.expected_status_code == null ? "" : String(c.expected_status_code),
+    expected_keyword: c.expected_keyword ?? "",
+  };
+}
+
+function EditCheckForm({ check, onCancel, onSaved }) {
+  const [f, setF] = useState(() => editInitial(check));
+  const [err, setErr] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const root = useRef(null);
+  useEffect(() => { root.current?.scrollIntoView({ block: "nearest" }); }, []);
+  const isWeb = check.check_type === "http" || check.check_type === "https";
+  const set = (k) => (e) => setF(x => ({ ...x, [k]: e.target.value }));
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const start = editInitial(check);
+    const body = {};
+    // Send only what changed: untouched fields are not re-validated server-side (the target check does DNS).
+    for (const k of ["name", "target", "expected_keyword"]) {
+      if (f[k] !== start[k]) body[k] = k === "expected_keyword" && f[k] === "" ? null : f[k].trim();
+    }
+    for (const [k, label] of [["interval_seconds", "Interval"], ["timeout_seconds", "Timeout"], ["consecutive_failure_threshold", "Failure threshold"]]) {
+      if (f[k] === start[k]) continue;
+      const n = intOrNull(f[k]);
+      // the API treats a null here as "use the default", so a blank/invalid number must not be sent
+      if (n === null) { setErr(`${label} must be a whole number`); return; }
+      body[k] = n;
+    }
+    if (isWeb && f.expected_status_code !== start.expected_status_code) {
+      if (f.expected_status_code.trim() === "") body.expected_status_code = null;
+      else {
+        const n = intOrNull(f.expected_status_code);
+        if (n === null) { setErr("Expected status must be a whole number (or blank for the default, 200)"); return; }
+        body.expected_status_code = n;
+      }
+    }
+    if (!Object.keys(body).length) { setErr("No changes to save"); return; }
+    setSaving(true); setErr(null);
+    try {
+      await updateSyntheticCheck(check.id, body);
+      onSaved();
+    } catch (ex) {
+      setErr(errText(ex));
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form className="syn-edit" ref={root} onSubmit={submit} aria-label={`Edit check ${check.name}`}>
+      <div className="syn-edit-head">
+        <span className="syn-edit-title">Edit check</span>
+        <span className="syn-edit-type mono" title="The check type cannot be changed; delete and re-create the check to change it">{TYPE_LABEL[check.check_type] || check.check_type}</span>
+      </div>
+      {err && <div className="syn-error syn-edit-error" role="alert"><AlertOctagonIcon size={13} /> <span>{err}</span></div>}
+      <div className="syn-edit-grid">
+        <div className="syn-field syn-edit-span2">
+          <label>Name</label>
+          <input aria-label="Name" value={f.name} onChange={set("name")} maxLength={255} required />
+        </div>
+        <div className="syn-field syn-edit-full">
+          <label>Target</label>
+          <input aria-label="Target" value={f.target} onChange={set("target")} maxLength={500} required
+                 placeholder={check.check_type === "https" ? "https://api.example.com/health" : check.check_type === "http" ? "http://example.com/health" : check.check_type === "tcp" ? "db.example.com:5432" : "example.com"} />
+        </div>
+        <div className="syn-field">
+          <label>Interval (sec)</label>
+          <input aria-label="Interval (sec)" type="number" min="60" max="86400" value={f.interval_seconds} onChange={set("interval_seconds")} required />
+        </div>
+        <div className="syn-field">
+          <label>Timeout (sec)</label>
+          <input aria-label="Timeout (sec)" type="number" min="1" max="60" value={f.timeout_seconds} onChange={set("timeout_seconds")} required />
+        </div>
+        <div className="syn-field">
+          <label>Failure threshold</label>
+          <input aria-label="Failure threshold" type="number" min="1" max="100" value={f.consecutive_failure_threshold} onChange={set("consecutive_failure_threshold")} required
+                 title="Consecutive failed probes before the check is marked Down" />
+        </div>
+        {isWeb && (
+          <>
+            <div className="syn-field">
+              <label>Expected status</label>
+              <input aria-label="Expected status" type="number" min="100" max="599" value={f.expected_status_code} onChange={set("expected_status_code")} placeholder="200 (default)" />
+            </div>
+            <div className="syn-field syn-edit-span2">
+              <label>Expected keyword</label>
+              <input aria-label="Expected keyword" value={f.expected_keyword} onChange={set("expected_keyword")} maxLength={255} placeholder="none" />
+            </div>
+          </>
+        )}
+      </div>
+      <div className="syn-edit-actions">
+        <button type="submit" className="syn-btn-add" disabled={saving}>{saving ? "Saving…" : "Save changes"}</button>
+        <button type="button" className="syn-btn-cancel" onClick={onCancel} disabled={saving}>Cancel</button>
+      </div>
+    </form>
+  );
 }
 
 export default function SyntheticChecks() {
@@ -62,6 +185,7 @@ export default function SyntheticChecks() {
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [editingId, setEditingId] = useState(null);
 
   const load = useCallback(() => {
     getSyntheticChecks().then(setChecks).catch(e => setError(e.message));
@@ -99,6 +223,7 @@ export default function SyntheticChecks() {
   const handleDelete = async (id) => {
     try {
       await deleteSyntheticCheck(id);
+      if (id === editingId) setEditingId(null);
       load();
     } catch (err) { setError(err.message); }
   };
@@ -151,6 +276,11 @@ export default function SyntheticChecks() {
         </button>
       </form>
 
+      {checks.some(c => c.id === editingId) && (
+        <EditCheckForm key={editingId} check={checks.find(c => c.id === editingId)}
+                       onCancel={() => setEditingId(null)} onSaved={() => { setEditingId(null); load(); }} />
+      )}
+
       <div className="syn-card">
         <div className="syn-bar">
           <span className="bar-icon">▐</span>
@@ -185,7 +315,7 @@ export default function SyntheticChecks() {
                   </td>
                   <td className="syn-target mono">{c.target}</td>
                   <td>
-                    <StatusBadge status={c.current_status} />
+                    <StatusBadge status={c.current_status} failures={c.consecutive_failures} threshold={c.consecutive_failure_threshold} enabled={!!c.enabled} />
                     {c.last_error && (
                       <div className={c.last_ok ? "syn-note" : "syn-err"} title={c.last_error}>{c.last_error}</div>
                     )}
@@ -201,6 +331,9 @@ export default function SyntheticChecks() {
                     </label>
                   </td>
                   <td className="syn-actions">
+                    <button className="syn-btn-edit" onClick={() => setEditingId(c.id)} title="Edit check" aria-label={`Edit ${c.name}`}>
+                      <EditIcon size={13} />
+                    </button>
                     <button className="syn-btn-delete" onClick={() => handleDelete(c.id)} title="Delete check">
                       <TrashIcon size={13} />
                     </button>
