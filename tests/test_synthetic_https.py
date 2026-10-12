@@ -640,7 +640,8 @@ def _run_due(mod, monkeypatch, check, probe_result):
         def close(self):
             pass
     monkeypatch.setattr(mod, "get_connection", lambda: Conn())
-    monkeypatch.setattr(mod, "_probe_https", lambda *a, **k: probe_result)
+    mod._probe_calls = []
+    monkeypatch.setattr(mod, "_probe_https", lambda *a, **k: mod._probe_calls.append(a) or probe_result)
     assert mod.run_due_checks() == 1
     return sqls
 
@@ -723,3 +724,161 @@ def test_run_due_checks_failed_handshake_leaves_cert_alert_untouched(monkeypatch
     assert not [s for s, p in sqls if "synthetic_cert_expiry" in str(p)]   # not resolved, not re-opened
     res = [(s, p) for s, p in sqls if s.startswith("INSERT INTO synthetic_check_results")][0]
     assert "TLS: certificate has expired" in res[1]
+
+
+# ── default HTTP->HTTPS redirect handling (no UI switch) ─────────────
+
+def _ok_probe(monkeypatch, mod):
+    monkeypatch.setattr(mod, "_probe_http_impl", lambda *a, **k: (True, 5, 200, None))
+
+
+def _count_redirect(monkeypatch, mod, state, detail="expected HTTP->HTTPS redirect from http://example.com/, got status 200 (no redirect)"):
+    calls = []
+    monkeypatch.setattr(mod, "_redirect_probe", lambda target, timeout: calls.append(target) or (state, detail))
+    return calls
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, "notice"), ("", "notice"), ("notice", "notice"), ("STRICT", "strict"), (" off ", "off"), ("bogus", "notice"),
+])
+def test_redirect_mode_env(monkeypatch, raw, expected):
+    mod = _synthetic()
+    if raw is None:
+        monkeypatch.delenv("SYNTHETIC_HTTPS_REDIRECT_MODE", raising=False)
+    else:
+        monkeypatch.setenv("SYNTHETIC_HTTPS_REDIRECT_MODE", raw)
+    assert mod._load_redirect_mode() == expected
+
+
+@pytest.mark.parametrize("target,ok", [
+    ("https://example.com/", True),
+    ("https://example.com:443/x", True),
+    ("https://example.com:8443/", False),      # port 80 twin can't be derived
+    ("https://8.8.8.8/", False),               # IP literal
+    ("https://[2001:db8::1]/", False),
+    ("http://example.com/", False),
+])
+def test_redirect_check_eligible(target, ok):
+    mod = _synthetic()
+    assert mod._redirect_check_eligible(target) is ok
+
+
+@pytest.mark.parametrize("resp,exc,state", [
+    (_Resp(301, "https://example.com/"), None, "ok"),
+    (_Resp(200), None, "no_redirect"),
+    (_Resp(302, "http://example.com/x"), None, "no_redirect"),
+    (None, "refused", "unreachable"),
+    (None, "timeout", "timeout"),
+    (None, "blocked", "blocked"),
+])
+def test_redirect_probe_states(monkeypatch, resp, exc, state):
+    import requests
+    mod = _synthetic()
+    errs = {"refused": requests.exceptions.ConnectionError("refused"),
+            "timeout": requests.exceptions.ReadTimeout("slow"),
+            "blocked": mod.UnsafeTargetError("private address")}
+    monkeypatch.setattr(mod, "_guarded_session", lambda *a, **k: _Sess(resp, errs.get(exc)))
+    assert mod._redirect_probe("https://example.com/", 5)[0] == state
+
+
+def test_notice_mode_keeps_probe_up_and_surfaces_text(monkeypatch):
+    mod = _synthetic()
+    _ok_probe(monkeypatch, mod)
+    _count_redirect(monkeypatch, mod, "no_redirect")
+    ok, _, status, err, _ = mod._probe_https("https://example.com/", 5, None, None, False, 7)
+    assert ok is True and status == 200 and err.startswith("Notice:") and "no redirect" in err
+
+
+def test_notice_mode_silent_when_port_80_closed_or_redirects(monkeypatch):
+    mod = _synthetic()
+    _ok_probe(monkeypatch, mod)
+    for state in ("ok", "unreachable", "timeout", "blocked"):
+        mod._redirect_notice_cache.clear()
+        _count_redirect(monkeypatch, mod, state, "whatever")
+        ok, _, _, err, _ = mod._probe_https("https://example.com/", 5, None, None, False, 7)
+        assert ok is True and err is None, state
+
+
+def test_notice_is_cached_so_target_sees_one_extra_request_per_hour(monkeypatch):
+    mod = _synthetic()
+    _ok_probe(monkeypatch, mod)
+    calls = _count_redirect(monkeypatch, mod, "no_redirect")
+    for _ in range(5):
+        _, _, _, err, _ = mod._probe_https("https://example.com/", 5, None, None, False, 7)
+        assert err.startswith("Notice:")                       # cached text keeps showing on every row
+    assert len(calls) == 1
+    mod._probe_https("https://example.com/", 5, None, None, False, 8)       # another check id: own entry
+    assert len(calls) == 2
+    for key, (ts, text) in list(mod._redirect_notice_cache.items()):          # age every entry past the TTL
+        mod._redirect_notice_cache[key] = (ts - mod._REDIRECT_NOTICE_TTL - 1, text)
+    mod._probe_https("https://example.com/", 5, None, None, False, 7)
+    mod._probe_https("https://example.com/", 5, None, None, False, 8)
+    assert len(calls) == 4                                                   # both re-checked after expiry
+
+
+def test_ineligible_targets_get_no_redirect_request(monkeypatch):
+    mod = _synthetic()
+    _ok_probe(monkeypatch, mod)
+    calls = _count_redirect(monkeypatch, mod, "no_redirect")
+    for target in ("https://8.8.8.8/", "https://example.com:8443/"):
+        ok, _, _, err, _ = mod._probe_https(target, 5, None, None, False, 7)
+        assert ok is True and err is None
+    assert calls == []
+
+
+def test_mode_off_makes_no_redirect_request(monkeypatch):
+    mod = _synthetic()
+    _ok_probe(monkeypatch, mod)
+    monkeypatch.setattr(mod, "REDIRECT_MODE", "off")
+    calls = _count_redirect(monkeypatch, mod, "no_redirect")
+    ok, _, _, err, _ = mod._probe_https("https://example.com/", 5, None, None, False, 7)
+    assert ok is True and err is None and calls == []
+
+
+def test_mode_strict_fails_the_probe_every_time(monkeypatch):
+    mod = _synthetic()
+    _ok_probe(monkeypatch, mod)
+    monkeypatch.setattr(mod, "REDIRECT_MODE", "strict")
+    calls = _count_redirect(monkeypatch, mod, "no_redirect")
+    for _ in range(2):
+        ok, _, _, err, _ = mod._probe_https("https://example.com/", 5, None, None, False, 7)
+        assert ok is False and "no redirect" in err and not err.startswith("Notice:")
+    assert len(calls) == 2                                      # strict is not cached
+
+
+def test_per_check_flag_is_strict_even_when_mode_is_off(monkeypatch):
+    mod = _synthetic()
+    _ok_probe(monkeypatch, mod)
+    monkeypatch.setattr(mod, "REDIRECT_MODE", "off")
+    _count_redirect(monkeypatch, mod, "no_redirect")
+    ok, _, _, err, _ = mod._probe_https("https://example.com/", 5, None, None, True, 7)
+    assert ok is False and "no redirect" in err
+
+
+def test_failed_probe_skips_redirect_check(monkeypatch):
+    mod = _synthetic()
+    monkeypatch.setattr(mod, "_probe_http_impl", lambda *a, **k: (False, 5, 500, "expected status 200, got 500"))
+    calls = _count_redirect(monkeypatch, mod, "no_redirect")
+    ok, _, _, err, _ = mod._probe_https("https://example.com/", 5, None, None, False, 7)
+    assert ok is False and err.startswith("expected status") and calls == []
+
+
+def test_chain_error_text_is_specific_and_actionable():
+    mod = _synthetic()
+    text, valid = mod._describe_tls_error(
+        _verify_error(20, "unable to get local issuer certificate"), "www.example.com")
+    assert valid is False
+    assert "unable to get local issuer certificate" in text            # the real OpenSSL reason
+    assert "intermediate certificate" in text and "CA bundle" in text  # the two usual causes
+
+
+def test_run_due_checks_passes_check_id_and_stores_notice_as_success(monkeypatch):
+    mod = _synthetic()
+    tls = _tls(mod, cert_days_left=200, tls_version="TLSv1.3", cert_valid=1)
+    notice = "Notice: expected HTTP->HTTPS redirect from http://example.com/, got status 200 (no redirect)"
+    sqls = _run_due(mod, monkeypatch, _DUE, (True, 40, 200, notice, tls))
+    # (target, timeout, expected_status, expected_keyword, expect_https_redirect, check_id)
+    assert len(mod._probe_calls) == 1 and mod._probe_calls[0][-1] == 7 and mod._probe_calls[0][0] == "https://example.com/"
+    res = [(s, p) for s, p in sqls if s.startswith("INSERT INTO synthetic_check_results")][0]
+    assert res[1][1] is True and notice in res[1]                            # success=1 with the notice text
+    assert not [s for s, _ in sqls if s.startswith("INSERT INTO alerts")]    # a notice never alerts

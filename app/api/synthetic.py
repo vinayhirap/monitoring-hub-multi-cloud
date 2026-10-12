@@ -127,8 +127,10 @@ def list_checks(current_user: dict = Depends(require_permission("synthetic.view"
     For 'https' checks also returns the latest TLS facts (cert_days_left,
     cert_not_after, cert_subject, cert_issuer, tls_version, tls_cipher,
     handshake_ms, cert_valid, tls_checked_at) taken from the most recent result
-    that reached a TLS session, and for every check `last_error` (NULL when the
-    latest probe succeeded) so the specific failure text is visible.
+    that reached a TLS session. For every check it also returns the latest probe's
+    `last_error` text, `last_ok` (1/0) and `last_cert_valid`: last_ok = 0 means the
+    text is a failure; last_ok = 1 with text means a non-failing "Notice: ..." (e.g.
+    http:// answers without redirecting to https).
     """
     accessible = get_accessible_account_ids(current_user)
     conn = get_connection(); cur = conn.cursor(dictionary=True)
@@ -139,14 +141,17 @@ def list_checks(current_user: dict = Depends(require_permission("synthetic.view"
                     FROM synthetic_check_results r
                     WHERE r.check_id = c.id
                       AND r.checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)) AS uptime_pct_24h,
-                   (SELECT r.error_message FROM synthetic_check_results r
-                    WHERE r.check_id = c.id
-                    ORDER BY r.checked_at DESC, r.id DESC LIMIT 1) AS last_error,
+                   lr.error_message AS last_error, lr.success AS last_ok,
+                   lr.cert_valid AS last_cert_valid,
                    lt.checked_at AS tls_checked_at, lt.cert_days_left, lt.cert_not_after,
                    lt.cert_subject, lt.cert_issuer, lt.tls_version, lt.tls_cipher,
                    lt.handshake_ms, lt.cert_valid
             FROM synthetic_checks c
             JOIN aws_accounts acc ON acc.id = c.aws_account_id
+            LEFT JOIN synthetic_check_results lr
+                   ON lr.id = (SELECT r3.id FROM synthetic_check_results r3
+                               WHERE r3.check_id = c.id
+                               ORDER BY r3.checked_at DESC, r3.id DESC LIMIT 1)
             LEFT JOIN synthetic_check_results lt
                    ON c.check_type = 'https'
                   AND lt.id = (SELECT r2.id FROM synthetic_check_results r2

@@ -19,7 +19,6 @@ import "./SyntheticChecks.css";
 const EMPTY_FORM = {
   aws_account_id: "", name: "", check_type: "http", target: "",
   interval_seconds: 300, consecutive_failure_threshold: 2,
-  expect_https_redirect: false,
 };
 
 const TYPE_LABEL = { http: "HTTP", https: "HTTPS", tcp: "TCP", dns: "DNS" };
@@ -36,6 +35,9 @@ function certTone(days) {
 
 function CertCell({ c }) {
   if (c.check_type !== "https") return <>—</>;
+  if (c.last_cert_valid === 0) {
+    return <span className="syn-cert-crit" title={c.last_error || "Certificate failed verification"}>invalid</span>;
+  }
   if (c.cert_days_left == null) return <span title="No successful TLS handshake recorded yet">—</span>;
   const d = c.cert_days_left;
   const tip = [
@@ -77,7 +79,6 @@ export default function SyntheticChecks() {
         aws_account_id: Number(form.aws_account_id),
         interval_seconds: Number(form.interval_seconds),
         consecutive_failure_threshold: Number(form.consecutive_failure_threshold),
-        expect_https_redirect: form.check_type === "https" && !!form.expect_https_redirect,
       });
       setForm(EMPTY_FORM);
       load();
@@ -126,7 +127,7 @@ export default function SyntheticChecks() {
           <input aria-label="Name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                  placeholder="Payment API health" required />
         </div>
-        <div className="syn-field syn-field-narrow">
+        <div className="syn-field syn-field-type">
           <label>Type</label>
           <select aria-label="Type" value={form.check_type} onChange={e => setForm(f => ({ ...f, check_type: e.target.value }))}>
             <option value="http">HTTP</option>
@@ -145,16 +146,6 @@ export default function SyntheticChecks() {
           <input aria-label="Interval (sec)" type="number" min="60" value={form.interval_seconds}
                  onChange={e => setForm(f => ({ ...f, interval_seconds: e.target.value }))} />
         </div>
-        {form.check_type === "https" && (
-          <div className="syn-field syn-field-check">
-            <label>Redirect</label>
-            <label className="syn-checkline" title="Also request the http:// version once per probe and require a redirect to https:// (default port 443 only)">
-              <input aria-label="Expect HTTP to HTTPS redirect" type="checkbox" checked={!!form.expect_https_redirect}
-                     onChange={e => setForm(f => ({ ...f, expect_https_redirect: e.target.checked }))} />
-              Expect HTTP→HTTPS redirect
-            </label>
-          </div>
-        )}
         <button type="submit" className="syn-btn-add" disabled={saving}>
           <PlusIcon size={13} /> {saving ? "Adding…" : "Add check"}
         </button>
@@ -191,12 +182,13 @@ export default function SyntheticChecks() {
                   <td>{c.name}</td>
                   <td className="mono">
                     {TYPE_LABEL[c.check_type] || c.check_type.toUpperCase()}
-                    {!!c.expect_https_redirect && <span className="syn-tag" title="Expects http:// to redirect to https://">↪ redirect</span>}
                   </td>
                   <td className="syn-target mono">{c.target}</td>
                   <td>
                     <StatusBadge status={c.current_status} />
-                    {c.last_error && <div className="syn-err" title={c.last_error}>{c.last_error}</div>}
+                    {c.last_error && (
+                      <div className={c.last_ok ? "syn-note" : "syn-err"} title={c.last_error}>{c.last_error}</div>
+                    )}
                   </td>
                   <td className="mono">{c.uptime_pct_24h != null ? `${c.uptime_pct_24h}%` : "—"}</td>
                   <td className="mono"><CertCell c={c} /></td>

@@ -93,6 +93,31 @@ def _load_cert_thresholds():
 
 CERT_WARN_DAYS, CERT_CRIT_DAYS = _load_cert_thresholds()
 
+# ── HTTP -> HTTPS redirect handling ('https' checks) ───────────────
+# There is no UI switch. Every https check on the default port (443, hostname
+# target) gets a redirect check, in the mode set by SYNTHETIC_HTTPS_REDIRECT_MODE:
+#   notice (default)  http://host/ answering WITHOUT redirecting to https is recorded as a
+#                     "Notice: ..." on the result row. The check stays UP (not an outage).
+#                     A closed / unreachable port 80 is fine and says nothing.
+#                     Cached per check for _REDIRECT_NOTICE_TTL (one extra request/hour).
+#   strict            the same finding FAILS the probe (one extra request every probe)
+#   off               no redirect check at all
+# A check's own expect_https_redirect flag (API only) is always strict.
+_REDIRECT_MODES = ("notice", "strict", "off")
+_REDIRECT_NOTICE_TTL = 3600
+_redirect_notice_cache = {}   # (check_id, target) -> (monotonic ts, notice text or None)
+
+
+def _load_redirect_mode() -> str:
+    raw = (os.getenv("SYNTHETIC_HTTPS_REDIRECT_MODE") or "notice").strip().lower()
+    if raw not in _REDIRECT_MODES:
+        logger.warning(f"[synthetic] ignoring invalid SYNTHETIC_HTTPS_REDIRECT_MODE={raw!r} (use notice|strict|off)")
+        return "notice"
+    return raw
+
+
+REDIRECT_MODE = _load_redirect_mode()
+
 _TLS_FIELDS = ("cert_days_left", "cert_not_after", "cert_subject", "cert_issuer",
                "tls_version", "tls_cipher", "handshake_ms", "cert_valid")
 
@@ -299,7 +324,8 @@ def _describe_tls_error(exc, host: str):
         if code in _X509_SELF_SIGNED:
             return "TLS: self-signed certificate (not trusted)", False
         if code in _X509_NO_ISSUER:
-            return "TLS: cannot verify the certificate chain (unknown issuer or missing intermediate certificate)", False
+            return (f"TLS: certificate chain not trusted ({msg}) - the server may not be sending its "
+                    f"intermediate certificate, or its issuer is not in the CA bundle"), False
         return f"TLS: certificate verification failed: {msg}"[:490], False
     if isinstance(exc, ssl.SSLError):
         reason = getattr(exc, "reason", None) or str(exc)
@@ -420,7 +446,8 @@ def validate_target(check_type: str, target: str, strict_scheme: bool = False) -
 
 
 def validate_https_redirect_option(check_type: str, target: str) -> None:
-    """expect_https_redirect: only for https checks on the default port, since
+    """expect_https_redirect (strict, API-only per-check flag; every default-port https
+    check is already redirect-checked in notice mode): only for https checks on the default port, since
     the plain-HTTP counterpart URL is derived by swapping scheme (port 80)."""
     if check_type != "https":
         raise ValueError("expect_https_redirect is only available for HTTPS checks")
@@ -498,11 +525,28 @@ def _probe_http_impl(target: str, timeout: int, expected_status: int, expected_k
         session.close()
 
 
-def _probe_https_redirect(target: str, timeout: int):
-    """expect_https_redirect: GET the plain-HTTP twin of an https:// target
-    WITHOUT following redirects and require a 3xx to an https:// Location.
-    One extra request per probe, only for checks that opted in; same SSRF
-    guard as every other probe. Returns (ok, error)."""
+def _redirect_check_eligible(target: str) -> bool:
+    """https:// hostname target on the default port: the only shape whose plain-HTTP
+    twin (port 80) can be derived by swapping the scheme."""
+    parts = urlsplit(target or "")
+    try:
+        port = parts.port
+    except ValueError:
+        return False
+    host = parts.hostname or ""
+    if parts.scheme != "https" or not host or port not in (None, 443):
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False                      # IP literal: no meaningful http->https story
+    except ValueError:
+        return True
+
+
+def _redirect_probe(target: str, timeout: int):
+    """GET the plain-HTTP twin of an https:// target WITHOUT following redirects.
+    Same SSRF guard as every other probe. Returns (state, detail) with state one of
+    ok | no_redirect | unreachable | timeout | blocked."""
     parts = urlsplit(target)
     host = parts.hostname or ""
     if ":" in host:
@@ -519,21 +563,43 @@ def _probe_https_redirect(target: str, timeout: int):
             resp.close()
         if status in (301, 302, 303, 307, 308):
             if urlsplit(urljoin(url, location)).scheme == "https":
-                return True, None
-            return False, f"expected HTTP->HTTPS redirect from {url}, but it redirects to {location or 'nowhere'}"[:490]
-        return False, f"expected HTTP->HTTPS redirect from {url}, got status {status} (no redirect)"[:490]
+                return "ok", None
+            return "no_redirect", f"expected HTTP->HTTPS redirect from {url}, but it redirects to {location or 'nowhere'}"[:480]
+        return "no_redirect", f"expected HTTP->HTTPS redirect from {url}, got status {status} (no redirect)"[:480]
     except UnsafeTargetError as e:
-        return False, f"blocked: {e}"[:490]
+        return "blocked", f"blocked: {e}"[:490]
     except requests.exceptions.Timeout:
-        return False, f"HTTP->HTTPS redirect check timed out after {timeout}s"
+        return "timeout", f"HTTP->HTTPS redirect check timed out after {timeout}s"
     except requests.exceptions.RequestException as e:
-        return False, f"expected HTTP->HTTPS redirect, but {url} is not reachable: {e}"[:490]
+        return "unreachable", f"expected HTTP->HTTPS redirect, but {url} is not reachable: {e}"[:490]
     finally:
         session.close()
 
 
+def _probe_https_redirect(target: str, timeout: int):
+    """Strict form: (ok, error). Any finding other than a redirect to https:// is an error."""
+    state, detail = _redirect_probe(target, timeout)
+    return (True, None) if state == "ok" else (False, detail)
+
+
+def _redirect_notice(target: str, timeout: int, cache_key):
+    """Notice mode: text when http:// ANSWERS without redirecting to https, else None.
+    Unreachable / blocked / timed-out port 80 is not a finding. Cached for the TTL so the
+    target sees at most one extra request per check per hour."""
+    if not _redirect_check_eligible(target):
+        return None
+    now = time.monotonic()
+    hit = _redirect_notice_cache.get(cache_key)
+    if hit and now - hit[0] < _REDIRECT_NOTICE_TTL:
+        return hit[1]
+    state, detail = _redirect_probe(target, timeout)
+    notice = f"Notice: {detail}" if state == "no_redirect" else None
+    _redirect_notice_cache[cache_key] = (now, notice)
+    return notice
+
+
 def _probe_https(target: str, timeout: int, expected_status: int, expected_keyword: str,
-                 expect_redirect: bool = False):
+                 expect_redirect: bool = False, check_id=None):
     """HTTP probe + TLS facts from the same connection. Returns
     (success, elapsed_ms, status_code, error, tls) where `tls` always has
     every key in _TLS_FIELDS (None when no TLS session was reached).
@@ -558,11 +624,17 @@ def _probe_https(target: str, timeout: int, expected_status: int, expected_keywo
         tls["cert_valid"] = None if valid is None else int(valid)
         success, error = False, msg
 
-    if success and expect_redirect:
+    if success and (expect_redirect or REDIRECT_MODE != "off"):
         remaining = max(MIN_TIMEOUT_SECONDS, int(timeout - (time.monotonic() - start)))
-        ok, redirect_error = _probe_https_redirect(target, remaining)
-        if not ok:
-            success, error = False, redirect_error
+        strict = expect_redirect or (REDIRECT_MODE == "strict" and _redirect_check_eligible(target))
+        if strict:
+            ok, redirect_error = _probe_https_redirect(target, remaining)
+            if not ok:
+                success, error = False, redirect_error
+        else:
+            notice = _redirect_notice(target, remaining, (check_id, target))
+            if notice:
+                error = notice               # probe stays a SUCCESS; the text is surfaced as a notice
     return success, elapsed_ms, status_code, error, tls
 
 
@@ -617,7 +689,7 @@ def _run_probe(check: dict):
     if check["check_type"] == "https":
         return _probe_https(check["target"], check["timeout_seconds"],
                             check["expected_status_code"], check["expected_keyword"],
-                            bool(check.get("expect_https_redirect")))[:4]
+                            bool(check.get("expect_https_redirect")), check.get("id"))[:4]
     if check["check_type"] == "http":
         return _probe_http(check["target"], check["timeout_seconds"],
                             check["expected_status_code"], check["expected_keyword"])
@@ -806,7 +878,7 @@ def run_due_checks() -> int:
                 if check["check_type"] == "https":
                     success, elapsed_ms, status_code, error, tls = _probe_https(
                         check["target"], check["timeout_seconds"], check["expected_status_code"],
-                        check["expected_keyword"], bool(check.get("expect_https_redirect")))
+                        check["expected_keyword"], bool(check.get("expect_https_redirect")), check["id"])
                 else:
                     success, elapsed_ms, status_code, error = _run_probe(check)
 
