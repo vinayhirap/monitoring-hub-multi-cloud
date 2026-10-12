@@ -59,7 +59,7 @@ from app import alert_rules as _alert_rules
 from app.alert_visibility import hidden_metrics_sql
 from app.threshold_defaults import normalize_service_key
 from app.utils.time_json import to_utc_iso
-from app.metric_display import effective_hours, shape_response, bucketize, bucket_seconds, display_spec, period_cutover_epoch
+from app.metric_display import effective_hours, shape_response, bucketize, bucket_seconds, display_spec, period_cutover_epoch, RANGE_LADDER_HOURS, widen_window_hours, _epoch
 from app.metric_meta import build_metric_meta
 import datetime
 import threading
@@ -966,6 +966,7 @@ def live_generic_metrics(
 
     req_hours = hours
     hours = effective_hours(hours)
+    max_hours = effective_hours(RANGE_LADDER_HOURS[-1])
     bsec  = bucket_seconds(hours)
     end   = datetime.datetime.utcnow()
     start = end - datetime.timedelta(hours=hours)
@@ -984,6 +985,23 @@ def live_generic_metrics(
             service, resource_id, row["metric_name"], start, end,
             match_field="resource_id", account_id=account_db_id,
         )
+        m_hours, m_bsec, widened = hours, bsec, False
+        if not series and hours < max_hours:
+            # Nothing inside the requested window. A metric polled every 6 h / 1 d / 1 w is not "missing" at 1H or 3H, it
+            # simply has no point there: look back once over the whole retention window and show the smallest preset
+            # range that actually contains data. One extra read per EMPTY metric, none for metrics that have points.
+            wide = _metric_history_query_range(
+                service, resource_id, row["metric_name"], end - datetime.timedelta(hours=max_hours), end,
+                match_field="resource_id", account_id=account_db_id,
+            )
+            if wide:
+                now_e = end.replace(tzinfo=datetime.timezone.utc).timestamp()
+                m_hours = widen_window_hours([_epoch(p["t"]) for p in wide], now_e, hours, max_hours)
+                if m_hours:
+                    m_bsec = bucket_seconds(m_hours)
+                    cut = now_e - m_hours * 3600
+                    series = [p for p in wide if _epoch(p["t"]) >= cut]
+                    widened = True
         if not series:
             continue  # no data yet for this metric/resource combo -- skip, don't render an empty chart
         spec = display_spec(provider, service, row["metric_name"], row.get("unit"), row.get("statistic"))
@@ -992,9 +1010,10 @@ def live_generic_metrics(
             "statistic": row.get("statistic"),
             "description": row.get("description"),
             "title": spec["title"],
-            "series": bucketize(series, bsec, spec["native_stat"], spec["scale"], rate=spec["rate"],
+            "series": bucketize(series, m_bsec, spec["native_stat"], spec["scale"], rate=spec["rate"],
                                legacy_scale=spec["legacy_scale"], cutover=period_cutover_epoch()),
-            "bucket_secs": bsec, "effective_hours": hours, "requested_hours": req_hours,
+            "bucket_secs": m_bsec, "effective_hours": m_hours, "requested_hours": req_hours,
+            "widened": widened,
         }
     return result
 

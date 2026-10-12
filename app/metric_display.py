@@ -303,6 +303,24 @@ def bucket_seconds(hours, target_points=500):
     return _NICE[-1]
 
 
+# Look-back presets the UI offers (1H 3H 6H 1D 1W 1M). A metric polled every 6 h, 1 d or 1 w has no point inside a 1H
+# or 3H window; instead of an empty chart the generic endpoint widens THAT metric to the smallest preset that has data.
+RANGE_LADDER_HOURS = (1, 3, 6, 24, 168, 720)
+
+
+def widen_window_hours(point_epochs, now_epoch, requested_hours, max_hours):
+    """Smallest preset window larger than `requested_hours` (and within `max_hours`) that holds >= 2 points, else the
+    smallest holding >= 1. None when the metric has no point at all inside max_hours. Pure function."""
+    ladder = [h for h in RANGE_LADDER_HOURS if requested_hours < h <= max_hours]
+    if max_hours not in ladder and max_hours > requested_hours:
+        ladder.append(max_hours)
+    for need in (2, 1):
+        for h in ladder:
+            if sum(1 for e in point_epochs if now_epoch - h * 3600 <= e <= now_epoch) >= need:
+                return h
+    return None
+
+
 def effective_hours(hours):
     """Ranges beyond metric_history retention cannot return more data."""
     return min(int(hours), METRIC_HISTORY_RETENTION_DAYS * 24)

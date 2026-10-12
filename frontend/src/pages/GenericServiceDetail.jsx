@@ -120,6 +120,8 @@ async function fetchThresholdMap(accountId) {
   return map;
 }
 
+const rangeLabelFor = (hours) => (TIME_RANGES.find(t => t.hours === hours)?.label) || `${hours}H`;
+
 function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
 function StateBadge({ state }) {
@@ -159,7 +161,8 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
   const reloadMeta = metaState.reload;
   const insightsReg = useInsightsRegistry();
 
-  const firstMetric = metrics ? Object.values(metrics)[0] : null;
+  // Prefer a metric shown over the REQUESTED range for the shared window; a widened one carries its own.
+  const firstMetric = metrics ? (Object.values(metrics).find(m => !m.widened) || Object.values(metrics)[0]) : null;
   const panelCtx = {
     meta: metaState.metrics, windowHours: firstMetric?.effective_hours || timeRange,
     bucketSecs: firstMetric?.bucket_secs || null, statOverride,
@@ -275,9 +278,8 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
               <div style={{ fontSize: 12, color: "var(--red)", padding: "10px 0" }}>{error}</div>
             ) : metricNames.length === 0 ? (
               <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "10px 0" }}>
-                No metric data collected yet for this resource in the last {timeRangeLabel}. If you expect a
-                metric here, confirm it's enabled for this service in <b style={{ color: "var(--text-secondary)" }}>Settings → Metrics</b>,
-                or try a wider time range above.
+                No metric data has been collected for this resource yet, in any available time range. If you expect a
+                metric here, confirm it's enabled for this service in <b style={{ color: "var(--text-secondary)" }}>Settings → Metrics</b>.
               </div>
             ) : (
               <MetricPanelContext.Provider value={panelCtx}>
@@ -289,19 +291,33 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10, paddingTop: 10 }}>
                 {metricNames.map((name, i) => {
                   const th = thresholdMap[`${service}:${name}`];
-                  return (
+                  const m = metrics[name];
+                  const chart = (
                     <MetricChart
                       key={name}
                       title={name}
-                      unit={metrics[name].unit}
-                      description={metrics[name].description}
-                      data={metrics[name].series}
+                      unit={m.unit}
+                      description={m.description}
+                      data={m.series}
                       color={CHART_PALETTE[i % CHART_PALETTE.length]}
                       warningThreshold={th?.warning}
                       criticalThreshold={th?.critical}
-                      timeRangeLabel={timeRangeLabel}
+                      timeRangeLabel={m.widened ? rangeLabelFor(m.effective_hours) : timeRangeLabel}
                       ianaName={ianaName}
                     />
+                  );
+                  if (!m.widened) return chart;
+                  // This metric has no point in the selected range (it is polled less often than that), so the backend
+                  // returned the smallest range that has data. Say so, and give the chart its own window.
+                  return (
+                    <div key={name}>
+                      <div style={{ fontSize: 10, color: "var(--text-muted)", padding: "0 2px 3px" }}>
+                        No data in {timeRangeLabel}: showing {rangeLabelFor(m.effective_hours)}. This metric is polled less often than that range.
+                      </div>
+                      <MetricPanelContext.Provider value={{ ...panelCtx, windowHours: m.effective_hours, bucketSecs: m.bucket_secs }}>
+                        {chart}
+                      </MetricPanelContext.Provider>
+                    </div>
                   );
                 })}
               </div>
