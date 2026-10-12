@@ -15,7 +15,10 @@ import GenericServiceDetail from "./GenericServiceDetail";
 import { getWafRules } from "../api/api";
 import { formatShort } from "../utils/timeFormat";
 
-const sumOf = (m) => (m && Array.isArray(m.series) ? m.series.reduce((a, p) => a + (Number(p.v) || 0), 0) : null);
+// A metric the server had to widen (no point in the selected range) covers a DIFFERENT window than the tile label, so it
+// must not be summed under that label: null -> shown as "—".
+const sumOf = (m) => (m && !m.widened && Array.isArray(m.series) ? m.series.reduce((a, p) => a + (Number(p.v) || 0), 0) : null);
+const NO_POINTS = "no points in this range (polled less often)";
 const fmt = (n) => (n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 }));
 
 function Kpi({ label, value, sub, tone }) {
@@ -31,7 +34,7 @@ function Kpi({ label, value, sub, tone }) {
 
 function mergeSeries(metrics, names) {
   const byT = {};
-  names.forEach((n) => (metrics?.[n]?.series || []).forEach((p) => { (byT[p.t] = byT[p.t] || { t: p.t })[n] = p.v; }));
+  names.filter((n) => !metrics?.[n]?.widened).forEach((n) => (metrics?.[n]?.series || []).forEach((p) => { (byT[p.t] = byT[p.t] || { t: p.t })[n] = p.v; }));
   return Object.values(byT).sort((a, b) => (a.t < b.t ? -1 : 1));
 }
 
@@ -100,15 +103,16 @@ function WafResourcePanel({ accountId, r, metrics, timeRange, timeRangeLabel, re
   const total = complete ? parts.reduce((a, b) => a + b, 0) : null;
   const ratio = total ? (100 * blocked) / total : null;
   const trend = mergeSeries(metrics, TREND.map((t) => t[0]));
-  const trendKeys = TREND.filter(([n]) => metrics?.[n]);
+  const trendKeys = TREND.filter(([n]) => metrics?.[n] && !metrics[n].widened);
 
   return (
     <div style={{ display: "grid", gap: 10, padding: "10px 0" }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-        <Kpi label={`Allowed · ${timeRangeLabel}`} value={fmt(allowed)} />
-        <Kpi label={`Blocked · ${timeRangeLabel}`} value={fmt(blocked)} tone={blocked ? "var(--red, #ef4444)" : undefined} />
+        <Kpi label={`Allowed · ${timeRangeLabel}`} value={fmt(allowed)} sub={metrics?.AllowedRequests?.widened ? NO_POINTS : undefined} />
+        <Kpi label={`Blocked · ${timeRangeLabel}`} value={fmt(blocked)} tone={blocked ? "var(--red, #ef4444)" : undefined}
+             sub={metrics?.BlockedRequests?.widened ? NO_POINTS : undefined} />
         <Kpi label="Block ratio" value={ratio == null ? "—" : `${ratio.toFixed(1)}%`}
-             sub={total == null ? "needs Allowed, Blocked, Counted, Passed" : `of ${fmt(total)} requests`} />
+             sub={total == null ? "needs Allowed, Blocked, Counted, Passed in this range" : `of ${fmt(total)} requests`} />
         <Kpi label="CAPTCHA" value={fmt(captcha)} />
         <Kpi label="Challenge" value={fmt(challenge)} />
         <Kpi label="Counted" value={fmt(counted)} sub="matched in count mode" />
