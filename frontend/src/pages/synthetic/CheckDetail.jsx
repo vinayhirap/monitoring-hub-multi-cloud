@@ -202,7 +202,7 @@ function Detail({ check: c, onClose }) {
           <Fact k="Fail after" v={`${c.consecutive_failure_threshold} in a row`} />
         </dl>
         {c.last_error
-          ? <div className={c.last_ok ? "cd-note" : "cd-err"}><b>{c.last_ok ? "Notice" : "Last error"}:</b> {c.last_error}</div>
+          ? <div className={c.last_ok ? "cd-note" : "cd-err"}><b>{c.last_ok ? "Notice" : "Last error"}:</b> {c.last_ok ? c.last_error.replace(/^\s*notice:\s*/i, "") : c.last_error}</div>
           : <div className="cd-ok">{c.last_ok == null ? "Not probed yet." : "Latest probe succeeded with no errors or notices."}</div>}
       </section>
 
