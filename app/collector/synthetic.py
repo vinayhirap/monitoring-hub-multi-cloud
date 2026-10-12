@@ -19,9 +19,13 @@ import ipaddress
 import json
 import logging
 import math
+import atexit
 import os
+import re
 import socket
 import ssl
+import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timedelta, timezone
@@ -120,6 +124,120 @@ REDIRECT_MODE = _load_redirect_mode()
 
 _TLS_FIELDS = ("cert_days_left", "cert_not_after", "cert_subject", "cert_issuer",
                "tls_version", "tls_cipher", "handshake_ms", "cert_valid")
+
+# ── Additional trusted CAs (private / corporate PKI) ─────────────────
+# Probes verify against requests' default bundle (certifi's public roots; the
+# OS trust store is NOT consulted -- the session sets trust_env=False and
+# requests reads certifi, so SSL_CERT_FILE / REQUESTS_CA_BUNDLE do nothing
+# here). A site signed by a private CA therefore always failed the chain
+# check. SYNTHETIC_CA_BUNDLE = path to a PEM file of ADDITIONAL trust
+# anchors. Unset = exactly the previous behaviour.
+#
+# Verification is never weakened: the extra certificates are appended to the
+# default roots in a merged bundle that is passed as the session's `verify`
+# path, so CERT_REQUIRED and hostname checking stay on and public roots keep
+# working. The merged file is rebuilt only when the source files change
+# (cheap stat per session). Unreadable / invalid input logs ONE warning and
+# falls back to the default bundle -- it never raises into the collector.
+CA_BUNDLE_ENV = "SYNTHETIC_CA_BUNDLE"
+_MAX_CA_BUNDLE_BYTES = 5_000_000
+_PEM_CERT_RE = re.compile(
+    r"-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----")
+_ca_lock = threading.Lock()
+_ca_state = {"key": None, "path": None}   # last resolution: cache key -> merged bundle path or None
+_ca_warned = set()                        # cache keys already warned about
+
+
+def _file_sig(path):
+    st = os.stat(path)
+    return (path, st.st_mtime_ns, st.st_size)
+
+
+def _build_merged_ca_bundle(base_path: str, extra_path: str) -> str:
+    """Validate the extra PEM and write base + extra to a private temp file.
+    Returns the merged path; raises ValueError / OSError / ssl.SSLError with a
+    user-safe message when the input is unusable."""
+    if not base_path or not os.path.isfile(base_path):
+        raise ValueError("the default CA bundle is not a single file, cannot extend it")
+    if os.path.getsize(extra_path) > _MAX_CA_BUNDLE_BYTES:
+        raise ValueError("file is larger than 5 MB")
+    with open(extra_path, "rb") as fh:
+        text = fh.read().decode("utf-8", errors="strict")
+    if "PRIVATE KEY" in text:
+        raise ValueError("file contains a private key; provide CA certificates only")
+    certs = _PEM_CERT_RE.findall(text)
+    if not certs:
+        raise ValueError("no PEM certificates found (expected '-----BEGIN CERTIFICATE-----' blocks)")
+    extra_pem = "\n".join(c.strip() for c in certs) + "\n"
+    probe = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    probe.load_verify_locations(cadata=extra_pem)     # SSLError if any block is corrupt
+    with open(base_path, "rb") as fh:
+        base_pem = fh.read()
+    fd, merged = tempfile.mkstemp(prefix="synthetic-ca-", suffix=".pem")   # 0600, unpredictable name
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(base_pem.rstrip(b"\n") + b"\n" + extra_pem.encode("ascii"))
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cafile=merged)  # merged file must load too
+    except Exception:
+        try:
+            os.unlink(merged)
+        except OSError:
+            pass
+        raise
+    return merged
+
+
+def _remove_quietly(path):
+    try:
+        if path:
+            os.unlink(path)
+    except OSError:
+        pass
+
+
+def _extra_ca_verify_path():
+    """Path of the merged (default + SYNTHETIC_CA_BUNDLE) bundle to use as the
+    session's `verify`, or None meaning 'use requests' default, unchanged'."""
+    extra = (os.getenv(CA_BUNDLE_ENV) or "").strip()
+    if not extra:
+        return None
+    import requests.adapters as _ra
+    base = _ra.DEFAULT_CA_BUNDLE_PATH
+    try:
+        key = (_file_sig(extra), _file_sig(base) if base and os.path.isfile(base) else (base,))
+    except OSError as e:
+        key = (extra, "unreadable")
+        err = e
+    else:
+        err = None
+    with _ca_lock:
+        if _ca_state["key"] == key:
+            return _ca_state["path"]
+        old = _ca_state["path"]
+        path = None
+        try:
+            if err is not None:
+                raise err
+            path = _build_merged_ca_bundle(base, extra)
+        except Exception as e:
+            if key not in _ca_warned:
+                _ca_warned.add(key)
+                logger.warning(
+                    f"[synthetic] {CA_BUNDLE_ENV}={extra!r} ignored ({type(e).__name__}: {e}) -- "
+                    f"probes use the default public CA bundle only")
+        else:
+            logger.info(f"[synthetic] {CA_BUNDLE_ENV}: trusting additional CAs from {extra!r} "
+                        f"in addition to the default public roots")
+        _ca_state["key"], _ca_state["path"] = key, path
+        if old and old != path:
+            _remove_quietly(old)
+        return path
+
+
+@atexit.register
+def _cleanup_merged_ca_bundle():
+    _remove_quietly(_ca_state.get("path"))
+
 
 # ── SSRF guard (audit b20) ───────────────────────────────────────────
 # Probes are created by any synthetic.manage holder and run from inside
@@ -307,6 +425,13 @@ _X509_NO_ISSUER = (20, 21)
 _X509_HOSTNAME_MISMATCH = (62, 64)
 
 
+def _private_ca_hint() -> str:
+    """Pointer to SYNTHETIC_CA_BUNDLE, only while it is not configured."""
+    if (os.getenv(CA_BUNDLE_ENV) or "").strip():
+        return ""
+    return f" (private/corporate CA: set {CA_BUNDLE_ENV} on the server)"
+
+
 def _describe_tls_error(exc, host: str):
     """ssl exception from the handshake -> (specific message, cert_valid).
     cert_valid is False for a verification failure, None for any other
@@ -321,11 +446,12 @@ def _describe_tls_error(exc, host: str):
             return "TLS: certificate is not yet valid", False
         if code in _X509_HOSTNAME_MISMATCH or (code is None and ("hostname" in msg.lower() or "doesn't match" in msg.lower())):
             return f"TLS: certificate is not valid for '{host}' (hostname mismatch)", False
+        hint = _private_ca_hint()
         if code in _X509_SELF_SIGNED:
-            return "TLS: self-signed certificate (not trusted)", False
+            return f"TLS: self-signed certificate (not trusted){hint}", False
         if code in _X509_NO_ISSUER:
             return (f"TLS: certificate chain not trusted ({msg}) - the server may not be sending its "
-                    f"intermediate certificate, or its issuer is not in the CA bundle"), False
+                    f"intermediate certificate, or its issuer is not in the CA bundle{hint}")[:490], False
         return f"TLS: certificate verification failed: {msg}"[:490], False
     if isinstance(exc, ssl.SSLError):
         reason = getattr(exc, "reason", None) or str(exc)
@@ -368,6 +494,9 @@ def _guarded_session(tls_sink: dict = None) -> requests.Session:
     # would validate the proxy's address instead of the real target.
     session.trust_env = False
     session.max_redirects = MAX_REDIRECTS
+    bundle = _extra_ca_verify_path()
+    if bundle:
+        session.verify = bundle     # default roots + SYNTHETIC_CA_BUNDLE; verification stays fully on
     adapter = _GuardedAdapter(
         max_retries=0,
         https_pool_cls=_make_inspecting_https_pool(tls_sink) if tls_sink is not None else None,
