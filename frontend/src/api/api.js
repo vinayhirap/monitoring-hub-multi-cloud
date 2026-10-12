@@ -49,6 +49,8 @@ export const getResourceCounts = (id) => apiFetch(`/api/live/resource-counts/${i
 export const getResourcesList  = (id, service) => apiFetch(`/api/live/resources-list/${id}/${service}`);
 export const getGenericMetrics = (id, service, resourceId, hours = 24) =>
   apiFetch(`/api/live/metrics/generic/${id}/${service}/${encodeURIComponent(resourceId)}?hours=${hours}`);
+export const getWafRules = (id, resourceId, hours = 24) =>
+  apiFetch(`/api/live/waf/${id}/rules/${encodeURIComponent(resourceId)}?hours=${hours}`);
 export const getMetricMeta = (id, service, resourceIds = []) =>
   apiFetch(`/api/live/metric-meta/${id}/${encodeURIComponent(String(service).toLowerCase())}?resource_ids=${encodeURIComponent(resourceIds.filter(Boolean).join(","))}`);
 export const getLiveEC2       = (id) => apiFetch(`/api/live/ec2/${id}`);

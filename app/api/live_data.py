@@ -999,6 +999,75 @@ def live_generic_metrics(
     return result
 
 
+# ── AWS WAFv2 detail page: per-rule visibility (Phase 3, 2026-10-07) ──────────
+# Read-only. The WebACL-wide series (allowed / blocked / captcha / challenge / BlockRatio) already come from
+# live_generic_metrics above; this adds what that endpoint cannot see: the per-rule BlockedRequests / CountedRequests the
+# WAF collector stores in metric_history under waf_rule__blocked__<rule metric> / waf_rule__counted__<rule metric>
+# (they have no catalog row on purpose). Rules come from what discovery remembered, so a rule that was deleted keeps no
+# row here and nothing is invented. Zero CloudWatch calls: it only reads our own tables.
+@router.get("/waf/{account_db_id}/rules/{resource_id:path}")
+def live_waf_rules(
+    account_db_id: int,
+    resource_id: str,
+    hours: int = Query(24),
+    limit: int = Query(10, ge=1, le=50),
+    current_user: dict = Depends(require_permission("metrics.view")),
+):
+    _check_account_scope(current_user, account_db_id)
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT tags FROM resources WHERE aws_account_id = %s AND resource_type = 'wafv2' AND resource_id = %s",
+            (account_db_id, resource_id),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="WAF web ACL not found")
+    tags = row.get("tags")
+    if isinstance(tags, (str, bytes)):
+        try:
+            tags = json.loads(tags)
+        except (TypeError, ValueError):
+            tags = {}
+    rules = (tags or {}).get("waf_rules")
+    # rules is None until discovery has run with WAF_PER_RULE_ENABLED; [] means "no CloudWatch-enabled rules".
+    if rules is None:
+        return {"status": "not_collected", "rules": [], "effective_hours": effective_hours(hours)}
+
+    hours = effective_hours(hours)
+    bsec = bucket_seconds(hours)
+    end = datetime.datetime.utcnow()
+    start = end - datetime.timedelta(hours=hours)
+    out = []
+    for r in rules:
+        action = r.get("action")
+        if action in ("BLOCK", "NONE"):
+            kind = "blocked"
+        elif action in ("COUNT", "COUNT_OVERRIDE"):
+            kind = "counted"
+        else:
+            continue
+        series = _metric_history_query_range(
+            "wafv2", resource_id, f"waf_rule__{kind}__{r['metric']}", start, end,
+            match_field="resource_id", account_id=account_db_id,
+        )
+        if not series:
+            continue
+        total = sum(float(p["v"]) for p in series if p.get("v") is not None)
+        out.append({
+            "name": r.get("name"), "metric": r.get("metric"), "kind": kind, "action": action,
+            "rule_type": r.get("kind"), "group": r.get("group"), "total": total,
+            "series": bucketize(series, bsec, "Sum", 1.0),
+        })
+    out.sort(key=lambda x: x["total"], reverse=True)
+    return {"status": "ok", "rules": out[:limit], "rules_tracked": len(rules), "rules_with_data": len(out),
+            "bucket_secs": bsec, "effective_hours": hours}
+
+
 @router.get("/metric-meta/{account_db_id}/{service}")
 def live_metric_meta(
     account_db_id: int,

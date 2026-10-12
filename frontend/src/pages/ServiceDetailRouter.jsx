@@ -12,9 +12,11 @@
 import { useParams } from "react-router-dom";
 import ServiceDetail, { hasCoreDetailPage } from "./ServiceDetail";
 import GenericServiceDetail from "./GenericServiceDetail";
+import WafServiceDetail from "./WafServiceDetail";
 
 export default function ServiceDetailRouter() {
   const { id, service } = useParams();
   if (hasCoreDetailPage(service)) return <ServiceDetail />;
+  if (String(service).toLowerCase() === "wafv2") return <WafServiceDetail accountId={id} />;
   return <GenericServiceDetail accountId={id} service={service} />;
 }

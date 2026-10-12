@@ -133,7 +133,7 @@ function MetricChart({ title, unit, description, data, color, warningThreshold, 
            warningThreshold={warningThreshold} criticalThreshold={criticalThreshold} timeRange={timeRangeLabel} />;
 }
 
-function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel, thresholdMap, autoExpand, alertInfo, health, refreshMs, refreshTick, statOverride, onLoaded }) {
+function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel, thresholdMap, autoExpand, alertInfo, health, refreshMs, refreshTick, statOverride, onLoaded, ResourcePanel }) {
   const { ianaName } = useTimezone();
   const [expanded, setExpanded] = useState(false);
   const [metrics, setMetrics] = useState(null);
@@ -281,6 +281,10 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
               </div>
             ) : (
               <MetricPanelContext.Provider value={panelCtx}>
+              {ResourcePanel && (
+                <ResourcePanel accountId={accountId} r={r} metrics={metrics} timeRange={timeRange}
+                               timeRangeLabel={timeRangeLabel} refreshTick={refreshTick} ianaName={ianaName} />
+              )}
               <AlertedMetricsStrip meta={metaState.metrics} unmatched={metaState.alerts_unmatched} />
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10, paddingTop: 10 }}>
                 {metricNames.map((name, i) => {
@@ -310,7 +314,7 @@ function ResourceRow({ r, isLast, accountId, service, timeRange, timeRangeLabel,
   );
 }
 
-export default function GenericServiceDetail({ accountId, service, label }) {
+export default function GenericServiceDetail({ accountId, service, label, ResourcePanel }) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [account, setAccount] = useState(null);
@@ -566,6 +570,7 @@ export default function GenericServiceDetail({ accountId, service, label }) {
                   timeRangeLabel={rangeLabel}
                   thresholdMap={thresholdMap}
                   refreshMs={refreshMs} refreshTick={refreshTick} statOverride={statOverride} onLoaded={setLastUpdated}
+                  ResourcePanel={ResourcePanel}
                   alertInfo={alertLookup(r.resource_id, r.name)} health={healthOf(r)}
                   autoExpand={!!resourceParam && (r.resource_id === resourceParam || r.name === resourceParam)}
                 />
