@@ -601,12 +601,67 @@ def _discover_opensearch(session, account, region, cursor):
     logger.info(f"  OpenSearch: {count} domains in {account['account_name']} / {region}")
 
 
+# Cap on rules remembered per WebACL. A WebACL can hold far more (capacity-bound); every remembered rule that is
+# Block/Count costs one billed GetMetricData metric per 5-min cycle, so the list is bounded on purpose.
+WAF_MAX_RULES_PER_ACL = 100
+_WAF_ACTION_KEYS = ("Block", "Allow", "Count", "Captcha", "Challenge")
+
+
+def _waf_rule_entries(rules):
+    """get_web_acl()['WebACL']['Rules'] -> the minimal, JSON-able description the per-rule collector needs. Only rules
+    with CloudWatch metrics switched on are kept (no metric exists otherwise -- querying one would be billed for nothing).
+    The CloudWatch `Rule` dimension is VisibilityConfig.MetricName, NOT the rule's Name."""
+    out = []
+    for r in sorted(rules or [], key=lambda x: x.get("Priority", 0)):
+        vc = r.get("VisibilityConfig") or {}
+        if not vc.get("CloudWatchMetricsEnabled") or not vc.get("MetricName"):
+            continue
+        stmt = r.get("Statement") or {}
+        kind, group = "rule", None
+        if "ManagedRuleGroupStatement" in stmt:
+            m = stmt["ManagedRuleGroupStatement"]
+            kind, group = "managed_group", f"{m.get('VendorName', '')}/{m.get('Name', '')}".strip("/")
+        elif "RuleGroupReferenceStatement" in stmt:
+            arn = str(stmt["RuleGroupReferenceStatement"].get("ARN", ""))
+            kind, group = "rule_group", (arn.rsplit("/", 2)[-2] if arn.count("/") >= 2 else arn)
+        if r.get("OverrideAction") is not None:      # rule-group statements carry OverrideAction instead of Action
+            action = "COUNT_OVERRIDE" if "Count" in (r.get("OverrideAction") or {}) else "NONE"
+        else:
+            a = r.get("Action") or {}
+            action = next((k.upper() for k in _WAF_ACTION_KEYS if k in a), "UNKNOWN")
+        out.append({"name": r.get("Name"), "metric": vc["MetricName"], "kind": kind, "group": group,
+                    "action": action, "priority": r.get("Priority")})
+        if len(out) >= WAF_MAX_RULES_PER_ACL:
+            break
+    return out
+
+
+def _existing_waf_tags(cursor, account_id, name):
+    cursor.execute("SELECT tags FROM resources WHERE aws_account_id = %s AND resource_type = 'wafv2' "
+                   "AND resource_id = %s", (account_id, name))
+    row = cursor.fetchone()
+    raw = (row["tags"] if isinstance(row, dict) else row[0]) if row else None
+    if isinstance(raw, (str, bytes)):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = None
+    return raw if isinstance(raw, dict) else {}
+
+
 @_safe
 def _discover_wafv2(session, account, region, cursor):
-    # REGIONAL scope only -- CLOUDFRONT-scope WebACLs live in us-east-1
-    # regardless of account region and are out of scope for this first
-    # pass (flagged in the module docstring). CloudWatch requires BOTH
-    # WebACL (name) AND Region dimensions together.
+    # REGIONAL scope only. CLOUDFRONT-scope WebACLs live in us-east-1 regardless of the account's
+    # region, are listed with Scope="CLOUDFRONT", and publish under Region="Global" -- NOT
+    # discovered here (reported in the Phase 3 notes; a separate, flag-gated follow-up).
+    # CloudWatch requires BOTH WebACL (name) AND Region dimensions together.
+    #
+    # Phase 3 (WAF_PER_RULE_ENABLED): additionally remember each ACL's CloudWatch-enabled rules so the
+    # metrics collector queries only rules that exist. list_web_acls returns each ACL's LockToken (it
+    # changes on every edit), so get_web_acl -- one call per ACL -- runs only when the ACL is new or was
+    # edited; steady state costs zero extra WAF API calls beyond the list this function always made.
+    from app.collector import polling_model
+    per_rule = polling_model.waf_per_rule_enabled()
     waf = session.client("wafv2", region_name=region)
     count = 0
     # list_web_acls has no botocore paginator (WAFv2 predates that
@@ -624,8 +679,22 @@ def _discover_wafv2(session, account, region, cursor):
         for acl in resp.get("WebACLs", []):
             name = acl["Name"]
             acl_id = acl["Id"]
-            _upsert_resource(cursor, account["id"], "wafv2", name, name,
-                              {"acl_id": acl_id, "cw_extra_dims": {"Region": region}}, region)
+            tags = {"acl_id": acl_id, "cw_extra_dims": {"Region": region}}
+            if per_rule:
+                lock = acl.get("LockToken")
+                prev = _existing_waf_tags(cursor, account["id"], name)
+                if prev.get("waf_rules") is not None and lock and prev.get("lock_token") == lock:
+                    tags.update({k: prev[k] for k in ("lock_token", "acl_metric_name", "waf_rules") if k in prev})
+                else:
+                    try:
+                        full = waf.get_web_acl(Name=name, Scope="REGIONAL", Id=acl_id).get("WebACL", {})
+                        tags["lock_token"] = lock
+                        tags["acl_metric_name"] = (full.get("VisibilityConfig") or {}).get("MetricName") or name
+                        tags["waf_rules"] = _waf_rule_entries(full.get("Rules"))
+                    except Exception as e:     # keep what we knew; never drop rules on a transient API error
+                        logger.warning(f"  WAFv2 get_web_acl failed [{name}/{region}]: {e}")
+                        tags.update({k: prev[k] for k in ("lock_token", "acl_metric_name", "waf_rules") if k in prev})
+            _upsert_resource(cursor, account["id"], "wafv2", name, name, tags, region)
             count += 1
         marker = resp.get("NextMarker")
         if not marker:

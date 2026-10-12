@@ -26,6 +26,7 @@ metrics ~4-5 min; Cloud Monitoring up to ~4 min. A window shorter than
 that silently skips points that were not yet visible on the previous poll.
 """
 
+import os
 from collections import namedtuple
 
 TIER_SECONDS = {
@@ -301,14 +302,66 @@ AWS_EXTENDED_ACTIVITY_DRIVEN_METRICS = {
     ("cloudfront", "OriginLatency"), ("cloudfront", "CacheHitRate"),
     ("wafv2", "AllowedRequests"), ("wafv2", "BlockedRequests"),
     ("wafv2", "CountedRequests"), ("wafv2", "PassedRequests"),
+    ("wafv2", "CaptchaRequests"), ("wafv2", "ChallengeRequests"),
+    ("wafv2", "RequestsWithValidCaptchaToken"), ("wafv2", "RequestsWithValidChallengeToken"),
+    ("wafv2", "BlockRatio"),    # derived from the counts above, same publish behaviour
 }
 
 
+# ── AWS WAFv2 (Phase 3, 2026-10-07) ─────────────────────────────────────
+# AWS WAF publishes AWS/WAFV2 metrics once a MINUTE, and only for a NONZERO value
+# (https://docs.aws.amazon.com/waf/latest/developerguide/waf-metrics.html), so a daily poll
+# (the old slow_extended placement) could only ever see a 48 h tail of sparse points.
+# Both switches below ship OFF; with them off every WAF code path behaves exactly as before
+# this phase (slow_extended, Period=300, WebACL-wide metrics only).
+#
+#   WAF_FAST_POLLING_ENABLED=true  key WAF metrics move to the 5-min "standard" tier and are
+#                                  queried at Period=60 (1-min points); the two valid-token
+#                                  metrics move to the 15-min "low" tier. Collected by the
+#                                  dedicated app/collector/metrics/waf.py, ONLY for WebACLs
+#                                  that discovery has found.
+#   WAF_PER_RULE_ENABLED=true      additionally query BlockedRequests / CountedRequests per
+#                                  rule (Period=300, same 5-min cycle). Needs the fast switch.
+#
+# Read from the environment (.env), once per process: a change needs a service restart.
+WAF_FAST_ENV = "WAF_FAST_POLLING_ENABLED"
+WAF_PER_RULE_ENV = "WAF_PER_RULE_ENABLED"
+WAF_KEY_PERIOD_SEC = 60        # AWS's native publish cadence for WAFV2
+WAF_RULE_PERIOD_SEC = 300      # per-rule series: coarser on purpose (cost + row count)
+WAF_STANDARD_METRICS = frozenset({
+    "AllowedRequests", "BlockedRequests", "CountedRequests", "PassedRequests",
+    "CaptchaRequests", "ChallengeRequests", "BlockRatio",
+})
+WAF_LOW_METRICS = frozenset({"RequestsWithValidCaptchaToken", "RequestsWithValidChallengeToken"})
+# Computed locally from other metrics' points -- never sent to CloudWatch, never billed.
+AWS_EXTENDED_DERIVED = {("wafv2", "BlockRatio")}
+
+
+def _env_on(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def waf_fast_enabled():
+    return _env_on(WAF_FAST_ENV)
+
+
+def waf_per_rule_enabled():
+    return waf_fast_enabled() and _env_on(WAF_PER_RULE_ENV)
+
+
 def aws_extended_period_sec(service, cw_metric_name):
+    if service == "wafv2" and waf_fast_enabled() and (
+            cw_metric_name in WAF_STANDARD_METRICS or cw_metric_name in WAF_LOW_METRICS):
+        return WAF_KEY_PERIOD_SEC
     return AWS_EXTENDED_PERIOD_OVERRIDES.get((service, cw_metric_name), _EXTENDED_DEFAULT_PERIOD_SEC)
 
 
 def aws_extended_tier(service, cw_metric_name):
+    if service == "wafv2" and waf_fast_enabled():
+        if cw_metric_name in WAF_STANDARD_METRICS:
+            return "standard"
+        if cw_metric_name in WAF_LOW_METRICS:
+            return "low"
     tier = AWS_EXTENDED_TIER_OVERRIDES.get((service, cw_metric_name))
     if tier:
         return tier

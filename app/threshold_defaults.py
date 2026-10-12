@@ -34,7 +34,16 @@ DEFAULT_THRESHOLDS = {
     'ApproximateNumberOfMessagesNotVisible': (1000, 10000, '>'),
     'ApproximateNumberOfMessagesVisible': (1000, 10000, '>'),
     'BinLogDiskUsage': (1000000, 5000000, '>'),
-    'BlockedRequests': (1, 5, '>'),
+    # 2026-10-07 (Phase 3 WAF): BlockedRequests was a static (1, 5) -- any 6 blocked requests in a period was CRITICAL, which on
+    # an internet-facing ACL is routine scanner noise. Now the placeholder, i.e. ANOMALY-ONLY (see PLACEHOLDER_THRESHOLD):
+    # a sustained, confident spike vs this ACL's own baseline, never above WARNING, above the ALERT_MIN_ABSOLUTE floor.
+    # db/migrations/083_waf_blocked_requests_anomaly_only.sql moves rows still at the old untouched default.
+    'BlockedRequests': (1000000, 5000000, '>'),
+    'BlockRatio': (1000000, 5000000, '>'),                # derived %, anomaly-only; floor in ALERT_MIN_ABSOLUTE
+    'CaptchaRequests': (1000000, 5000000, '>'),
+    'ChallengeRequests': (1000000, 5000000, '>'),
+    'RequestsWithValidCaptchaToken': (1000000, 5000000, '>'),
+    'RequestsWithValidChallengeToken': (1000000, 5000000, '>'),
     'BucketSizeBytes': (1000000, 5000000, '>'),
     'BufferCacheHitRatio': (80, 50, '<'),
     'BurstBalance': (30, 10, '<'),
@@ -272,6 +281,14 @@ ALERT_MIN_ABSOLUTE = {
     "networkin": 1_000_000.0,
     "networkout": 1_000_000.0,
     "blockedrequests": 10.0,
+    # AWS WAF (Phase 3, 2026-10-07). Units: requests per 1-MINUTE point (the WAF fast path stores Period=60 sums); blockratio
+    # is a percentage (the collector also refuses to emit a ratio below WAF_RATIO_MIN_REQUESTS requests in the minute).
+    # Allowed: 100/min is ~1.7 req/s -- below that an ACL is effectively idle and "3x normal" means nothing.
+    "allowedrequests": 100.0,
+    "countedrequests": 10.0,
+    "captcharequests": 10.0,
+    "challengerequests": 10.0,
+    "blockratio": 25.0,
     # ALB target 4xx (client error) count. PROD 2026-10-03, 7 days, value at trigger time: of 356 alerts
     # 207 fired at <=5 requests and 49 more at 6-10 (72% at or below 10; alert 9160 fired at 3 requests
     # against a dynamic line of 1.77). A handful of client errors per 5 minutes is background noise on

@@ -29,10 +29,13 @@ def test_floor_table_holds_exactly_the_agreed_metrics_and_units():
         "volumereadops": 1000.0, "volumewriteops": 1000.0,
         "volumereadbytes": 50_000_000.0, "volumewritebytes": 50_000_000.0,
         "networkin": 1_000_000.0, "networkout": 1_000_000.0, "blockedrequests": 10.0,
-        "httpcode_target_4xx_count": 10.0}
+        "httpcode_target_4xx_count": 10.0,
+        # Phase 3 (2026-10-07) AWS WAF, per 1-minute point
+        "allowedrequests": 100.0, "countedrequests": 10.0, "captcharequests": 10.0,
+        "challengerequests": 10.0, "blockratio": 25.0}
     assert alert_floor("VolumeReadOps") == 1000.0                 # PascalCase family (extended tier) too
     assert alert_floor("NetworkOut") == 1_000_000.0 and alert_floor("BlockedRequests") == 10.0
-    assert alert_floor("requestcount") == 0.0 and alert_floor("allowedrequests") == 0.0 and alert_floor(None) == 0.0
+    assert alert_floor("requestcount") == 0.0 and alert_floor("passedrequests") == 0.0 and alert_floor(None) == 0.0
 
 
 def test_4xx_count_has_a_floor_but_server_errors_never_do():

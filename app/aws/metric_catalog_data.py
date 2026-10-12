@@ -311,8 +311,23 @@ CURATED = {
         # structurally cannot.
         ("AllowedRequests", "Count", "Sum", True,  "Requests allowed"),
         ("BlockedRequests", "Count", "Sum", True,  "Requests blocked"),
-        ("CountedRequests", "Count", "Sum", False, "Requests matched in count mode"),
-        ("PassedRequests",  "Count", "Sum", False, "Requests passed through"),
+        # 2026-10-07 (Phase 3 WAF): CountedRequests / PassedRequests are now
+        # defaults -- both are denominators of the derived BlockRatio below
+        # (collected together or not at all), and Counted is the signal that
+        # a rule is still in test mode.
+        ("CountedRequests", "Count", "Sum", True,  "Requests matched in count mode"),
+        ("PassedRequests",  "Count", "Sum", True,  "Requests passed through (rule-group evaluation, no rule matched)"),
+        # CAPTCHA / Challenge actions. Names and Sum statistic verified against
+        # https://docs.aws.amazon.com/waf/latest/developerguide/waf-metrics.html
+        # (2026-10-07). AWS reports a point only for a NONZERO value, one per minute.
+        ("CaptchaRequests",                   "Count", "Sum", True, "Requests that hit a CAPTCHA action (terminating; excludes valid-token requests)"),
+        ("ChallengeRequests",                 "Count", "Sum", True, "Requests that hit a Challenge action (terminating; excludes valid-token requests)"),
+        ("RequestsWithValidCaptchaToken",     "Count", "Sum", True, "Requests carrying a valid CAPTCHA token (CAPTCHA already solved)"),
+        ("RequestsWithValidChallengeToken",   "Count", "Sum", True, "Requests carrying a valid Challenge token (silent challenge already passed)"),
+        # DERIVED by the collector from the request counts above -- never sent to
+        # CloudWatch (polling_model.AWS_EXTENDED_DERIVED keeps it out of
+        # EXTENDED_METRICS). Blocked / (Allowed + Blocked + Counted + Passed).
+        ("BlockRatio", "Percent", "Average", True, "Derived: blocked requests as % of all WAF-evaluated requests (only when traffic is above a minimum)"),
     ]),
     "redshift": ("Amazon Redshift", "AWS/Redshift", "extended", [
         ("CPUUtilization",       "Percent", "Average", True, "% CPU used"),

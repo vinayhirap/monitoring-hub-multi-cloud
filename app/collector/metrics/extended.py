@@ -39,6 +39,8 @@ for _service_key, (_display, _namespace, _category, _metrics) in CURATED.items()
          polling_model.AWS_EXTENDED_NAMESPACE_OVERRIDES.get((_service_key, m_name), _namespace))
         for (m_name, unit, stat, is_default, desc) in _metrics
         if (_service_key, m_name) not in polling_model.AWS_EXTENDED_UNSUPPORTED
+        # derived locally (e.g. wafv2 BlockRatio): there is no CloudWatch metric to ask for
+        and (_service_key, m_name) not in polling_model.AWS_EXTENDED_DERIVED
     ]
 
 # Services confirmed, via a live 24h metric_history audit on 2026-09-12
@@ -207,6 +209,11 @@ def _build_dimensions(resource, cw_metric_name=None):
     # bare cluster name CloudWatch's ClusterName dimension actually needs
     # is in resources.name instead (same row, stored separately).
     dim_value = resource["name"] if rt == "ecs" else resource["resource_id"]
+    if rt == "wafv2":
+        # WebACL dimension = the ACL's VisibilityConfig.MetricName (== its Name unless someone chose differently);
+        # discovery records the real one only when WAF_PER_RULE_ENABLED made it call get_web_acl.
+        _t = resource.get("tags")
+        dim_value = (_t.get("acl_metric_name") if isinstance(_t, dict) else None) or dim_value
     if rt == "globalaccelerator":
         # resource_id is the accelerator ARN; CloudWatch's Accelerator
         # dimension is the trailing accelerator id.
@@ -491,6 +498,11 @@ def collect_extended_for_account(session, account, tier="extended"):
         cw_region = _region_for_service(resource_type, region)
         try:
             cw = session.client("cloudwatch", region_name=cw_region, config=STANDARD_RETRY)
+            if resource_type == "wafv2" and polling_model.waf_fast_enabled():
+                # Phase 3: 1-min period, per-minute zero-fill, per-rule and derived BlockRatio -- see waf.py
+                from app.collector.metrics import waf as waf_collector
+                waf_collector.collect_waf_resources(cw, resources, enabled_keys, tier)
+                continue
             _collect_extended_service(cw, resources, resource_type, enabled_keys,
                                       minutes=minutes, tier=tier)
         except Exception as e:

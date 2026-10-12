@@ -92,7 +92,7 @@ def test_blocked_requests_above_the_floor_alert_with_configured_severity_and_a_f
 
 def test_a_metric_without_a_floor_is_untouched():
     cur = _Rec()
-    _eval(_row("allowedrequests", 2, 1.0, 5.0), cur)             # same numbers, no floor -> still alerts
+    _eval(_row("passedrequests", 2, 1.0, 5.0), cur)             # same numbers, no floor (allowedrequests gained one in Phase 3) -> still alerts
     assert cur.inserted_alert() is not None
 
 
