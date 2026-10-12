@@ -1,0 +1,76 @@
+/* Check detail drawer (shell, scrim, Esc/focus handling come from components/ResourceDrawer) */
+.syn-row-click { cursor: pointer; }
+.syn-row-click:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.cd { padding: 0 20px 28px; min-width: 0; }
+.cd-head { position: sticky; top: 0; z-index: 7; margin: 0 -20px 8px; padding: 14px 20px 10px; background: var(--surface-1, var(--bg-card)); border-bottom: 1px solid var(--border); }
+.cd-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.cd-title h2 { font-size: 16px; font-weight: 700; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.cd-close { flex: none; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 1px solid var(--border-md); color: var(--text-muted); border-radius: var(--radius); cursor: pointer; }
+.cd-close:hover { border-color: var(--border-bright); color: var(--text-primary); }
+.cd-sub { display: flex; align-items: baseline; gap: 10px; margin-top: 6px; flex-wrap: wrap; font-size: 12px; }
+.cd-type { font-size: 10px; padding: 2px 8px; border: 1px solid var(--border-md); border-radius: 3px; color: var(--text-muted); }
+.cd-target { color: var(--text-secondary); overflow-wrap: anywhere; min-width: 0; }
+
+.cd-sec { margin-top: 18px; min-width: 0; }
+.cd-sec h3 { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-secondary); font-family: var(--font-mono); margin: 0 0 10px; }
+.cd .mono { font-family: var(--font-mono); }
+
+.cd-state { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.cd-badge-up      { background: rgba(34,197,94,.12);  color: var(--green);  border: 1px solid rgba(34,197,94,.3); }
+.cd-badge-down    { background: rgba(239,68,68,.12);  color: var(--red);    border: 1px solid rgba(239,68,68,.3); }
+.cd-badge-failing { background: rgba(245,158,11,.12); color: var(--warn-fg); border: 1px solid rgba(245,158,11,.35); }
+.cd-badge-unknown { background: rgba(99,130,190,.1);  color: var(--text-muted); border: 1px solid var(--border-md); }
+.cd-paused { font-size: 12px; color: var(--text-muted); }
+
+.cd-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 10px 16px; margin: 0 0 10px; }
+.cd-facts-tls { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); margin-top: 14px; }
+.cd-fact { min-width: 0; }
+.cd-fact dt { font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); font-family: var(--font-mono); }
+.cd-fact dd { margin: 3px 0 0; font-size: 12px; color: var(--text-primary); overflow-wrap: anywhere; white-space: normal; }
+
+/* same colours as the list's red error / amber notice, wrapped in full */
+.cd-err, .cd-note, .cd-ok { font-size: 12px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; padding: 8px 10px; border-radius: var(--radius); }
+.cd-err  { color: var(--red);     background: rgba(239,68,68,.08);  border: 1px solid rgba(239,68,68,.3); }
+.cd-note { color: var(--warn-fg); background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.3); }
+.cd-ok   { color: var(--text-muted); }
+
+.cd-range { display: inline-flex; margin-top: 18px; border: 1px solid var(--border-md); border-radius: var(--radius); overflow: hidden; }
+.cd-range button { background: transparent; border: 0; color: var(--text-secondary); padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.cd-range button + button { border-left: 1px solid var(--border-md); }
+.cd-range button.on { background: var(--accent-dim); color: var(--accent); }
+
+.cd-chart { width: 100%; min-width: 0; }
+.cd-legend { font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.5; }
+.cd-dot-fail { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #f26868; vertical-align: middle; }
+.cd-empty { padding: 14px 0; font-size: 12px; color: var(--text-muted); }
+.cd-load-err { margin-top: 14px; }
+
+.cd-probes { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cd-probes th { text-align: left; padding: 8px 10px; font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
+.cd-probes td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; color: var(--text-secondary); }
+.cd-probes td.mono { white-space: nowrap; }
+/* error text is never truncated: the message column takes the remaining width and wraps */
+.cd-msg { min-width: 180px; white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
+.cd-msg-err  { color: var(--red); }
+.cd-msg-note { color: var(--warn-fg); }
+.cd-res { font-size: 10px; font-weight: 700; font-family: var(--font-mono); padding: 1px 7px; border-radius: 3px; }
+.cd-res-ok     { color: var(--green);   background: rgba(34,197,94,.12); }
+.cd-res-fail   { color: var(--red);     background: rgba(239,68,68,.12); }
+.cd-res-notice { color: var(--warn-fg); background: rgba(245,158,11,.12); }
+.cd-more { margin-top: 10px; background: transparent; border: 1px solid var(--border-md); color: var(--text-secondary); padding: 7px 14px; border-radius: var(--radius); font-size: 12px; cursor: pointer; }
+.cd-more:hover { border-color: var(--border-bright); color: var(--text-primary); }
+
+/* narrow screens: each probe becomes a small card, so nothing scrolls sideways and the message keeps the full width */
+@media (max-width: 560px) {
+  .cd { padding: 0 14px 24px; }
+  .cd-head { margin: 0 -14px 8px; padding: 12px 14px 10px; }
+  .cd-probes thead { display: none; }
+  .cd-probes, .cd-probes tbody, .cd-probes tr, .cd-probes td { display: block; width: 100%; box-sizing: border-box; }
+  .cd-probes tr { padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .cd-probes td { display: flex; gap: 10px; padding: 2px 0; border: 0; }
+  .cd-probes td::before { content: attr(data-label); flex: none; width: 52px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); font-family: var(--font-mono); padding-top: 1px; }
+  .cd-probes td.mono { white-space: normal; }
+  .cd-msg { min-width: 0; flex: 1; }
+  .cd-msg:empty { display: none; }
+}

@@ -15,6 +15,7 @@ import {
 } from "../api/api";
 import { PlusIcon, TrashIcon, EditIcon, AlertOctagonIcon } from "../components/icons";
 import "./SyntheticChecks.css";
+import CheckDetail from "./synthetic/CheckDetail";
 
 const EMPTY_FORM = {
   aws_account_id: "", name: "", check_type: "http", target: "",
@@ -181,6 +182,7 @@ function EditCheckForm({ check, onCancel, onSaved }) {
 
 export default function SyntheticChecks() {
   const [checks, setChecks] = useState([]);
+  const [detailId, setDetailId] = useState(null);   // row clicked -> detail drawer
   const [accounts, setAccounts] = useState([]);
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -308,7 +310,7 @@ export default function SyntheticChecks() {
             </thead>
             <tbody>
               {checks.map(c => (
-                <tr key={c.id}>
+                <tr key={c.id} {...CheckDetail.rowProps(c.id, setDetailId)}>
                   <td>{c.name}</td>
                   <td className="mono">
                     {TYPE_LABEL[c.check_type] || c.check_type.toUpperCase()}
@@ -344,6 +346,7 @@ export default function SyntheticChecks() {
           </table></div>
         )}
       </div>
+      <CheckDetail checks={checks} id={detailId} onClose={() => setDetailId(null)} />
     </div>
   );
 }
