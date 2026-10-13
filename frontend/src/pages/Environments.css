@@ -51,3 +51,40 @@
 .env-modal-head span, .env-modal-note { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .env-modal-pre { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; overflow: auto; font-family: var(--font-mono); font-size: 12px; margin: 0; flex: 1; white-space: pre; }
 .env-modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* guided layout */
+.env-help { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px; margin-bottom: var(--space-4); font-size: 12px; }
+.env-help summary { cursor: pointer; font-weight: 700; }
+.env-help dl { margin: 8px 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; line-height: 1.5; }
+.env-help dt { font-weight: 700; }
+.env-help dd { margin: 0; color: var(--text-muted); }
+.env-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: var(--space-4); }
+.env-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px 16px; }
+.env-card h2, .env-defaults h2, .env-quick h2 { font-size: 13px; font-weight: 700; margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
+.env-step-no { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 11px; }
+.env-card-main { font-size: 13px; line-height: 1.5; margin-bottom: 8px; }
+.env-card-main strong { font-size: 20px; }
+.env-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.env-chip { padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; border: 1px solid var(--border-md); }
+.env-bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; margin-bottom: 8px; }
+.env-bar span { display: block; height: 100%; background: var(--green, #22c55e); }
+.env-link { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 12px; font-weight: 700; padding: 0; }
+.env-link:hover { text-decoration: underline; }
+button.env-tagtile { text-align: left; color: var(--text); cursor: pointer; flex: 1 1 150px; max-width: 220px; }
+button.env-tagtile:hover { border-color: var(--accent); }
+.env-tagtile-h { font-size: 11px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+.env-defaults { margin-bottom: var(--space-4); }
+.env-defaults p, .env-quick p { font-size: 12px; color: var(--text-muted); margin: 0 0 8px; line-height: 1.5; }
+.env-lead { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: var(--space-3); max-width: 760px; }
+.env-quick { background: var(--bg-card); border: 1px solid var(--accent); border-radius: var(--radius-lg); padding: 12px 16px; margin-bottom: var(--space-4); }
+.env-quick-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.env-quick-n { margin-left: 8px; font-size: 11px; color: var(--text-muted); }
+.env-quick-actions { display: flex; gap: 6px; }
+.env-quick-actions button, .env-steps button { background: var(--bg-card); border: 1px solid var(--border-md); color: var(--text); border-radius: var(--radius); padding: 5px 12px; font-size: 12px; cursor: pointer; }
+.env-quick-actions button:disabled, .env-steps button:disabled { opacity: .45; cursor: default; }
+.env-quick-more { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+.env-steps { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px 12px 34px; margin: 0 0 var(--space-4); font-size: 12px; line-height: 1.5; display: flex; flex-direction: column; gap: 8px; }
+.env-steps div { margin-top: 6px; }
+.env-source { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+.env-next { font-size: 12px; color: var(--text-muted); max-width: 320px; }
+.env-error:empty { display: none; }

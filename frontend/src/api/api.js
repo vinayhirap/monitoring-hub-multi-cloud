@@ -347,6 +347,9 @@ export const getEnvironmentResources = (params = {}) => {
 };
 export const classifyResources = (resource_ids, env) =>
   apiFetch("/api/environments/classify", { method: "POST", body: JSON.stringify({ resource_ids, env }) });
+// every resource of one type in one account that is still waiting for an environment
+export const classifyGroup = (group, env) =>
+  apiFetch("/api/environments/classify", { method: "POST", body: JSON.stringify({ group, env }) });
 export const setAccountDefaultEnv = (accountId, env) =>
   apiFetch(`/api/environments/accounts/${accountId}/default`, { method: "PUT", body: JSON.stringify({ env }) });
 export const getTagPlan = (params = {}) => {
