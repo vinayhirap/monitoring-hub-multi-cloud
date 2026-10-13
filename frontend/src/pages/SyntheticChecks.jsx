@@ -181,7 +181,7 @@ export default function SyntheticChecks() {
   const [editingId, setEditingId] = useState(null);
 
   const load = useCallback(() => {
-    getSyntheticChecks().then(setChecks).catch(e => setError(e.message));
+    getSyntheticChecks().then(setChecks).catch(e => setError(errText(e)));
     getAccounts().then(setAccounts).catch(() => {});
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -200,7 +200,7 @@ export default function SyntheticChecks() {
       setForm(EMPTY_FORM);
       load();
     } catch (err) {
-      setError(err.message);
+      setError(errText(err));
     } finally {
       setSaving(false);
     }
@@ -210,7 +210,7 @@ export default function SyntheticChecks() {
     try {
       await updateSyntheticCheck(c.id, { enabled: c.enabled ? 0 : 1 });
       load();
-    } catch (err) { setError(err.message); }
+    } catch (err) { setError(errText(err)); }
   };
 
   const handleDelete = async (id) => {
@@ -218,7 +218,7 @@ export default function SyntheticChecks() {
       await deleteSyntheticCheck(id);
       if (id === editingId) setEditingId(null);
       load();
-    } catch (err) { setError(err.message); }
+    } catch (err) { setError(errText(err)); }
   };
 
   return (
