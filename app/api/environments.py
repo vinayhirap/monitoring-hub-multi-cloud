@@ -3,7 +3,8 @@
 Environment classification API (phase 4a).
 
   GET  /api/environments/summary                 counts per env / source, per account
-  GET  /api/environments/resources               the Needs-classification queue, or every resource
+  GET  /api/environments/resources               the Needs-classification queue, the Tagging view, or every resource
+  GET  /api/environments/tag-plan                an AWS CLI script that writes the Environment tag for CloudOps decisions
   POST /api/environments/classify                mark one or many resources prod|uat|dev|ignore|clear
   PUT  /api/environments/accounts/{id}/default   set / clear an account's default environment
 
@@ -33,6 +34,7 @@ from app.auth.authorization import get_accessible_account_ids
 from app.auth.permissions import require_permission
 from app.collector.env_sync import (NON_ALERTABLE_TYPES, STALE_RESOURCE_HOURS,
                                     sync_resource_environments)
+from app.collector.tag_plan import DEFAULT_SOURCES, build_tag_plan
 from app.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -73,6 +75,12 @@ def _require_account_access(current_user, account_ids):
         raise HTTPException(status_code=403, detail="You do not have access to one or more of these accounts")
 
 
+def _conflict(override, tags):
+    """A CloudOps manual choice that contradicts what the resource's own AWS tag says."""
+    tag_env = ec.tag_environment(tags)
+    return bool(override in ec.TIERS and tag_env and tag_env != override)
+
+
 def _iso(v):
     return v.isoformat() + "Z" if isinstance(v, datetime) else v
 
@@ -105,6 +113,20 @@ def summary(current_user: dict = Depends(require_permission("environments.view")
                 GROUP BY env, source
             """, _live_params() + scope_params)
             breakdown = cur.fetchall()
+            cur.execute(f"""
+                SELECT COALESCE(r.tag_state, 'unclassified') AS state, COUNT(*) AS n
+                FROM resources r
+                JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
+                WHERE {_LIVE_WHERE}{scope_sql}
+                GROUP BY state
+            """, _live_params() + scope_params)
+            tag_states = {t["state"]: int(t["n"]) for t in cur.fetchall()}
+            cur.execute(f"""
+                SELECT r.tags, r.env_override FROM resources r
+                JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
+                WHERE {_LIVE_WHERE}{scope_sql} AND r.env_override IN ('prod', 'uat', 'dev')
+            """, _live_params() + scope_params)
+            conflicts = sum(1 for r in cur.fetchall() if _conflict(r["env_override"], r["tags"]))
         finally:
             cur.close()
     finally:
@@ -125,15 +147,18 @@ def summary(current_user: dict = Depends(require_permission("environments.view")
         "needs_classification": sum(a["needs_classification"] for a in accounts),
         "by_env": by_env,
         "by_source": by_source,
+        "by_tag_state": tag_states,
+        "conflicts": conflicts,
         "accounts": accounts,
     }
 
 
 @router.get("/resources")
 def list_resources(
-    view: str = Query("needs_classification", pattern="^(needs_classification|all)$"),
+    view: str = Query("needs_classification", pattern="^(needs_classification|tagging|all)$"),
     env: Optional[str] = Query(None),
     source: Optional[str] = Query(None),
+    tag_state: Optional[str] = Query(None),
     account_id: Optional[int] = Query(None),
     resource_type: Optional[str] = Query(None),
     q: Optional[str] = Query(None, max_length=100),
@@ -146,6 +171,12 @@ def list_resources(
     params = _live_params() + scope_params
     if view == "needs_classification":
         where += f" AND {_QUEUE_WHERE}"
+    elif view == "tagging":
+        where += " AND r.tag_state IN ('missing', 'invalid', 'nonstandard')"
+    if tag_state:
+        if tag_state not in ec.TAG_STATES:
+            raise HTTPException(status_code=400, detail="tag_state must be ok, nonstandard, invalid, missing or not_checked")
+        where += " AND r.tag_state = %s"; params.append(tag_state)
     if env:
         if env == "unclassified":
             where += " AND r.env_resolved IS NULL"
@@ -178,7 +209,7 @@ def list_resources(
                        r.resource_id, r.name, r.region,
                        r.env_resolved AS env, r.env_source AS source, r.env_reason AS reason,
                        r.env_override AS override, r.env_override_by AS override_by,
-                       r.env_override_at AS override_at
+                       r.env_override_at AS override_at, r.tag_state, r.tags
                 FROM resources r
                 JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
                 WHERE {where}
@@ -192,7 +223,50 @@ def list_resources(
         conn.close()
     for r in rows:
         r["override_at"] = _iso(r["override_at"])
+        tags = r.pop("tags")                 # raw tags are not returned, only what is derived from them
+        r["missing_tags"] = ec.missing_tags(tags) if r["tag_state"] and r["tag_state"] != "not_checked" else []
+        r["tag_env"] = ec.tag_environment(tags)
+        r["conflict"] = _conflict(r["override"], tags)
     return {"items": rows, "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/tag-plan")
+def tag_plan(
+    account_id: Optional[int] = Query(None),
+    sources: str = Query(",".join(DEFAULT_SOURCES), max_length=60),
+    current_user: dict = Depends(require_permission("environments.view")),
+):
+    """An AWS CLI script that writes Environment=<tier> onto EC2 instances and EBS volumes whose
+    environment CloudOps decided but whose AWS tag is missing or non-standard. Generated text only:
+    nothing is executed and CloudOps changes nothing in AWS."""
+    chosen = tuple(x for x in (v.strip() for v in sources.split(",")) if x)
+    if not chosen or any(x not in ("manual", "name", "related", "account") for x in chosen):
+        raise HTTPException(status_code=400, detail="sources must be a list of manual, name, related, account")
+    scope_sql, scope_params = _scope(current_user)
+    where = _LIVE_WHERE + scope_sql
+    params = _live_params() + scope_params
+    if account_id is not None:
+        where += " AND r.aws_account_id = %s"; params.append(account_id)
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(f"""
+                SELECT r.id, r.aws_account_id, aa.account_id, aa.account_name, r.resource_type, r.resource_id,
+                       r.region, r.tags, r.env_resolved, r.env_source, r.tag_state
+                FROM resources r
+                JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
+                WHERE {where}
+            """, params)
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+    plan = build_tag_plan(rows, sources=chosen)
+    return {"script": plan["script"], "resources": plan["resources"], "commands": plan["commands"],
+            "accounts": plan["accounts"], "not_covered": plan["not_covered"],
+            "skipped_invalid": plan["skipped_invalid"], "sources": list(chosen)}
 
 
 def _env_counts(cur, pks):

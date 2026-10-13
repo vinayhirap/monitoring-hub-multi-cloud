@@ -44,7 +44,7 @@ INHERIT_EDGE_TYPES = ("attached_to",)
 
 _BASE_SELECT = """
     SELECT r.id, r.aws_account_id, r.resource_id, r.resource_type, r.name, r.tags,
-           r.env_override, r.env_resolved, r.env_source, r.env_reason,
+           r.env_override, r.env_resolved, r.env_source, r.env_reason, r.tag_state,
            aa.default_env
     FROM resources r
     JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
@@ -172,9 +172,11 @@ def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False
             report["total"] += 1
             _tally(report["by_source"], res.source)
             _tally(report["by_env"], res.env)
+            tstate = ec.tag_state(row.get("resource_type"), row.get("tags"))
             same = (row.get("env_resolved") == res.env
                     and row.get("env_source") == res.source
-                    and (row.get("env_reason") or "") == res.reason)
+                    and (row.get("env_reason") or "") == res.reason
+                    and row.get("tag_state") == tstate)
             if same:
                 continue
             report["changed"] += 1
@@ -182,7 +184,7 @@ def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False
             _tally(report["changed_by_env"], res.env)
             if res.env == ec.UNKNOWN and row.get("env_resolved") != ec.UNKNOWN:
                 report["newly_unknown"] += 1
-            updates.append((res.env, res.source, res.reason, row["id"]))
+            updates.append((res.env, res.source, res.reason, tstate, row["id"]))
 
         if dry_run or not updates:
             return report
@@ -192,8 +194,8 @@ def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False
             for i in range(0, len(updates), _CHUNK):
                 chunk = updates[i:i + _CHUNK]
                 wcur.executemany(
-                    "UPDATE resources SET env_resolved = %s, env_source = %s, env_reason = %s "
-                    "WHERE id = %s", chunk)
+                    "UPDATE resources SET env_resolved = %s, env_source = %s, env_reason = %s, "
+                    "tag_state = %s WHERE id = %s", chunk)
                 conn.commit()
                 report["applied"] += len(chunk)
         except Exception:

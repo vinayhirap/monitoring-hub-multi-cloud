@@ -349,3 +349,8 @@ export const classifyResources = (resource_ids, env) =>
   apiFetch("/api/environments/classify", { method: "POST", body: JSON.stringify({ resource_ids, env }) });
 export const setAccountDefaultEnv = (accountId, env) =>
   apiFetch(`/api/environments/accounts/${accountId}/default`, { method: "PUT", body: JSON.stringify({ env }) });
+export const getTagPlan = (params = {}) => {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== "" && v != null) qs.set(k, v); });
+  return apiFetch(`/api/environments/tag-plan?${qs.toString()}`);
+};

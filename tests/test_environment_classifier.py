@@ -312,3 +312,56 @@ def test_two_parents_that_agree_inherit():
 
 def test_related_is_a_known_source():
     assert "related" in ec.SOURCES
+
+
+# -- tag compliance ----------------------------------------------------------------
+
+def test_tag_state_ok_needs_the_exact_standard_key_and_value():
+    assert ec.tag_state("ec2", {"Environment": "prod"}) == "ok"
+    assert ec.tag_state("ec2", {"Environment": "uat", "Owner": "x"}) == "ok"
+    assert ec.tag_state("ec2", '{"Environment": "dev"}') == "ok"
+
+
+def test_tag_state_nonstandard_is_understood_but_not_to_standard():
+    for tags in ({"Env": "prod"}, {"environment": "prod"}, {"Environment": "Production"},
+                 {"Environment": "staging"}, {"Stage": "dev"}, {"Environment": "prod "}):
+        assert ec.tag_state("ec2", tags) == "nonstandard", tags
+
+
+def test_tag_state_invalid_is_present_but_meaningless_or_ambiguous():
+    for tags in ({"Environment": "blue"}, {"Environment": "prod/dev"}, {"Environment": ""},
+                 {"Environment": "non-prod"}):
+        assert ec.tag_state("ec2", tags) == "invalid", tags
+
+
+def test_tag_state_missing_when_no_environment_style_key():
+    assert ec.tag_state("ec2", {}) == "missing"
+    assert ec.tag_state("rds", {"Name": "x", "Owner": "y", "_instance_type": "t3"}) == "missing"
+    assert ec.tag_state("ec2", None) == "missing"
+    assert ec.tag_state("ec2", {"Tier": "prod"}) == "missing"
+
+
+def test_tag_state_is_not_checked_when_the_stored_tags_are_not_the_resources_own():
+    for rtype in ("s3", "logs", "kms", "lambda", "elb", "sqs", "natgateway", "certificatemanager"):
+        assert ec.tag_state(rtype, {}) == "not_checked", rtype
+    assert ec.tag_state("s3", {"Environment": "prod"}) == "not_checked"   # not even when present
+
+
+def test_attached_ebs_volume_carries_its_instances_tags_so_it_is_not_checked():
+    assert ec.tag_state("ebs", {"parent_ec2": "i-1"}) == "not_checked"
+    assert ec.tag_state("ebs", {"Environment": "prod", "parent_ec2": "i-1"}) == "not_checked"
+    assert ec.tag_state("ebs", {"_ebs_state": "available"}) == "missing"          # unattached: own tags
+    assert ec.tag_state("ebs", {"Environment": "dev"}) == "ok"
+
+
+def test_missing_tags_lists_absent_mandatory_keys_ignoring_case():
+    got = ec.missing_tags({"environment": "prod", "OWNER": "t", "Application": "a"})
+    assert got == ["CostCenter", "Criticality", "DataClassification", "ManagedBy"]
+    assert ec.missing_tags({}) == list(ec.MANDATORY_TAGS)
+    assert ec.missing_tags(None) == list(ec.MANDATORY_TAGS)
+
+
+def test_tag_environment_reads_only_the_tag():
+    assert ec.tag_environment({"Env": "Production"}) == "prod"
+    assert ec.tag_environment({"Environment": "blue"}) is None
+    assert ec.tag_environment({}) is None

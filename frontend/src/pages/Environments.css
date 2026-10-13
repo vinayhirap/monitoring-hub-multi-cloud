@@ -32,3 +32,22 @@
 .env-unknown, .env-none { color: var(--text-muted); border-style: dashed; }
 .env-ignore { color: var(--text-muted); text-decoration: line-through; }
 .env-pager { display: flex; align-items: center; gap: 12px; justify-content: flex-end; margin-top: var(--space-4); font-size: 12px; color: var(--text-muted); }
+.tag-ok { color: var(--green, #22c55e); border-color: var(--green, #22c55e); }
+.tag-nonstandard { color: var(--accent); border-color: var(--accent); }
+.tag-invalid, .tag-missing { color: var(--red); border-color: var(--red); }
+.tag-not_checked { color: var(--text-muted); border-style: dashed; }
+.env-tagtiles { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: var(--space-4); }
+.env-tagtile { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px; min-width: 110px; }
+.env-tagtile-n { font-size: 20px; font-weight: 700; }
+.env-tagtile-l { font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); font-family: var(--font-mono); }
+.env-tagtile.tag-conflict { border-color: var(--red); }
+.env-tagnote { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; font-size: 12px; line-height: 1.5; margin-bottom: var(--space-3); display: flex; gap: 14px; align-items: center; justify-content: space-between; }
+.env-tagnote button, .env-modal-actions button { background: var(--bg-card); border: 1px solid var(--border-md); color: var(--text); border-radius: var(--radius); padding: 6px 12px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.env-conflict { font-size: 11px; color: var(--red); margin-top: 3px; }
+.env-missing { margin-top: 3px; }
+.env-modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.env-modal-box { background: var(--bg-card); border: 1px solid var(--border-md); border-radius: var(--radius-lg); width: min(900px, 94vw); max-height: 86vh; display: flex; flex-direction: column; padding: 16px; gap: 10px; }
+.env-modal-head { display: flex; justify-content: space-between; font-size: 13px; }
+.env-modal-head span, .env-modal-note { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.env-modal-pre { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; overflow: auto; font-family: var(--font-mono); font-size: 12px; margin: 0; flex: 1; white-space: pre; }
+.env-modal-actions { display: flex; gap: 8px; justify-content: flex-end; }

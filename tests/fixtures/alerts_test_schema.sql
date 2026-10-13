@@ -126,6 +126,7 @@ CREATE TABLE `resources` (
   `env_resolved` varchar(10) DEFAULT NULL,
   `env_source` varchar(10) DEFAULT NULL,
   `env_reason` varchar(200) DEFAULT NULL,
+  `tag_state` varchar(12) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uniq_resource_identity` (`aws_account_id`,`resource_type`,`resource_id`),
   KEY `idx_resources_tier` (`aws_account_id`,`monitoring_tier`,`instance_state`)

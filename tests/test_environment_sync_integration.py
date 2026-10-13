@@ -102,3 +102,18 @@ def test_same_resource_id_in_another_account_is_not_mixed_up(db):
     _sync()
     v = db.one("SELECT env_resolved AS env FROM resources WHERE resource_id='vol-1'")
     assert v["env"] == "dev"
+
+
+def test_tag_state_is_stored_and_honest_about_what_it_cannot_see(db):
+    db.resource(1, "ec2", "i-0000000a", name="plain", tags={"Environment": "prod"})
+    db.resource(1, "ec2", "i-0000000b", name="plain-b", tags={"Env": "Production"})
+    db.resource(1, "ec2", "i-0000000c", name="plain-c", tags={"Name": "x"})
+    db.resource(1, "s3", "bucket-1", name="bucket-1", tags={})
+    db.resource(1, "ebs", "vol-0000000a", name="vol-0000000a", tags={"parent_ec2": "i-0000000a"})
+    db.resource(1, "ebs", "vol-0000000b", name="vol-0000000b", tags={"_ebs_state": "available"})
+    _sync()
+    ids = ("i-0000000a", "i-0000000b", "i-0000000c", "bucket-1", "vol-0000000a", "vol-0000000b")
+    got = {rid: db.one("SELECT tag_state FROM resources WHERE resource_id=%s", (rid,))["tag_state"] for rid in ids}
+    assert got == {"i-0000000a": "ok", "i-0000000b": "nonstandard", "i-0000000c": "missing",
+                   "bucket-1": "not_checked", "vol-0000000a": "not_checked", "vol-0000000b": "missing"}
+    assert _sync()["changed"] == 0           # stable on a second run

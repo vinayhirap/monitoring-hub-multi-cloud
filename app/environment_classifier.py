@@ -230,3 +230,67 @@ def severity_for(env, is_critical):
     if is_critical:
         return "CRITICAL"
     return "WARNING" if is_prod_like(env) else "INFO"
+
+
+# ---------------------------------------------------------------------------------------------
+# Tag compliance (docs/TAGGING_STANDARD.md)
+# ---------------------------------------------------------------------------------------------
+MANDATORY_TAGS = ("Environment", "Application", "Owner", "CostCenter",
+                  "Criticality", "DataClassification", "ManagedBy")
+TAG_STATES = ("ok", "nonstandard", "invalid", "missing", "not_checked")
+NEEDS_TAGGING = ("missing", "invalid", "nonstandard")
+
+# Resource types whose discovery stores the resource's REAL AWS tags. For every other type the
+# stored tags are internal bookkeeping (or nothing), so "untagged" cannot be said honestly and the
+# state is "not_checked". Attached EBS volumes are a special case, see tags_known().
+TAGS_COLLECTED_TYPES = frozenset({"ec2", "rds", "efs", "autoscaling", "transitgateway", "vpn"})
+
+
+def _fold_key(k):
+    return re.sub(r"[-.\s]+", "_", str(k).strip().lower())
+
+
+def tags_known(resource_type, tags):
+    """True when the stored tags are the resource's own AWS tags.
+
+    An attached EBS volume is stored WITH ITS INSTANCE'S TAGS (discovery copies them on purpose
+    so alerts inherit the instance's environment, plus a parent_ec2 key). Its own tags are not
+    known, so it is not checked; an unattached volume carries its own tags and is.
+    """
+    t = str(resource_type or "").lower()
+    if t in TAGS_COLLECTED_TYPES:
+        return True
+    if t == "ebs":
+        return "parent_ec2" not in _tags_dict(tags)
+    return False
+
+
+def tag_state(resource_type, tags):
+    """ok | nonstandard | invalid | missing | not_checked.
+
+    ok          Environment tag, exactly the standard key and one of prod / uat / dev
+    nonstandard understood but not to the standard (Env=Production, environment=prod, ...)
+    invalid     an environment-style tag is present but its value means nothing / is ambiguous
+    missing     no environment-style tag at all
+    not_checked the stored tags are not this resource's own AWS tags (cannot say)
+    """
+    if not tags_known(resource_type, tags):
+        return "not_checked"
+    d = _tags_dict(tags)
+    if str(d.get("Environment", "")) in TIERS:
+        return "ok"
+    if not any(_fold_key(k) in TAG_KEYS for k in d):
+        return "missing"
+    return "nonstandard" if _from_tags(d) else "invalid"
+
+
+def tag_environment(tags):
+    """The environment the resource's own tag says (prod / uat / dev), or None."""
+    hit = _from_tags(tags)
+    return hit.env if hit else None
+
+
+def missing_tags(tags):
+    """Mandatory standard tags absent from the resource (key case ignored)."""
+    have = {_fold_key(k) for k in _tags_dict(tags)}
+    return [k for k in MANDATORY_TAGS if _fold_key(k) not in have]
