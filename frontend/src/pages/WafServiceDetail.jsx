@@ -96,11 +96,10 @@ function TopRules({ accountId, r, timeRange, refreshTick }) {
 
 function WafResourcePanel({ accountId, r, metrics, timeRange, timeRangeLabel, refreshTick, ianaName }) {
   const allowed = sumOf(metrics?.AllowedRequests), blocked = sumOf(metrics?.BlockedRequests);
-  const counted = sumOf(metrics?.CountedRequests), passed = sumOf(metrics?.PassedRequests);
+  const counted = sumOf(metrics?.CountedRequests);
   const captcha = sumOf(metrics?.CaptchaRequests), challenge = sumOf(metrics?.ChallengeRequests);
-  const parts = [allowed, blocked, counted, passed];
-  const complete = parts.every((x) => x != null);
-  const total = complete ? parts.reduce((a, b) => a + b, 0) : null;
+  // Blocked / (Allowed + Blocked): Counted and Passed overlap with those two, so they are not part of the denominator.
+  const total = allowed != null && blocked != null ? allowed + blocked : null;
   const ratio = total ? (100 * blocked) / total : null;
   const trend = mergeSeries(metrics, TREND.map((t) => t[0]));
   const trendKeys = TREND.filter(([n]) => metrics?.[n] && !metrics[n].widened);
@@ -112,7 +111,7 @@ function WafResourcePanel({ accountId, r, metrics, timeRange, timeRangeLabel, re
         <Kpi label={`Blocked · ${timeRangeLabel}`} value={fmt(blocked)} tone={blocked ? "var(--red, #ef4444)" : undefined}
              sub={metrics?.BlockedRequests?.widened ? NO_POINTS : undefined} />
         <Kpi label="Block ratio" value={ratio == null ? "—" : `${ratio.toFixed(1)}%`}
-             sub={total == null ? "needs Allowed, Blocked, Counted, Passed in this range" : `of ${fmt(total)} requests`} />
+             sub={total == null ? "needs Allowed and Blocked in this range" : `of ${fmt(total)} allowed + blocked`} />
         <Kpi label="CAPTCHA" value={fmt(captcha)} />
         <Kpi label="Challenge" value={fmt(challenge)} />
         <Kpi label="Counted" value={fmt(counted)} sub="matched in count mode" />

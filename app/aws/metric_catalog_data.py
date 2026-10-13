@@ -326,8 +326,8 @@ CURATED = {
         ("RequestsWithValidChallengeToken",   "Count", "Sum", True, "Requests carrying a valid Challenge token (silent challenge already passed)"),
         # DERIVED by the collector from the request counts above -- never sent to
         # CloudWatch (polling_model.AWS_EXTENDED_DERIVED keeps it out of
-        # EXTENDED_METRICS). Blocked / (Allowed + Blocked + Counted + Passed).
-        ("BlockRatio", "Percent", "Average", True, "Derived: blocked requests as % of all WAF-evaluated requests (only when traffic is above a minimum)"),
+        # EXTENDED_METRICS). Blocked / (Allowed + Blocked).
+        ("BlockRatio", "Percent", "Average", True, "Derived: blocked requests as % of allowed + blocked requests (only when traffic is above a minimum)"),
     ]),
     "redshift": ("Amazon Redshift", "AWS/Redshift", "extended", [
         ("CPUUtilization",       "Percent", "Average", True, "% CPU used"),

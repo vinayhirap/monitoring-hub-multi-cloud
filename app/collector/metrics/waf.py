@@ -46,9 +46,11 @@ RULE_PREFIX = "waf_rule__"
 RULE_BLOCKED_PREFIX = RULE_PREFIX + "blocked__"
 RULE_COUNTED_PREFIX = RULE_PREFIX + "counted__"
 RATIO_DB_NAME = "blockratio"
-# Components of BlockRatio = Blocked / (Allowed + Blocked + Counted + Passed). All four must be enabled for the account,
-# otherwise the denominator would silently shrink and the ratio overstate.
-RATIO_COMPONENTS = ("AllowedRequests", "BlockedRequests", "CountedRequests", "PassedRequests")
+# BlockRatio = Blocked / (Allowed + Blocked). Counted and Passed are deliberately NOT in the denominator: a request matched by
+# a Count-mode rule (or passed through a rule group) continues on and is ALSO reported as Allowed or Blocked, so adding them
+# double-counts and understates the ratio (PROD showed Counted up to 430/min). Both components must be enabled for the
+# account, otherwise the denominator would silently shrink and the ratio overstate.
+RATIO_COMPONENTS = ("AllowedRequests", "BlockedRequests")
 # A ratio is meaningless on a handful of requests (1 blocked of 2 = 50%). Below this many requests in the minute no ratio
 # point is written at all. Tunable without a deploy: WAF_RATIO_MIN_REQUESTS.
 RATIO_MIN_REQUESTS = max(1, int(os.environ.get("WAF_RATIO_MIN_REQUESTS", "20")))
@@ -120,7 +122,7 @@ def fill_minutes(points, start_epoch, end_epoch, period=60):
 
 def derive_block_ratio(series, min_requests=RATIO_MIN_REQUESTS):
     """series: {cw_metric_name: {epoch: value}} already zero-filled over the same buckets.
-    -> {epoch: 100 * Blocked / (Allowed + Blocked + Counted + Passed)} for buckets with at least `min_requests` requests.
+    -> {epoch: 100 * Blocked / (Allowed + Blocked)} for buckets with at least `min_requests` requests.
     Pure function."""
     if not all(c in series for c in RATIO_COMPONENTS):
         return {}

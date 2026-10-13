@@ -45,12 +45,8 @@ def test_fill_minutes_zero_fills_gaps():
 
 
 def test_block_ratio_math_and_traffic_floor():
-    s = {c: {0: 0.0, 60: 0.0} for c in waf.RATIO_COMPONENTS}
-    s["BlockedRequests"] = {0: 10.0, 60: 1.0}
-    s["AllowedRequests"] = {0: 70.0, 60: 1.0}
-    s["CountedRequests"] = {0: 10.0, 60: 0.0}
-    s["PassedRequests"] = {0: 10.0, 60: 0.0}
-    assert waf.derive_block_ratio(s, 20) == {0: 10.0}      # minute 60 has 2 requests: no ratio
+    s = {"BlockedRequests": {0: 10.0, 60: 1.0}, "AllowedRequests": {0: 70.0, 60: 1.0}}
+    assert waf.derive_block_ratio(s, 20) == {0: 12.5}      # 10 / (70 + 10); minute 60 has 2 requests: no ratio
     assert waf.derive_block_ratio({"BlockedRequests": {0: 1.0}}, 1) == {}   # missing component: no ratio
 
 
