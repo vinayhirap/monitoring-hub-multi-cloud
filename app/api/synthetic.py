@@ -145,7 +145,8 @@ def list_checks(current_user: dict = Depends(require_permission("synthetic.view"
                    (SELECT ROUND(100 * AVG(r.success), 1)
                     FROM synthetic_check_results r
                     WHERE r.check_id = c.id
-                      AND r.checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)) AS uptime_pct_24h,
+                      AND r.checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+                      AND (c.target_changed_at IS NULL OR r.checked_at >= c.target_changed_at)) AS uptime_pct_24h,
                    lr.error_message AS last_error, lr.success AS last_ok,
                    lr.cert_valid AS last_cert_valid,
                    lt.checked_at AS tls_checked_at, lt.cert_days_left, lt.cert_not_after,
@@ -156,11 +157,13 @@ def list_checks(current_user: dict = Depends(require_permission("synthetic.view"
             LEFT JOIN synthetic_check_results lr
                    ON lr.id = (SELECT r3.id FROM synthetic_check_results r3
                                WHERE r3.check_id = c.id
+                                 AND (c.target_changed_at IS NULL OR r3.checked_at >= c.target_changed_at)
                                ORDER BY r3.checked_at DESC, r3.id DESC LIMIT 1)
             LEFT JOIN synthetic_check_results lt
                    ON c.check_type = 'https'
                   AND lt.id = (SELECT r2.id FROM synthetic_check_results r2
                                WHERE r2.check_id = c.id AND r2.tls_version IS NOT NULL
+                                 AND (c.target_changed_at IS NULL OR r2.checked_at >= c.target_changed_at)
                                ORDER BY r2.checked_at DESC, r2.id DESC LIMIT 1)
             ORDER BY c.name
         """)
@@ -189,16 +192,25 @@ def get_check_results(
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
-            SELECT checked_at, success, response_time_ms, status_code, error_message,
-                   cert_days_left, cert_not_after, cert_subject, cert_issuer,
-                   tls_version, tls_cipher, handshake_ms, cert_valid
-            FROM synthetic_check_results
-            WHERE check_id = %s AND checked_at >= DATE_SUB(NOW(), INTERVAL %s HOUR)
-            ORDER BY checked_at ASC
+            SELECT r.checked_at, r.success, r.response_time_ms, r.status_code, r.error_message,
+                   r.cert_days_left, r.cert_not_after, r.cert_subject, r.cert_issuer,
+                   r.tls_version, r.tls_cipher, r.handshake_ms, r.cert_valid
+            FROM synthetic_check_results r
+            JOIN synthetic_checks c ON c.id = r.check_id
+            WHERE r.check_id = %s AND r.checked_at >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+              AND (c.target_changed_at IS NULL OR r.checked_at >= c.target_changed_at)
+            ORDER BY r.checked_at ASC
         """, (check_id, hours))
         results = cur.fetchall()
         uptime_pct = round(100 * sum(r["success"] for r in results) / len(results), 2) if results else None
-        return {"check_id": check_id, "window_hours": hours, "uptime_pct": uptime_pct, "results": results}
+        # only reported when the target change cut this window short, so the UI can say why older probes are missing
+        cur.execute("""
+            SELECT target_changed_at FROM synthetic_checks
+            WHERE id = %s AND target_changed_at >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+        """, (check_id, hours))
+        tc = cur.fetchone()
+        return {"check_id": check_id, "window_hours": hours, "uptime_pct": uptime_pct, "results": results,
+                "target_changed_at": tc["target_changed_at"] if tc else None}
     finally:
         cur.close(); conn.close()
 
@@ -287,6 +299,7 @@ def update_check(check_id: int, payload: dict = Body(...), current_user: dict = 
     if not raw:
         raise HTTPException(status_code=400, detail="No editable fields provided")
     updates = _validate_common(raw)
+    target_changed = False
     if "target" in raw or "expect_https_redirect" in raw:
         row = _get_check_row(check_id)
         check_type = row["check_type"]
@@ -298,6 +311,7 @@ def update_check(check_id: int, payload: dict = Body(...), current_user: dict = 
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             updates["target"] = target
+            target_changed = target != (row["target"] or "")
         # the redirect flag must stay valid for whatever the target ends up being
         if updates.get("expect_https_redirect", row["expect_https_redirect"]):
             try:
@@ -311,6 +325,10 @@ def update_check(check_id: int, payload: dict = Body(...), current_user: dict = 
     # streak restarts and the next collector tick probes with the new settings. (current_status and the open
     # alert are left alone -- the next probe moves them through the normal path.) A new interval pulls an
     # already-later next_check_at in, so a shorter interval takes effect without waiting out the old one.
+    if target_changed:
+        # a different host: results from before this moment describe the OLD target and are no longer shown
+        # in the list's TLS / last-error / uptime figures or in the detail drawer (rows are kept)
+        set_parts.append("target_changed_at = NOW()")
     if any(k in updates for k in _PROBE_AFFECTING_FIELDS):
         set_parts += ["consecutive_failures = 0", "next_check_at = NOW()"]
     elif "interval_seconds" in updates:

@@ -223,6 +223,9 @@ function Detail({ check: c, onClose }) {
         ))}
       </div>
 
+      {cur?.data?.target_changed_at && (
+        <div className="cd-since">Showing probes since the target was changed ({fmt(cur.data.target_changed_at)}); earlier probes were for the previous target.</div>
+      )}
       {cur?.error && <div className="syn-error cd-load-err" role="alert"><span>{cur.error}</span></div>}
       {!cur && <div className="cd-empty">Loading…</div>}
 

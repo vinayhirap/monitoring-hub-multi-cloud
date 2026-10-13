@@ -40,6 +40,7 @@
 .cd-range button + button { border-left: 1px solid var(--border-md); }
 .cd-range button.on { background: var(--accent-dim); color: var(--accent); }
 
+.cd-since { margin-top: 12px; font-size: 11px; line-height: 1.5; color: var(--text-muted); overflow-wrap: anywhere; }
 .cd-chart { width: 100%; min-width: 0; }
 .cd-legend { font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.5; }
 .cd-dot-fail { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #f26868; vertical-align: middle; }

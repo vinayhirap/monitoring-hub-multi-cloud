@@ -133,3 +133,4 @@
   .syn-edit-span2 { grid-column: 1 / -1; }
   .syn-edit-actions > button { flex: 1; }
 }
+.syn-edit-hint { font-size: 11px; line-height: 1.5; color: var(--warn-fg); overflow-wrap: anywhere; }

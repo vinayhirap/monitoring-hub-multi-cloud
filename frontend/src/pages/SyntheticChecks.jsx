@@ -136,8 +136,14 @@ function EditCheckForm({ check, onCancel, onSaved }) {
         <div className="syn-field syn-edit-full">
           <label>Target</label>
           <input aria-label="Target" value={f.target} onChange={set("target")} maxLength={500} required
+                 aria-describedby={f.target.trim() !== check.target ? "syn-target-hint" : undefined}
                  placeholder={check.check_type === "https" ? "https://api.example.com/health" : check.check_type === "http" ? "http://example.com/health" : check.check_type === "tcp" ? "db.example.com:5432" : "example.com"} />
         </div>
+        {f.target.trim() !== check.target && (
+          <div id="syn-target-hint" className="syn-edit-hint syn-edit-full">
+            Changing the target starts fresh uptime, certificate and TLS figures for this check; earlier probes (kept in the database) stop being shown.
+          </div>
+        )}
         <div className="syn-field">
           <label>Interval (sec)</label>
           <input aria-label="Interval (sec)" type="number" min="60" max="86400" value={f.interval_seconds} onChange={set("interval_seconds")} required />
