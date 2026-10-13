@@ -2,19 +2,20 @@
 // Per-check detail drawer for the Synthetic Checks page: current state, last error/notice, response-time and
 // cert-days-left trends, current TLS facts and a table of recent probes (error text wrapped, never truncated).
 //
-// Data: ONE request on open to GET /api/synthetic-checks/{id}/results?hours=N (no polling -- the page itself
-// does not poll). The endpoint has no row limit or pagination (every probe in the window, oldest first, N up to
+// Data: GET /api/synthetic-checks/{id}/results?hours=N on open, then refreshed on the page's own cadence (useAutoRefresh:
+// 30 s for 24 h, 5 min for 7 d, paused in a hidden tab). The endpoint has no row limit or pagination (every probe in the window, oldest first, N up to
 // 720 h), so the default window is 24 h and 7 d is only fetched when the person asks for it. Charts are
 // thinned to <= MAX_POINTS in the browser; the table pages client-side.
 //
 // Wiring in SyntheticChecks.jsx is three tiny pieces: <tr {...CheckDetail.rowProps(c.id, setDetailId)}>, a
 // detailId state, and <CheckDetail checks={checks} id={detailId} onClose={...} /> (renders nothing when id is null).
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine } from "recharts";
 import ResourceDrawer from "../../components/ResourceDrawer";
 import { XIcon } from "../../components/icons";
 import { getSyntheticResults } from "../../api/api";
 import { useTimezone } from "../../contexts/TimezoneContext";
+import { useAutoRefresh } from "../../hooks/useAutoRefresh";
 import { formatStamp, zoneLabel } from "../../utils/timeFormat";
 import "./CheckDetail.css";
 import { certThresholds } from "./certThresholds";
@@ -22,6 +23,9 @@ import { certThresholds } from "./certThresholds";
 const RANGES = [{ hours: 24, label: "24 h" }, { hours: 168, label: "7 d" }];
 const MAX_POINTS = 240;     // chart points; more than this is thinned
 const PAGE = 50;            // probe rows per page in the table
+// Live refresh (same cadence as the page's list): 30 s for the 24 h window; the 7 d window can be ~10k rows, so it
+// refreshes every 5 min instead.
+const REFRESH_MS = { 24: 30000, 168: 300000 };
 const TYPE_LABEL = { http: "HTTP", https: "HTTPS", tcp: "TCP", dns: "DNS" };
 const AXIS = { fontSize: 9, fill: "#3d5070" };
 const TIP = { background: "#0b1220", border: "1px solid rgba(99,130,190,0.2)", borderRadius: 6, fontSize: 11 };
@@ -140,13 +144,19 @@ function Detail({ check: c, onClose }) {
   const [hours, setHours] = useState(24);
   const [res, setRes] = useState(null);                      // { key, data } | { key, error }
   const key = `${c.id}:${hours}`;
-  useEffect(() => {
-    let live = true;
+  const latestKey = useRef(key);
+  useEffect(() => { latestKey.current = key; }, [key]);   // declared before the load effect so it runs first
+  // First load for a window shows its error; a later (auto) refresh that fails keeps the data already on screen.
+  const load = useCallback(() => {
     getSyntheticResults(c.id, hours)
-      .then(data => live && setRes({ key, data }))
-      .catch(e => live && setRes({ key, error: e.detail || e.message || "Could not load results" }));
-    return () => { live = false; };
+      .then(data => { if (latestKey.current === key) setRes({ key, data }); })
+      .catch(e => {
+        if (latestKey.current !== key) return;
+        setRes(prev => (prev?.key === key && prev.data ? prev : { key, error: e.detail || e.message || "Could not load results" }));
+      });
   }, [c.id, hours, key]);
+  useEffect(() => { load(); }, [load]);
+  useAutoRefresh(load, REFRESH_MS[hours]);
   const cur = res?.key === key ? res : null;                 // ignore a response for a window we've left
   const https = c.check_type === "https";
   const certTh = certThresholds(c);

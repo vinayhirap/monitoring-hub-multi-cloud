@@ -16,6 +16,7 @@ import {
 import { PlusIcon, TrashIcon, EditIcon, AlertOctagonIcon } from "../components/icons";
 import "./SyntheticChecks.css";
 import CheckDetail from "./synthetic/CheckDetail";
+import { useAutoRefresh } from "../hooks/useAutoRefresh";
 import { certThresholds, certTone } from "./synthetic/certThresholds";
 
 const EMPTY_FORM = {
@@ -185,6 +186,9 @@ export default function SyntheticChecks() {
     getAccounts().then(setAccounts).catch(() => {});
   }, []);
   useEffect(() => { load(); }, [load]);
+  // keep the list (status, Failing n/N, last probe, uptime) and the open detail drawer's header current; a failed
+  // refresh keeps what is on screen rather than raising a banner. Paused while the tab is hidden.
+  useAutoRefresh(() => { getSyntheticChecks().then(setChecks).catch(() => {}); }, 30000);
 
   const handleCreate = async (e) => {
     e.preventDefault();
