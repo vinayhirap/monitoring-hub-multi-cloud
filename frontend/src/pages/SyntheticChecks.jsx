@@ -16,6 +16,7 @@ import {
 import { PlusIcon, TrashIcon, EditIcon, AlertOctagonIcon } from "../components/icons";
 import "./SyntheticChecks.css";
 import CheckDetail from "./synthetic/CheckDetail";
+import { certThresholds, certTone } from "./synthetic/certThresholds";
 
 const EMPTY_FORM = {
   aws_account_id: "", name: "", check_type: "http", target: "",
@@ -23,16 +24,6 @@ const EMPTY_FORM = {
 };
 
 const TYPE_LABEL = { http: "HTTP", https: "HTTPS", tcp: "TCP", dns: "DNS" };
-// Same thresholds the backend alerts on (app/collector/synthetic.py: WARNING <= 30d, CRITICAL <= 7d).
-// Display tone only; the alert itself is raised server-side.
-const CERT_WARN_DAYS = 30, CERT_CRIT_DAYS = 7;
-
-function certTone(days) {
-  if (days == null) return "";
-  if (days <= CERT_CRIT_DAYS) return "syn-cert-crit";
-  if (days <= CERT_WARN_DAYS) return "syn-cert-warn";
-  return "syn-cert-ok";
-}
 
 function CertCell({ c }) {
   if (c.check_type !== "https") return <>—</>;
@@ -49,7 +40,7 @@ function CertCell({ c }) {
     c.handshake_ms != null && `TLS handshake: ${c.handshake_ms} ms`,
     c.cert_valid != null && `Chain + hostname verified: ${c.cert_valid ? "yes" : "no"}`,
   ].filter(Boolean).join("\n");
-  return <span className={certTone(d)} title={tip}>{d < 0 ? "expired" : `${d} day${d === 1 ? "" : "s"}`}</span>;
+  return <span className={certTone(d, certThresholds(c))} title={tip}>{d < 0 ? "expired" : `${d} day${d === 1 ? "" : "s"}`}</span>;
 }
 
 // A failed probe does not flip the status until consecutive_failure_threshold probes in a row have failed

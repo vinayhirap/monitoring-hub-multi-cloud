@@ -17,12 +17,11 @@ import { getSyntheticResults } from "../../api/api";
 import { useTimezone } from "../../contexts/TimezoneContext";
 import { formatStamp, zoneLabel } from "../../utils/timeFormat";
 import "./CheckDetail.css";
+import { certThresholds } from "./certThresholds";
 
 const RANGES = [{ hours: 24, label: "24 h" }, { hours: 168, label: "7 d" }];
 const MAX_POINTS = 240;     // chart points; more than this is thinned
 const PAGE = 50;            // probe rows per page in the table
-// Same thresholds as SyntheticChecks.jsx / the backend cert alert (WARNING <= 30d, CRITICAL <= 7d). Display only.
-const CERT_WARN_DAYS = 30, CERT_CRIT_DAYS = 7;
 const TYPE_LABEL = { http: "HTTP", https: "HTTPS", tcp: "TCP", dns: "DNS" };
 const AXIS = { fontSize: 9, fill: "#3d5070" };
 const TIP = { background: "#0b1220", border: "1px solid rgba(99,130,190,0.2)", borderRadius: 6, fontSize: 11 };
@@ -150,6 +149,7 @@ function Detail({ check: c, onClose }) {
   }, [c.id, hours, key]);
   const cur = res?.key === key ? res : null;                 // ignore a response for a window we've left
   const https = c.check_type === "https";
+  const certTh = certThresholds(c);
   const fmt = (v) => (v == null ? null : formatStamp(new Date(toMs(v)), ianaName, zoneLabel(ianaName)));
 
   const rows = useMemo(() => (cur?.data?.results || [])
@@ -238,8 +238,8 @@ function Detail({ check: c, onClose }) {
               {certSeries.length
                 ? <>
                     <Trend data={certSeries} dataKey="d" ianaName={ianaName} unit="days left" yDomain={["auto", "auto"]} color="#7c6ee0"
-                           refs={[{ y: CERT_WARN_DAYS, color: "#f59e0b", dash: "4 4" }, { y: CERT_CRIT_DAYS, color: "#ef4444", dash: "2 3" }]} />
-                    <div className="cd-legend">days left on the certificate; dashed lines at {CERT_WARN_DAYS} d (warning) and {CERT_CRIT_DAYS} d (critical)</div>
+                           refs={[{ y: certTh.warn, color: "#f59e0b", dash: "4 4" }, { y: certTh.crit, color: "#ef4444", dash: "2 3" }]} />
+                    <div className="cd-legend">days left on the certificate; dashed lines at {certTh.warn} d (warning) and {certTh.crit} d (critical)</div>
                   </>
                 : <div className="cd-empty">No successful TLS handshake in this window.</div>}
               {tls.tls_version

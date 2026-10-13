@@ -15,6 +15,7 @@ from app.auth.authorization import get_accessible_account_ids
 from app.collector.synthetic import (
     validate_target, validate_https_redirect_option,
     MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, CERT_ALERT_METRIC,
+    CERT_WARN_DAYS, CERT_CRIT_DAYS,
 )
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,10 @@ def list_checks(current_user: dict = Depends(require_permission("synthetic.view"
     `last_error` text, `last_ok` (1/0) and `last_cert_valid`: last_ok = 0 means the
     text is a failure; last_ok = 1 with text means a non-failing "Notice: ..." (e.g.
     http:// answers without redirecting to https).
+
+    https rows also carry cert_warn_days / cert_crit_days: the thresholds the cert-expiry
+    alert is actually using (SYNTHETIC_CERT_WARN_DAYS / _CRIT_DAYS, defaults 30 / 7), so the
+    UI colours and chart lines always agree with the alert.
     """
     accessible = get_accessible_account_ids(current_user)
     conn = get_connection(); cur = conn.cursor(dictionary=True)
@@ -162,6 +167,9 @@ def list_checks(current_user: dict = Depends(require_permission("synthetic.view"
         rows = cur.fetchall()
         if accessible is not None:
             rows = [r for r in rows if r["aws_account_id"] in accessible]
+        for r in rows:
+            if r.get("check_type") == "https":
+                r["cert_warn_days"], r["cert_crit_days"] = CERT_WARN_DAYS, CERT_CRIT_DAYS
         return rows
     finally:
         cur.close(); conn.close()
