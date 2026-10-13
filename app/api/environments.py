@@ -5,7 +5,9 @@ Environment classification API (phase 4a).
   GET  /api/environments/summary                 counts per env / source, per account
   GET  /api/environments/resources               the Needs-classification queue, the Tagging view, or every resource
   GET  /api/environments/tag-plan                an AWS CLI script that writes the Environment tag for CloudOps decisions
-  POST /api/environments/classify                mark one or many resources prod|uat|dev|ignore|clear
+  POST /api/environments/classify                mark one or many resources prod|uat|dev|ignore|clear, or a whole
+                                                 group ({"group": {"account_id", "resource_type"}}) of the resources
+                                                 still waiting in the Needs-classification queue
   PUT  /api/environments/accounts/{id}/default   set / clear an account's default environment
 
 Permissions: environments.view (read), environments.manage (write), migration
@@ -41,6 +43,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/environments", tags=["Environments"])
 
 MAX_BULK = 500
+MAX_GROUP = 2000          # one account + one resource type, only what is still in the Needs-classification queue
+MAX_QUEUE_GROUPS = 40
 AUDIT_ID_SAMPLE = 100
 _CHOICES = ec.MANUAL_CHOICES + ("clear",)
 _QUEUE_WHERE = "(r.env_source = 'unknown' OR r.env_source IS NULL)"
@@ -127,6 +131,18 @@ def summary(current_user: dict = Depends(require_permission("environments.view")
                 WHERE {_LIVE_WHERE}{scope_sql} AND r.env_override IN ('prod', 'uat', 'dev')
             """, _live_params() + scope_params)
             conflicts = sum(1 for r in cur.fetchall() if _conflict(r["env_override"], r["tags"]))
+            # what is waiting in the queue, by account and resource type: lets the page offer "place all 80
+            # certificates in this account at once" instead of 50 checkboxes at a time
+            cur.execute(f"""
+                SELECT r.aws_account_id AS account_id, aa.account_name, r.resource_type, COUNT(*) AS n
+                FROM resources r
+                JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
+                WHERE {_LIVE_WHERE}{scope_sql} AND {_QUEUE_WHERE}
+                GROUP BY r.aws_account_id, aa.account_name, r.resource_type
+                ORDER BY n DESC, aa.account_name, r.resource_type
+                LIMIT {MAX_QUEUE_GROUPS}
+            """, _live_params() + scope_params)
+            queue_groups = [dict(g, n=int(g["n"])) for g in cur.fetchall()]
         finally:
             cur.close()
     finally:
@@ -149,6 +165,7 @@ def summary(current_user: dict = Depends(require_permission("environments.view")
         "by_source": by_source,
         "by_tag_state": tag_states,
         "conflicts": conflicts,
+        "queue_groups": queue_groups,
         "accounts": accounts,
     }
 
@@ -289,23 +306,68 @@ def _env_counts(cur, pks):
     return {r["env"]: int(r["n"]) for r in cur.fetchall()}
 
 
+def _group_pks(current_user, group):
+    """-> (resource pks, group info) for every live resource of one account + resource type that is still in the
+    Needs-classification queue. Only the queue: a resource somebody already placed, or that has a tag or a
+    recognised name, is never touched by a group action."""
+    if not isinstance(group, dict):
+        raise HTTPException(status_code=400, detail="group must be an object with account_id and resource_type")
+    try:
+        if isinstance(group.get("account_id"), bool):
+            raise ValueError
+        account_id = int(group.get("account_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="group.account_id must be an integer")
+    rtype = group.get("resource_type")
+    if not isinstance(rtype, str) or not rtype.strip() or len(rtype) > 60:
+        raise HTTPException(status_code=400, detail="group.resource_type must be a resource type name")
+    rtype = rtype.strip()
+    _require_account_access(current_user, [account_id])
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(f"""
+                SELECT r.id FROM resources r
+                JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
+                WHERE {_LIVE_WHERE} AND {_QUEUE_WHERE} AND r.aws_account_id = %s AND r.resource_type = %s
+                ORDER BY r.id LIMIT %s
+            """, _live_params() + [account_id, rtype, MAX_GROUP + 1])
+            ids = [int(r["id"]) for r in cur.fetchall()]
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+    if len(ids) > MAX_GROUP:
+        raise HTTPException(status_code=400, detail=f"More than {MAX_GROUP} resources in that group; place them in smaller batches")
+    if not ids:
+        raise HTTPException(status_code=404, detail="Nothing of that type in that account is waiting for an environment any more")
+    return ids, {"account_id": account_id, "resource_type": rtype}
+
+
 @router.post("/classify")
 def classify(request: Request, payload: dict = Body(...),
              current_user: dict = Depends(require_permission("environments.manage"))):
     env = str(payload.get("env", "")).strip().lower()
     if env not in _CHOICES:
         raise HTTPException(status_code=400, detail="env must be one of: prod, uat, dev, ignore, clear")
-    raw_ids = payload.get("resource_ids")
-    if not isinstance(raw_ids, list) or not raw_ids:
-        raise HTTPException(status_code=400, detail="resource_ids must be a non-empty list")
-    if len(raw_ids) > MAX_BULK:
-        raise HTTPException(status_code=400, detail=f"At most {MAX_BULK} resources per request")
-    try:
-        if any(isinstance(i, bool) for i in raw_ids):
-            raise ValueError
-        pks = sorted({int(i) for i in raw_ids})
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="resource_ids must be integers")
+    group_info = None
+    if payload.get("group") is not None:
+        if env == "clear":
+            raise HTTPException(status_code=400, detail="A group can be marked prod, uat, dev or ignore, not cleared")
+        pks, group_info = _group_pks(current_user, payload.get("group"))
+    else:
+        raw_ids = payload.get("resource_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise HTTPException(status_code=400, detail="resource_ids must be a non-empty list")
+        if len(raw_ids) > MAX_BULK:
+            raise HTTPException(status_code=400, detail=f"At most {MAX_BULK} resources per request")
+        try:
+            if any(isinstance(i, bool) for i in raw_ids):
+                raise ValueError
+            pks = sorted({int(i) for i in raw_ids})
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="resource_ids must be integers")
 
     marks = ", ".join(["%s"] * len(pks))
     conn = get_connection()
@@ -357,8 +419,10 @@ def classify(request: Request, payload: dict = Body(...),
         "Environment classification changed",
         role=str(current_user.get("role", "")).upper(),
         payload={
-            "detail": f"{len(pks)} resource(s) set to '{env}'",
-            "env": env, "count": len(pks), "account_ids": accounts,
+            "detail": f"{len(pks)} resource(s) set to '{env}'"
+                      + (f" (every {group_info['resource_type']} still waiting in account {group_info['account_id']})"
+                         if group_info else ""),
+            "env": env, "count": len(pks), "account_ids": accounts, "group": group_info,
             "resource_ids": pks[:AUDIT_ID_SAMPLE],
             "resource_ids_truncated": len(pks) > AUDIT_ID_SAMPLE,
             "before": before, "after": after,
