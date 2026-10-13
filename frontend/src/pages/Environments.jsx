@@ -74,7 +74,9 @@ function nextStep(r, view, canManage) {
   if (view === "needs_classification") {
     return canManage ? "Mark it Prod, UAT or Dev." : "Ask someone with edit access to place it.";
   }
-  return r.reason || "";
+  // the stored reason is a lowercase fragment ("account default", "attached to ec2 X ..."); show it as a sentence
+  const why = r.reason || SOURCE_LABEL[r.source] || "";
+  return why ? why.charAt(0).toUpperCase() + why.slice(1) : "";
 }
 
 export default function Environments() {
