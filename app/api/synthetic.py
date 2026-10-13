@@ -178,10 +178,16 @@ def list_checks(current_user: dict = Depends(require_permission("synthetic.view"
         cur.close(); conn.close()
 
 
+# rows returned per results request: a 30-day window at a 60 s interval is ~43k rows
+_RESULTS_DEFAULT_LIMIT = 20000
+_RESULTS_MAX_LIMIT = 50000
+
+
 @router.get("/{check_id}/results")
 def get_check_results(
     check_id: int,
     hours: int = Query(24, ge=1, le=720),
+    limit: int = Query(_RESULTS_DEFAULT_LIMIT, ge=1, le=_RESULTS_MAX_LIMIT),
     current_user: dict = Depends(require_permission("synthetic.view")),
 ):
     account_id = _get_check_account_id(check_id)
@@ -191,18 +197,26 @@ def get_check_results(
 
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
-        cur.execute("""
-            SELECT r.checked_at, r.success, r.response_time_ms, r.status_code, r.error_message,
-                   r.cert_days_left, r.cert_not_after, r.cert_subject, r.cert_issuer,
-                   r.tls_version, r.tls_cipher, r.handshake_ms, r.cert_valid
+        scope = """
             FROM synthetic_check_results r
             JOIN synthetic_checks c ON c.id = r.check_id
             WHERE r.check_id = %s AND r.checked_at >= DATE_SUB(NOW(), INTERVAL %s HOUR)
               AND (c.target_changed_at IS NULL OR r.checked_at >= c.target_changed_at)
-            ORDER BY r.checked_at ASC
-        """, (check_id, hours))
-        results = cur.fetchall()
-        uptime_pct = round(100 * sum(r["success"] for r in results) / len(results), 2) if results else None
+        """
+        # uptime is computed over the WHOLE window in SQL, so capping the rows returned never skews it
+        cur.execute("SELECT COUNT(*) AS n, COALESCE(SUM(r.success), 0) AS ok " + scope, (check_id, hours))
+        agg = cur.fetchone()
+        total, ok = int(agg["n"] or 0), int(agg["ok"] or 0)
+        # newest `limit` rows (a long window at a short interval can be tens of thousands), returned oldest-first
+        cur.execute("""
+            SELECT r.checked_at, r.success, r.response_time_ms, r.status_code, r.error_message,
+                   r.cert_days_left, r.cert_not_after, r.cert_subject, r.cert_issuer,
+                   r.tls_version, r.tls_cipher, r.handshake_ms, r.cert_valid
+            """ + scope + """
+            ORDER BY r.checked_at DESC, r.id DESC LIMIT %s
+        """, (check_id, hours, limit))
+        results = list(reversed(cur.fetchall()))
+        uptime_pct = round(100 * ok / total, 2) if total else None
         # only reported when the target change cut this window short, so the UI can say why older probes are missing
         cur.execute("""
             SELECT target_changed_at FROM synthetic_checks
@@ -210,6 +224,7 @@ def get_check_results(
         """, (check_id, hours))
         tc = cur.fetchone()
         return {"check_id": check_id, "window_hours": hours, "uptime_pct": uptime_pct, "results": results,
+                "total_results": total, "truncated": total > len(results),
                 "target_changed_at": tc["target_changed_at"] if tc else None}
     finally:
         cur.close(); conn.close()

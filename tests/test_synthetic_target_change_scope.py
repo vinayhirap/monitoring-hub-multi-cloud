@@ -96,18 +96,30 @@ def test_results_are_clamped_and_report_the_change(monkeypatch):
     stamp = "2026-10-13 06:33:00"
     monkeypatch.setattr(mod, "_get_check_account_id", lambda cid: 4)
     monkeypatch.setattr(mod, "get_connection",
-                        lambda: _conn(sqls, fetchall=[[{"success": 1}, {"success": 0}]],
-                                      fetchone=[{"target_changed_at": stamp}]))
-    out = mod.get_check_results(7, hours=24, current_user=_USER)
-    assert "r.checked_at >= c.target_changed_at" in sqls[0][0]
-    assert out["target_changed_at"] == stamp and out["uptime_pct"] == 50.0
+                        lambda: _conn(sqls, fetchall=[[{"success": 0}, {"success": 1}]],
+                                      fetchone=[{"n": 2, "ok": 1}, {"target_changed_at": stamp}]))
+    out = mod.get_check_results(7, hours=24, limit=100, current_user=_USER)
+    assert all("r.checked_at >= c.target_changed_at" in s[0] for s in sqls[:2])
+    assert out["target_changed_at"] == stamp and out["uptime_pct"] == 50.0 and out["truncated"] is False
+    assert [r["success"] for r in out["results"]] == [1, 0]          # newest-first query, returned oldest-first
+
+
+def test_results_cap_rows_but_uptime_covers_the_whole_window(monkeypatch):
+    mod = _api()
+    monkeypatch.setattr(mod, "_get_check_account_id", lambda cid: 4)
+    monkeypatch.setattr(mod, "get_connection", lambda: _conn(
+        [], fetchall=[[{"success": 1}] * 3], fetchone=[{"n": 10, "ok": 9}, None]))
+    out = mod.get_check_results(7, hours=24, limit=3, current_user=_USER)
+    assert len(out["results"]) == 3 and out["total_results"] == 10 and out["truncated"] is True
+    assert out["uptime_pct"] == 90.0
 
 
 def test_results_report_nothing_when_the_change_is_outside_the_window(monkeypatch):
     mod = _api()
     monkeypatch.setattr(mod, "_get_check_account_id", lambda cid: 4)
-    monkeypatch.setattr(mod, "get_connection", lambda: _conn([], fetchall=[[]], fetchone=[None]))
-    assert mod.get_check_results(7, hours=24, current_user=_USER)["target_changed_at"] is None
+    monkeypatch.setattr(mod, "get_connection", lambda: _conn([], fetchall=[[]], fetchone=[{"n": 0, "ok": 0}, None]))
+    out = mod.get_check_results(7, hours=24, limit=100, current_user=_USER)
+    assert out["target_changed_at"] is None and out["uptime_pct"] is None
 
 
 def test_migration_is_idempotent_and_additive():

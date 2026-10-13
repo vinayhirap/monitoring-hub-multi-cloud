@@ -1,4 +1,4 @@
--- db/migrations/084_resource_tag_state.sql
+-- db/migrations/086_resource_tag_state.sql
 --
 -- Phase 4a follow-up: tag compliance per resource (docs/TAGGING_STANDARD.md).
 --

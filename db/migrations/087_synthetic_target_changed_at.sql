@@ -1,6 +1,6 @@
 -- 087_synthetic_target_changed_at.sql
 --
--- synthetic_checks.target_changed_at: UTC time of the last edit that changed a check's target (NULL = never changed).
+-- synthetic_checks.target_changed_at: database-clock time (NOW(), the same clock checked_at uses) of the last edit that changed a check's target (NULL = never changed).
 --
 -- Why: the list/drawer took "latest TLS facts", "last error" and 24h uptime from the check's whole result history,
 -- so after pointing a check at a different host the old host's certificate, TLS version and uptime kept showing

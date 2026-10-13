@@ -70,6 +70,7 @@ def _compute_status(cursor, slo: dict) -> dict:
             FROM synthetic_check_results r
             JOIN synthetic_checks c ON c.id = r.check_id AND c.aws_account_id = %s
             WHERE r.check_id = %s AND r.checked_at >= %s
+              AND (c.target_changed_at IS NULL OR r.checked_at >= c.target_changed_at)
         """, (slo["aws_account_id"], slo["synthetic_check_id"], window_start))
         row = cursor.fetchone()
         total = row["total"] or 0
