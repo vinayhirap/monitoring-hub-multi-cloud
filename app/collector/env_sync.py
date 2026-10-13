@@ -184,20 +184,27 @@ def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False
             _tally(report["changed_by_env"], res.env)
             if res.env == ec.UNKNOWN and row.get("env_resolved") != ec.UNKNOWN:
                 report["newly_unknown"] += 1
-            updates.append((res.env, res.source, res.reason, tstate, row["id"]))
+            updates.append((res.env, res.source, res.reason, tstate, row["id"], row.get("env_override")))
 
         if dry_run or not updates:
             return report
 
+        # Ascending id: every writer that touches many resources rows takes their locks in the same order,
+        # so two of them cannot wait on each other (metric_history inserts also lock the parent resources row).
+        updates.sort(key=lambda u: u[4])
         wcur = conn.cursor()
         try:
             for i in range(0, len(updates), _CHUNK):
                 chunk = updates[i:i + _CHUNK]
+                # `env_override <=> %s`: only write if the manual choice is still what this pass read. A user may
+                # have saved (or cleared) an override since the rows were loaded; the classify API re-resolves that
+                # row itself, and a stale write here must not put the old answer back.
                 wcur.executemany(
                     "UPDATE resources SET env_resolved = %s, env_source = %s, env_reason = %s, "
-                    "tag_state = %s WHERE id = %s", chunk)
+                    "tag_state = %s WHERE id = %s AND env_override <=> %s", chunk)
                 conn.commit()
-                report["applied"] += len(chunk)
+                n = getattr(wcur, "rowcount", None)
+                report["applied"] += n if isinstance(n, int) and n >= 0 else len(chunk)
         except Exception:
             conn.rollback()
             raise
