@@ -186,7 +186,7 @@ def list_resources(
             raise HTTPException(status_code=400, detail="env must be prod, uat, dev, unknown, ignore or unclassified")
     if source:
         if source not in ec.SOURCES:
-            raise HTTPException(status_code=400, detail="source must be manual, tag, name, account or unknown")
+            raise HTTPException(status_code=400, detail="source must be manual, tag, name, related, account or unknown")
         where += " AND r.env_source = %s"; params.append(source)
     if account_id is not None:
         where += " AND r.aws_account_id = %s"; params.append(account_id)
@@ -269,6 +269,20 @@ def tag_plan(
             "skipped_invalid": plan["skipped_invalid"], "sources": list(chosen)}
 
 
+_EMPTY_REPORT = {"applied": 0, "by_env": {}}
+
+
+def _resync(**kw):
+    """Re-resolve after a change that is ALREADY COMMITTED. A failure here must not turn a saved change into a
+    500 with no audit entry: the discovery loop re-resolves every resource on its next run anyway."""
+    try:
+        return sync_resource_environments(**kw), None
+    except Exception:
+        logger.exception("environment re-resolve after a saved change failed")
+        return dict(_EMPTY_REPORT), ("Saved, but the environments could not be re-evaluated just now; "
+                                     "they refresh on the next discovery run.")
+
+
 def _env_counts(cur, pks):
     cur.execute("SELECT COALESCE(env_resolved, 'unclassified') AS env, COUNT(*) AS n "
                 "FROM resources WHERE id IN (" + ", ".join(["%s"] * len(pks)) + ") GROUP BY env", list(pks))
@@ -326,7 +340,7 @@ def classify(request: Request, payload: dict = Body(...),
         conn.close()
 
     # Re-resolve just these rows so env_resolved/env_source reflect the change now.
-    report = sync_resource_environments(resource_pks=pks)
+    report, sync_warning = _resync(resource_pks=pks)
 
     conn = get_connection()
     try:
@@ -351,8 +365,11 @@ def classify(request: Request, payload: dict = Body(...),
         },
         request=request,
     )
-    return {"status": "ok", "updated": len(pks), "env": env, "after": after,
-            "reclassified": report["applied"]}
+    out = {"status": "ok", "updated": len(pks), "env": env, "after": after,
+           "reclassified": report["applied"]}
+    if sync_warning:
+        out["warning"] = sync_warning
+    return out
 
 
 @router.put("/accounts/{account_id}/default")
@@ -388,7 +405,7 @@ def set_account_default(account_id: int, request: Request, payload: dict = Body(
     finally:
         conn.close()
 
-    report = sync_resource_environments(account_id=account_id)
+    report, sync_warning = _resync(account_id=account_id)
     write_audit(
         current_user["username"],
         "Account default environment changed",
@@ -401,5 +418,8 @@ def set_account_default(account_id: int, request: Request, payload: dict = Body(
         },
         request=request,
     )
-    return {"status": "ok", "account_id": account_id, "default_env": new_default,
-            "reclassified": report["applied"]}
+    out = {"status": "ok", "account_id": account_id, "default_env": new_default,
+           "reclassified": report["applied"]}
+    if sync_warning:
+        out["warning"] = sync_warning
+    return out
