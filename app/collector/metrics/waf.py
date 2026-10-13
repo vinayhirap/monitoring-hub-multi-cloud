@@ -23,8 +23,10 @@ COST (CloudWatch bills per METRIC REQUESTED, $0.01 / 1,000 -- not per API call, 
 
 PER-RULE SERIES are stored in metric_history only (no `metrics` row, no catalog row, no threshold): visibility, not alerting.
 They are sparse on purpose -- never zero-filled -- so a wrong dimension reads as "no data", not as "no attacks".
-Stored name: waf_rule__blocked__<rule MetricName> / waf_rule__counted__<rule MetricName>  (<= 19 + 128 chars; column is 150).
+Stored name: waf_rule__blocked__<rule MetricName> / waf_rule__counted__<rule MetricName>, shortened with a digest when it
+would exceed the VARCHAR(100) column (see rule_db_name).
 """
+import hashlib
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -58,8 +60,19 @@ _KEY_DEFS = [
 ]
 
 
+METRIC_NAME_MAX = 100   # metric_history.metric_name is VARCHAR(100) (checked with DESCRIBE on PROD, 2026-10-12)
+
+
 def rule_db_name(kind, rule_metric):
-    return (RULE_BLOCKED_PREFIX if kind == "blocked" else RULE_COUNTED_PREFIX) + rule_metric
+    """Stored metric_name for a per-rule series. Always <= METRIC_NAME_MAX; a rule metric name too long to fit is cut to
+    60 chars plus an 8-hex digest of the full name, so it stays unique and deterministic (the API endpoint calls this
+    same function to find the rows)."""
+    name = (RULE_BLOCKED_PREFIX if kind == "blocked" else RULE_COUNTED_PREFIX) + rule_metric
+    if len(name) <= METRIC_NAME_MAX:
+        return name
+    digest = hashlib.sha1(rule_metric.encode("utf-8")).hexdigest()[:8]
+    prefix = RULE_BLOCKED_PREFIX if kind == "blocked" else RULE_COUNTED_PREFIX
+    return f"{prefix}{rule_metric[:60]}_{digest}"
 
 
 def acl_dimension_value(resource):

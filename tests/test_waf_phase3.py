@@ -74,5 +74,10 @@ def test_rule_discovery_skips_metricless_rules_and_uses_metric_name():
     assert [(r["name"], r["metric"]) for r in out] == [("N1", "m1")]
 
 
-def test_rule_db_name_fits_column():
-    assert len(waf.rule_db_name("blocked", "x" * 128)) <= 150
+def test_rule_db_name_fits_varchar_100_and_stays_unique():
+    long_a, long_b = "a" * 128, "a" * 127 + "b"
+    for kind in ("blocked", "counted"):
+        assert len(waf.rule_db_name(kind, long_a)) <= 100
+    assert waf.rule_db_name("blocked", long_a) != waf.rule_db_name("blocked", long_b)
+    assert waf.rule_db_name("blocked", long_a) == waf.rule_db_name("blocked", long_a)
+    assert waf.rule_db_name("blocked", "short-rule") == "waf_rule__blocked__short-rule"

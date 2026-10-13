@@ -1024,6 +1024,11 @@ def live_generic_metrics(
 # WAF collector stores in metric_history under waf_rule__blocked__<rule metric> / waf_rule__counted__<rule metric>
 # (they have no catalog row on purpose). Rules come from what discovery remembered, so a rule that was deleted keeps no
 # row here and nothing is invented. Zero CloudWatch calls: it only reads our own tables.
+def _waf_rule_db_name(kind, rule_metric):
+    from app.collector.metrics.waf import rule_db_name     # one definition of the stored name (<= 100 chars)
+    return rule_db_name(kind, rule_metric)
+
+
 @router.get("/waf/{account_db_id}/rules/{resource_id:path}")
 def live_waf_rules(
     account_db_id: int,
@@ -1071,7 +1076,7 @@ def live_waf_rules(
         else:
             continue
         series = _metric_history_query_range(
-            "wafv2", resource_id, f"waf_rule__{kind}__{r['metric']}", start, end,
+            "wafv2", resource_id, _waf_rule_db_name(kind, r["metric"]), start, end,
             match_field="resource_id", account_id=account_db_id,
         )
         if not series:
