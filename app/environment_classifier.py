@@ -7,7 +7,7 @@ collector sync, the API and the unit tests can all share one definition.
 
 Resolution order, first match wins:
 
-    1. manual   a user-saved override (resource_env_overrides)
+    1. manual   a user-saved override (resources.env_override)
     2. tag      Environment / Env / Stage ... tag with a recognised value
     3. name     a recognised token in the resource NAME, then its ID
     4. related  the environment of the resource it is ATTACHED TO (an EBS volume
@@ -35,7 +35,8 @@ phrase BEFORE tokenising, otherwise its "prod" half would read as production;
 "non-prod" / "nonprod" is deliberately ignored (it does not say which
 non-production tier it is). Tokens that point at two different tiers
 ("prod-to-dev-sync") are not guessed at: the result is "unknown" with the
-conflict recorded in the reason.
+conflict recorded in the reason. "DevOps" (also DevSecOps / SecDevOps) is a discipline, not the dev tier, and is
+ignored like "non-prod".
 """
 import json
 import os
@@ -75,6 +76,9 @@ for _w in _DEV_WORDS:
 _SEP = r"[\s_\-./:]*"
 _PRE_PROD = re.compile(r"(?<![a-z0-9])pre" + _SEP + r"prod(?:uction)?(?![a-z])", re.I)
 _NON_PROD = re.compile(r"(?<![a-z0-9])non" + _SEP + r"prod(?:uction)?(?![a-z])", re.I)
+# "DevOps" / "DevSecOps" / "SecDevOps" name a discipline, not the dev tier. Without this a camelCase name such as
+# "DevOps-Jenkins" split into Dev + Ops and a PRODUCTION build server was labelled dev (warnings downgraded to INFO).
+_DEVOPS = re.compile(r"(?<![a-z0-9])(?:sec" + _SEP + r")?dev" + _SEP + r"(?:sec" + _SEP + r")?ops(?![a-z])", re.I)
 _CAMEL_1 = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _CAMEL_2 = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 _NON_ALNUM = re.compile(r"[^A-Za-z0-9]+")
@@ -117,6 +121,7 @@ def _scan(text):
     s = _PRE_PROD.sub(_take_phrase, s)
     s = _NON_PROD.sub(" ", s)
     s = _CAMEL_2.sub(" ", _CAMEL_1.sub(" ", s))
+    s = _DEVOPS.sub(" ", s)          # after the camelCase split, so "DevOpsRunner" -> "Dev Ops Runner" is seen
     for tok in _NON_ALNUM.split(s):
         if not tok:
             continue

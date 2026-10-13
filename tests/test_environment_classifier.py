@@ -365,3 +365,20 @@ def test_tag_environment_reads_only_the_tag():
     assert ec.tag_environment({"Env": "Production"}) == "prod"
     assert ec.tag_environment({"Environment": "blue"}) is None
     assert ec.tag_environment({}) is None
+
+
+# --- "DevOps" is a discipline, not the dev tier (a prod build server must not be labelled dev) ---------------------
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("name", ["DevOps-Jenkins", "DevOpsRunner", "RunDevOps", "devops", "Dev-Ops",
+                                   "DevSecOps-scan", "SecDevOps", "DEVOPS"])
+def test_devops_names_are_not_read_as_dev(name):
+    r = resolve(name=name)
+    assert (r.env, r.source) == ("unknown", "unknown")      # unknown is prod-like: still alerted at prod strength
+
+
+@_pytest.mark.parametrize("name,env", [("prod-DevOps-tools", "prod"), ("DevOps-UAT", "uat"),
+                                       ("web-dev-01", "dev"), ("dev-ops-dev", "dev")])
+def test_devops_does_not_hide_a_real_tier_token(name, env):
+    assert resolve(name=name).env == env
