@@ -4,15 +4,17 @@
 //     place. They are alerted like prod until someone settles them here.
 //   - All resources: every resource with its environment and HOW it was decided.
 // Writes need environments.manage; everything is scoped to the caller's accounts server-side.
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getEnvironmentSummary, getEnvironmentResources, classifyResources, setAccountDefaultEnv, getTagPlan,
 } from "../api/api";
 import { copyText } from "../utils/copyText";
 import { useAuth } from "../auth/AuthContext";
+import { useAutoRefresh } from "../hooks/useAutoRefresh";
 import "./Environments.css";
 
 const PAGE = 50;
+const REFRESH_MS = 60000;
 const SOURCE_LABEL = { manual: "Manual", tag: "Tag", name: "Name", related: "Attached resource", account: "Account default", unknown: "Unknown" };
 const TAG_LABEL = { ok: "Tagged", nonstandard: "Non-standard", invalid: "Invalid value", missing: "Untagged", not_checked: "Not checked" };
 const TAG_HINT = {
@@ -56,18 +58,41 @@ export default function Environments() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
+  const [qText, setQText] = useState("");
+  const reqId = useRef(0);
 
+  // Only the newest request may update the screen: typing in the search box or paging quickly sends several,
+  // and an older (slower) answer must not overwrite a newer one.
   const load = useCallback(() => {
-    getEnvironmentSummary().then(setSummary).catch(e => setError(e.message));
+    const mine = ++reqId.current;
+    getEnvironmentSummary().then(d => { if (reqId.current === mine) setSummary(d); })
+      .catch(e => { if (reqId.current === mine) setError(e.message); });
     getEnvironmentResources({ view, ...filters, limit: PAGE, offset })
-      .then(d => { setData(d); setError(null); })
-      .catch(e => setError(e.message));
+      .then(d => {
+        if (reqId.current !== mine) return;
+        // the page we were on emptied out (everything on it was just classified): go back to the last real page
+        if (!d.items.length && offset > 0 && d.total > 0) {
+          setOffset((Math.ceil(d.total / PAGE) - 1) * PAGE);
+          return;
+        }
+        setData(d); setError(null);
+      })
+      .catch(e => { if (reqId.current === mine) setError(e.message); });
   }, [view, filters, offset]);
 
   useEffect(() => { load(); }, [load]);
+  // keep counts and rows current, but never while rows are selected, a request is running or the script dialog is
+  // open: a refresh must not move rows out from under someone who is mid-selection
+  useAutoRefresh(() => { if (!selected.size && !busy && !plan) load(); }, REFRESH_MS);
   useEffect(() => { setSelected(new Set()); }, [view, filters, offset]);
 
   const setFilter = (k, v) => { setOffset(0); setFilters(f => ({ ...f, [k]: v })); };
+  // search runs 300 ms after the last keystroke instead of once per key
+  useEffect(() => {
+    if (qText === filters.q) return undefined;
+    const t = setTimeout(() => setFilter("q", qText), 300);
+    return () => clearTimeout(t);
+  }, [qText, filters.q]);
   const switchView = v => { setView(v); setOffset(0); setFilters(f => ({ ...f, env: "", source: "", tag_state: "" })); };
 
   const openPlan = async () => {
@@ -88,9 +113,9 @@ export default function Environments() {
     setBusy(true); setNotice(null);
     try {
       const r = await classifyResources([...selected], env);
-      setNotice(env === "clear"
+      setNotice((env === "clear"
         ? `Cleared the manual choice on ${r.updated} resource(s).`
-        : `Marked ${r.updated} resource(s) as ${ENV_LABEL[env] || env}.`);
+        : `Marked ${r.updated} resource(s) as ${ENV_LABEL[env] || env}.`) + (r.warning ? ` ${r.warning}` : ""));
       setSelected(new Set());
       load();
     } catch (e) { setError(e.message); }
@@ -98,10 +123,19 @@ export default function Environments() {
   };
 
   const changeDefault = async (accountId, env) => {
+    const acct = summary?.accounts.find(a => a.account_id === accountId);
+    const msg = env
+      ? `Set ${acct?.account_name || "this account"}'s default environment to ${ENV_LABEL[env]}?\n\n`
+        + `Every resource in this account that has no manual choice, tag or recognised name will be labelled ${ENV_LABEL[env]} `
+        + `and leave the Needs classification queue (${acct?.needs_classification ?? 0} are in it now). `
+        + "Alerting is unchanged unless environment-aware classification is switched on."
+      : `Clear ${acct?.account_name || "this account"}'s default environment?\n\n`
+        + "Resources that only had the default will go back to Unknown and into the Needs classification queue.";
+    if (!window.confirm(msg)) return;
     setBusy(true); setNotice(null);
     try {
       const r = await setAccountDefaultEnv(accountId, env || null);
-      setNotice(`Account default ${env ? `set to ${ENV_LABEL[env]}` : "cleared"}; ${r.reclassified} resource(s) re-evaluated.`);
+      setNotice(`Account default ${env ? `set to ${ENV_LABEL[env]}` : "cleared"}; ${r.reclassified} resource(s) re-evaluated.${r.warning ? ` ${r.warning}` : ""}`);
       load();
     } catch (e) { setError(e.message); }
     setBusy(false);
@@ -195,7 +229,7 @@ export default function Environments() {
             </select>
           </>
         )}
-        <input placeholder="Search name or ID" value={filters.q} onChange={e => setFilter("q", e.target.value)} />
+        <input placeholder="Search name or ID" aria-label="Search name or ID" value={qText} onChange={e => setQText(e.target.value)} />
       </div>
 
       {view === "tagging" && (
@@ -230,7 +264,7 @@ export default function Environments() {
         <tbody>
           {data.items.map(r => (
             <tr key={r.id}>
-              {canManage && <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} /></td>}
+              {canManage && <td><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} aria-label={`Select ${r.name || r.resource_id}`} /></td>}
               <td><div className="env-name">{r.name || r.resource_id}</div>{r.name && <div className="env-id">{r.resource_id}</div>}</td>
               <td>{r.resource_type}</td>
               <td>{r.account_name}</td>
