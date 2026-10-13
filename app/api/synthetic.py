@@ -267,6 +267,10 @@ def create_check(payload: dict = Body(...), current_user: dict = Depends(require
         cur.close(); conn.close()
 
 
+# PATCH fields that change what a probe does; editing one restarts the failure streak (see update_check)
+_PROBE_AFFECTING_FIELDS = ("target", "expected_status_code", "expected_keyword", "timeout_seconds", "expect_https_redirect")
+
+
 @router.patch("/{check_id}")
 def update_check(check_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("synthetic.manage"))):
     account_id = _get_check_account_id(check_id)
@@ -301,12 +305,22 @@ def update_check(check_id: int, payload: dict = Body(...), current_user: dict = 
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
 
-    set_clause = ", ".join(f"{k} = %s" for k in updates)
+    set_parts = [f"{k} = %s" for k in updates]
+    params = list(updates.values())
+    # An edit that changes WHAT is probed must not leave the old target's failure streak / schedule behind: the
+    # streak restarts and the next collector tick probes with the new settings. (current_status and the open
+    # alert are left alone -- the next probe moves them through the normal path.) A new interval pulls an
+    # already-later next_check_at in, so a shorter interval takes effect without waiting out the old one.
+    if any(k in updates for k in _PROBE_AFFECTING_FIELDS):
+        set_parts += ["consecutive_failures = 0", "next_check_at = NOW()"]
+    elif "interval_seconds" in updates:
+        set_parts.append("next_check_at = LEAST(COALESCE(next_check_at, NOW()), DATE_ADD(NOW(), INTERVAL %s SECOND))")
+        params.append(updates["interval_seconds"])
     conn = get_connection(); cur = conn.cursor()
     try:
         cur.execute(
-            f"UPDATE synthetic_checks SET {set_clause} WHERE id = %s",
-            (*updates.values(), check_id),
+            f"UPDATE synthetic_checks SET {', '.join(set_parts)} WHERE id = %s",
+            (*params, check_id),
         )
         conn.commit()
         return {"status": "updated"}
