@@ -621,6 +621,8 @@ def _run_due(mod, monkeypatch, check, probe_result):
             return [dict(check)] if self._last.startswith("SELECT id, aws_account_id") else []
 
         def fetchone(self):
+            if self._last.startswith("SELECT id FROM synthetic_checks"):
+                return {"id": check["id"]}                         # row unchanged since it was read
             return None                                            # no open alert yet
 
         def close(self):
@@ -691,6 +693,8 @@ def test_run_due_checks_http_type_keeps_legacy_insert(monkeypatch):
             return [dict(_DUE, check_type="http")] if self._last.startswith("SELECT id, aws_account_id") else []
 
         def fetchone(self):
+            if self._last.startswith("SELECT id FROM synthetic_checks"):
+                return {"id": 7}
             return None
 
         def close(self):

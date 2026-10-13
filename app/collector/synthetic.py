@@ -979,6 +979,21 @@ def _insert_result(cursor, check: dict, success, elapsed_ms, status_code, error,
           *(tls.get(k) for k in _TLS_FIELDS)))
 
 
+def _check_unchanged_since_read(cursor, check: dict) -> bool:
+    """True if the check row still exists, is enabled and has the probe-affecting settings this probe ran with.
+    SELECT ... FOR UPDATE: keeps a concurrent PATCH (which updates the same row) waiting until this check's
+    transaction commits."""
+    cursor.execute("""
+        SELECT id FROM synthetic_checks
+        WHERE id = %s AND enabled = 1 AND target = %s
+          AND expected_status_code <=> %s AND expected_keyword <=> %s
+          AND expect_https_redirect <=> %s AND timeout_seconds <=> %s
+        FOR UPDATE
+    """, (check["id"], check["target"], check["expected_status_code"], check["expected_keyword"],
+          int(bool(check.get("expect_https_redirect"))), check["timeout_seconds"]))
+    return cursor.fetchone() is not None
+
+
 def run_due_checks() -> int:
     """Probes every enabled check whose next_check_at has passed (or
     was never set -- brand new checks run on the very next tick).
@@ -1010,6 +1025,16 @@ def run_due_checks() -> int:
                         check["expected_keyword"], bool(check.get("expect_https_redirect")), check["id"])
                 else:
                     success, elapsed_ms, status_code, error = _run_probe(check)
+
+                # The probe above is slow network I/O; the check may have been edited (or disabled) meanwhile.
+                # Lock the row and confirm it still has the settings that were probed, so a result for the OLD
+                # target is never stored as the new target's and never overwrites the edit's streak/schedule reset.
+                # The lock is held until this check's commit, so an edit lands strictly before or after it.
+                if not _check_unchanged_since_read(cursor, check):
+                    conn.rollback()
+                    logger.info(f"[synthetic] check id={check['id']} was edited or disabled while being probed; "
+                                f"discarding that probe, the next tick re-probes it")
+                    continue
 
                 _insert_result(cursor, check, success, elapsed_ms, status_code, error, tls)
 
