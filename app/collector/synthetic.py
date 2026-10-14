@@ -767,14 +767,26 @@ def _probe_https(target: str, timeout: int, expected_status: int, expected_keywo
     return success, elapsed_ms, status_code, error, tls
 
 
-def _cert_alert_level(days_left):
-    """days until expiry -> ('CRITICAL'|'WARNING', threshold_days) or None."""
+def effective_cert_thresholds(check):
+    """(warn_days, crit_days) for one check: its own pair when set and sane (crit < warn), else the global defaults."""
+    warn, crit = (check or {}).get("cert_warn_days"), (check or {}).get("cert_crit_days")
+    try:
+        warn, crit = int(warn), int(crit)
+    except (TypeError, ValueError):
+        return CERT_WARN_DAYS, CERT_CRIT_DAYS
+    return (warn, crit) if 1 <= crit < warn else (CERT_WARN_DAYS, CERT_CRIT_DAYS)
+
+
+def _cert_alert_level(days_left, warn=None, crit=None):
+    """days until expiry -> ('CRITICAL'|'WARNING', threshold_days) or None. warn / crit default to the globals."""
+    warn = CERT_WARN_DAYS if warn is None else warn
+    crit = CERT_CRIT_DAYS if crit is None else crit
     if days_left is None:
         return None
-    if days_left <= CERT_CRIT_DAYS:
-        return "CRITICAL", CERT_CRIT_DAYS
-    if days_left <= CERT_WARN_DAYS:
-        return "WARNING", CERT_WARN_DAYS
+    if days_left <= crit:
+        return "CRITICAL", crit
+    if days_left <= warn:
+        return "WARNING", warn
     return None
 
 
@@ -953,7 +965,7 @@ def _apply_cert_alert(cursor, resource_id: str, check: dict, tls: dict):
     days_left = (tls or {}).get("cert_days_left")
     if days_left is None:
         return
-    level = _cert_alert_level(days_left)
+    level = _cert_alert_level(days_left, *effective_cert_thresholds(check))
     if level is None:
         _resolve_alert(cursor, resource_id, check["aws_account_id"], CERT_ALERT_METRIC)
     else:
@@ -994,6 +1006,38 @@ def _check_unchanged_since_read(cursor, check: dict) -> bool:
     return cursor.fetchone() is not None
 
 
+_silenced_cache = {"at": 0.0, "map": {}}
+
+
+def _silenced_reason(cursor, check):
+    """Maintenance-window reason covering this check's synthetic resource right now, else None (cached ~60 s)."""
+    now = time.time()
+    if now - _silenced_cache["at"] > 60:
+        try:
+            from app.collector.maintenance import active_silenced_map
+            _silenced_cache["map"] = active_silenced_map(cursor)
+        except Exception:
+            logger.debug("[synthetic] could not read maintenance windows", exc_info=True)
+            _silenced_cache["map"] = {}
+        _silenced_cache["at"] = now
+    return _silenced_cache["map"].get((check["aws_account_id"], _synthetic_resource_id(check["id"])))
+
+
+def _notify_after_probe(conn, cursor, check, outage_event, error, tls):
+    """Tell the right people about an outage / certificate state, once the probe's own writes are committed.
+    Never raises: a mail problem must not break probing (see app/collector/synthetic_notify.py)."""
+    try:
+        from app.collector import synthetic_notify as notify
+        silenced = _silenced_reason(cursor, check) if (outage_event or tls) else None
+        if outage_event:
+            notify.on_outage_change(conn, cursor, check, outage_event == "down", error, silenced)
+        if tls is not None and tls.get("cert_days_left") is not None:
+            warn, crit = effective_cert_thresholds(check)
+            notify.on_certificate(conn, cursor, check, tls, warn, crit, silenced)
+    except Exception:
+        logger.exception("[synthetic] notification step failed for check id=%s", check.get("id"))
+
+
 def run_due_checks() -> int:
     """Probes every enabled check whose next_check_at has passed (or
     was never set -- brand new checks run on the very next tick).
@@ -1008,7 +1052,7 @@ def run_due_checks() -> int:
             SELECT id, aws_account_id, name, check_type, target,
                    expected_status_code, expected_keyword, expect_https_redirect,
                    timeout_seconds, interval_seconds, consecutive_failure_threshold,
-                   environment, consecutive_failures, current_status
+                   environment, consecutive_failures, current_status, cert_warn_days, cert_crit_days
             FROM synthetic_checks
             WHERE enabled = 1 AND (next_check_at IS NULL OR next_check_at <= NOW())
             ORDER BY next_check_at IS NULL DESC, next_check_at ASC
@@ -1057,7 +1101,9 @@ def run_due_checks() -> int:
                 check["consecutive_failures"] = new_consecutive_failures
 
                 resource_id = _ensure_resource_row(cursor, check)
+                outage_event = None            # "down" / "recovered": told to people after the commit below
                 if new_status == "down" and check["current_status"] != "down":
+                    outage_event = "down"
                     # Just crossed the threshold this cycle -- fire the alert.
                     _write_or_update_alert(cursor, resource_id, check, error)
                 elif new_status == "down":
@@ -1066,6 +1112,7 @@ def run_due_checks() -> int:
                     _write_or_update_alert(cursor, resource_id, check, error)
                 elif new_status == "up" and check["current_status"] == "down":
                     _resolve_alert(cursor, resource_id, check["aws_account_id"])
+                    outage_event = "recovered"
 
                 if tls is not None:
                     _apply_cert_alert(cursor, resource_id, check, tls)
@@ -1076,6 +1123,7 @@ def run_due_checks() -> int:
                 # being committed alongside everyone else's.
                 conn.commit()
                 probed += 1
+                _notify_after_probe(conn, cursor, check, outage_event, error, tls)
 
             except Exception:
                 conn.rollback()
@@ -1097,10 +1145,64 @@ def run_due_checks() -> int:
         conn.close()
 
 
+ROLLUP_RETENTION_DAYS = 400
+
+
+def rollup_daily_stats(days_back: int = RESULT_RETENTION_DAYS + 1, check_ids=None) -> int:
+    """Writes one synthetic_daily_stats row per check per COMPLETE day found in the raw results (the last `days_back`
+    days, today excluded), replacing any existing row for that day. Raw results are pruned after
+    RESULT_RETENTION_DAYS, but a monthly or quarterly report needs the numbers; this keeps them for
+    ROLLUP_RETENTION_DAYS. Safe to run repeatedly. Returns the number of rows written."""
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        sql = """SELECT check_id, DATE(checked_at) AS day, success, response_time_ms, cert_days_left
+                 FROM synthetic_check_results
+                 WHERE checked_at >= DATE_SUB(CURDATE(), INTERVAL %s DAY) AND checked_at < CURDATE()"""
+        params = [days_back]
+        if check_ids:
+            sql += " AND check_id IN (" + ", ".join(["%s"] * len(check_ids)) + ")"
+            params += list(check_ids)
+        cursor.execute(sql + " ORDER BY check_id, checked_at", params)
+        buckets = {}
+        for r in cursor.fetchall():
+            b = buckets.setdefault((r["check_id"], r["day"]), {"n": 0, "ok": 0, "ms": [], "cert": None})
+            b["n"] += 1
+            b["ok"] += 1 if r["success"] else 0
+            if r["success"] and r["response_time_ms"] is not None:
+                b["ms"].append(int(r["response_time_ms"]))
+            if r["cert_days_left"] is not None:
+                b["cert"] = r["cert_days_left"] if b["cert"] is None else min(b["cert"], r["cert_days_left"])
+        rows = []
+        for (cid, day), b in buckets.items():
+            ms = sorted(b["ms"])
+            rows.append((cid, day, b["n"], b["ok"],
+                         round(sum(ms) / len(ms)) if ms else None,
+                         ms[min(len(ms) - 1, int(0.95 * len(ms)))] if ms else None,
+                         ms[-1] if ms else None, b["cert"]))
+        if rows:
+            cursor.executemany("""
+                INSERT INTO synthetic_daily_stats (check_id, day, probes, ok, avg_ms, p95_ms, max_ms, min_cert_days)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE probes = VALUES(probes), ok = VALUES(ok), avg_ms = VALUES(avg_ms),
+                                        p95_ms = VALUES(p95_ms), max_ms = VALUES(max_ms),
+                                        min_cert_days = VALUES(min_cert_days)""", rows)
+        conn.commit()
+        return len(rows)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def prune_synthetic_results(retain_days: int = RESULT_RETENTION_DAYS) -> int:
     """Deletes synthetic_check_results older than retain_days. Called
     from scheduler.py's low tier, same pattern as
-    metrics_writer.prune_metric_history()."""
+    metrics_writer.prune_metric_history(). The daily roll-up runs first, so deleting raw rows never loses the
+    numbers a long report needs; roll-ups themselves are kept ROLLUP_RETENTION_DAYS."""
+    rollup_daily_stats(days_back=retain_days + 1)
     conn = get_connection()
     cursor = conn.cursor()
     try:
@@ -1109,6 +1211,8 @@ def prune_synthetic_results(retain_days: int = RESULT_RETENTION_DAYS) -> int:
             (retain_days,),
         )
         deleted = cursor.rowcount
+        cursor.execute("DELETE FROM synthetic_daily_stats WHERE day < DATE_SUB(CURDATE(), INTERVAL %s DAY)",
+                       (ROLLUP_RETENTION_DAYS,))
         conn.commit()
         return deleted
     except Exception:

@@ -8,6 +8,7 @@ scoped to the caller's accessible accounts via
 get_accessible_account_ids(), same pattern as app/api/alerts.py.
 """
 import logging
+import re
 from fastapi import APIRouter, Body, HTTPException, Depends, Query
 from app.db import get_connection
 from app.auth.permissions import require_permission
@@ -79,6 +80,77 @@ def _validate_common(payload: dict) -> dict:
     return out
 
 
+def effective_cert_thresholds(check: dict):
+    """(warn, crit) a check's certificate alert really uses: its own sane pair, else the global defaults."""
+    try:
+        warn, crit = int(check.get("cert_warn_days")), int(check.get("cert_crit_days"))
+    except (TypeError, ValueError):
+        return CERT_WARN_DAYS, CERT_CRIT_DAYS
+    return (warn, crit) if 1 <= crit < warn else (CERT_WARN_DAYS, CERT_CRIT_DAYS)
+
+
+def _cert_pair(payload: dict, check_type: str, current: dict = None):
+    """Per-check certificate thresholds. -> {} when the payload does not mention them, else
+    {"cert_warn_days": n|None, "cert_crit_days": n|None}. Both or neither; crit < warn; https checks only.
+    On PATCH a single value is merged with the stored pair so crit < warn is judged on the result."""
+    if "cert_warn_days" not in payload and "cert_crit_days" not in payload:
+        return {}
+    cur = current or {}
+    warn = payload["cert_warn_days"] if "cert_warn_days" in payload else cur.get("cert_warn_days")
+    crit = payload["cert_crit_days"] if "cert_crit_days" in payload else cur.get("cert_crit_days")
+    if warn in (None, "") and crit in (None, ""):
+        return {"cert_warn_days": None, "cert_crit_days": None}          # back to the global defaults
+    if check_type != "https":
+        raise HTTPException(status_code=400, detail="certificate thresholds only apply to https checks")
+    if warn in (None, "") or crit in (None, ""):
+        raise HTTPException(status_code=400, detail="set both the warning and the critical days, or leave both empty for the defaults")
+    try:
+        warn, crit = int(warn), int(crit)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="certificate thresholds must be whole numbers of days")
+    if not (2 <= warn <= 365) or not (1 <= crit <= 364):
+        raise HTTPException(status_code=400, detail="warning days must be 2 to 365 and critical days 1 to 364")
+    if crit >= warn:
+        raise HTTPException(status_code=400, detail="critical days must be smaller than warning days")
+    return {"cert_warn_days": warn, "cert_crit_days": crit}
+
+
+_CONTACT_EMAIL_RE = re.compile(r"^[^@\s,;<>\"']+@[^@\s,;<>\"']+\.[^@\s,;<>\"']+$")
+MAX_CONTACTS = 20
+
+
+def _clean_contacts(raw) -> list:
+    """Validated, de-duplicated contact list or HTTP 400. Each: {email, label, notify_outage, notify_cert}."""
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="contacts must be a list")
+    if len(raw) > MAX_CONTACTS:
+        raise HTTPException(status_code=400, detail=f"at most {MAX_CONTACTS} contacts per check")
+    out, seen = [], set()
+    for i, c in enumerate(raw, 1):
+        if not isinstance(c, dict):
+            raise HTTPException(status_code=400, detail=f"contact {i} must be an object")
+        email = (c.get("email") or "").strip() if isinstance(c.get("email"), str) else ""
+        if not email or len(email) > 254 or not _CONTACT_EMAIL_RE.match(email):
+            raise HTTPException(status_code=400, detail=f"contact {i}: not a valid email address")
+        if email.lower() in seen:
+            raise HTTPException(status_code=400, detail=f"{email} is listed twice")
+        seen.add(email.lower())
+        label = c.get("label")
+        if label is not None and (not isinstance(label, str) or len(label) > 100):
+            raise HTTPException(status_code=400, detail=f"contact {i}: label must be text of at most 100 characters")
+        label = re.sub(r"[\x00-\x1f]", " ", label).strip() if isinstance(label, str) else None
+        outage, cert = bool(c.get("notify_outage", True)), bool(c.get("notify_cert", True))
+        if not outage and not cert:
+            raise HTTPException(status_code=400, detail=f"contact {i} ({email}) receives nothing: turn on outages or certificates")
+        out.append({"email": email, "label": label or None, "notify_outage": outage, "notify_cert": cert})
+    return out
+
+
+def _mask_email(addr: str) -> str:
+    local, _, domain = (addr or "").partition("@")
+    return f"{local[:1]}***@{domain}" if domain else "(hidden)"
+
+
 def _require_account_access(account_id: int, current_user: dict) -> None:
     accessible = get_accessible_account_ids(current_user)
     if accessible is not None and account_id not in accessible:
@@ -109,7 +181,7 @@ def _get_check_row(check_id: int):
     conn = get_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute(
-            "SELECT check_type, target, expect_https_redirect FROM synthetic_checks WHERE id = %s",
+            "SELECT check_type, target, expect_https_redirect, cert_warn_days, cert_crit_days FROM synthetic_checks WHERE id = %s",
             (check_id,))
         return cur.fetchone()
     finally:
@@ -142,6 +214,9 @@ def list_checks(current_user: dict = Depends(require_permission("synthetic.view"
     try:
         cur.execute("""
             SELECT c.*, acc.account_name,
+                   (SELECT COUNT(*) FROM synthetic_check_contacts k WHERE k.check_id = c.id) AS contact_count,
+                   (SELECT COUNT(*) FROM synthetic_check_contacts k WHERE k.check_id = c.id AND k.notify_cert = 1) AS cert_contact_count,
+                   (SELECT COUNT(*) FROM synthetic_check_contacts k WHERE k.check_id = c.id AND k.notify_outage = 1) AS outage_contact_count,
                    (SELECT ROUND(100 * AVG(r.success), 1)
                     FROM synthetic_check_results r
                     WHERE r.check_id = c.id
@@ -172,7 +247,10 @@ def list_checks(current_user: dict = Depends(require_permission("synthetic.view"
             rows = [r for r in rows if r["aws_account_id"] in accessible]
         for r in rows:
             if r.get("check_type") == "https":
-                r["cert_warn_days"], r["cert_crit_days"] = CERT_WARN_DAYS, CERT_CRIT_DAYS
+                # this check's own pair when it has one, else the global defaults: what the alert really uses
+                r["cert_thresholds_custom"] = (r.get("cert_warn_days"), r.get("cert_crit_days")) != (None, None) \
+                    and effective_cert_thresholds(r) != (CERT_WARN_DAYS, CERT_CRIT_DAYS)
+                r["cert_warn_days"], r["cert_crit_days"] = effective_cert_thresholds(r)
         return rows
     finally:
         cur.close(); conn.close()
@@ -257,6 +335,9 @@ def create_check(payload: dict = Body(...), current_user: dict = Depends(require
         "expect_https_redirect": payload.get("expect_https_redirect", False),
     })
 
+    certs = _cert_pair(payload, check_type)
+    contacts = _clean_contacts(payload.get("contacts", [])) if "contacts" in payload else []
+
     target = (payload.get("target") or "").strip() if isinstance(payload.get("target"), str) else ""
     try:
         # strict_scheme: a NEW https:// URL must use the 'https' type (existing
@@ -273,8 +354,8 @@ def create_check(payload: dict = Body(...), current_user: dict = Depends(require
             INSERT INTO synthetic_checks
                 (aws_account_id, name, check_type, target, expected_status_code,
                  expected_keyword, expect_https_redirect, timeout_seconds, interval_seconds,
-                 consecutive_failure_threshold, environment, enabled, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 consecutive_failure_threshold, environment, enabled, created_by, cert_warn_days, cert_crit_days)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             int(account_id), fields["name"], check_type, target,
             fields["expected_status_code"], fields["expected_keyword"],
@@ -282,10 +363,15 @@ def create_check(payload: dict = Body(...), current_user: dict = Depends(require
             fields["timeout_seconds"], fields["interval_seconds"],
             fields["consecutive_failure_threshold"],
             fields["environment"], fields["enabled"],
-            int(current_user["id"]),
+            int(current_user["id"]), certs.get("cert_warn_days"), certs.get("cert_crit_days"),
         ))
+        new_id = cur.lastrowid
+        for c in contacts:
+            cur.execute("""INSERT INTO synthetic_check_contacts (check_id, email, label, notify_outage, notify_cert, created_by)
+                           VALUES (%s, %s, %s, %s, %s, %s)""",
+                        (new_id, c["email"], c["label"], c["notify_outage"], c["notify_cert"], current_user.get("username")))
         conn.commit()
-        return {"status": "created", "id": cur.lastrowid}
+        return {"status": "created", "id": new_id}
     except Exception:
         conn.rollback()
         logger.exception("create synthetic check failed")
@@ -308,12 +394,17 @@ def update_check(check_id: int, payload: dict = Body(...), current_user: dict = 
     editable_fields = (
         "name", "target", "expected_status_code", "expected_keyword",
         "timeout_seconds", "interval_seconds", "consecutive_failure_threshold",
-        "environment", "enabled", "expect_https_redirect",
+        "environment", "enabled", "expect_https_redirect", "cert_warn_days", "cert_crit_days",
     )
     raw = {k: v for k, v in payload.items() if k in editable_fields}
     if not raw:
         raise HTTPException(status_code=400, detail="No editable fields provided")
+    cert_raw = {k: raw.pop(k) for k in ("cert_warn_days", "cert_crit_days") if k in raw}
     updates = _validate_common(raw)
+    if cert_raw:
+        stored = _get_check_row(check_id)
+        updates.update(_cert_pair(cert_raw, stored["check_type"], stored))
+
     target_changed = False
     if "target" in raw or "expect_https_redirect" in raw:
         row = _get_check_row(check_id)
@@ -392,3 +483,104 @@ def delete_check(check_id: int, current_user: dict = Depends(require_permission(
         return {"status": "deleted"}
     finally:
         cur.close(); conn.close()
+
+
+# ── Alert contacts (who is told about THIS check) ─────────────────────
+# Email addresses are personal data: anyone with synthetic.view sees how many people are told and a masked address,
+# only synthetic.manage sees (and can change) the full list. Account scope is enforced like every other route here.
+
+def _is_manager(current_user: dict) -> bool:
+    from app.auth.permissions import has_permission
+    return has_permission(current_user, "synthetic.manage")
+
+
+@router.get("/{check_id}/contacts")
+def get_contacts(check_id: int, current_user: dict = Depends(require_permission("synthetic.view"))):
+    account_id = _get_check_account_id(check_id)
+    if account_id is None:
+        raise HTTPException(status_code=404, detail="Check not found")
+    _require_account_access(account_id, current_user)
+    manager = _is_manager(current_user)
+    conn = get_connection(); cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT email, label, notify_outage, notify_cert FROM synthetic_check_contacts "
+                    "WHERE check_id = %s ORDER BY id", (check_id,))
+        rows = cur.fetchall()
+        cur.execute("SELECT cert_warn_days, cert_crit_days, check_type FROM synthetic_checks WHERE id = %s", (check_id,))
+        chk = cur.fetchone() or {}
+    finally:
+        cur.close(); conn.close()
+    warn, crit = effective_cert_thresholds(chk)
+    contacts = [{"email": r["email"] if manager else _mask_email(r["email"]), "label": r["label"],
+                 "notify_outage": bool(r["notify_outage"]), "notify_cert": bool(r["notify_cert"])} for r in rows]
+    return {"check_id": check_id, "contacts": contacts, "editable": manager, "max_contacts": MAX_CONTACTS,
+            "cert_warn_days": warn, "cert_crit_days": crit,
+            "cert_thresholds_custom": (chk.get("cert_warn_days"), chk.get("cert_crit_days")) != (None, None),
+            "default_warn_days": CERT_WARN_DAYS, "default_crit_days": CERT_CRIT_DAYS}
+
+
+@router.put("/{check_id}/contacts")
+def put_contacts(check_id: int, payload: dict = Body(...),
+                 current_user: dict = Depends(require_permission("synthetic.manage"))):
+    """Replaces the check's whole contact list (the UI edits the list as a unit)."""
+    account_id = _get_check_account_id(check_id)
+    if account_id is None:
+        raise HTTPException(status_code=404, detail="Check not found")
+    _require_account_access(account_id, current_user)
+    contacts = _clean_contacts(payload.get("contacts"))
+    conn = get_connection(); cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM synthetic_check_contacts WHERE check_id = %s", (check_id,))
+        for c in contacts:
+            cur.execute("""INSERT INTO synthetic_check_contacts (check_id, email, label, notify_outage, notify_cert, created_by)
+                           VALUES (%s, %s, %s, %s, %s, %s)""",
+                        (check_id, c["email"], c["label"], c["notify_outage"], c["notify_cert"], current_user.get("username")))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("saving synthetic contacts failed")
+        raise HTTPException(status_code=400, detail="Could not save the contacts")
+    finally:
+        cur.close(); conn.close()
+    try:
+        from app.audit import write_audit
+        write_audit(current_user["username"], "Synthetic check contacts changed",
+                    f"check_id={check_id} contacts={len(contacts)}", role=current_user.get("role"))
+    except Exception:
+        logger.warning("audit write failed for synthetic contacts", exc_info=True)
+    return {"status": "saved", "count": len(contacts)}
+
+
+@router.post("/{check_id}/contacts/test")
+def test_contacts(check_id: int, current_user: dict = Depends(require_permission("synthetic.manage"))):
+    """Sends one clearly-labelled test email to every contact of the check, so people know it will reach them."""
+    from app.email import mailer
+    account_id = _get_check_account_id(check_id)
+    if account_id is None:
+        raise HTTPException(status_code=404, detail="Check not found")
+    _require_account_access(account_id, current_user)
+    if not mailer.is_configured():
+        raise HTTPException(status_code=501, detail="Email is not set up on this server yet (SMTP_HOST). "
+                                                    "An administrator must configure SMTP before alerts can be emailed.")
+    conn = get_connection(); cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT c.name, c.target FROM synthetic_checks c WHERE c.id = %s", (check_id,))
+        chk = cur.fetchone()
+        cur.execute("SELECT email FROM synthetic_check_contacts WHERE check_id = %s ORDER BY id", (check_id,))
+        addrs = [r["email"] for r in cur.fetchall()]
+    finally:
+        cur.close(); conn.close()
+    if not addrs:
+        raise HTTPException(status_code=400, detail="This check has no contacts to test")
+    subject = f"[CloudOps] Test: alert contacts for {chk['name']}"
+    body = (f"This is a test message from CloudOps.\n\nYou are listed as an alert contact for the synthetic check "
+            f"'{chk['name']}' ({chk['target']}). You will be emailed if it goes down or its certificate is about to "
+            f"expire. If you can read this, delivery works.\n\nSent by {current_user.get('username')}.")
+    sent = sum(1 for a in addrs if mailer.send_email(a, subject, body))
+    try:
+        from app.audit import write_audit
+        write_audit(current_user["username"], "Synthetic contacts tested",
+                    f"check_id={check_id} sent={sent}/{len(addrs)}", role=current_user.get("role"))
+    except Exception:
+        logger.warning("audit write failed for synthetic contact test", exc_info=True)
+    return {"status": "sent" if sent == len(addrs) else ("partial" if sent else "failed"), "sent": sent, "total": len(addrs)}
