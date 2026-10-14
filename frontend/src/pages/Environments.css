@@ -88,3 +88,14 @@ button.env-tagtile:hover { border-color: var(--accent); }
 .env-source { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
 .env-next { font-size: 12px; color: var(--text-muted); max-width: 320px; }
 .env-error:empty { display: none; }
+.env-cloud { display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: .05em; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border-md); color: var(--text-muted); font-family: var(--font-mono); vertical-align: middle; }
+.env-account .env-chips { margin-bottom: 8px; min-height: 4px; }
+.env-scope { margin: 6px 0; color: var(--text-muted); }
+.env-muted { color: var(--text-muted); font-size: 12px; }
+.env-plan-envs { display: flex; gap: 6px; flex-wrap: wrap; }
+.env-plan-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.env-plan-table th { text-align: left; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); font-family: var(--font-mono); padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.env-plan-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.env-plan-how { margin: 0; padding-left: 20px; }
+.env-plan-how code { font-family: var(--font-mono); background: var(--bg-input); padding: 1px 5px; border-radius: 3px; }
+.env-quick-more { margin-top: 6px; }

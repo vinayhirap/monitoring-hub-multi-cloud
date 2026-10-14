@@ -16,7 +16,15 @@ import "./Environments.css";
 
 const PAGE = 50;
 const REFRESH_MS = 60000;
-const QUICK_GROUPS = 8;
+const QUICK_GROUPS = 6;
+const PROVIDER_LABEL = { aws: "AWS", azure: "Azure", gcp: "GCP" };
+// the tags CloudOps can use (server-side ESSENTIAL_TAGS); cost tags are deliberately not asked for
+const CLOUDOPS_TAGS = [
+  ["Environment", "decides alert strength and polling (required)"],
+  ["Criticality", "critical / high / medium / low; reserved for a priority bump"],
+  ["Owner", "the team that answers for the resource"],
+  ["Application", "what the resource belongs to"],
+];
 
 const ENV_LABEL = { prod: "Prod", uat: "UAT", dev: "Dev", unknown: "Not placed", ignore: "Ignored" };
 const ENV_LONG = { prod: "Production", uat: "UAT", dev: "Development" };
@@ -38,6 +46,11 @@ const TAG_HINT = {
 const TAG_ORDER = ["ok", "nonstandard", "invalid", "missing", "not_checked"];
 const TAG_PROBLEMS = ["missing", "nonstandard", "invalid"];
 
+function CloudBadge({ provider }) {
+  const p = provider || "aws";
+  return <span className={`env-cloud env-cloud-${p}`}>{PROVIDER_LABEL[p] || p}</span>;
+}
+
 function EnvBadge({ env }) {
   if (!env) return <span className="env-badge env-none">Not placed</span>;
   return <span className={`env-badge env-${env}`}>{ENV_LABEL[env] || env}</span>;
@@ -58,6 +71,10 @@ function saveText(name, text) {
 
 // One plain sentence per row saying what the person should do about it.
 function nextStep(r, view, canManage) {
+  const other = r.provider && r.provider !== "aws";
+  if (view === "tagging" && other) {
+    return `Add the ${r.provider === "gcp" ? "label" : "tag"} environment = ${r.env || "prod, uat or dev"} in the ${PROVIDER_LABEL[r.provider]} console. The script covers AWS only.`;
+  }
   if (view === "tagging") {
     if (!ENV_LONG[r.env]) {
       return canManage ? "Mark an environment first (buttons above the table), then add the tag in AWS."
@@ -86,7 +103,8 @@ export default function Environments() {
   const [summary, setSummary] = useState(null);
   const [data, setData] = useState({ items: [], total: 0 });
   const [offset, setOffset] = useState(0);
-  const [filters, setFilters] = useState({ account_id: "", q: "", env: "", source: "", tag_state: "" });
+  const [filters, setFilters] = useState({ account_id: "", q: "", env: "", source: "", tag_state: "", resource_type: "", region: "" });
+  const [showAllGroups, setShowAllGroups] = useState(false);
   const [plan, setPlan] = useState(null);
   const [copied, setCopied] = useState(false);
   const [selected, setSelected] = useState(new Set());
@@ -135,13 +153,21 @@ export default function Environments() {
     const t = setTimeout(() => setFilter("q", qText), 300);
     return () => clearTimeout(t);
   }, [qText, filters.q]);
-  const switchView = v => { setView(v); setOffset(0); setFilters(f => ({ ...f, env: "", source: "", tag_state: "" })); };
+  const switchView = v => { setView(v); setOffset(0); setFilters(f => ({ ...f, env: "", source: "", tag_state: "", resource_type: "", region: "" })); };
   // a tag tile opens the full list filtered to that tag status
-  const showTagState = k => { setView("all"); setOffset(0); setFilters(f => ({ ...f, env: "", source: "", tag_state: k })); };
+  const showTagState = k => { setView("all"); setOffset(0); setFilters(f => ({ ...f, env: "", source: "", tag_state: k, resource_type: "", region: "" })); };
 
   const openPlan = async () => {
     setBusy(true); setNotice(null);
-    try { setPlan(await getTagPlan({ account_id: filters.account_id })); setCopied(false); }
+    try {
+      setPlan(await getTagPlan({
+        account_id: filters.account_id,
+        env: ["prod", "uat", "dev"].includes(filters.env) ? filters.env : "",
+        region: filters.region,
+        resource_type: ["ec2", "ebs"].includes(filters.resource_type) ? filters.resource_type : "",
+      }));
+      setCopied(false);
+    }
     catch (e) { setError(e.message); }
     setBusy(false);
   };
@@ -242,6 +268,12 @@ export default function Environments() {
           <dd>CloudOps could not tell the tier from a tag, the name or what the resource is attached to. It is alerted as if it were Prod until someone places it.</dd>
           <dt>Environment tag</dt>
           <dd>A label named Environment, with the value prod, uat or dev, on the resource in AWS. It is the most reliable source, and other teams can see it too.</dd>
+          <dt>Tags CloudOps uses</dt>
+          <dd>
+            Environment (required: it sets alert strength and polling), then Criticality, Owner and Application, which say how
+            important a resource is and who answers for it. Cost tags such as CostCenter are not needed by CloudOps and are not
+            checked here; keep them if finance asks for them.
+          </dd>
           <dt>Account default</dt>
           <dd>A fallback for resources with no tag and no name hint. Use it only when everything untagged in an account is the same tier.</dd>
         </dl>
@@ -306,8 +338,13 @@ export default function Environments() {
           <div className="env-accounts">
             {accounts.map(a => (
               <div key={a.account_id} className="env-account">
-                <div className="env-account-name">{a.account_name}</div>
+                <div className="env-account-name">{a.account_name} <CloudBadge provider={a.provider} /></div>
                 <div className="env-account-meta">{a.total} resources, {a.needs_classification} not placed</div>
+                <div className="env-chips">
+                  {["prod", "uat", "dev"].filter(k => a.by_env?.[k]).map(k => (
+                    <span key={k} className={`env-chip env-${k}`}>{ENV_LABEL[k]} {a.by_env[k]}</span>
+                  ))}
+                </div>
                 <label className="env-field">
                   <span>Default environment</span>
                   <select value={a.default_env || ""} disabled={!canManage || busy}
@@ -346,7 +383,7 @@ export default function Environments() {
           <h2>Fastest way: place a whole group at once</h2>
           <p>Each line is every resource of one type in one account that is still waiting. Types such as certificates and backups
             usually belong to a single tier, so one click can place dozens of them.</p>
-          {quickGroups.slice(0, QUICK_GROUPS).map(g => (
+          {(showAllGroups ? quickGroups : quickGroups.slice(0, QUICK_GROUPS)).map(g => (
             <div key={`${g.account_id}:${g.resource_type}`} className="env-quick-row">
               <div className="env-quick-what">
                 <strong>{g.resource_type}</strong> in {g.account_name}
@@ -360,7 +397,12 @@ export default function Environments() {
             </div>
           ))}
           {quickGroups.length > QUICK_GROUPS && (
-            <div className="env-quick-more">{quickGroups.length - QUICK_GROUPS} more group(s) are in the list below.</div>
+            <button className="env-link" onClick={() => setShowAllGroups(v => !v)}>
+              {showAllGroups ? "Show fewer groups" : `Show all ${quickGroups.length} groups`}
+            </button>
+          )}
+          {summary.queue_groups.length >= 40 && (
+            <div className="env-quick-more">Only the 40 largest groups are listed. Place some, and the rest appear.</div>
           )}
         </section>
       )}
@@ -375,11 +417,23 @@ export default function Environments() {
           <li>
             <strong>Generate the script.</strong> It adds the Environment tag and leaves every other tag alone. It covers EC2
             instances and EBS volumes; tag other types in the AWS console or Tag Editor.
-            <div><button disabled={busy} onClick={openPlan}>Generate AWS tagging script</button></div>
+            <div className="env-scope">
+              Script scope: {filters.account_id ? (accounts.find(a => String(a.account_id) === String(filters.account_id))?.account_name || "one account") : "all accounts"}
+              {["prod", "uat", "dev"].includes(filters.env) ? `, ${ENV_LONG[filters.env]} only` : ""}
+              {filters.region ? `, ${filters.region}` : ""}
+              {["ec2", "ebs"].includes(filters.resource_type) ? `, ${filters.resource_type} only` : ""}
+              . Change the filters below to narrow it.
+            </div>
+            <div>
+              {canManage
+                ? <button disabled={busy} onClick={openPlan}>Generate AWS tagging script</button>
+                : <span className="env-muted">Generating the script needs edit access to environments.</span>}
+            </div>
           </li>
           <li>
-            <strong>Run it in AWS</strong> with credentials for that account (AWS CloudShell works). CloudOps never changes anything
-            in AWS itself. The counts above update after the next discovery run.
+            <strong>Run it in AWS</strong>: sign in to the AWS console of the account the script names, open CloudShell, paste the
+            script and run it once per account (add DRY_RUN=1 first to preview). CloudOps never changes anything in AWS itself.
+            The counts above update after the next discovery run.
           </li>
         </ol>
       )}
@@ -387,20 +441,28 @@ export default function Environments() {
       <div className="env-filters">
         <select aria-label="Account" value={filters.account_id} onChange={e => setFilter("account_id", e.target.value)}>
           <option value="">All accounts</option>
-          {accounts.map(a => <option key={a.account_id} value={a.account_id}>{a.account_name}</option>)}
+          {accounts.map(a => <option key={a.account_id} value={a.account_id}>{a.account_name} ({PROVIDER_LABEL[a.provider] || "AWS"})</option>)}
+        </select>
+        {view !== "needs_classification" && (
+          <select aria-label="Environment" value={filters.env} onChange={e => setFilter("env", e.target.value)}>
+            <option value="">Any environment</option>
+            {(view === "tagging" ? ["prod", "uat", "dev"] : ["prod", "uat", "dev", "unknown", "ignore", "unclassified"]).map(v =>
+              <option key={v} value={v}>{ENV_LABEL[v] || "Not yet evaluated"}</option>)}
+          </select>
+        )}
+        <select aria-label="Resource type" value={filters.resource_type} onChange={e => setFilter("resource_type", e.target.value)}>
+          <option value="">Any resource type</option>
+          {(summary?.facets?.resource_types || []).map(t => <option key={t.value} value={t.value}>{t.value} ({t.n})</option>)}
+        </select>
+        <select aria-label="Region" value={filters.region} onChange={e => setFilter("region", e.target.value)}>
+          <option value="">Any region</option>
+          {(summary?.facets?.regions || []).map(t => <option key={t.value} value={t.value}>{t.value} ({t.n})</option>)}
         </select>
         {view === "all" && (
-          <>
-            <select aria-label="Environment" value={filters.env} onChange={e => setFilter("env", e.target.value)}>
-              <option value="">Any environment</option>
-              {["prod", "uat", "dev", "unknown", "ignore", "unclassified"].map(v =>
-                <option key={v} value={v}>{ENV_LABEL[v] || "Not yet evaluated"}</option>)}
-            </select>
-            <select aria-label="How it was decided" value={filters.source} onChange={e => setFilter("source", e.target.value)}>
-              <option value="">Any source</option>
-              {Object.entries(SOURCE_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-            </select>
-          </>
+          <select aria-label="How it was decided" value={filters.source} onChange={e => setFilter("source", e.target.value)}>
+            <option value="">Any source</option>
+            {Object.entries(SOURCE_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
         )}
         {(view === "all" || view === "tagging") && (
           <select aria-label="Tag status" value={filters.tag_state} onChange={e => setFilter("tag_state", e.target.value)}>
@@ -409,6 +471,11 @@ export default function Environments() {
           </select>
         )}
         <input placeholder="Search name or ID" aria-label="Search name or ID" value={qText} onChange={e => setQText(e.target.value)} />
+        {(filters.account_id || filters.env || filters.resource_type || filters.region || filters.source || filters.tag_state || qText) && (
+          <button className="env-link" onClick={() => { setQText(""); setOffset(0); setFilters({ account_id: "", q: "", env: "", source: "", tag_state: "", resource_type: "", region: "" }); }}>
+            Clear filters
+          </button>
+        )}
       </div>
 
       {canManage && (
@@ -429,7 +496,7 @@ export default function Environments() {
           <tr>
             {canManage && <th><input type="checkbox" checked={allOnPage} onChange={togglePage} aria-label="Select page" /></th>}
             <th>Resource</th><th>Type</th><th>Account</th>
-            <th>Environment</th><th>AWS tag</th><th>{view === "all" ? "Why" : "What to do"}</th>
+            <th>Environment</th><th>Cloud tag</th><th>{view === "all" ? "Why" : "What to do"}</th>
           </tr>
         </thead>
         <tbody>
@@ -441,7 +508,7 @@ export default function Environments() {
                 <div className="env-id">{r.name ? `${r.resource_id}` : ""}{r.region ? `${r.name ? " | " : ""}${r.region}` : ""}</div>
               </td>
               <td>{r.resource_type}</td>
-              <td>{r.account_name}</td>
+              <td>{r.account_name} <CloudBadge provider={r.provider} /></td>
               <td>
                 <EnvBadge env={r.env} />
                 <div className="env-source">{SOURCE_LABEL[r.source] || "Not evaluated yet"}{r.override_by ? ` (${r.override_by})` : ""}</div>
@@ -451,7 +518,8 @@ export default function Environments() {
               <td className="env-next">
                 {nextStep(r, view, canManage)}
                 {view === "tagging" && r.missing_tags?.length > 0 && (
-                  <div className="env-missing">Other standard tags missing: {r.missing_tags.filter(t => t !== "Environment").join(", ") || "none"}</div>
+                  r.missing_tags.filter(t => t !== "Environment").length > 0 &&
+                  <div className="env-missing">Also add for CloudOps: {r.missing_tags.filter(t => t !== "Environment").join(", ")}</div>
                 )}
               </td>
             </tr>
@@ -473,11 +541,33 @@ export default function Environments() {
               <strong>AWS tagging script</strong>
               <span>{plan.resources} resource(s), {plan.commands} command(s), {plan.accounts} account(s)</span>
             </div>
+            <div className="env-plan-envs">
+              {["prod", "uat", "dev"].filter(k => plan.by_env?.[k]).map(k => (
+                <span key={k} className={`env-chip env-${k}`}>{ENV_LABEL[k]} {plan.by_env[k]}</span>
+              ))}
+            </div>
+            {plan.groups?.length > 0 && (
+              <table className="env-plan-table">
+                <thead><tr><th>Account</th><th>Region</th><th>Environment</th><th>Resources</th></tr></thead>
+                <tbody>
+                  {plan.groups.map(g => (
+                    <tr key={`${g.account_id}${g.region}${g.env}`}>
+                      <td>{g.account_name} <span className="env-id">{g.account_id}</span></td>
+                      <td>{g.region}</td><td><EnvBadge env={g.env} /></td><td>{g.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <ol className="env-modal-note env-plan-how">
+              <li>Download or copy the script. Read it: each resource is listed in a comment above its command.</li>
+              <li>Sign in to the AWS console of <strong>each account in the table</strong> and open CloudShell (any region).</li>
+              <li>Paste or upload the script and run <code>DRY_RUN=1 bash cloudops-tagging-plan.sh</code> to preview, then <code>bash cloudops-tagging-plan.sh</code>.</li>
+              <li>Repeat for the next account. A block only runs in its own account, and the script stops if the account does not match.</li>
+            </ol>
             <div className="env-modal-note">
-              How to use it: review the script, open AWS CloudShell (or a terminal) signed in to the account named in each
-              block, then paste and run that block. Each block first checks that you are in the right account and stops if not.
-              Each command adds or overwrites the Environment tag and leaves all other tags alone. It covers EC2 instances and
-              EBS volumes only.
+              Needs the ec2:CreateTags permission. It adds or overwrites only the Environment tag and covers EC2 instances and EBS
+              volumes. Azure and GCP resources are not included, and tags on other types are done in the console or Tag Editor.
               {Object.keys(plan.not_covered || {}).length > 0 &&
                 ` Not covered: ${Object.entries(plan.not_covered).map(([t, n]) => `${t} x${n}`).join(", ")}.`}
             </div>
