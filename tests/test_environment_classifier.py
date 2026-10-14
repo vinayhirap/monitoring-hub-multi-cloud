@@ -382,3 +382,11 @@ def test_devops_names_are_not_read_as_dev(name):
                                        ("web-dev-01", "dev"), ("dev-ops-dev", "dev")])
 def test_devops_does_not_hide_a_real_tier_token(name, env):
     assert resolve(name=name).env == env
+
+
+def test_essential_tags_exclude_cost_and_governance_tags():
+    assert ec.ESSENTIAL_TAGS == ("Environment", "Criticality", "Owner", "Application")
+    assert not {"CostCenter", "DataClassification", "ManagedBy"} & set(ec.ESSENTIAL_TAGS)
+    assert ec.missing_tags({"Environment": "prod"}, ec.ESSENTIAL_TAGS) == ["Criticality", "Owner", "Application"]
+    assert ec.missing_tags({"environment": "prod", "OWNER": "t", "application": "a", "criticality": "low"},
+                           ec.ESSENTIAL_TAGS) == []

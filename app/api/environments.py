@@ -5,6 +5,7 @@ Environment classification API (phase 4a).
   GET  /api/environments/summary                 counts per env / source, per account
   GET  /api/environments/resources               the Needs-classification queue, the Tagging view, or every resource
   GET  /api/environments/tag-plan                an AWS CLI script that writes the Environment tag for CloudOps decisions
+                                                 (environments.manage; AWS accounts only; optional env / region / type filters)
   POST /api/environments/classify                mark one or many resources prod|uat|dev|ignore|clear, or a whole
                                                  group ({"group": {"account_id", "resource_type"}}) of the resources
                                                  still waiting in the Needs-classification queue
@@ -97,13 +98,13 @@ def summary(current_user: dict = Depends(require_permission("environments.view")
         cur = conn.cursor(dictionary=True)
         try:
             cur.execute(f"""
-                SELECT aa.id AS account_id, aa.account_name, aa.default_env,
+                SELECT aa.id AS account_id, aa.account_name, aa.provider, aa.default_env,
                        COUNT(r.id) AS total,
                        SUM(CASE WHEN {_QUEUE_WHERE} THEN 1 ELSE 0 END) AS needs_classification
                 FROM aws_accounts aa
                 LEFT JOIN resources r ON r.aws_account_id = aa.id AND {_LIVE_WHERE}{scope_sql}
                 WHERE aa.status = 'active'
-                GROUP BY aa.id, aa.account_name, aa.default_env
+                GROUP BY aa.id, aa.account_name, aa.provider, aa.default_env
                 ORDER BY aa.account_name
             """, _live_params() + scope_params)
             accounts = cur.fetchall()
@@ -143,6 +144,33 @@ def summary(current_user: dict = Depends(require_permission("environments.view")
                 LIMIT {MAX_QUEUE_GROUPS}
             """, _live_params() + scope_params)
             queue_groups = [dict(g, n=int(g["n"])) for g in cur.fetchall()]
+            # which tier each account mostly is, and what the filters can offer
+            cur.execute(f"""
+                SELECT r.aws_account_id AS account_id, COALESCE(r.env_resolved, 'unclassified') AS env, COUNT(*) AS n
+                FROM resources r
+                JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
+                WHERE {_LIVE_WHERE}{scope_sql}
+                GROUP BY r.aws_account_id, env
+            """, _live_params() + scope_params)
+            account_envs = {}
+            for g in cur.fetchall():
+                account_envs.setdefault(g["account_id"], {})[g["env"]] = int(g["n"])
+            cur.execute(f"""
+                SELECT r.resource_type AS value, COUNT(*) AS n
+                FROM resources r
+                JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
+                WHERE {_LIVE_WHERE}{scope_sql}
+                GROUP BY r.resource_type ORDER BY n DESC, r.resource_type LIMIT 80
+            """, _live_params() + scope_params)
+            types = [{"value": t["value"], "n": int(t["n"])} for t in cur.fetchall() if t["value"]]
+            cur.execute(f"""
+                SELECT r.region AS value, COUNT(*) AS n
+                FROM resources r
+                JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
+                WHERE {_LIVE_WHERE}{scope_sql} AND r.region IS NOT NULL AND r.region != ''
+                GROUP BY r.region ORDER BY n DESC, r.region LIMIT 60
+            """, _live_params() + scope_params)
+            regions = [{"value": t["value"], "n": int(t["n"])} for t in cur.fetchall()]
         finally:
             cur.close()
     finally:
@@ -159,6 +187,8 @@ def summary(current_user: dict = Depends(require_permission("environments.view")
     for a in accounts:
         a["total"] = int(a["total"] or 0)
         a["needs_classification"] = int(a["needs_classification"] or 0)
+        a["provider"] = a.get("provider") or "aws"
+        a["by_env"] = account_envs.get(a["account_id"], {})
     return {
         "needs_classification": sum(a["needs_classification"] for a in accounts),
         "by_env": by_env,
@@ -166,6 +196,7 @@ def summary(current_user: dict = Depends(require_permission("environments.view")
         "by_tag_state": tag_states,
         "conflicts": conflicts,
         "queue_groups": queue_groups,
+        "facets": {"resource_types": types, "regions": regions},
         "accounts": accounts,
     }
 
@@ -177,7 +208,8 @@ def list_resources(
     source: Optional[str] = Query(None),
     tag_state: Optional[str] = Query(None),
     account_id: Optional[int] = Query(None),
-    resource_type: Optional[str] = Query(None),
+    resource_type: Optional[str] = Query(None, max_length=60),
+    region: Optional[str] = Query(None, max_length=40),
     q: Optional[str] = Query(None, max_length=100),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -209,6 +241,8 @@ def list_resources(
         where += " AND r.aws_account_id = %s"; params.append(account_id)
     if resource_type:
         where += " AND r.resource_type = %s"; params.append(resource_type)
+    if region:
+        where += " AND r.region = %s"; params.append(region)
     if q:
         like = f"%{q}%"
         where += " AND (r.name LIKE %s OR r.resource_id LIKE %s)"; params += [like, like]
@@ -222,7 +256,7 @@ def list_resources(
                             WHERE {where}""", params)
             total = int(cur.fetchone()["n"])
             cur.execute(f"""
-                SELECT r.id, r.aws_account_id AS account_id, aa.account_name, r.resource_type,
+                SELECT r.id, r.aws_account_id AS account_id, aa.account_name, aa.provider, r.resource_type,
                        r.resource_id, r.name, r.region,
                        r.env_resolved AS env, r.env_source AS source, r.env_reason AS reason,
                        r.env_override AS override, r.env_override_by AS override_by,
@@ -241,7 +275,7 @@ def list_resources(
     for r in rows:
         r["override_at"] = _iso(r["override_at"])
         tags = r.pop("tags")                 # raw tags are not returned, only what is derived from them
-        r["missing_tags"] = ec.missing_tags(tags) if r["tag_state"] and r["tag_state"] != "not_checked" else []
+        r["missing_tags"] = ec.missing_tags(tags, ec.ESSENTIAL_TAGS) if r["tag_state"] and r["tag_state"] != "not_checked" else []
         r["tag_env"] = ec.tag_environment(tags)
         r["conflict"] = _conflict(r["override"], tags)
     return {"items": rows, "total": total, "limit": limit, "offset": offset}
@@ -251,14 +285,24 @@ def list_resources(
 def tag_plan(
     account_id: Optional[int] = Query(None),
     sources: str = Query(",".join(DEFAULT_SOURCES), max_length=60),
-    current_user: dict = Depends(require_permission("environments.view")),
+    env: Optional[str] = Query(None),
+    region: Optional[str] = Query(None, max_length=40),
+    resource_type: Optional[str] = Query(None, max_length=60),
+    current_user: dict = Depends(require_permission("environments.manage")),
 ):
     """An AWS CLI script that writes Environment=<tier> onto EC2 instances and EBS volumes whose
     environment CloudOps decided but whose AWS tag is missing or non-standard. Generated text only:
-    nothing is executed and CloudOps changes nothing in AWS."""
+    nothing is executed and CloudOps changes nothing in AWS.
+
+    Needs environments.manage, not just view: the script names AWS account numbers and resource ids, and
+    it is meant for the person who will act on it. AWS accounts only; other clouds have no script yet."""
     chosen = tuple(x for x in (v.strip() for v in sources.split(",")) if x)
     if not chosen or any(x not in ("manual", "name", "related", "account") for x in chosen):
         raise HTTPException(status_code=400, detail="sources must be a list of manual, name, related, account")
+    if env and env not in ec.TIERS:
+        raise HTTPException(status_code=400, detail="env must be prod, uat or dev")
+    if resource_type and resource_type not in ("ec2", "ebs"):
+        raise HTTPException(status_code=400, detail="the script covers ec2 and ebs only")
     scope_sql, scope_params = _scope(current_user)
     where = _LIVE_WHERE + scope_sql
     params = _live_params() + scope_params
@@ -269,10 +313,10 @@ def tag_plan(
         cur = conn.cursor(dictionary=True)
         try:
             cur.execute(f"""
-                SELECT r.id, r.aws_account_id, aa.account_id, aa.account_name, r.resource_type, r.resource_id,
+                SELECT r.id, r.aws_account_id, aa.account_id, aa.account_name, r.resource_type, r.resource_id, r.name,
                        r.region, r.tags, r.env_resolved, r.env_source, r.tag_state
                 FROM resources r
-                JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
+                JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active' AND aa.provider = 'aws'
                 WHERE {where}
             """, params)
             rows = cur.fetchall()
@@ -280,10 +324,12 @@ def tag_plan(
             cur.close()
     finally:
         conn.close()
-    plan = build_tag_plan(rows, sources=chosen)
+    plan = build_tag_plan(rows, sources=chosen, env=env, region=region or None, resource_type=resource_type)
     return {"script": plan["script"], "resources": plan["resources"], "commands": plan["commands"],
             "accounts": plan["accounts"], "not_covered": plan["not_covered"],
-            "skipped_invalid": plan["skipped_invalid"], "sources": list(chosen)}
+            "skipped_invalid": plan["skipped_invalid"], "sources": list(chosen),
+            "by_env": plan["by_env"], "groups": plan["groups"],
+            "filters": {"account_id": account_id, "env": env, "region": region, "resource_type": resource_type}}
 
 
 _EMPTY_REPORT = {"applied": 0, "by_env": {}}

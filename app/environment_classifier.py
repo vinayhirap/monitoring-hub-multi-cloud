@@ -245,6 +245,12 @@ MANDATORY_TAGS = ("Environment", "Application", "Owner", "CostCenter",
 TAG_STATES = ("ok", "nonstandard", "invalid", "missing", "not_checked")
 NEEDS_TAGGING = ("missing", "invalid", "nonstandard")
 
+# The tags CloudOps itself can use. Environment decides alert strength and polling today. Criticality is
+# reserved for the phase-4b priority bump. Application and Owner say what a resource belongs to and who answers
+# for it (alert context, escalation, ownership). The rest of the standard (CostCenter, DataClassification,
+# ManagedBy) is cost / governance data that CloudOps never reads, so the Environments page does not nag about it.
+ESSENTIAL_TAGS = ("Environment", "Criticality", "Owner", "Application")
+
 # Resource types whose discovery stores the resource's REAL AWS tags. For every other type the
 # stored tags are internal bookkeeping (or nothing), so "untagged" cannot be said honestly and the
 # state is "not_checked". Attached EBS volumes are a special case, see tags_known().
@@ -295,7 +301,8 @@ def tag_environment(tags):
     return hit.env if hit else None
 
 
-def missing_tags(tags):
-    """Mandatory standard tags absent from the resource (key case ignored)."""
+def missing_tags(tags, keys=None):
+    """Standard tags absent from the resource (key case ignored). `keys` defaults to the full standard;
+    pass ESSENTIAL_TAGS for the ones CloudOps actually uses."""
     have = {_fold_key(k) for k in _tags_dict(tags)}
-    return [k for k in MANDATORY_TAGS if _fold_key(k) not in have]
+    return [k for k in (keys or MANDATORY_TAGS) if _fold_key(k) not in have]

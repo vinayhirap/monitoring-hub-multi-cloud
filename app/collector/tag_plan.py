@@ -17,7 +17,7 @@ Scope, deliberately narrow so every line can be trusted:
   * An attached EBS volume is included when its instance is, because its own tags are not
     known (see environment_classifier.tags_known).
   * Every id, region and account number is validated against a strict pattern before it can
-    reach the script, so database content cannot inject a command.
+    reach the script, so database content cannot inject a command. Names appear only as sanitised comments.
 Other resource types are counted but not exported; tag them in the console or with the Tag Editor.
 """
 import re
@@ -40,11 +40,21 @@ def _eligible(row, sources):
             and row.get("tag_state") in ec.NEEDS_TAGGING)
 
 
-def build_tag_plan(rows, sources=DEFAULT_SOURCES, now=None):
+def _clean(text, limit=60):
+    """A resource name as a harmless comment fragment: printable ASCII only, no line breaks."""
+    return re.sub(r"[^A-Za-z0-9 ._:@+=-]", "", str(text or ""))[:limit].strip()
+
+
+def build_tag_plan(rows, sources=DEFAULT_SOURCES, now=None, env=None, region=None, resource_type=None):
     """rows: resources joined with their account (see api/environments.py).
 
+    env / region / resource_type narrow the export to what the person filtered the page by. They are applied
+    AFTER an attached volume has been matched to its instance, so filtering by "ebs" still finds volumes
+    that follow an instance.
+
     -> {"script": str, "resources": int, "commands": int, "accounts": int,
-        "not_covered": {resource_type: count}, "skipped_invalid": int}
+        "not_covered": {resource_type: count}, "skipped_invalid": int,
+        "by_env": {env: n}, "groups": [{account_id, account_name, region, env, count}]}
     """
     now = now or datetime.now(timezone.utc)
     sources = tuple(sources)
@@ -68,54 +78,113 @@ def build_tag_plan(rows, sources=DEFAULT_SOURCES, now=None):
                 and r.get("env_source") in sources:
             not_covered[rtype] = not_covered.get(rtype, 0) + 1
 
+    if env or region or resource_type:
+        chosen = {k: v for k, v in chosen.items()
+                  if (not env or v == env)
+                  and (not region or by_key[k].get("region") == region)
+                  and (not resource_type or by_key[k].get("resource_type") == resource_type)}
+
     groups = {}                       # (account pk, region, env) -> [resource ids]
     skipped = 0
-    for (acct, rid), env in chosen.items():
+    for (acct, rid), tier in chosen.items():
         row = by_key[(acct, rid)]
-        region = row.get("region") or ""
-        if not (_ID.match(rid) and _REGION.match(region) and _ACCOUNT.match(str(row.get("account_id") or ""))):
+        reg = row.get("region") or ""
+        if not (_ID.match(rid) and _REGION.match(reg) and _ACCOUNT.match(str(row.get("account_id") or ""))):
             skipped += 1
             continue
-        groups.setdefault((acct, region, env), []).append(rid)
+        groups.setdefault((acct, reg, tier), []).append(rid)
 
+    ordered = sorted(groups.items(), key=lambda kv: (str(by_key[(kv[0][0], kv[1][0])].get("account_name") or ""),
+                                                      kv[0][0], kv[0][1], kv[0][2]))
+    by_env = {}
+    for (_a, _r, tier), ids in ordered:
+        by_env[tier] = by_env.get(tier, 0) + len(ids)
+    summary = [{"account_id": str(by_key[(a, ids[0])]["account_id"]),
+                "account_name": _clean(by_key[(a, ids[0])].get("account_name")),
+                "region": reg, "env": tier, "count": len(ids)}
+               for (a, reg, tier), ids in ordered]
+
+    # one function per account so each block can only ever run against that account
+    accts = []                        # (account pk, 12-digit id, clean name)
+    for (a, _reg, _tier), ids in ordered:
+        if not accts or accts[-1][0] != a:
+            row = by_key[(a, ids[0])]
+            accts.append((a, str(row["account_id"]), _clean(row.get("account_name"), 40)))
+
+    total = sum(by_env.values())
     lines = [
         "#!/usr/bin/env bash",
         f"# CloudOps tagging plan, generated {now.strftime('%Y-%m-%d %H:%M UTC')}",
-        "# Review before running. Each command adds or overwrites ONLY the Environment tag;",
-        "# every other tag on the resource is left as it is.",
-        "# Run each account block with credentials for THAT account. The check at the top of the",
-        "# block stops the script if the credentials belong to a different account.",
-        "set -euo pipefail",
-        "",
+        "#",
+        "# WHAT IT DOES",
+        "#   Adds or overwrites ONLY the Environment tag on the resources below. Every other tag is left as it is.",
+        "#   It covers EC2 instances and EBS volumes. CloudOps never runs it; you do, with your own AWS credentials.",
+        "#",
+        "# WHERE TO RUN IT",
+        "#   Sign in to the AWS console of the account named in a block below and open AWS CloudShell (any region),",
+        "#   or use a terminal with that account's credentials. Paste or upload this file and run it there:",
+        "#       bash cloudops-tagging-plan.sh",
+        "#   Run it once per account. A block only runs when the credentials belong to its account; any other",
+        "#   account's block is never run, and if the credentials match none of them the script stops at once.",
+        "#   The identity needs the ec2:CreateTags permission (and ec2:DescribeTags to verify).",
+        "#   To preview without changing anything:   DRY_RUN=1 bash cloudops-tagging-plan.sh",
+        "#",
+        "# SUMMARY  (" + (", ".join(f"{t} {n}" for t, n in sorted(by_env.items())) or "nothing to tag")
+        + f"; {total} resource(s) in {len(accts)} account(s))",
     ]
+    per = {}
+    for g in summary:
+        per.setdefault((g["account_name"], g["account_id"]), []).append(g)
+    for (aname, aid), gs in per.items():
+        lines.append(f"#   {aname} ({aid}): " + ", ".join(f"{g['region']} {g['env']} {g['count']}" for g in gs))
+    lines += ["",
+              "set -euo pipefail",
+              'DRY_RUN="${DRY_RUN:-0}"',
+              'run() { if [ "$DRY_RUN" = "1" ]; then echo "[dry run] $*"; else "$@"; fi; }',
+              ""]
+
     commands = 0
-    accounts = set()
     last_acct = None
-    for (acct, region, env), ids in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2])):
-        row = by_key[(acct, ids[0])]
+    for (acct, reg, tier), ids in ordered:
         if acct != last_acct:
-            name = re.sub(r"[^A-Za-z0-9 ._-]", "", str(row.get("account_name") or ""))
-            lines += [f"# ===== Account {name} ({row['account_id']}) =====",
-                      f"test \"$(aws sts get-caller-identity --query Account --output text)\" = \"{row['account_id']}\" "
-                      f"|| {{ echo 'Wrong AWS account: expected {row['account_id']}'; exit 1; }}", ""]
+            if last_acct is not None:
+                lines += ["}", ""]
+            aid = next(x[1] for x in accts if x[0] == acct)
+            aname = next(x[2] for x in accts if x[0] == acct)
+            lines += [f"# ===== Account {aname} ({aid}) =====",
+                      f"tag_account_{aid}() {{"]
             last_acct = acct
-            accounts.add(acct)
         ids = sorted(ids)
-        lines.append(f"# {region}: Environment={env}, {len(ids)} resource(s)")
+        lines.append(f"  # {reg}: Environment={tier}, {len(ids)} resource(s)")
+        for rid in ids:
+            nm = _clean(by_key[(acct, rid)].get("name"))
+            lines.append(f"  #   {rid}" + (f"  {nm}" if nm and nm != rid else ""))
         for i in range(0, len(ids), _BATCH):
             chunk = ids[i:i + _BATCH]
-            lines.append(f"aws ec2 create-tags --region {region} --resources {' '.join(chunk)} "
-                         f"--tags Key=Environment,Value={env}")
+            lines.append(f"  run aws ec2 create-tags --region {reg} --resources {' '.join(chunk)} "
+                         f"--tags Key=Environment,Value={tier}")
             commands += 1
         lines.append("")
-    if not commands:
-        lines.append("# Nothing to export: no EC2 instance or EBS volume has a CloudOps decision "
+    if last_acct is not None:
+        lines += ["}", ""]
+        lines += ['CURRENT_ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"',
+                  'case "$CURRENT_ACCOUNT" in']
+        for _a, aid, aname in accts:
+            lines.append(f"  {aid}) echo 'Tagging account {aname} ({aid})'; tag_account_{aid} ;;")
+        lines += ["  *) echo \"These credentials are for account $CURRENT_ACCOUNT, which has no block in this script. "
+                  "Expected one of: " + ", ".join(a[1] for a in accts) + "\"; exit 1 ;;",
+                  "esac",
+                  'echo "Done. Verify with: aws ec2 describe-tags --filters Name=key,Values=Environment '
+                  'Name=resource-id,Values=<id> --region <region>"', ""]
+    else:
+        lines.append("# Nothing to export: no EC2 instance or EBS volume matches, i.e. has a CloudOps decision "
                      "and a missing or non-standard Environment tag.")
     if not_covered:
-        lines += ["", "# Not covered by this script (tag in the console or with Tag Editor): "
+        lines += ["# Not covered by this script (tag in the console or with Tag Editor): "
                   + ", ".join(f"{t} x{n}" for t, n in sorted(not_covered.items()))]
-    return {"script": "\n".join(lines) + "\n", "resources": len(chosen) - skipped, "commands": commands,
-            "accounts": len(accounts), "not_covered": not_covered, "skipped_invalid": skipped}
+    return {"script": "\n".join(lines) + "\n", "resources": total, "commands": commands,
+            "accounts": len(accts), "not_covered": not_covered, "skipped_invalid": skipped,
+            "by_env": by_env, "groups": summary}
 
 
 def _tags_parent(row):

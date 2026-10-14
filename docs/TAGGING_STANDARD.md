@@ -34,6 +34,21 @@ Do not use the `aws:` prefix (reserved by AWS).
 | `DataClassification` | `public`, `internal`, `confidential`, `restricted` | Handling rules for the data it holds. |
 | `ManagedBy` | `terraform`, `cloudformation`, `manual` | How it is changed. `manual` is a review flag. |
 
+### Which tags CloudOps actually uses
+
+The standard lists seven tags for the whole organisation, but CloudOps reads only some of them. The
+Environments page asks for these four and ignores the rest:
+
+| Tag | Used by CloudOps for |
+|---|---|
+| `Environment` | alert strength, polling and "Needs classification" (required) |
+| `Criticality` | reserved for the phase 4b priority bump |
+| `Owner` | who answers for the resource |
+| `Application` | what the resource belongs to |
+
+`CostCenter`, `DataClassification` and `ManagedBy` are cost and governance tags. CloudOps never reads them, so
+it does not report them as missing; keep them wherever finance or security require them.
+
 ## 3. Environment catalogue
 
 One key, three values. Variants are expressed with a second tag, not with new values, so every
@@ -128,7 +143,7 @@ Child resources should not rely on inheritance; tag them at creation.
 3. **Service control policy** that denies creating a resource without `aws:RequestTag/Environment`,
    where the service supports tagging at creation.
 4. **Resource Groups Tag Editor** to back-tag existing resources in bulk, filtered by account and region.
-5. Activate `Environment`, `Application` and `CostCenter` as cost-allocation tags in Billing.
+5. Optional, for finance and not needed by CloudOps: activate `Environment`, `Application` and `CostCenter` as cost-allocation tags in Billing.
 
 ## 8. Rollout for an existing estate
 
