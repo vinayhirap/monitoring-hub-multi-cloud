@@ -87,3 +87,12 @@ def test_pdf_never_prints_contact_addresses():
     pdf = sr.render_synthetic_pdf(report_type="weekly", scope_id="2", scope_label="x", period_start=START,
                                   period_end=END, data=d, generated_by="t")
     assert b"secret@corp.example" not in pdf
+
+
+def test_data_coverage_is_stated_when_monitoring_started_part_way():
+    s = sr.summarize(_data())                      # daily rows start 1 Oct, period starts 14 Sep
+    assert "starts on 01 Oct 2026" in sr.summary_paragraphs(s)[1][1]
+    d = _data()
+    d["daily"][1][0]["day"] = date(2026, 9, 14)
+    d["daily"][2][0]["day"] = date(2026, 9, 14)
+    assert not any(lead == "Data" for lead, _ in sr.summary_paragraphs(sr.summarize(d)))

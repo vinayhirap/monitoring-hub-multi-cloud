@@ -71,34 +71,44 @@ export default function ContactsPanel({ check, onClose, onChanged }) {
     } finally { setBusy(false); }
   };
 
+  const sw = (checked, label, onChange, disabled) => (
+    <label className="syn-toggle" title={label}>
+      <input type="checkbox" aria-label={label} checked={checked} disabled={disabled} onChange={onChange} />
+      <span className="syn-toggle-track"><span className="syn-toggle-thumb" /></span>
+    </label>
+  );
+  const locked = !canEdit || masked;
+
   return (
     <div className="syn-contacts" role="region" aria-label={`Alert contacts for ${check.name}`}>
-      <div className="syn-contacts-head">
-        <b>Who is notified: {check.name}</b>
-        <span className="syn-note">Email, per person. Outages are sent when the check goes down and when it recovers; certificate notices when it nears expiry, escalate, and when it is renewed. Maintenance windows silence them.</span>
-        <button type="button" className="syn-btn-cancel" onClick={onClose}>Close</button>
+      <div className="syn-edit-head">
+        <span className="syn-edit-title">Alert contacts</span>
+        <span className="syn-edit-type">{check.name}</span>
       </div>
+      <p className="syn-contacts-help">
+        Email, per person. Outage emails go out when the check goes down and when it recovers. Certificate emails go out when the
+        certificate nears expiry, escalate as it gets closer, and again once it is renewed. Maintenance windows silence them.
+      </p>
 
-      {rows === null ? <div className="syn-note">Loading...</div> : (
+      {rows === null ? <p className="syn-contacts-help">Loading...</p> : (
         <>
-          {rows.length === 0 && <div className="syn-warn-note">No one is notified by email about this check. {canEdit ? "Add an address below." : "Ask an admin to add one."}</div>}
+          {rows.length === 0 && <div className="syn-contacts-empty">No one is emailed about this check yet. {canEdit ? "Add an address below." : "Ask an admin to add one."}</div>}
           {rows.length > 0 && (
-            <table className="syn-table syn-contacts-table">
-              <thead><tr><th>Email</th><th>Label</th><th>Outages</th><th>Certificate</th><th></th></tr></thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={r.email + i}>
-                    <td className="mono">{r.email}</td>
-                    <td>{canEdit ? <input aria-label={`Label for ${r.email}`} value={r.label || ""} maxLength={100} placeholder="Network team" onChange={e => edit(i, { label: e.target.value })} /> : (r.label || "")}</td>
-                    <td><input type="checkbox" aria-label={`Outages to ${r.email}`} checked={!!r.notify_outage} disabled={!canEdit || masked} onChange={e => edit(i, { notify_outage: e.target.checked })} /></td>
-                    <td><input type="checkbox" aria-label={`Certificate notices to ${r.email}`} checked={!!r.notify_cert} disabled={!canEdit || masked} onChange={e => edit(i, { notify_cert: e.target.checked })} /></td>
-                    <td>{canEdit && !masked && <button type="button" className="syn-btn-delete" title="Remove" aria-label={`Remove ${r.email}`} onClick={() => setRows(l => l.filter((_, j) => j !== i))}><TrashIcon size={13} /></button>}</td>
-                  </tr>))}
-              </tbody>
-            </table>)}
-          {masked && rows.length > 0 && <div className="syn-note">Addresses are partly hidden for your role; editing needs the synthetic manage permission.</div>}
+            <div className="syn-contacts-list" role="table" aria-label="Contacts">
+              <div className="syn-contacts-row is-head" role="row"><span>Email</span><span>Label</span><span className="syn-contacts-sw">Outages</span><span className="syn-contacts-sw">Certificate</span><span /></div>
+              {rows.map((r, i) => (
+                <div className="syn-contacts-row" role="row" key={r.email + i}>
+                  <span className="mono">{r.email}</span>
+                  {locked ? <span>{r.label || ""}</span>
+                    : <input type="text" aria-label={`Label for ${r.email}`} value={r.label || ""} maxLength={100} placeholder="Network team" onChange={e => edit(i, { label: e.target.value })} />}
+                  <span className="syn-contacts-sw">{sw(!!r.notify_outage, `Outage emails to ${r.email}`, e => edit(i, { notify_outage: e.target.checked }), locked)}</span>
+                  <span className="syn-contacts-sw">{sw(!!r.notify_cert, `Certificate emails to ${r.email}`, e => edit(i, { notify_cert: e.target.checked }), locked)}</span>
+                  <span>{!locked && <button type="button" className="syn-btn-delete" title="Remove" aria-label={`Remove ${r.email}`} onClick={() => setRows(l => l.filter((_, j) => j !== i))}><TrashIcon size={13} /></button>}</span>
+                </div>))}
+            </div>)}
+          {masked && rows.length > 0 && <p className="syn-contacts-help">Addresses are partly hidden for your role. Changing contacts needs the synthetic manage permission.</p>}
 
-          {canEdit && !masked && (
+          {!locked && (
             <div className="syn-contacts-add">
               <input aria-label="New contact email" type="email" value={draft} placeholder="name@company.com" onChange={e => setDraft(e.target.value)}
                      onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); add(); } }} />
@@ -107,24 +117,26 @@ export default function ContactsPanel({ check, onClose, onChanged }) {
 
           {isHttps && (
             <div className="syn-contacts-cert">
-              <label className="syn-toggle-line">
-                <input type="checkbox" checked={custom} disabled={!canEdit} onChange={e => setCustom(e.target.checked)} />
-                <span>Use custom certificate thresholds (default: warn {defaults.warn} days, critical {defaults.crit} days before expiry)</span>
-              </label>
+              <div className="syn-contacts-cert-line">
+                {sw(custom, "Use custom certificate thresholds", e => setCustom(e.target.checked), !canEdit)}
+                <span>{custom ? "Custom certificate thresholds" : `Default thresholds: warn ${defaults.warn} days, critical ${defaults.crit} days before expiry`}</span>
+              </div>
               {custom && (
                 <div className="syn-contacts-days">
-                  <label>Warn at (days) <input type="number" min="2" max="365" value={warn} disabled={!canEdit} onChange={e => setWarn(e.target.value)} /></label>
-                  <label>Critical at (days) <input type="number" min="1" max="364" value={crit} disabled={!canEdit} onChange={e => setCrit(e.target.value)} /></label>
+                  <label>Warn at (days)<input type="number" min="2" max="365" value={warn} disabled={!canEdit} onChange={e => setWarn(e.target.value)} /></label>
+                  <label>Critical at (days)<input type="number" min="1" max="364" value={crit} disabled={!canEdit} onChange={e => setCrit(e.target.value)} /></label>
                 </div>)}
-              <div className="syn-note">Reminders: while in the warning window, once a week; once critical or expired, daily. Reminders go to the contacts above only.</div>
+              <div className="syn-contacts-foot">Reminders go to the contacts above only: once a week while in the warning window, daily once critical or expired.</div>
             </div>)}
 
           <div className="syn-contacts-actions">
-            {canEdit && !masked && <button type="button" className="syn-btn-add" onClick={save} disabled={busy}>{busy ? "Working..." : "Save"}</button>}
-            {canEdit && !masked && <button type="button" className="syn-btn-cancel" onClick={test} disabled={busy || rows.length === 0}>Send test email</button>}
+            {!locked && <button type="button" className="syn-btn-add" onClick={save} disabled={busy}>{busy ? "Saving..." : "Save"}</button>}
+            {!locked && <button type="button" className="syn-btn-cancel" onClick={test} disabled={busy || rows.length === 0}
+                                title={rows.length === 0 ? "Add and save a contact first" : "Sends a test email to every saved contact"}>Send test email</button>}
+            <button type="button" className="syn-btn-cancel" onClick={onClose}>Close</button>
             {hasPermission("reports.generate") && <Link className="syn-link" to={`/reports?template=synthetic&account=${check.aws_account_id}&check=${check.id}`}>Generate a report for this check</Link>}
           </div>
-          {msg && <div className={msg.kind === "ok" ? "syn-ok-note" : "syn-error"} role={msg.kind === "err" ? "alert" : "status"}>{msg.text}</div>}
+          {msg && <div className={`syn-error syn-contacts-msg${msg.kind === "ok" ? " is-ok" : ""}`} role={msg.kind === "err" ? "alert" : "status"}>{msg.text}</div>}
         </>)}
     </div>
   );

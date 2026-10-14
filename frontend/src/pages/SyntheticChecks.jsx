@@ -334,7 +334,7 @@ export default function SyntheticChecks() {
                   <td className="mono"><CertCell c={c} /></td>
                   <td className="mono">{c.check_type === "https" ? (c.tls_version || "—") : "—"}</td>
                   <td>
-                    <button type="button" className={`syn-notify${c.contact_count ? "" : " is-none"}`} onClick={() => setContactsId(c.id)}
+                    <button type="button" className={`syn-notify${c.contact_count ? "" : " is-none"}`} onClick={() => { setEditingId(null); setContactsId(c.id); }}
                             title="Choose who is emailed about outages and certificate expiry" aria-label={`Alert contacts for ${c.name}`}>
                       {c.contact_count ? `${c.contact_count} contact${c.contact_count === 1 ? "" : "s"}` : "No one notified"}
                     </button>
@@ -347,7 +347,7 @@ export default function SyntheticChecks() {
                     </label>
                   </td>
                   <td className="syn-actions">
-                    <button className="syn-btn-edit" onClick={() => setEditingId(c.id)} title="Edit check" aria-label={`Edit ${c.name}`}>
+                    <button className="syn-btn-edit" onClick={() => { setContactsId(null); setEditingId(c.id); }} title="Edit check" aria-label={`Edit ${c.name}`}>
                       <EditIcon size={13} />
                     </button>
                     <button className="syn-btn-delete" onClick={() => handleDelete(c.id)} title="Delete check">

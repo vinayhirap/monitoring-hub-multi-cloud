@@ -135,18 +135,38 @@
 }
 .syn-edit-hint { font-size: 11px; line-height: 1.5; color: var(--warn-fg); overflow-wrap: anywhere; }
 
-/* alert contacts */
-.syn-notify { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; color: var(--text-primary); font-size: 11px; cursor: pointer; white-space: nowrap; }
-.syn-notify:hover { border-color: var(--border-bright); }
-.syn-notify.is-none { color: var(--warn-fg); border-color: var(--warn-fg); }
-.syn-contacts { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 12px; }
-.syn-contacts-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
-.syn-contacts-head .syn-note { flex: 1; min-width: 240px; max-width: none; margin: 0; }
-.syn-contacts-table input[type="text"], .syn-contacts-table input:not([type]) { width: 100%; min-width: 120px; }
-.syn-contacts-add, .syn-contacts-actions, .syn-contacts-days { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.syn-contacts-add input { min-width: 240px; flex: 1; }
-.syn-contacts-days input { width: 80px; }
-.syn-toggle-line { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.syn-warn-note { color: var(--warn-fg); font-size: 12px; }
-.syn-ok-note { color: var(--ok-fg, #3fb97a); font-size: 12px; }
-.syn-link { font-size: 12px; color: var(--accent, #2bb3ac); }
+/* alert contacts (same look as the edit form) */
+.syn-notify { background: transparent; border: 1px solid var(--border-md); border-radius: var(--radius); padding: 3px 9px; color: var(--text-secondary); font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all .15s; }
+.syn-notify:hover { border-color: var(--accent); color: var(--accent); }
+.syn-notify.is-none { color: var(--warn-fg); border-color: rgba(245,158,11,.45); background: rgba(245,158,11,.08); }
+.syn-contacts { background: var(--bg-card); border: 1px solid var(--border-md); border-left: 3px solid var(--accent); border-radius: var(--radius-lg); padding: 14px 16px 16px; margin-bottom: var(--space-5); }
+.syn-contacts-help { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin: 0 0 14px; max-width: 760px; }
+.syn-contacts-empty { font-size: 12px; color: var(--warn-fg); margin-bottom: 12px; }
+.syn-contacts-list { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 14px; }
+.syn-contacts-row { display: grid; grid-template-columns: minmax(180px, 1.4fr) minmax(120px, 1fr) auto auto auto; align-items: center; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--border); }
+.syn-contacts-row:first-child { border-top: 0; }
+.syn-contacts-row.is-head { background: var(--bg-elevated); font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); font-family: var(--font-mono); padding-top: 9px; padding-bottom: 9px; }
+.syn-contacts-row input[type="text"] { width: 100%; box-sizing: border-box; }
+.syn-contacts .in, .syn-contacts-row input[type="text"], .syn-contacts-days input, .syn-contacts-add input {
+  background: var(--bg-input); border: 1px solid var(--border-md); color: var(--text-primary); padding: 7px 10px; border-radius: var(--radius); font-size: 13px; }
+.syn-contacts-row input[type="text"]:focus, .syn-contacts-days input:focus, .syn-contacts-add input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(43,179,172,.1); }
+.syn-contacts-row input:disabled { opacity: .6; cursor: not-allowed; }
+.syn-contacts-sw { display: flex; align-items: center; justify-content: center; gap: 8px; min-width: 84px; font-size: 12px; color: var(--text-secondary); }
+.syn-contacts-add { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.syn-contacts-add input { flex: 1; min-width: 240px; }
+.syn-contacts-cert { border-top: 1px solid var(--border); padding-top: 14px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 10px; }
+.syn-contacts-cert-line { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-primary); }
+.syn-contacts-days { display: flex; flex-wrap: wrap; gap: 16px; }
+.syn-contacts-days label { display: flex; flex-direction: column; gap: 6px; font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); font-family: var(--font-mono); }
+.syn-contacts-days input { width: 110px; }
+.syn-contacts-foot { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+.syn-contacts-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.syn-contacts-msg { margin-top: 12px; margin-bottom: 0; }
+.syn-contacts-msg.is-ok { background: rgba(34,197,94,.08); border-color: rgba(34,197,94,.3); color: var(--green); }
+.syn-link { font-size: 12px; font-weight: 600; color: var(--accent); text-decoration: none; margin-left: 4px; }
+.syn-link:hover { text-decoration: underline; }
+@media (max-width: 720px) {
+  .syn-contacts-row { grid-template-columns: 1fr 1fr; }
+  .syn-contacts-row.is-head { display: none; }
+  .syn-contacts-actions > button { flex: 1; }
+}

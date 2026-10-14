@@ -181,6 +181,7 @@ def summarize(data):
                 a, w = day_ms.get(d, (0, 0))
                 day_ms[d] = (a + int(r["avg_ms"]) * int(r["ok"]), w + int(r["ok"]))
     avails = [p["availability"] for p in per if p["availability"] is not None]
+    seen_days = sorted({r["day"] for rows in data["daily"].values() for r in rows} | {t["day"] for t in data["today"].values()})
     all_outages = sorted((dict(o, check=p["check"]) for p in per for o in p["outages"]), key=lambda o: o["start"])
     certs_due = []
     for p in per:
@@ -190,7 +191,8 @@ def summarize(data):
             if cert["cert_days_left"] <= warn:
                 certs_due.append(p)
     return {
-        "per_check": per, "checks": len(per),
+        "period_start": start, "period_end": end, "per_check": per, "checks": len(per),
+        "first_day": seen_days[0] if seen_days else None, "last_day": seen_days[-1] if seen_days else None,
         "avg_availability": round(sum(avails) / len(avails), 2) if avails else None,
         "probes": sum(p["probes"] for p in per), "failed": sum(p["failed"] for p in per),
         "outage_count": len(all_outages), "downtime_min": sum(p["downtime_min"] for p in per),
@@ -210,6 +212,27 @@ def _plural(n, one, many=None):
     return one if n == 1 else (many or one + "s")
 
 
+def _coverage_text(summ, period_start=None, period_end=None):
+    """Says so when the figures cover less than the requested period (a check added part-way through, or probes lost)."""
+    first = summ.get("first_day")
+    start = summ.get("period_start")
+    if not first or not start:
+        return None
+    gap = (datetime.combine(first, datetime.min.time()) - _naive(start).replace(hour=0, minute=0, second=0, microsecond=0)).days \
+        if not isinstance(first, datetime) else (_naive(first) - _naive(start)).days
+    if gap < 2:
+        return None
+    return (f"Monitoring data starts on {_fmt_day(datetime.combine(first, datetime.min.time()) if not isinstance(first, datetime) else first)}, "
+            f"so the figures below cover {gap_days_text(summ)} of the requested period, not all of it.")
+
+
+def gap_days_text(summ):
+    first, last, start, end = summ["first_day"], summ.get("last_day"), summ["period_start"], summ["period_end"]
+    total = max(1, (_naive(end) - _naive(start)).days)
+    have = max(1, (last - first).days + 1) if last and first else 0
+    return f"{have} of {total} days"
+
+
 def summary_paragraphs(summ):
     out = []
     if summ["avg_availability"] is None:
@@ -217,6 +240,9 @@ def summary_paragraphs(summ):
     out.append(("Availability",
                 f"Across {summ['checks']} {_plural(summ['checks'], 'check')}, average availability was "
                 f"{summ['avg_availability']:.2f}% over {summ['probes']:,} probes ({summ['failed']:,} failed)."))
+    cov = _coverage_text(summ)
+    if cov:
+        out.append(("Data", cov))
     b, w = summ["best"], summ["worst"]
     if b and w and b is not w:
         out.append(("Range", f"Best: {b['check']['name']} at {b['availability']:.2f}%. "
@@ -319,7 +345,7 @@ def render_synthetic_pdf(*, report_type, scope_id, scope_label, period_start, pe
                         for p in summ["per_check"]])
         kit.plain_paragraph(pdf, f"Status bands are reference values: healthy {_HEALTHY_PCT}% or more, degraded "
                                  f"{_DEGRADED_PCT}% or more, poor below that. Worst p95 is the slowest day's 95th percentile "
-                                 "response time. Figures are whole UTC days.", size=8.5, color=kit.MUTED, italic=True)
+                                 "response time. Figures are grouped by UTC day; the latest day may be partial.", size=8.5, color=kit.MUTED, italic=True)
 
     if summ["day_failed"]:
         kit.section_header(pdf, "Failed Probes per Day")
@@ -349,8 +375,8 @@ def render_synthetic_pdf(*, report_type, scope_id, scope_label, period_start, pe
     certs = [p for p in summ["per_check"] if p["cert"] and p["cert"].get("cert_not_after")]
     if certs:
         kit.section_header(pdf, "TLS Certificates")
-        kit.data_table(pdf, [("Check", 44, "L"), ("Expires (UTC)", 32, "L"), ("Days left", 20, "R"),
-                             ("Issuer", 54, "L"), ("Status", 26, "C")],
+        kit.data_table(pdf, [("Check", 38, "L"), ("Expires (UTC)", 28, "L"), ("Days left", 18, "R"),
+                             ("Issuer", 70, "L"), ("Status", 26, "C")],
                        [(p["check"]["name"], _fmt_day(p["cert"]["cert_not_after"]),
                          str(p["cert"]["cert_days_left"]) if p["cert"]["cert_days_left"] is not None else "-",
                          p["cert"].get("cert_issuer") or "-",
