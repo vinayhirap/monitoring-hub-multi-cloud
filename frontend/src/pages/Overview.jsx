@@ -5,10 +5,11 @@ import { useAuth } from "../auth/AuthContext";
 import { useAlertSync } from "../hooks/useAlertSync";
 import { getLiveAccounts } from "../api/api";
 import { useDashboardData } from "../hooks/useDashboardData";
-import { summarize } from "../utils/dashboardModel";
+import { summarize, ageLabel } from "../utils/dashboardModel";
+import { buildServiceChips, syncFreshness } from "../utils/serviceChips";
 import { StatusHero, KpiRow, ActivityPanel, FeedPanel, MatrixPanel, TopResourcesPanel, IncidentsPanel, IntelligencePanel, CoveragePanel, PanelSkeleton } from "./overview/panels";
 import { PageHeader } from "../components/ui";
-import { AlertOctagonIcon, ZapIcon, AlertTriangleIcon, ServerIcon, HardDriveIcon, BucketIcon, RefreshCwIcon } from "../components/icons";
+import { AlertOctagonIcon, AlertTriangleIcon, RefreshCwIcon } from "../components/icons";
 import "./Overview.css";
 import "./overview/dash.css";
 import { useTimezone } from "../contexts/TimezoneContext";
@@ -317,9 +318,11 @@ export default function Overview() {
               <AccountGroupCard
                 key={group.account_id}
                 group={group}
+                now={now}
                 expanded={expandedIds.has(group.account_id)}
                 onToggle={() => toggleExpand(group.account_id)}
                 onRegionClick={(regionRow) => navigate(`/accounts/${regionRow.id}/services`)}
+                onServiceClick={(rowId, serviceKey) => navigate(`/accounts/${rowId}/${serviceKey}`)}
               />
             ))}
           </div>
@@ -343,7 +346,7 @@ export default function Overview() {
 
 // ─── Account Group Card ──────────────────────────────────────────────────────
 
-function AccountGroupCard({ group, expanded, onToggle, onRegionClick }) {
+function AccountGroupCard({ group, now, expanded, onToggle, onRegionClick, onServiceClick }) {
   const status = aggregateStatus(group.regions);
   const stats  = aggregateStats(group.regions);
   const regionCount = group.regions.length;
@@ -371,6 +374,15 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick }) {
   // not just running EC2 instances, which is why an account full of warnings
   // used to show an all-green ring.
   const ring = aggregateRing(group.regions);
+  const ringHealthy = Math.max(0, ring.total - ring.critical - ring.warning);
+
+  // One chip per service the ring counts (not a fixed EC2/EBS/S3/Lambda four), worst
+  // alert state first -- see utils/serviceChips.js.
+  const chips = buildServiceChips(group.regions);
+  // Freshness of the least recently synced region, with the same thresholds as the
+  // "Regions synced" KPI above.
+  const fresh = syncFreshness(group.regions, now);
+  const freshText = fresh.level === "unknown" ? "Not synced yet" : `Synced ${ageLabel(fresh.ageMs)} ago`;
 
   return (
     <div className={`account-card ac-${status} ${expanded ? "ac-expanded" : ""}`}>
@@ -386,6 +398,10 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick }) {
             </div>
             <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)" }}>
               {group.account_id}
+            </div>
+            <div className={`acc-sync acc-sync-${fresh.level}`}
+                 title={group.regions.length > 1 ? "Time since the least recently synced region" : "Time since this account's last metrics sync"}>
+              <span className="acc-sync-dot" />{freshText}
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -430,18 +446,37 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick }) {
 
         <div className="acc-body">
           <HealthRing ring={ring} />
-          <div className="acc-chips">
-            <ResChip icon={<ServerIcon size={13} />}  label="EC2"    value={stats.ec2_total}    sub={`${stats.ec2_running} running`} />
-            <ResChip icon={<HardDriveIcon size={13} />}  label="EBS"    value={stats.ebs_total}    />
-            <ResChip icon={<BucketIcon size={13} />}  label="S3"     value={stats.s3_total}     />
-            <ResChip icon={<ZapIcon size={13} />}   label="Lambda" value={stats.lambda_total} />
-          </div>
+          {ring.total > 0 ? (
+            <div className="ring-legend">
+              <span className="ring-legend-row"><i className="lg lg-ok" />{ringHealthy} healthy</span>
+              <span className="ring-legend-row"><i className="lg lg-warn" />{ring.warning} warning</span>
+              <span className="ring-legend-row"><i className="lg lg-crit" />{ring.critical} critical</span>
+            </div>
+          ) : (
+            <div className="ring-legend ring-legend-empty">No monitored services yet</div>
+          )}
         </div>
+
+        {chips.length > 0 && (
+          <div className="acc-services">
+            <div className="acc-section-label">Services, alerting first</div>
+            <ServiceChips chips={chips} max={6} onChipClick={c => onServiceClick(c.rowId, c.key)} />
+          </div>
+        )}
 
         <div className="acc-footer" style={{ borderTop: "1px solid var(--border)", paddingTop: 8, marginTop: 4 }}>
           <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
             {expanded ? "▴ Collapse regions" : `▾ View ${regionCount} region${regionCount !== 1 ? "s" : ""}`}
           </span>
+          {/* One region: the card's own services page. With several regions the link would have to pick one, so each
+              region row below keeps its own "Services →" instead. */}
+          {regionCount === 1 && ring.total > 0 && (
+            <span className="view-link" role="link" tabIndex={0}
+                  onClick={e => { e.stopPropagation(); onRegionClick(group.regions[0]); }}
+                  onKeyDown={e => { if (e.key === "Enter") { e.stopPropagation(); onRegionClick(group.regions[0]); } }}>
+              All {ring.total} services →
+            </span>
+          )}
         </div>
       </div>
 
@@ -463,6 +498,7 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick }) {
               key={regionRow.id}
               regionRow={regionRow}
               onClick={() => onRegionClick(regionRow)}
+              onServiceClick={onServiceClick}
             />
           ))}
         </div>
@@ -473,8 +509,9 @@ function AccountGroupCard({ group, expanded, onToggle, onRegionClick }) {
 
 // ─── Region Row (drilldown) ───────────────────────────────────────────────────
 
-function RegionRow({ regionRow, onClick }) {
+function RegionRow({ regionRow, onClick, onServiceClick }) {
   const status = regionRow.status || "healthy";
+  const chips = buildServiceChips([regionRow]);
 
   // Same authoritative per-region counts the backend used to set
   // regionRow.status -- no more independent (and fragile) re-derivation
@@ -512,12 +549,8 @@ function RegionRow({ regionRow, onClick }) {
         <span className="region-row-name">
           {regionRow.region}
         </span>
-        <div className="region-row-chips">
-          <MiniChip label="EC2"    value={regionRow.ec2_total}    sub={`${regionRow.ec2_running} running`} />
-          <MiniChip label="EBS"    value={regionRow.ebs_total}    />
-          <MiniChip label="S3"     value={regionRow.s3_total}     />
-          <MiniChip label="λ"      value={regionRow.lambda_total} />
-        </div>
+        <ServiceChips className="region-row-chips" compact chips={chips} max={5}
+                      onChipClick={c => onServiceClick(c.rowId, c.key)} />
       </div>
 
       <div className="region-row-actions">
@@ -533,14 +566,38 @@ function RegionRow({ regionRow, onClick }) {
   );
 }
 
-function MiniChip({ label, value, sub }) {
-  if (!value && value !== 0) return null;
+/** One chip per service, alerting ones first. Shows the first `max`; "+N more" expands in place.
+ *  Every click stops propagation: the card and the region row around the chips are themselves
+ *  click targets (expand regions / open the Services page). A chip opens that one service. */
+function ServiceChips({ chips, max, compact = false, className = "", onChipClick }) {
+  const [showAll, setShowAll] = useState(false);
+  if (!chips.length) return null;
+  const shown  = showAll ? chips : chips.slice(0, max);
+  const hidden = chips.length - shown.length;
+  const stop   = fn => e => { e.stopPropagation(); fn(); };
   return (
-    <span className="mini-chip">
-      <span className="mini-chip-label">{label}</span>
-      <span className="mini-chip-value">{value}</span>
-      {sub && <span className="mini-chip-sub">{sub}</span>}
-    </span>
+    <div className={`svc-chips${compact ? " svc-chips-sm" : ""} ${className}`.trim()}>
+      {shown.map(c => {
+        const alertText = c.sev === "critical" ? "critical alert firing" : c.sev === "warning" ? "warning alert firing" : "";
+        return (
+          <button key={c.key} type="button" className={`svc-chip svc-${c.sev}`}
+                  title={`${c.label}${c.count != null ? `: ${c.count}` : ""}${alertText ? `, ${alertText}` : ""}. Open ${c.label}`}
+                  aria-label={`${c.label}${c.count != null ? ` ${c.count}` : ""}${alertText ? `, ${alertText}` : ""}`}
+                  onClick={stop(() => onChipClick(c))}>
+            {c.sev !== "none" && <span className="svc-dot" aria-hidden="true" />}
+            <span className="svc-chip-label">{c.label}</span>
+            {c.count != null && <span className="svc-chip-count">{c.count}</span>}
+            {c.sub && <span className="svc-chip-sub">· {c.sub}</span>}
+          </button>
+        );
+      })}
+      {hidden > 0 && (
+        <button type="button" className="svc-chip svc-more" onClick={stop(() => setShowAll(true))}>+{hidden} more ▾</button>
+      )}
+      {showAll && chips.length > max && (
+        <button type="button" className="svc-chip svc-more" onClick={stop(() => setShowAll(false))}>Show less ▴</button>
+      )}
+    </div>
   );
 }
 
@@ -632,17 +689,6 @@ function HealthRing({ ring }) {
           {tooltip.detail ? ` (${tooltip.detail})` : ""}
         </div>
       )}
-    </div>
-  );
-}
-
-function ResChip({ icon, label, value, sub }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 4, background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 8px", fontSize: 11 }}>
-      <span style={{ fontSize: 12, display: "inline-flex", alignItems: "center" }}>{icon}</span>
-      <span style={{ color: "var(--text-muted)" }}>{label}</span>
-      <span style={{ fontWeight: 700, fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>{value}</span>
-      {sub && <span style={{ color: "var(--text-muted)", fontSize: 10 }}>· {sub}</span>}
     </div>
   );
 }

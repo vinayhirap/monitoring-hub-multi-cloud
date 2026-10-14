@@ -303,6 +303,55 @@ def _get_active_services_by_account_unsafe() -> dict:
     return out
 
 
+def _get_service_counts_by_account() -> dict:
+    """What the Overview account/region cards need to draw one chip per
+    service: {"counts": {aws_account_id: {service_key: resource_count}},
+               "labels": {service_key: display_service}}.
+
+    Same presence rule and the same normalize_service_key() as
+    _get_active_services_by_account() above and GET /resource-counts/{id}, so
+    a chip's number is the number on the Services page the chip links to.
+    Cached with the rest of layer 1 (60 s). Never raises: on any failure the
+    cards fall back to the live per-type totals already on every row."""
+    try:
+        return _get_service_counts_by_account_unsafe()
+    except Exception as e:
+        logger.error(f"Service counts fetch error: {e}")
+        return {"counts": {}, "labels": {}}
+
+
+def _get_service_counts_by_account_unsafe() -> dict:
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(f"""
+                SELECT r.aws_account_id, r.resource_type, r.resource_id
+                FROM resources r
+                JOIN aws_accounts acc ON acc.id = r.aws_account_id AND acc.status = 'active'
+                WHERE (COALESCE(acc.provider, 'aws') <> 'aws'
+                       OR r.last_seen_at > NOW() - INTERVAL {_AWS_STALE_AFTER_MINUTES} MINUTE)
+            """)
+            present = cur.fetchall()
+            cur.execute("""
+                SELECT service, MIN(display_service) AS display_service
+                FROM metric_catalog
+                GROUP BY service
+            """)
+            label_rows = cur.fetchall()
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+    counts = {}
+    for r in present:
+        key = normalize_service_key(r["resource_type"], r["resource_id"] or "")
+        per_account = counts.setdefault(r["aws_account_id"], {})
+        per_account[key] = per_account.get(key, 0) + 1
+    labels = {r["service"]: r["display_service"] for r in label_rows if r.get("display_service")}
+    return {"counts": counts, "labels": labels}
+
+
 # Metrics that genuinely mean an EC2 instance is slow, degraded, or down --
 # i.e. actually worth painting that instance's HealthRing wedge red/amber
 # for. Deliberately a curated ALLOWLIST, not "any active alert on this
@@ -522,6 +571,7 @@ def _build_base_accounts():
     """Layer 1: per-account AWS resource summary. Slow (live describe calls)."""
     accounts = _get_db_accounts()
     active_services = _get_active_services_by_account()
+    service_counts = _get_service_counts_by_account()
 
     def process_account(acc):
         region  = acc.get("default_region")
@@ -552,6 +602,15 @@ def _build_base_accounts():
                 "instance_count": summary["lambda_total"],
             })
 
+        # One chip per service on the Overview cards. Limited to the services the
+        # ring counts (active_services) so chips and ring can never disagree; an
+        # alerting service outside that set is added by the frontend from
+        # health_ring and shown without a count.
+        active_keys    = set(active_services.get(acc["id"], ()))
+        acct_counts    = service_counts["counts"].get(acc["id"], {})
+        row_svc_counts = {k: v for k, v in acct_counts.items() if k in active_keys}
+        row_svc_labels = {k: service_counts["labels"][k] for k in active_keys if k in service_counts["labels"]}
+
         return _serialize({
             "id":               acc["id"],
             "account_name":     acc["account_name"],
@@ -572,6 +631,8 @@ def _build_base_accounts():
             "instance_count":   total,
             "services":         services,
             "active_services":  sorted(active_services.get(acc["id"], ())),
+            "service_counts":   row_svc_counts,
+            "service_labels":   row_svc_labels,
             "created_at":       acc.get("created_at"),
             "last_synced_at":   acc.get("last_synced_at"),
         })

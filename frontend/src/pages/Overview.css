@@ -101,6 +101,42 @@
 .acc-body { display:flex; align-items:center; gap:12px; margin:10px 0 12px; }
 .acc-chips { display:flex; flex-direction:column; gap:5px; flex:1; }
 
+/* ── Account card: sync freshness, ring legend, one chip per service ── */
+.acc-sync { display:inline-flex; align-items:center; gap:5px; margin-top:3px; font-size:11px; color:var(--text-muted); }
+.acc-sync-dot { width:6px; height:6px; border-radius:50%; background:var(--text-muted); flex-shrink:0; }
+.acc-sync-fresh .acc-sync-dot { background:#22c55e; }
+.acc-sync-aging .acc-sync-dot { background:#f59e0b; }
+.acc-sync-stale .acc-sync-dot { background:#ef4444; }
+.acc-sync-stale { color:#ef4444; }
+
+.ring-legend { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-secondary); }
+.ring-legend-row { display:inline-flex; align-items:center; gap:6px; }
+.ring-legend-empty { color:var(--text-muted); }
+.lg { width:9px; height:9px; border-radius:2px; display:inline-block; flex-shrink:0; }
+.lg-ok   { background:#22c55e; }
+.lg-warn { background:#f59e0b; }
+.lg-crit { background:#ef4444; }
+
+.acc-services { margin:0 0 10px; }
+.acc-section-label { font-size:11px; color:var(--text-muted); margin-bottom:6px; }
+.svc-chips { display:flex; flex-wrap:wrap; gap:6px; }
+.svc-chip { display:inline-flex; align-items:center; gap:5px; font:inherit; font-size:12px; line-height:1.2; padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-elevated); color:var(--text-secondary); cursor:pointer; transition:border-color .15s; }
+.svc-chip:hover { border-color:var(--border-bright); }
+.svc-chip:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.svc-chip-count { font-family:var(--font-mono); font-weight:700; color:var(--text-primary); }
+.svc-chip-sub { color:var(--text-muted); font-size:11px; }
+.svc-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+.svc-warning  { border-color:rgba(245,158,11,0.35); }
+.svc-critical { border-color:rgba(239,68,68,0.4); }
+.svc-warning  .svc-dot { background:#f59e0b; }
+.svc-critical .svc-dot { background:#ef4444; }
+.svc-more { border-style:dashed; color:var(--accent); }
+/* region rows: the same chips, one size down (matches the old mini chips) */
+.svc-chips-sm { gap:5px; }
+.svc-chips-sm .svc-chip { font-size:10px; font-family:var(--font-mono); padding:2px 6px; border-radius:4px; gap:3px; background:var(--bg-card); }
+.svc-chips-sm .svc-chip-sub { font-size:9px; }
+.svc-chips-sm .svc-dot { width:6px; height:6px; }
+
 .h-ring-wrap { position:relative; width:70px; height:70px; flex-shrink:0; }
 .h-ring-label { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; }
 .h-ring-num { font-family:var(--font-mono); font-weight:800; font-size:16px; line-height:1; color:var(--text-primary); }
@@ -304,6 +340,16 @@
 [data-theme="light"] .mini-chip-label { color: #566e92; }
 [data-theme="light"] .mini-chip-value { color: #0f1c35; }
 [data-theme="light"] .mini-chip-sub   { color: #8ba0bc; }
+
+/* Service chips, ring legend, sync line — light mode */
+[data-theme="light"] .svc-chip        { background: #f0f4fa; border-color: rgba(99,130,190,0.2); color: #4a6080; }
+[data-theme="light"] .svc-chip:hover  { border-color: rgba(0,119,204,0.35); }
+[data-theme="light"] .svc-chip-count  { color: #0f1c35; }
+[data-theme="light"] .svc-chip-sub    { color: #8ba0bc; }
+[data-theme="light"] .svc-warning     { border-color: rgba(184,110,0,0.4); }
+[data-theme="light"] .svc-critical    { border-color: rgba(192,57,43,0.45); }
+[data-theme="light"] .ring-legend     { color: #4a6080; }
+[data-theme="light"] .acc-section-label { color: #566e92; }
 
 /* Region count badge — light mode */
 [data-theme="light"] .region-count-badge { background: #f0f4fa; border-color: rgba(99,130,190,0.2); color: #4a6080; }
