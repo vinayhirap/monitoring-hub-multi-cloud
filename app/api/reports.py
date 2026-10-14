@@ -66,7 +66,7 @@ def _require_enabled():
 router = APIRouter(prefix="/api/reports", tags=["Reports"], dependencies=[Depends(_require_enabled)])
 
 _VALID_REPORT_TYPES = {"WEEKLY", "MONTHLY", "QUARTERLY", "CUSTOM"}
-_VALID_SCOPE_TYPES = {"ACCOUNT", "RESOURCE", "INCIDENT", "CLIENT"}
+_VALID_SCOPE_TYPES = {"ACCOUNT", "RESOURCE", "INCIDENT", "CLIENT", "SYNTHETIC"}
 
 
 def _require_account_access(account_id: int | None, user: dict) -> None:
@@ -120,6 +120,27 @@ def _find_duplicate_job(cur, report_type, scope_type, scope_id, account_id, user
     return cur.fetchone()
 
 
+def _validate_synthetic_scope(scope_id: str, account_id: int, current_user: dict) -> None:
+    """scope_id is '<account id>' or '<account id>:<check id>'. It must name the account the caller selected, the caller
+    must be allowed to see synthetic data at all (a report is another way to read it), and a single check must exist in
+    that account."""
+    from app.auth.permissions import has_permission
+    from app.reports.synthetic_report import parse_scope
+    if not has_permission(current_user, "synthetic.view"):
+        raise HTTPException(status_code=403, detail="Missing permission: synthetic.view")
+    try:
+        acct, check_id = parse_scope(scope_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if acct != int(account_id):
+        raise HTTPException(status_code=400, detail="scope_id must name the selected account")
+    if check_id is not None:
+        with get_db_cursor(dictionary=True, commit=False) as (_, cur):
+            cur.execute("SELECT id FROM synthetic_checks WHERE id = %s AND aws_account_id = %s", (check_id, acct))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="That check does not exist in this account")
+
+
 @router.post("/generate")
 def generate_report(
     background_tasks: BackgroundTasks,
@@ -138,7 +159,7 @@ def generate_report(
         raise HTTPException(status_code=400, detail=f"report_type must be one of {sorted(_VALID_REPORT_TYPES)}")
     if scope_type not in _VALID_SCOPE_TYPES:
         raise HTTPException(status_code=400, detail=f"scope_type must be one of {sorted(_VALID_SCOPE_TYPES)}")
-    if scope_type in ("INCIDENT", "RESOURCE", "ACCOUNT") and not account_id:
+    if scope_type in ("INCIDENT", "RESOURCE", "ACCOUNT", "SYNTHETIC") and not account_id:
         raise HTTPException(status_code=400, detail=f"account_id is required for scope_type={scope_type} "
                                                       "-- a resource/incident id is only unique within one "
                                                       "account, not globally (see db/migrations/048_add_account_scoping_to_alerts.sql). "
@@ -162,6 +183,8 @@ def generate_report(
     if scope_type == "CLIENT" and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="CLIENT-scoped reports span multiple accounts and are admin-only")
     _require_account_access(account_id, current_user)
+    if scope_type == "SYNTHETIC":
+        _validate_synthetic_scope(scope_id, account_id, current_user)
 
     start, end = _resolve_period(report_type, period_start, period_end)
 

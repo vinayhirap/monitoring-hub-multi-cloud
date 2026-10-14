@@ -4,17 +4,18 @@
 // The backend has no content templates, scheduling or job-list endpoint; templates here are presets of the
 // real parameters, and "Recent requests" are the jobs started from this browser (status read from the API).
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useTimezone } from "../contexts/TimezoneContext";
 import {
-  getLiveAccounts, generateReport, getReportJobStatus, listReports, reportDownloadUrl, emailReport,
+  getLiveAccounts, getSyntheticChecks, generateReport, getReportJobStatus, listReports, reportDownloadUrl, emailReport,
   listReportScopeResources, listReportScopeIncidents,
 } from "../api/api";
 import { getCached, setCached } from "../utils/dataCache";
 import { DownloadIcon } from "../components/icons";
 import { PageHeader, Panel, Badge, StatusBeacon, SegmentedControl, FilterBar, DataTable, EmptyState } from "../components/ui";
 import {
-  CONTENT, PERIODS, templatesFor, quickRanges, periodWindow, validateRequest, jobIsTerminal, trackJob, updateJob,
+  contentFor, PERIODS, templatesFor, quickRanges, periodWindow, validateRequest, jobIsTerminal, trackJob, updateJob,
   describeRequest, filterLibrary, expiryState, fmtSize,
 } from "../utils/reportPlan";
 import "./Reports.css";
@@ -32,15 +33,19 @@ export default function Reports() {
   const canGenerate = hasPermission("reports.generate");
   const templates = useMemo(() => templatesFor(isAdmin), [isAdmin]);
 
+  const [qs] = useSearchParams();
   const [accounts, setAccounts] = useState([]);
-  const [tplId, setTplId] = useState("weekly");
+  const [tplId, setTplId] = useState(() => (qs.get("template") === "synthetic" ? "synthetic" : "weekly"));
   const tpl = templates.find(t => t.id === tplId) || templates[0];
-  const [reportType, setReportType] = useState("WEEKLY");
-  const [accountId, setAccountId] = useState("");
+  const [reportType, setReportType] = useState(() => (qs.get("template") === "synthetic" ? "MONTHLY" : "WEEKLY"));
+  const [accountId, setAccountId] = useState(() => (qs.get("template") === "synthetic" ? (qs.get("account") || "") : ""));
   const [scopeId, setScopeId] = useState("");
   const [manualId, setManualId] = useState(false);
   const [resources, setResources] = useState([]);
   const [incidents, setIncidents] = useState([]);
+  const [synthChecks, setSynthChecks] = useState([]);
+  const [checkId, setCheckId] = useState("");              // "" = every check in the account
+  const presetCheck = useRef(qs.get("template") === "synthetic" ? (qs.get("check") || "") : "");
   const [pStart, setPStart] = useState("");
   const [pEnd, setPEnd] = useState("");
   const [error, setError] = useState("");
@@ -76,7 +81,9 @@ export default function Reports() {
 
   useEffect(() => {
     setScopeId(""); setManualId(false);
-    if (!accountId) { setResources([]); setIncidents([]); return; }
+    setCheckId(presetCheck.current); presetCheck.current = "";
+    if (!accountId) { setResources([]); setIncidents([]); setSynthChecks([]); return; }
+    if (scopeType === "SYNTHETIC") getSyntheticChecks().then(r => setSynthChecks((Array.isArray(r) ? r : []).filter(c => String(c.aws_account_id) === String(accountId)))).catch(() => setSynthChecks([]));
     if (scopeType === "RESOURCE") listReportScopeResources(accountId).then(r => setResources(Array.isArray(r) ? r : [])).catch(() => setResources([]));
     if (scopeType === "INCIDENT") listReportScopeIncidents(accountId).then(r => setIncidents(Array.isArray(r) ? r : [])).catch(() => setIncidents([]));
   }, [accountId, scopeType]);
@@ -84,9 +91,11 @@ export default function Reports() {
   const win = periodWindow({ reportType, start: pStart, end: pEnd });
   const scopeLabel = scopeType === "CLIENT" ? (scopeId ? `Client: ${scopeId} (all accounts)` : "")
     : scopeType === "ACCOUNT" ? (acctLabel ? `Account ${acctLabel}` : "")
+    : scopeType === "SYNTHETIC" ? (acctLabel ? `Synthetic checks: ${checkId ? (synthChecks.find(c => String(c.id) === String(checkId))?.name || `check ${checkId}`) : "all checks"} in ${acctLabel}` : "")
     : scopeType === "RESOURCE" ? (scopeId ? `Resource ${resources.find(r => r.resource_id === scopeId)?.name || scopeId}${acctLabel ? ` in ${acctLabel}` : ""}` : "")
     : (scopeId ? `Incident #${scopeId}${acctLabel ? ` in ${acctLabel}` : ""}` : "");
-  const problem = validateRequest({ scopeType, reportType, accountId, scopeId: scopeType === "ACCOUNT" ? accountId : scopeId, start: pStart, end: pEnd, isAdmin });
+  const syntheticScopeId = checkId ? `${accountId}:${checkId}` : String(accountId || "");
+  const problem = validateRequest({ scopeType, reportType, accountId, scopeId: scopeType === "ACCOUNT" ? accountId : scopeType === "SYNTHETIC" ? syntheticScopeId : scopeId, start: pStart, end: pEnd, isAdmin });
   const summary = describeRequest({ template: tpl, reportType, scopeLabel, window: win, tz: ianaName });
 
   // Poll every non-terminal tracked job; one self-scheduling loop for all of them
@@ -118,7 +127,7 @@ export default function Reports() {
     setSubmitting(true);
     try {
       const resp = await generateReport({
-        reportType, scopeType, scopeId: scopeType === "ACCOUNT" ? accountId : scopeId.trim(),
+        reportType, scopeType, scopeId: scopeType === "ACCOUNT" ? accountId : scopeType === "SYNTHETIC" ? syntheticScopeId : scopeId.trim(),
         accountId: scopeType === "CLIENT" ? null : (accountId || null),
         periodStart: reportType === "CUSTOM" ? pStart : undefined, periodEnd: reportType === "CUSTOM" ? pEnd : undefined,
       });
@@ -192,6 +201,13 @@ export default function Reports() {
               <label className="rp-f"><span>Client or stakeholder name</span>
                 <input value={scopeId} onChange={e => setScopeId(e.target.value)} placeholder="Shown on the report cover" maxLength={80} />
                 <small>Spans every account. Admin only.</small></label>)}
+            {scopeType === "SYNTHETIC" && (
+              <label className="rp-f"><span>Check</span>
+                <select value={checkId} onChange={e => setCheckId(e.target.value)} disabled={!accountId} data-testid="rp-check">
+                  <option value="">{accountId ? `All checks in this account (${synthChecks.length})` : "Select an account first"}</option>
+                  {synthChecks.map(c => <option key={c.id} value={c.id}>{c.name} ({c.check_type})</option>)}
+                </select>
+                <small>Leave on all checks for one combined report, or pick one check.</small></label>)}
             {scopeType === "RESOURCE" && (
               <label className="rp-f"><span>Resource</span>
                 {manualId ? <input value={scopeId} onChange={e => setScopeId(e.target.value)} placeholder="resource id" />
@@ -226,7 +242,7 @@ export default function Reports() {
           <div className="rp-review">
             <div>
               <div className="rp-sum" data-testid="rp-summary">{summary}</div>
-              <ul className="rp-incl" aria-label="What the report contains">{CONTENT.map(c => <li key={c}>{c}</li>)}</ul>
+              <ul className="rp-incl" aria-label="What the report contains">{contentFor(tpl).map(c => <li key={c}>{c}</li>)}</ul>
               <p className="rp-dim">Only data from accounts you can access is included. Delivery by email needs SMTP to be set up on the server; scheduled reports are not available yet.</p>
             </div>
             <div className="rp-go">

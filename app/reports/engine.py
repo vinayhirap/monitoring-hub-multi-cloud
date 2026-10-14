@@ -226,6 +226,8 @@ def report_title(report_type: str, scope_type: str) -> str:
         return "Incident Report"
     if st == "RESOURCE":
         return "Resource Report"
+    if st == "SYNTHETIC":
+        return "Synthetic Monitoring Report"
     base = _TYPE_TITLES.get((report_type or "").upper(), "Operations Report")
     return base.replace("Operations Report", "Client Report").replace("Operations Review", "Client Review") \
         if st == "CLIENT" else base

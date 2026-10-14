@@ -40,6 +40,8 @@ def periodic_report_filename(report: dict) -> str:
         kind = "Incident"
     elif scope == "RESOURCE":
         kind = "Resource"
+    elif scope == "SYNTHETIC":
+        kind = "Synthetic-" + _TYPE_WORDS.get((report.get("report_type") or "").upper(), "Report")
     else:
         kind = _TYPE_WORDS.get((report.get("report_type") or "").upper(), "Operations")
     who = slug(report.get("scope_label") or report.get("scope_id") or "report", 36)

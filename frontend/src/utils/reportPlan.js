@@ -10,12 +10,23 @@ export const CONTENT = [
   "Incident narratives with impact / probable cause and resolution or current status",
 ];
 
+export const SYNTHETIC_CONTENT = [
+  "Availability per check, with status bands (healthy, degraded, poor)",
+  "Failed probes per day and average response time per day",
+  "Outages: start, end, duration, and any still open",
+  "TLS certificates: expiry date, days left, issuer, and renewal status",
+  "Recommendations (checks nobody is notified about, certificates due, slow endpoints)",
+];
+
+export const contentFor = tpl => (tpl && tpl.scopeType === "SYNTHETIC" ? SYNTHETIC_CONTENT : CONTENT);
+
 export const TEMPLATES = [
   { id: "weekly",    label: "Weekly operations summary", blurb: "Last 7 days for one account", reportType: "WEEKLY",    scopeType: "ACCOUNT" },
   { id: "monthly",   label: "Monthly review",            blurb: "Last 30 days for one account", reportType: "MONTHLY",   scopeType: "ACCOUNT" },
   { id: "quarterly", label: "Quarterly review",          blurb: "Last 90 days for one account", reportType: "QUARTERLY", scopeType: "ACCOUNT" },
   { id: "incident",  label: "Incident report",           blurb: "One incident, with cause and resolution", reportType: "MONTHLY", scopeType: "INCIDENT" },
   { id: "resource",  label: "Resource report",           blurb: "Alert history of one resource", reportType: "MONTHLY", scopeType: "RESOURCE" },
+  { id: "synthetic", label: "Synthetic checks report", blurb: "Uptime, outages and certificates for one account or one check", reportType: "MONTHLY", scopeType: "SYNTHETIC" },
   { id: "client",    label: "Stakeholder / client report", blurb: "All accounts, admin only", reportType: "MONTHLY", scopeType: "CLIENT", adminOnly: true },
   { id: "custom",    label: "Custom period",             blurb: "Any range up to 400 days", reportType: "CUSTOM", scopeType: "ACCOUNT" },
 ];

@@ -225,6 +225,9 @@ export const getSyntheticResults  = (id, hours = 24) => apiFetch(`/api/synthetic
 export const createSyntheticCheck = (data) => apiFetch("/api/synthetic-checks", { method: "POST", body: JSON.stringify(data) });
 export const updateSyntheticCheck = (id, data) => apiFetch(`/api/synthetic-checks/${id}`, { method: "PATCH", body: JSON.stringify(data) });
 export const deleteSyntheticCheck = (id) => apiFetch(`/api/synthetic-checks/${id}`, { method: "DELETE" });
+export const getSyntheticContacts = (id) => apiFetch(`/api/synthetic-checks/${id}/contacts`);
+export const setSyntheticContacts = (id, contacts) => apiFetch(`/api/synthetic-checks/${id}/contacts`, { method: "PUT", body: JSON.stringify({ contacts }) });
+export const testSyntheticContacts = (id) => apiFetch(`/api/synthetic-checks/${id}/contacts/test`, { method: "POST" });
 
 // ── SLO / error-budget tracking ──────────────────────────────────────
 export const getSlos      = () => apiFetch("/api/slo");

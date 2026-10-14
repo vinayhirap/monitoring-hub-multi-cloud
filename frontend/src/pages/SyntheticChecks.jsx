@@ -16,6 +16,7 @@ import {
 import { PlusIcon, TrashIcon, EditIcon, AlertOctagonIcon } from "../components/icons";
 import "./SyntheticChecks.css";
 import CheckDetail from "./synthetic/CheckDetail";
+import ContactsPanel from "./synthetic/ContactsPanel";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
 import { certThresholds, certTone } from "./synthetic/certThresholds";
 
@@ -186,6 +187,7 @@ export default function SyntheticChecks() {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
+  const [contactsId, setContactsId] = useState(null);
 
   const load = useCallback(() => {
     getSyntheticChecks().then(setChecks).catch(e => setError(errText(e)));
@@ -284,6 +286,10 @@ export default function SyntheticChecks() {
                        onCancel={() => setEditingId(null)} onSaved={() => { setEditingId(null); load(); }} />
       )}
 
+      {checks.some(c => c.id === contactsId) && (
+        <ContactsPanel key={contactsId} check={checks.find(c => c.id === contactsId)} onClose={() => setContactsId(null)} onChanged={load} />
+      )}
+
       <div className="syn-card">
         <div className="syn-bar">
           <span className="bar-icon">▐</span>
@@ -304,6 +310,7 @@ export default function SyntheticChecks() {
                 <th>Uptime (24h)</th>
                 <th>Cert expires in</th>
                 <th>TLS</th>
+                <th>Notified</th>
                 <th>Interval</th>
                 <th>Enabled</th>
                 <th></th>
@@ -326,6 +333,12 @@ export default function SyntheticChecks() {
                   <td className="mono">{c.uptime_pct_24h != null ? `${c.uptime_pct_24h}%` : "—"}</td>
                   <td className="mono"><CertCell c={c} /></td>
                   <td className="mono">{c.check_type === "https" ? (c.tls_version || "—") : "—"}</td>
+                  <td>
+                    <button type="button" className={`syn-notify${c.contact_count ? "" : " is-none"}`} onClick={() => setContactsId(c.id)}
+                            title="Choose who is emailed about outages and certificate expiry" aria-label={`Alert contacts for ${c.name}`}>
+                      {c.contact_count ? `${c.contact_count} contact${c.contact_count === 1 ? "" : "s"}` : "No one notified"}
+                    </button>
+                  </td>
                   <td className="mono">{c.interval_seconds}s</td>
                   <td>
                     <label className="syn-toggle">

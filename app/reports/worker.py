@@ -116,17 +116,31 @@ def run_job(job_id: int) -> None:
         logger.warning(f"report_jobs id={job_id}: could not claim (already running/finished elsewhere)")
         return
     try:
-        data = gather_report_data(
-            job["scope_type"], job["scope_id"], job["account_id"],
-            job["period_start"], job["period_end"],
-        )
-        scope_label = (data.get("account") or {}).get("account_name") or job["scope_id"]
-        pdf_bytes = render_report_pdf(
-            report_type=job["report_type"], scope_type=job["scope_type"],
-            scope_id=job["scope_id"], scope_label=scope_label,
-            period_start=job["period_start"], period_end=job["period_end"],
-            data=data, generated_by=job["requested_by"],
-        )
+        if job["scope_type"] == "SYNTHETIC":
+            from app.reports import synthetic_report as sr
+            acct_id, check_id = sr.parse_scope(job["scope_id"])
+            if job["account_id"] is not None and int(job["account_id"]) != acct_id:
+                raise ValueError("synthetic report scope does not match its account")
+            data = sr.gather_synthetic_data(acct_id, check_id, job["period_start"], job["period_end"])
+            scope_label = (data.get("account") or {}).get("account_name") or job["scope_id"]
+            if check_id and data["checks"]:
+                scope_label = f"{scope_label} / {data['checks'][0]['name']}"
+            pdf_bytes = sr.render_synthetic_pdf(
+                report_type=job["report_type"], scope_id=job["scope_id"], scope_label=scope_label,
+                period_start=job["period_start"], period_end=job["period_end"],
+                data=data, generated_by=job["requested_by"])
+        else:
+            data = gather_report_data(
+                job["scope_type"], job["scope_id"], job["account_id"],
+                job["period_start"], job["period_end"],
+            )
+            scope_label = (data.get("account") or {}).get("account_name") or job["scope_id"]
+            pdf_bytes = render_report_pdf(
+                report_type=job["report_type"], scope_type=job["scope_type"],
+                scope_id=job["scope_id"], scope_label=scope_label,
+                period_start=job["period_start"], period_end=job["period_end"],
+                data=data, generated_by=job["requested_by"],
+            )
         # AUDIT FIX (b21/082, LOW): previously hashed pdf_bytes twice
         # (once here via __import__("hashlib") to build the key before
         # the PUT, once again inside put_report() itself) and called
