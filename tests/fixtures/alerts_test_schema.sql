@@ -334,3 +334,6 @@ CREATE TABLE IF NOT EXISTS metric_history (
   metric_timestamp DATETIME NOT NULL,
   KEY idx_mh_res_metric_ts (resource_id, metric_name, metric_timestamp)
 );
+
+-- Workstream B (tag sync), migration 095: columns the real-DB tests need.
+ALTER TABLE `resources` ADD COLUMN `synced_tags` JSON NULL, ADD COLUMN `tags_synced_at` DATETIME NULL;

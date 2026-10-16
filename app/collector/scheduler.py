@@ -423,6 +423,13 @@ def _low_tier_loop(leader_event, last_low):
 def run_discovery_once():
     from app.collector.discovery.runner import run_discovery
     run_discovery()
+    # Workstream B: learn the real AWS tags of the types discovery stores none for. A no-op (and no AWS call) unless
+    # TAG_SYNC_ENABLED is on; never raises. Runs before the classification pass so that pass sees its result.
+    try:
+        from app.collector.tag_sync import sync_after_discovery as tag_sync_after_discovery
+        tag_sync_after_discovery()
+    except Exception as e:
+        logger.warning(f"[tag-sync] hook failed (non-fatal): {e}")
     # Phase 4a: (re)classify every resource's environment right after discovery, so changed
     # tags/names are picked up and new resources reach the Needs-classification queue. Never
     # raises; a no-op until migration 083 is applied. Labels only -- it changes no alerting.

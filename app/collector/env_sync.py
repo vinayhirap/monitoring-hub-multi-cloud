@@ -45,7 +45,8 @@ INHERIT_EDGE_TYPES = ("attached_to",)
 _BASE_SELECT = """
     SELECT r.id, r.aws_account_id, r.resource_id, r.resource_type, r.name, r.tags,
            r.env_override, r.env_resolved, r.env_source, r.env_reason, r.tag_state,
-           {extra}aa.default_env
+           {extra}{synced},
+           aa.default_env
     FROM resources r
     JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
     WHERE (r.instance_state IS NULL OR r.instance_state != 'terminated')
@@ -54,11 +55,24 @@ _BASE_SELECT = """
 """
 
 
+def _row_synced(row):
+    """The fresh tag-sync result for a row (dict, {} = swept and absent) or None. Only types the sync covers."""
+    synced = ec.parse_synced(row.get("synced_tags"))
+    if synced is None or str(row.get("resource_type") or "").lower() not in ec.TAG_SYNC_TYPES:
+        return None
+    return synced
+
+
 def resolve_row(row, related=None):
     """One resources row (dict) -> classifier Resolution."""
+    tags = row.get("tags")
+    synced = _row_synced(row)
+    if synced and ec.tag_sync_feeds_environment():
+        # TAG_SYNC_FEED_ENVIRONMENT: an Environment tag learned from AWS decides the environment. Off by default.
+        tags = {**ec._tags_dict(tags), **synced}
     return ec.resolve_environment(
         override=row.get("env_override"),
-        tags=row.get("tags"),
+        tags=tags,
         name=row.get("name"),
         resource_id=row.get("resource_id"),
         account_default=row.get("default_env"),
@@ -66,9 +80,20 @@ def resolve_row(row, related=None):
     )
 
 
+def _synced_fragment(cursor):
+    """Select-list piece for the tag-sync result: NULL unless TAG_SYNC_ENABLED and migration 095 are both in place,
+    so a deploy that restarts before the migration cannot break classification."""
+    try:
+        from app.collector.tag_sync import synced_select
+        return synced_select(cursor)
+    except Exception:
+        return "NULL AS synced_tags"
+
+
 def _load(cursor, account_ids=None, with_warning=True):
     sql = _BASE_SELECT.format(types=", ".join(["%s"] * len(NON_ALERTABLE_TYPES)),
-                              extra="r.env_warning, " if with_warning else "")
+                              extra="r.env_warning, " if with_warning else "",
+                              synced=_synced_fragment(cursor))
     params = [STALE_RESOURCE_HOURS, *NON_ALERTABLE_TYPES]
     if account_ids is not None:
         if not account_ids:
@@ -222,7 +247,7 @@ def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False
                     warn_updates.append((new_w, row["id"], row.get("env_override")))
             _tally(report["by_source"], res.source)
             _tally(report["by_env"], res.env)
-            tstate = ec.tag_state(row.get("resource_type"), row.get("tags"))
+            tstate = ec.tag_state(row.get("resource_type"), row.get("tags"), _row_synced(row))
             same = (row.get("env_resolved") == res.env
                     and row.get("env_source") == res.source
                     and (row.get("env_reason") or "") == res.reason

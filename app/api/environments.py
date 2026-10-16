@@ -293,12 +293,13 @@ def list_resources(
                             WHERE {where}""", params)
             total = int(cur.fetchone()["n"])
             warn_select = ", r.env_warning AS warning" if warn_col else ""
+            synced_sql = _synced_fragment(cur)      # NULL AS synced_tags unless the tag sync is on (workstream B)
             cur.execute(f"""
                 SELECT r.id, r.aws_account_id AS account_id, aa.account_name, aa.provider, r.resource_type,
                        r.resource_id, r.name, r.region,
                        r.env_resolved AS env, r.env_source AS source, r.env_reason AS reason,
                        r.env_override AS override, r.env_override_by AS override_by,
-                       r.env_override_at AS override_at, r.tag_state, r.tags{warn_select}
+                       r.env_override_at AS override_at, r.tag_state, r.tags, {synced_sql}{warn_select}
                 FROM resources r
                 JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
                 WHERE {where}
@@ -314,9 +315,11 @@ def list_resources(
     for r in rows:
         r["override_at"] = _iso(r["override_at"])
         tags = r.pop("tags")                 # raw tags are not returned, only what is derived from them
-        tags_by_pk[r["id"]] = tags
         r["warning"] = r.get("warning")
         r["warning_kind"] = ec.warning_kind(r["warning"])
+        tags_by_pk[r["id"]] = tags           # raw stored tags, as before: suggestions are not fed by the tag sync
+        synced = ec.parse_synced(r.pop("synced_tags", None))
+        tags = ec.effective_tags(r["resource_type"], tags, synced)   # the tag sync's result for the types it covers
         r["missing_tags"] = ec.missing_tags(tags, ec.ESSENTIAL_TAGS) if r["tag_state"] and r["tag_state"] != "not_checked" else []
         r["tag_env"] = ec.tag_environment(tags)
         r["conflict"] = _conflict(r["override"], tags)
@@ -379,6 +382,15 @@ def tag_plan(
             "skipped_invalid": plan["skipped_invalid"], "sources": list(chosen),
             "by_env": plan["by_env"], "groups": plan["groups"],
             "filters": {"account_id": account_id, "env": env, "region": region, "resource_type": resource_type}}
+
+
+def _synced_fragment(cur):
+    """Tag-sync result column: NULL unless TAG_SYNC_ENABLED and migration 095 are in place (workstream B)."""
+    try:
+        from app.collector.tag_sync import synced_select
+        return synced_select(cur)
+    except Exception:
+        return "NULL AS synced_tags"
 
 
 _EMPTY_REPORT = {"applied": 0, "by_env": {}}
