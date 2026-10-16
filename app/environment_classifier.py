@@ -261,22 +261,74 @@ def _fold_key(k):
     return re.sub(r"[-.\s]+", "_", str(k).strip().lower())
 
 
-def tags_known(resource_type, tags):
+# Types whose real AWS tags the tag sync (app/collector/tag_sync.py, flag TAG_SYNC_ENABLED) can learn from the
+# Resource Groups Tagging API. Kept equal to app/aws/arn_match.SYNC_TYPES (a test enforces it; this module stays
+# import-free). Being listed here never says "untagged" by itself: a row only becomes known when the sync stored
+# a fresh result for it, see tags_known(synced=...).
+TAG_SYNC_TYPES = frozenset({
+    "s3", "logs", "kms", "lambda", "elb", "sqs", "sns", "natgateway", "certificatemanager",
+    "cloudfront", "kinesis", "wafv2", "backup", "events", "dynamodb", "eks", "firehose",
+})
+
+
+def tag_sync_enabled():
+    """TAG_SYNC_ENABLED gates the Tagging-API sweep and every use of its result. Default: off."""
+    return os.getenv("TAG_SYNC_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+
+
+def tag_sync_feeds_environment():
+    """TAG_SYNC_FEED_ENVIRONMENT (needs TAG_SYNC_ENABLED): let an Environment tag learned by the sync decide the
+    resource's environment. Separate and default off because it can change alert strength. Default: off."""
+    return tag_sync_enabled() and os.getenv("TAG_SYNC_FEED_ENVIRONMENT", "false").strip().lower() in ("true", "1", "yes")
+
+
+def parse_synced(raw):
+    """resources.synced_tags (JSON text / dict / None) -> dict, or None when there is no usable value.
+    {} is a real answer ("swept and not in the result"); None means "not known"."""
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, (str, bytes)):
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _synced_usable(resource_type, synced):
+    return synced is not None and str(resource_type or "").lower() in TAG_SYNC_TYPES
+
+
+def effective_tags(resource_type, tags, synced=None):
+    """The tags that describe the resource's OWN AWS tags when known: the sync result for sync types, else the
+    stored tags. Used for tag state and for the Environments page's missing-tag list."""
+    return synced if _synced_usable(resource_type, synced) else _tags_dict(tags)
+
+
+def tags_known(resource_type, tags, synced=None):
     """True when the stored tags are the resource's own AWS tags.
 
     An attached EBS volume is stored WITH ITS INSTANCE'S TAGS (discovery copies them on purpose
     so alerts inherit the instance's environment, plus a parent_ec2 key). Its own tags are not
     known, so it is not checked; an unattached volume carries its own tags and is.
+
+    `synced` is the FRESH tag-sync result for the row (dict, {} = swept and absent) or None. It makes the
+    row known only for TAG_SYNC_TYPES; a stale or missing result is passed as None by the caller.
     """
     t = str(resource_type or "").lower()
     if t in TAGS_COLLECTED_TYPES:
+        return True
+    if _synced_usable(t, synced):
         return True
     if t == "ebs":
         return "parent_ec2" not in _tags_dict(tags)
     return False
 
 
-def tag_state(resource_type, tags):
+def tag_state(resource_type, tags, synced=None):
     """ok | nonstandard | invalid | missing | not_checked.
 
     ok          Environment tag, exactly the standard key and one of prod / uat / dev
@@ -285,9 +337,9 @@ def tag_state(resource_type, tags):
     missing     no environment-style tag at all
     not_checked the stored tags are not this resource's own AWS tags (cannot say)
     """
-    if not tags_known(resource_type, tags):
+    if not tags_known(resource_type, tags, synced):
         return "not_checked"
-    d = _tags_dict(tags)
+    d = effective_tags(resource_type, tags, synced)
     if str(d.get("Environment", "")) in TIERS:
         return "ok"
     if not any(_fold_key(k) in TAG_KEYS for k in d):
