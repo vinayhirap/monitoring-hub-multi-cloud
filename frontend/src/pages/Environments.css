@@ -115,3 +115,9 @@ button.env-tagtile:hover { border-color: var(--accent); }
 .env-preview { max-width: 620px; }
 .env-compliance h2 { font-size: 14px; margin: var(--space-4) 0 var(--space-2); }
 @media (max-width: 700px) { .env-suggest { min-width: 0; } }
+
+/* buttons in the governance additions use the same look as the rest of the page */
+.env-compliance button, .env-suggest button { background: var(--bg-card); border: 1px solid var(--border-md); color: var(--text); border-radius: var(--radius); padding: 5px 12px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.env-compliance button:hover:not(:disabled), .env-suggest button:hover:not(:disabled) { border-color: var(--accent); }
+.env-compliance button:disabled, .env-suggest button:disabled { opacity: .45; cursor: default; }
+.env-compliance > div:first-of-type + div { margin: var(--space-2) 0; }
