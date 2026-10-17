@@ -58,6 +58,12 @@ ABSENCE_VERIFIED_TYPES = frozenset({
 # Types whose ARNs carry no region (global namespace).
 GLOBAL_TYPES = frozenset({"s3", "cloudfront"})
 
+# What each kind of sweep may speak for. "full" is an unfiltered GetResources of one region: it proves tags for every
+# type AND (rules below) can prove absence. "global" and "s3" are FILTERED sweeps (ResourceTypeFilters) made only to
+# find CloudFront distributions / S3 buckets cheaply: they prove tags for those types and nothing else, and they never
+# count as a completed sweep of their region, so they cannot support an "untagged" claim for any type.
+SCOPE_TYPES = {"full": None, "global": frozenset({"s3", "cloudfront"}), "s3": frozenset({"s3"})}
+
 assert ABSENCE_VERIFIED_TYPES <= SYNC_TYPES
 
 
@@ -213,7 +219,8 @@ def plan_account(rows, sweeps, account_number, absence_types=ABSENCE_VERIFIED_TY
     """Decide, for one account, what each row's tag knowledge is.
 
     rows    [{id, resource_type, resource_id, region, tags}]  live rows of this account
-    sweeps  [{region, ok, items: [{arn, tags}]}]   one per swept region; ok=False means failed/partial
+    sweeps  [{region, ok, items: [{arn, tags}], scope?}]   one per sweep; ok=False means failed/partial;
+            scope is "full" (default), "global" or "s3" -- see SCOPE_TYPES
     returns {"decisions": {row id: Decision}, "types": {rtype: stats}, "foreign_arns": [...],
              "unsupported_arns": int}
       stats: rows, matched, absent, unknown, unmatched_rows [(id, resource_id)],
@@ -235,7 +242,10 @@ def plan_account(rows, sweeps, account_number, absence_types=ABSENCE_VERIFIED_TY
         if not sw.get("ok"):
             continue
         items = sw.get("items") or []
-        ok_regions[sw["region"]] = ok_regions.get(sw["region"], 0) + len(items)
+        scope = sw.get("scope") or "full"
+        allowed = SCOPE_TYPES.get(scope, frozenset())      # unknown scope: speaks for nothing
+        if scope == "full":
+            ok_regions[sw["region"]] = ok_regions.get(sw["region"], 0) + len(items)
         for it in items:
             arn = it.get("arn")
             hit = arn_key(arn)
@@ -243,6 +253,8 @@ def plan_account(rows, sweeps, account_number, absence_types=ABSENCE_VERIFIED_TY
                 unsupported += 1
                 continue
             key, acl_id = hit
+            if allowed is not None and key.rtype not in allowed:
+                continue                                   # outside what this filtered sweep may speak for
             # S3 ARNs carry no account (rows are keyed with account ""); every other type must be ours
             if key.rtype != "s3" and key.account != account_number:
                 foreign.append(arn)

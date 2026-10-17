@@ -185,11 +185,12 @@ def _load_sync(monkeypatch, db, accounts=None):
 
 
 def _sweeper(items=None, ok=True, error=None, pages=1, calls=None):
-    def f(account, region):
+    def f(account, spec):
+        region = spec["region"]
         if calls is not None:
-            calls.append(region)
-        return {"region": region, "ok": ok, "items": [{"arn": a, "tags": t} for a, t in (items or [])],
-                "pages": pages, "error": error}
+            calls.append((region, spec["scope"]) if spec["scope"] != "full" else region)
+        return {"region": region, "scope": spec["scope"], "ok": ok,
+                "items": [{"arn": a, "tags": t} for a, t in (items or [])], "pages": pages, "error": error}
     return f
 
 
@@ -228,17 +229,56 @@ def test_dry_run_writes_nothing(monkeypatch):
     assert db.updates == [] and rep["accounts"]["AuroGov"]["types"]["sqs"]["matched"] == 1
 
 
-def test_one_sweep_per_region_and_us_east_1_only_when_global_rows_exist(monkeypatch):
+def test_sweep_plan_is_one_full_sweep_plus_cheap_filtered_ones_only_when_needed(monkeypatch):
     calls = []
     db = FakeDB([_db_row(1, "sqs", "orders")])
     ts = _load_sync(monkeypatch, db)
     ts.run_tag_sync(sweeper=_sweeper(calls=calls))
-    assert calls == [REG]
+    assert calls == [REG]                                              # nothing global: one call series
     calls.clear()
-    db = FakeDB([_db_row(1, "sqs", "orders"), _db_row(2, "s3", "bucket", region="ap-south-1")])
+    db = FakeDB([_db_row(1, "sqs", "orders"), _db_row(2, "s3", "bucket", region="ap-south-1"),
+                 _db_row(3, "s3", "other", region="ap-south-2"), _db_row(4, "s3", "far", region="ap-south-2"),
+                 _db_row(5, "cloudfront", "E1", region="global")])
     ts = _load_sync(monkeypatch, db)
     ts.run_tag_sync(sweeper=_sweeper(calls=calls))
-    assert calls == [REG, "us-east-1"]
+    assert calls == [REG, ("us-east-1", "global"), ("ap-south-2", "s3")]  # one filtered sweep per extra bucket region
+
+
+def test_sweep_plan_filters_and_default_region_in_us_east_1(monkeypatch):
+    ts = load_module("app/collector/tag_sync.py")
+    rows = [{"resource_type": "s3", "region": "us-east-1"}, {"resource_type": "cloudfront", "region": "global"}]
+    assert ts.sweep_plan({"default_region": "us-east-1"}, rows) == [
+        {"region": "us-east-1", "scope": "full", "filters": None}]
+    plan = ts.sweep_plan({"default_region": REG}, rows)
+    assert plan[1] == {"region": "us-east-1", "scope": "global", "filters": ["cloudfront", "s3"]}
+    many = [{"resource_type": "s3", "region": f"r-{i}"} for i in range(30)]
+    assert len(ts.sweep_plan({"default_region": REG}, many)) <= 1 + 1 + ts.MAX_EXTRA_S3_REGIONS
+
+
+def test_hook_sweeps_at_most_once_per_interval(monkeypatch):
+    monkeypatch.setenv("TAG_SYNC_ENABLED", "true")
+    monkeypatch.setenv("TAG_SYNC_INTERVAL_MINUTES", "60")
+    install_stub("app.db", get_connection=lambda: None)
+    ts = load_module("app/collector/tag_sync.py")
+    runs = []
+    ts.run_tag_sync = lambda *a, **k: runs.append(1) or {"written": 0, "calls": 0}
+    ts.sync_after_discovery()
+    ts.sync_after_discovery()
+    assert len(runs) == 1
+    ts._last_run -= 3601
+    ts.sync_after_discovery()
+    assert len(runs) == 2
+
+
+def test_interval_setting_is_sane(monkeypatch):
+    ts = load_module("app/collector/tag_sync.py")
+    monkeypatch.delenv("TAG_SYNC_INTERVAL_MINUTES", raising=False)
+    assert ts.interval_minutes() == 60
+    for bad in ("abc", "0", "-3", "4"):
+        monkeypatch.setenv("TAG_SYNC_INTERVAL_MINUTES", bad)
+        assert ts.interval_minutes() == 60
+    monkeypatch.setenv("TAG_SYNC_INTERVAL_MINUTES", "15")
+    assert ts.interval_minutes() == 15
 
 
 def test_absence_types_setting_can_only_narrow(monkeypatch):
@@ -286,11 +326,18 @@ def test_hook_never_raises(monkeypatch):
 
 # ---------------------------------------------------------------- the AWS sweep itself
 class FakePaginator:
-    def __init__(self, pages, fail_after=None):
+    def __init__(self, pages, fail_after=None, seen=None, reject_filter=False):
         self.pages, self.fail_after = pages, fail_after
+        self.seen = seen if seen is not None else []
+        self.reject_filter = reject_filter
 
     def paginate(self, **kw):
         assert kw.get("ResourcesPerPage") == 100
+        self.seen.append(dict(kw))
+        if self.reject_filter and "ResourceTypeFilters" in kw:
+            class Bad(Exception):
+                response = {"Error": {"Code": "InvalidParameterException"}}
+            raise Bad("bad filter")
         for i, p in enumerate(self.pages):
             if self.fail_after is not None and i == self.fail_after:
                 raise RuntimeError("Throttling: Rate exceeded")
@@ -298,8 +345,9 @@ class FakePaginator:
 
 
 class FakeSession:
-    def __init__(self, pages, fail_after=None):
+    def __init__(self, pages, fail_after=None, reject_filter=False):
         self.pages, self.fail_after, self.clients = pages, fail_after, []
+        self.seen, self.reject_filter = [], reject_filter
 
     def client(self, name, region_name=None, config=None):
         self.clients.append((name, region_name))
@@ -308,7 +356,7 @@ class FakeSession:
         class C:
             def get_paginator(self, op):
                 assert op == "get_resources"
-                return FakePaginator(sess.pages, sess.fail_after)
+                return FakePaginator(sess.pages, sess.fail_after, sess.seen, sess.reject_filter)
         return C()
 
 
@@ -341,3 +389,25 @@ def test_access_denied_is_logged_once_per_day(monkeypatch, caplog):
         for _ in range(3):
             ts._log_sweep_failure(acct, REG, Denied("no"))
     assert sum("AccessDeniedException" in r.message for r in caplog.records) == 1
+
+
+def test_filtered_sweep_sends_the_filter_and_marks_its_scope():
+    ts = load_module("app/collector/tag_sync.py")
+    sess = FakeSession([_page(("arn:aws:cloudfront::123456789012:distribution/E1", {"k": "v"}))])
+    out = ts.sweep_region(sess, "us-east-1", ["cloudfront", "s3"], "global")
+    assert out["ok"] and out["scope"] == "global"
+    assert sess.seen == [{"ResourcesPerPage": 100, "ResourceTypeFilters": ["cloudfront", "s3"]}]
+
+
+def test_a_rejected_filter_falls_back_to_an_unfiltered_sweep():
+    ts = load_module("app/collector/tag_sync.py")
+    sess = FakeSession([_page(("arn:aws:s3:::b", {"k": "v"}))], reject_filter=True)
+    out = ts.sweep_region(sess, "us-east-1", ["s3"], "global")
+    assert out["ok"] and len(out["items"]) == 1 and out["pages"] == 1
+    assert "ResourceTypeFilters" not in sess.seen[-1]
+
+
+def test_a_non_filter_error_is_not_retried():
+    ts = load_module("app/collector/tag_sync.py")
+    out = ts.sweep_region(FakeSession([_page()], fail_after=0), REG, ["s3"], "global")
+    assert out["ok"] is False and out["items"] == []

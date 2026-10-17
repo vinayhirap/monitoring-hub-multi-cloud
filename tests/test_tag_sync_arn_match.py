@@ -214,3 +214,43 @@ def test_existing_tag_aware_and_unlisted_types_are_not_touched():
     rows = [row("ec2", "i-0abc", REG, pk=1), row("rds", "db1", REG, pk=2), row("dms", "t1", REG, pk=3), row("ebs", "vol-1", REG, pk=4)]
     out = plan(rows, [sweep([(FILLER, {})])])
     assert out["decisions"] == {}
+
+
+# ---- filtered sweeps (scope "global" / "s3"): proof of tags for their types, never a completed region sweep
+def fsweep(items, region, scope):
+    return {"region": region, "scope": scope, "ok": True, "items": [{"arn": a, "tags": t} for a, t in items]}
+
+
+def test_a_global_sweep_proves_cloudfront_and_s3_tags_but_ignores_other_types():
+    rows = [row("cloudfront", "E2ABCDEFGHIJKL", "global", pk=1), row("s3", "my-bucket", "us-east-1", pk=2),
+            row("sqs", "orders-queue", "us-east-1", pk=3)]
+    sw = fsweep([(CASES["cloudfront"][2], {"Environment": "prod"}), ("arn:aws:s3:::my-bucket", {"Owner": "a"}),
+                 ("arn:aws:sqs:us-east-1:%s:orders-queue" % ACCT, {"x": "y"})], "us-east-1", "global")
+    out = plan(rows, [sw])
+    assert out["decisions"][1].status == "tagged" and out["decisions"][2].status == "tagged"
+    assert 3 not in out["decisions"]                       # the sqs ARN is outside what a global sweep may speak for
+
+
+def test_a_filtered_sweep_never_supports_an_untagged_claim():
+    rows = [row("sqs", "orders-queue", "us-east-1", pk=1), row("logs", "/aws/x", "ap-south-1", pk=2)]
+    out = plan(rows, [fsweep([("arn:aws:s3:::b", {"k": "v"})], "us-east-1", "global"),
+                      fsweep([("arn:aws:s3:::c", {"k": "v"})], "ap-south-1", "s3")])
+    assert out["decisions"] == {}                          # no full sweep of either region
+
+
+def test_s3_bucket_in_another_region_is_proven_by_its_own_filtered_sweep():
+    sw_full = sweep([(FILLER, {"k": "v"})])
+    sw_s3 = fsweep([("arn:aws:s3:::cf-templates-x-ap-south-2", {"Owner": "a"})], "ap-south-2", "s3")
+    out = plan([row("s3", "cf-templates-x-ap-south-2", "ap-south-2")], [sw_full, sw_s3])
+    assert out["decisions"][1].status == "tagged"
+
+
+def test_s3_stays_unknown_when_absent_even_with_filtered_sweeps_of_its_region():
+    out = plan([row("s3", "untagged-bucket", "ap-south-2")],
+               [sweep([(FILLER, {"k": "v"})]), fsweep([("arn:aws:s3:::other", {"a": "b"})], "ap-south-2", "s3")])
+    assert out["decisions"] == {}
+
+
+def test_unknown_scope_speaks_for_nothing():
+    out = plan([row("sqs", "q1", REG)], [dict(sweep([(f"arn:aws:sqs:{REG}:{ACCT}:q1", {"a": "b"})]), scope="weird")])
+    assert out["decisions"] == {}

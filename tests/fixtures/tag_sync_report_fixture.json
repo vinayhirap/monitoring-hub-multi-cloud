@@ -137,7 +137,8 @@
       "Environment": "prod"
      }
     }
-   ]
+   ],
+   "scope": "global"
   }
  ]
 }

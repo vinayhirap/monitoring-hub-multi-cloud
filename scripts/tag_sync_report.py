@@ -50,7 +50,7 @@ def build_report(rows, sweeps, account_number, absence_types=None):
     for t, stats in plan["types"].items():
         types[t] = dict(stats, tag_state=by_type.get(t, {}), may_claim_untagged=t in arn_match.ABSENCE_VERIFIED_TYPES)
     return {
-        "sweeps": [{"region": s["region"], "ok": bool(s.get("ok")), "resources": len(s.get("items") or []),
+        "sweeps": [{"region": s["region"], "scope": s.get("scope") or "full", "ok": bool(s.get("ok")), "resources": len(s.get("items") or []),
                     "pages": s.get("pages"), "error": str(s["error"]) if s.get("error") else None} for s in sweeps],
         "types": types,
         "other_types_tag_state": {t: v for t, v in by_type.items() if t not in plan["types"]},
@@ -61,7 +61,7 @@ def build_report(rows, sweeps, account_number, absence_types=None):
 def render(account_name, rep, show=20):
     out = [f"=== {account_name} ==="]
     for s in rep["sweeps"]:
-        out.append(f"sweep {s['region']:<14} {'ok' if s['ok'] else 'FAILED'}  resources={s['resources']}  pages={s['pages']}"
+        out.append(f"sweep {s['region']:<14} {s['scope']:<7} {'ok' if s['ok'] else 'FAILED'}  resources={s['resources']}  pages={s['pages']}"
                    + (f"  error={s['error']}" if s["error"] else ""))
     out.append(f"ARNs of types the sync does not handle (ignored): {rep['unsupported_arns']}   "
                f"ARNs of other accounts (ignored): {len(rep['foreign_arns'])}")
@@ -138,7 +138,8 @@ def _live(account_id):
         if session is None:
             print(f"{a['account_name']}: no AWS session, skipped")
             continue
-        sweeps = [tag_sync.sweep_region(session, r) for r in tag_sync.regions_for(a, rows)]
+        sweeps = [tag_sync.sweep_region(session, sp["region"], sp["filters"], sp["scope"])
+                  for sp in tag_sync.sweep_plan(a, rows)]
         yield a["account_name"], rows, sweeps, number
 
 

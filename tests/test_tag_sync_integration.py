@@ -41,9 +41,11 @@ def _sync(monkeypatch, items, ok=True, dry_run=False):
     ts._get_session = lambda a: object()
     sweeps = []
 
-    def sweeper(account, region):
+    def sweeper(account, spec):
+        region = spec["region"]
         sweeps.append(region)
-        return {"region": region, "ok": ok, "pages": 1, "error": None if ok else RuntimeError("Throttling"),
+        return {"region": region, "scope": spec["scope"], "ok": ok, "pages": 1,
+                "error": None if ok else RuntimeError("Throttling"),
                 "items": [{"arn": a, "tags": t} for a, t in (items if ok else [])]}
     rep = ts.run_tag_sync(sweeper=sweeper, dry_run=dry_run)
     return rep, sweeps

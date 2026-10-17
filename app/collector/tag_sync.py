@@ -30,12 +30,17 @@ from app.aws import arn_match
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_AGE_HOURS = 6
-REFRESH_MINUTES = 60              # re-stamp an unchanged result at most this often (keeps writes small)
+REFRESH_MINUTES = 30              # re-stamp an unchanged result at most this often (keeps writes small)
+DEFAULT_INTERVAL_MINUTES = 60     # how often the sweep runs (discovery itself runs every 15 minutes)
+GLOBAL_FILTERS = ("cloudfront", "s3")      # ResourceTypeFilters for the us-east-1 sweep (global services only)
+S3_FILTERS = ("s3",)
+MAX_EXTRA_S3_REGIONS = 10
 STALE_RESOURCE_HOURS = 48         # same freshness rule as env_sync
 _CHUNK = 500
 _ERROR_LOG_INTERVAL = 24 * 3600
 _last_error_log = {}              # (account id, region, code) -> time of the last log line
 _columns_ok = False
+_last_run = 0.0
 
 
 def enabled():
@@ -48,6 +53,15 @@ def max_age_hours():
         return v if v > 0 else DEFAULT_MAX_AGE_HOURS
     except ValueError:
         return DEFAULT_MAX_AGE_HOURS
+
+
+def interval_minutes():
+    """TAG_SYNC_INTERVAL_MINUTES (default 60, minimum 5): how often the discovery hook actually sweeps."""
+    try:
+        v = int(os.getenv("TAG_SYNC_INTERVAL_MINUTES", str(DEFAULT_INTERVAL_MINUTES)))
+        return v if v >= 5 else DEFAULT_INTERVAL_MINUTES
+    except ValueError:
+        return DEFAULT_INTERVAL_MINUTES
 
 
 def absence_types():
@@ -91,22 +105,40 @@ def synced_select(cursor, alias="r"):
 # ---------------------------------------------------------------------------------------------
 # AWS sweep
 # ---------------------------------------------------------------------------------------------
-def sweep_region(session, region):
-    """One paginated GetResources for `region`. -> {"region", "ok", "items", "pages", "error"}.
-    ANY exception (AccessDenied, throttling after the client's own retries, network) makes the whole
+def _read_pages(client, kwargs, out):
+    items = []
+    for page in client.get_paginator("get_resources").paginate(**kwargs):
+        out["pages"] += 1
+        for m in page.get("ResourceTagMappingList", []):
+            arn = m.get("ResourceARN")
+            if arn:
+                items.append({"arn": arn, "tags": {t.get("Key"): t.get("Value") for t in m.get("Tags", [])
+                                                     if t.get("Key")}})
+    return items
+
+
+def sweep_region(session, region, filters=None, scope="full"):
+    """One paginated GetResources for `region`. -> {"region", "scope", "ok", "items", "pages", "error"}.
+    `filters` (ResourceTypeFilters) is used only for the cheap global / S3 sweeps; if AWS rejects the filter the
+    sweep is repeated unfiltered (arn_match then keeps only the types that scope may speak for).
+    ANY other exception (AccessDenied, throttling after the client's own retries, network) makes the whole
     sweep ok=False and returns no items: a partial result must never be read as "the rest is untagged"."""
-    out = {"region": region, "ok": False, "items": [], "pages": 0, "error": None}
+    out = {"region": region, "scope": scope, "ok": False, "items": [], "pages": 0, "error": None}
     try:
         from app.aws.boto_config import STANDARD_RETRY
         client = session.client("resourcegroupstaggingapi", region_name=region, config=STANDARD_RETRY)
-        items = []
-        for page in client.get_paginator("get_resources").paginate(ResourcesPerPage=100):
-            out["pages"] += 1
-            for m in page.get("ResourceTagMappingList", []):
-                arn = m.get("ResourceARN")
-                if arn:
-                    items.append({"arn": arn, "tags": {t.get("Key"): t.get("Value") for t in m.get("Tags", [])
-                                                         if t.get("Key")}})
+        kwargs = {"ResourcesPerPage": 100}
+        if filters:
+            kwargs["ResourceTypeFilters"] = list(filters)
+        try:
+            items = _read_pages(client, kwargs, out)
+        except Exception as e:
+            if not (filters and _error_code(e) == "InvalidParameterException"):
+                raise
+            logger.warning(f"[tag-sync] {region}: ResourceTypeFilters rejected ({e}); repeating unfiltered")
+            kwargs.pop("ResourceTypeFilters")
+            out["pages"] = 0
+            items = _read_pages(client, kwargs, out)
         out["items"] = items
         out["ok"] = True
     except Exception as e:
@@ -137,16 +169,28 @@ def _log_sweep_failure(account, region, e):
                        f"stored tag status left untouched (logged once per day)")
 
 
-def regions_for(account, rows):
-    """Regions to sweep: the discovery region, plus us-east-1 when the account has S3 / CloudFront rows (global
-    services, positive matching only)."""
-    regions = []
+def sweep_plan(account, rows):
+    """What to sweep for one account -> [{"region", "scope", "filters"}].
+      * the discovery region, unfiltered ("full"): proves tags for every type and can support "untagged";
+      * us-east-1, filtered to CloudFront and S3 ("global"), when the account has such rows;
+      * each other region that holds an S3 bucket row, filtered to S3 ("s3"), so buckets outside the discovery
+        region are found too (at most MAX_EXTRA_S3_REGIONS).
+    Filtered sweeps never support an "untagged" claim (see arn_match.SCOPE_TYPES)."""
+    plan, covered = [], set()
     default = account.get("default_region")
     if default:
-        regions.append(default)
-    if any(str(r.get("resource_type")).lower() in arn_match.GLOBAL_TYPES for r in rows) and "us-east-1" not in regions:
-        regions.append("us-east-1")
-    return regions
+        plan.append({"region": default, "scope": "full", "filters": None})
+        covered.add(default)
+    types = {str(r.get("resource_type")).lower() for r in rows}
+    if types & arn_match.GLOBAL_TYPES and "us-east-1" not in covered:
+        plan.append({"region": "us-east-1", "scope": "global", "filters": list(GLOBAL_FILTERS)})
+        covered.add("us-east-1")
+    s3_regions = sorted({str(r.get("region")) for r in rows
+                         if str(r.get("resource_type")).lower() == "s3" and r.get("region")
+                         and str(r.get("region")) not in ("global",)} - covered)
+    for region in s3_regions[:MAX_EXTRA_S3_REGIONS]:
+        plan.append({"region": region, "scope": "s3", "filters": list(S3_FILTERS)})
+    return plan
 
 
 # ---------------------------------------------------------------------------------------------
@@ -205,7 +249,7 @@ def run_tag_sync(account_ids=None, dry_run=False, sweeper=None):
     """Sweep, match, store. Returns a report dict; never raises.
         {"accounts": {account name: {"regions": {...}, "types": {...}, "written": n}}, "calls": pages,
          "written": n, "skipped": reason|None}
-    `sweeper(account, region) -> sweep dict` replaces the AWS call (tests, report script)."""
+    `sweeper(account, spec) -> sweep dict` replaces the AWS call (tests); spec is a sweep_plan() entry."""
     from app.db import get_connection
     report = {"accounts": {}, "calls": 0, "written": 0, "skipped": None, "dry_run": bool(dry_run)}
     try:
@@ -241,11 +285,13 @@ def run_tag_sync(account_ids=None, dry_run=False, sweeper=None):
                 report["accounts"][name] = {"skipped": "no session"}
                 continue
             sweeps = []
-            for region in regions_for(account, rows):
-                sw = sweeper(account, region) if sweeper else sweep_region(session, region)
+            for spec in sweep_plan(account, rows):
+                sw = (sweeper(account, spec) if sweeper
+                      else sweep_region(session, spec["region"], spec["filters"], spec["scope"]))
+                sw.setdefault("scope", spec["scope"])
                 report["calls"] += sw.get("pages", 0) or 0
                 if not sw.get("ok"):
-                    _log_sweep_failure(account, region, sw.get("error") or RuntimeError("sweep failed"))
+                    _log_sweep_failure(account, spec["region"], sw.get("error") or RuntimeError("sweep failed"))
                 sweeps.append(sw)
 
             plan = arn_match.plan_account(rows, sweeps, number, absence_types())
@@ -267,8 +313,9 @@ def run_tag_sync(account_ids=None, dry_run=False, sweeper=None):
                     wcur.close()
             report["written"] += written
             report["accounts"][name] = {
-                "regions": {s["region"]: {"ok": bool(s.get("ok")), "resources": len(s.get("items") or []),
-                                          "pages": s.get("pages", 0)} for s in sweeps},
+                "regions": {f"{s['region']}/{s.get('scope', 'full')}": {
+                    "ok": bool(s.get("ok")), "resources": len(s.get("items") or []), "pages": s.get("pages", 0)}
+                    for s in sweeps},
                 "types": plan["types"], "written": written,
             }
         except Exception as e:
@@ -295,9 +342,15 @@ def run_tag_sync(account_ids=None, dry_run=False, sweeper=None):
 
 def sync_after_discovery():
     """Discovery-loop hook: runs BEFORE env_sync.sync_after_discovery so the classification pass sees the fresh
-    result. Does nothing, and makes no AWS call, unless TAG_SYNC_ENABLED is on. Never raises."""
+    result. Does nothing, and makes no AWS call, unless TAG_SYNC_ENABLED is on. Sweeps at most once per
+    TAG_SYNC_INTERVAL_MINUTES (default 60; tags change rarely, discovery runs every 15 minutes). Never raises."""
+    global _last_run
     if not enabled():
         return
+    now = time.time()
+    if _last_run and now - _last_run < interval_minutes() * 60:
+        return
+    _last_run = now          # a failed attempt also waits for the next interval; failures are logged once a day
     try:
         rep = run_tag_sync()
         if rep.get("written"):

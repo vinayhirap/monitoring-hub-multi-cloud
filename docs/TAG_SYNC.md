@@ -40,8 +40,9 @@ A tagged resource that fails to match is therefore never reported `missing`: fai
 different tags, an ARN of another account, a Lambda alias or version ARN, an SNS subscription ARN, an EventBridge rule
 on a custom bus, a WAF ACL whose id differs from the one discovery stored.
 
-**Not allowed to claim "untagged" yet:** S3 (bucket tags may be indexed under the bucket's region or under us-east-1),
-CloudFront (global, us-east-1 only) and WAFv2 (row id is the ACL name; REGIONAL vs CLOUDFRONT scope). They still show
+**Not allowed to claim "untagged" yet:** S3 (a bucket is indexed in its own region; the first PROD report left 17 of 46
+AuroGov buckets unmatched, several named for ap-south-2, which that report never swept), CloudFront (global, us-east-1
+only) and WAFv2 (no WAF ARN has appeared in any PROD sweep yet, so the ACL-name mapping is unproven). They still show
 `ok / nonstandard / invalid / missing` when the sweep finds them (that is proof), and `not_checked` when it does not.
 To promote one, run the report, confirm zero unexplained unmatched rows and ARNs, then add the type to
 `ABSENCE_VERIFIED_TYPES` in a reviewed change. It cannot be switched on by an environment setting.
@@ -65,17 +66,31 @@ Tags starting `aws:` (CloudFormation and similar system tags) are dropped.
 | `TAG_SYNC_ENABLED` | off | Everything above. Off: no AWS call, no query on the new columns, no change anywhere. |
 | `TAG_SYNC_ABSENCE_TYPES` | unset = all verified types | Can only **narrow** the list: `none`, or `logs,kms`. It cannot add a type. |
 | `TAG_SYNC_MAX_AGE_HOURS` | 6 | How long a stored result is trusted. |
+| `TAG_SYNC_INTERVAL_MINUTES` | 60 (minimum 5) | How often the discovery hook sweeps. |
 | `TAG_SYNC_FEED_ENVIRONMENT` | off | Also lets an `Environment` tag found by the sync decide the resource's environment (source `tag`). **This changes alert strength** (a bucket tagged `dev` becomes dev) and is off on purpose; turn it on separately, later. |
 
 ## AWS call volume
 
-One paginated `GetResources` series per account per discovery cycle for the discovery region, plus one for `us-east-1`
-only when the account has S3 or CloudFront rows. At 100 resources per page: a prod account with up to a few hundred
-tagged resources costs 1 to 4 calls per region per cycle. Discovery runs every 15 minutes (96 cycles a day), so the two
-prod accounts (AuroGov, U4RAD) make roughly 2 accounts x 2 regions x 1-3 pages x 96 = **about 400 to 1,150 calls a day**
-(the bottom of that range if few resources are tagged). The Tagging API has no charge. Calls are counted in the API
-usage log under provider `aws`, tier `tag_sync` (calls only, no billed units). The sweep uses the shared adaptive retry
-config, so throttling slows it down rather than hammering AWS.
+What the sync sweeps for one account (`tag_sync.sweep_plan`):
+
+| Sweep | Scope | Why |
+|---|---|---|
+| The discovery region (e.g. ap-south-1), unfiltered | `full` | Proves tags for every type; the only sweep that can support an "untagged" claim. |
+| us-east-1, `ResourceTypeFilters` = cloudfront, s3 | `global` | CloudFront is indexed in us-east-1 only. Filtered, so it is about one page instead of the hundreds of unrelated resources an unfiltered sweep returns. Only when the account has CloudFront or S3 rows. |
+| Each other region that holds an S3 bucket row, filter s3 | `s3` | A bucket is indexed in its own region (for example ap-south-2). At most 10 regions. |
+
+If AWS rejects a filter, that sweep is repeated unfiltered and only the types its scope may speak for are kept.
+
+Measured on PROD with the first report (2026-10-17, unfiltered sweeps): AuroGov ap-south-1 = 623 resources in 7 pages,
+U4RAD ap-south-1 = 739 resources in 8 pages; an unfiltered us-east-1 sweep returned 600 resources in 6 pages for
+AuroGov, which is why that sweep is now filtered. With the plan above a cycle costs roughly 7 + 1 + 1 pages for AuroGov
+and 8 + 1 pages for U4RAD, about 18 calls.
+
+The sweep runs at most once per `TAG_SYNC_INTERVAL_MINUTES` (default 60), although discovery runs every 15 minutes:
+tags change rarely and the stored result is trusted for 6 hours. 18 calls x 24 = **about 430 `GetResources` calls a day**
+on prod (the first version of this document estimated less; the figure above comes from measured page counts). The
+Tagging API has no charge. Calls are counted in the API usage log under provider `aws`, tier `tag_sync` (calls only,
+no billed units). The sweep uses the shared adaptive retry config, so throttling slows it down rather than hammering AWS.
 
 ## Permissions
 
@@ -107,6 +122,8 @@ nothing reads them. No data is lost and nothing was ever written to AWS.
 - The Tagging API index can lag behind a tag change by minutes. A resource tagged a minute ago may still show as untagged
   for a cycle or two.
 - Types AWS does not return through `GetResources` stay `not_checked`.
-- Only the discovery region of each account is swept (plus us-east-1 for global types). A row in another region is
-  `not_checked`.
+- Only the discovery region of each account is swept in full, plus the cheap filtered sweeps above. A row of any other
+  type in another region is `not_checked`. Resources in regions CloudOps does not discover (the first PROD report
+  showed ACM, load balancers, KMS keys, log groups and rules in AuroGov's us-east-1) are not rows, so they are neither
+  matched nor reported.
 - Azure and GCP are not covered. Their discovery code is separate; whether it stores resource tags was not verified here.
