@@ -324,3 +324,13 @@ CREATE TABLE `org_groups` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
+
+-- Phase 4c: the evaluator's idle-ELB sweep reads metric_history (db/migrations/002c).
+CREATE TABLE IF NOT EXISTS metric_history (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  resource_id BIGINT NOT NULL,
+  metric_name VARCHAR(100) NOT NULL,
+  metric_value DOUBLE NOT NULL,
+  metric_timestamp DATETIME NOT NULL,
+  KEY idx_mh_res_metric_ts (resource_id, metric_name, metric_timestamp)
+);
