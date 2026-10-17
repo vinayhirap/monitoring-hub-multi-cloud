@@ -45,7 +45,7 @@ INHERIT_EDGE_TYPES = ("attached_to",)
 _BASE_SELECT = """
     SELECT r.id, r.aws_account_id, r.resource_id, r.resource_type, r.name, r.tags,
            r.env_override, r.env_resolved, r.env_source, r.env_reason, r.tag_state,
-           aa.default_env
+           {extra}aa.default_env
     FROM resources r
     JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
     WHERE (r.instance_state IS NULL OR r.instance_state != 'terminated')
@@ -66,8 +66,9 @@ def resolve_row(row, related=None):
     )
 
 
-def _load(cursor, account_ids=None):
-    sql = _BASE_SELECT.format(types=", ".join(["%s"] * len(NON_ALERTABLE_TYPES)))
+def _load(cursor, account_ids=None, with_warning=True):
+    sql = _BASE_SELECT.format(types=", ".join(["%s"] * len(NON_ALERTABLE_TYPES)),
+                              extra="r.env_warning, " if with_warning else "")
     params = [STALE_RESOURCE_HOURS, *NON_ALERTABLE_TYPES]
     if account_ids is not None:
         if not account_ids:
@@ -114,11 +115,28 @@ def classify_rows(rows, edges):
     return out, parents_of
 
 
+def warn_rows(rows, resolved, parents_of):
+    """Pure. -> {row id: warning message or None}. Warnings never alter `resolved`; they only describe
+    evidence that disagrees (environment_classifier.detect_warning)."""
+    out = {}
+    for r in rows:
+        res = resolved[r["id"]]
+        attached = [(resolved[p["id"]], f"{p['resource_type']} {p.get('name') or p['resource_id']}")
+                    for p in parents_of.get(r["id"], ())]
+        hit = ec.detect_warning(
+            env=res.env, source=res.source, override=r.get("env_override"), tags=r.get("tags"),
+            name=r.get("name"), resource_id=r.get("resource_id"), resource_type=r.get("resource_type"),
+            attached=attached)
+        out[r["id"]] = hit[1] if hit else None
+    return out
+
+
 def _tally(counter, key):
     counter[key] = counter.get(key, 0) + 1
 
 
-def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False):
+def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False,
+                               account_default_override=None, collect_changes=False):
     """Classify and persist. Returns a report dict:
 
         total            resources considered
@@ -129,14 +147,23 @@ def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False
         changed_by_source / changed_by_env   the same, restricted to changed rows
         newly_unknown    rows that are now unknown and were not before
 
+    account_default_override=(account_id, env_or_None) classifies as if that account's default were that value.
+    It exists for the preview in the Environments page and REQUIRES dry_run=True: a hypothetical default is never
+    written. collect_changes=True adds report["changes"], one dict per row that would be written
+    (resource_id, old_env, old_source, new_env, new_source).
+
     resource_pks limits what is WRITTEN to those resources plus the resources attached to
     them (their children); the whole of each touched account is still loaded so a child can
     see its parent.
     """
+    if account_default_override is not None and not dry_run:
+        raise ValueError("account_default_override is for previews only and requires dry_run=True")
     report = {
         "dry_run": bool(dry_run), "total": 0, "changed": 0, "applied": 0,
         "by_source": {}, "by_env": {}, "changed_by_source": {}, "changed_by_env": {},
         "newly_unknown": 0,
+        # mismatch warnings (migration 098): rows now carrying one / rows whose stored warning changed / written
+        "warnings": 0, "warning_changed": 0, "warning_applied": 0,
     }
     conn = get_connection()
     try:
@@ -149,11 +176,25 @@ def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False
                 cursor.execute("SELECT DISTINCT aws_account_id FROM resources WHERE id IN ("
                                + ", ".join(["%s"] * len(resource_pks)) + ")", list(resource_pks))
                 account_ids = [r["aws_account_id"] for r in cursor.fetchall()]
-            rows = _load(cursor, account_ids)
+            with_warning = True
+            try:
+                rows = _load(cursor, account_ids)
+            except Exception as e:
+                if getattr(e, "errno", None) != 1054:
+                    raise
+                # migration 098 not applied yet: classify exactly as before, just without mismatch warnings
+                with_warning = False
+                rows = _load(cursor, account_ids, with_warning=False)
             edges = _load_edges(cursor, account_ids)
         finally:
             cursor.close()
         conn.commit()      # release the read snapshot before any write
+
+        if account_default_override is not None:
+            ov_account, ov_env = account_default_override
+            rows = [dict(r, default_env=ov_env) if r["aws_account_id"] == ov_account else r for r in rows]
+        if collect_changes:
+            report["changes"] = []
 
         resolved, parents_of = classify_rows(rows, edges)
 
@@ -164,12 +205,21 @@ def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False
                 if any(p["id"] in scope for p in parents):
                     scope.add(child_id)
 
+        warnings = warn_rows(rows, resolved, parents_of) if with_warning else {}
+        warn_updates = []
         updates = []
         for row in rows:
             if scope is not None and row["id"] not in scope:
                 continue
             res = resolved[row["id"]]
             report["total"] += 1
+            if with_warning:
+                new_w = warnings.get(row["id"])
+                if new_w:
+                    report["warnings"] += 1
+                if (row.get("env_warning") or None) != new_w:
+                    report["warning_changed"] += 1
+                    warn_updates.append((new_w, row["id"], row.get("env_override")))
             _tally(report["by_source"], res.source)
             _tally(report["by_env"], res.env)
             tstate = ec.tag_state(row.get("resource_type"), row.get("tags"))
@@ -185,8 +235,12 @@ def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False
             if res.env == ec.UNKNOWN and row.get("env_resolved") != ec.UNKNOWN:
                 report["newly_unknown"] += 1
             updates.append((res.env, res.source, res.reason, tstate, row["id"], row.get("env_override")))
+            if collect_changes:
+                report["changes"].append({
+                    "resource_id": row["resource_id"], "old_env": row.get("env_resolved"),
+                    "old_source": row.get("env_source"), "new_env": res.env, "new_source": res.source})
 
-        if dry_run or not updates:
+        if dry_run or not (updates or warn_updates):
             return report
 
         # Ascending id: every writer that touches many resources rows takes their locks in the same order,
@@ -205,6 +259,15 @@ def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False
                 conn.commit()
                 n = getattr(wcur, "rowcount", None)
                 report["applied"] += n if isinstance(n, int) and n >= 0 else len(chunk)
+            # Warnings are a separate statement so the classification UPDATE above stays exactly as it was. Same
+            # id order and the same guard: a manual choice saved since the read must not get a stale warning.
+            warn_updates.sort(key=lambda u: u[1])
+            for i in range(0, len(warn_updates), _CHUNK):
+                chunk = warn_updates[i:i + _CHUNK]
+                wcur.executemany("UPDATE resources SET env_warning = %s WHERE id = %s AND env_override <=> %s", chunk)
+                conn.commit()
+                n = getattr(wcur, "rowcount", None)
+                report["warning_applied"] += n if isinstance(n, int) and n >= 0 else len(chunk)
         except Exception:
             conn.rollback()
             raise
@@ -228,3 +291,17 @@ def sync_after_discovery():
             logger.debug("[env-sync] migration 083 not applied yet -- skipping")
         else:
             logger.warning(f"[env-sync] failed (non-fatal): {e}")
+        return
+    # Workstream C, only after a clean sync: the daily compliance snapshot (ENV_COMPLIANCE_SNAPSHOT, default on, writes
+    # a report table only) and the weekly digest (ENV_DIGEST_ENABLED, default OFF). Each is a no-op when its migration
+    # is missing and neither can raise into discovery.
+    try:
+        from app.env_governance_db import snapshot_after_discovery
+        snapshot_after_discovery()
+    except Exception as e:
+        logger.debug(f"[env-sync] compliance snapshot skipped: {e}")
+    try:
+        from app.env_digest import maybe_send_weekly_digest
+        maybe_send_weekly_digest()
+    except Exception as e:
+        logger.debug(f"[env-sync] digest skipped: {e}")

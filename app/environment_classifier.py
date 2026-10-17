@@ -306,3 +306,227 @@ def missing_tags(tags, keys=None):
     pass ESSENTIAL_TAGS for the ones CloudOps actually uses."""
     have = {_fold_key(k) for k in _tags_dict(tags)}
     return [k for k in (keys or MANDATORY_TAGS) if _fold_key(k) not in have]
+
+
+# ---------------------------------------------------------------------------------------------
+# Workstream C: mismatch warnings and suggestions (pure; neither changes a resolved environment)
+# ---------------------------------------------------------------------------------------------
+# A WARNING says "two pieces of evidence disagree, a person should look". It is stored beside the resolution
+# (resources.env_warning) and never feeds back into it: resolve_environment() above is untouched.
+WARNING_KINDS = ("manual_vs_tag", "tag_vs_name", "manual_vs_name", "volume_vs_instance")
+
+
+def name_environment(name, resource_id=None):
+    """The tier the NAME (then the ID) says, or None when it says nothing or contradicts itself."""
+    hit = _from_name(name, resource_id)
+    return hit.env if hit and hit.env in TIERS else None
+
+
+def _tier_word(env):
+    return {PROD: "prod", UAT: "uat", DEV: "dev"}.get(env, str(env))
+
+
+def detect_warning(*, env, source, override=None, tags=None, name=None, resource_id=None,
+                   resource_type=None, attached=None):
+    """-> (kind, message) or None. First matching kind wins; `kind` is one of WARNING_KINDS.
+
+    env, source  the resolution already computed for this resource
+    attached     iterable of (Resolution, label) for the resources THIS one is attached to (an EBS volume's
+                 instance). Only parents whose own environment rests on evidence (RELATED_PARENT_SOURCES)
+                 count, the same rule the classifier uses to pass an environment down.
+
+    The message is a short lowercase fragment prefixed with the kind ("tag_vs_name: tag says prod but the
+    name says dev"), at most REASON_MAX characters. An "ignore" choice, an unknown resource and a resource
+    with no second piece of evidence never produce a warning.
+    """
+    o = str(override).strip().lower() if override else None
+    manual = o if o in TIERS else None
+    tag_env = tag_environment(tags)
+    name_env = name_environment(name, resource_id)
+    # An attached volume is stored WITH ITS INSTANCE'S tags (see tags_known): say whose tag it is.
+    own_tag = "tag"
+    if str(resource_type or "").lower() == "ebs" and "parent_ec2" in _tags_dict(tags):
+        own_tag = "attached instance's tag"
+
+    if manual and tag_env and manual != tag_env:
+        return "manual_vs_tag", _clip(f"manual_vs_tag: placed as {_tier_word(manual)} here but the {own_tag} says {_tier_word(tag_env)}")
+    if tag_env and name_env and tag_env != name_env:
+        return "tag_vs_name", _clip(f"tag_vs_name: the {own_tag} says {_tier_word(tag_env)} but the name says {_tier_word(name_env)}")
+    if manual and name_env and manual != name_env:
+        return "manual_vs_name", _clip(f"manual_vs_name: placed as {_tier_word(manual)} here but the name says {_tier_word(name_env)}")
+    if env in TIERS and source != "related":
+        for res, label in (attached or ()):
+            if res.env in TIERS and res.source in RELATED_PARENT_SOURCES and res.env != env:
+                return "volume_vs_instance", _clip(
+                    f"volume_vs_instance: {_tier_word(env)} but attached to {label}, which is {_tier_word(res.env)}")
+    return None
+
+
+def warning_kind(message):
+    """'tag_vs_name: ...' -> 'tag_vs_name' (None when empty or not recognised)."""
+    if not message:
+        return None
+    kind = str(message).split(":", 1)[0].strip()
+    return kind if kind in WARNING_KINDS else None
+
+
+# ---- suggestions for UNKNOWN resources -----------------------------------------------------
+# Weaker evidence than resolve_environment() accepts, so it is only ever PROPOSED, never applied. The evidence is
+# resources in the SAME account that were decided by their own evidence (manual / tag / name), grouped by:
+#   application  the same Application tag value
+#   stack        the same CloudFormation stack / Auto Scaling group / Beanstalk environment tag
+#   prefix       the same first two or three name tokens (the environment word itself is ignored)
+# Every basis must be UNANIMOUS among the evidence it finds. Siblings that disagree, or two bases that point at
+# different tiers, or a suggestion that contradicts a tier word in the resource's own name, all give no suggestion.
+SUGGESTION_SOURCES = ("manual", "tag", "name")        # sibling evidence that rests on the sibling itself
+CONFIDENCE = ("low", "medium", "high")
+APPLICATION_TAG_KEYS = ("application", "app", "application_name")
+STACK_TAG_KEYS = ("aws:cloudformation:stack_name", "aws:autoscaling:groupname",
+                  "elasticbeanstalk:environment_name")
+MIN_PREFIX_CHARS = 5
+
+Suggestion = namedtuple("Suggestion", "env confidence basis reason evidence")
+
+
+def _tag_value(tags, keys):
+    folded = {}
+    for k, v in _tags_dict(tags).items():
+        folded.setdefault(re.sub(r"[-.\s]+", "_", str(k).strip().lower()), v)
+    for key in keys:
+        v = folded.get(key)
+        if v is not None and str(v).strip():
+            return str(v).strip().lower()
+    return None
+
+
+def _name_tokens(text):
+    """Leading name tokens with tier words and bare numbers removed ('HCS-PROD-MD-01' -> hcs, md)."""
+    if not text:
+        return []
+    s = _PRE_PROD.sub(" ", str(text))
+    s = _NON_PROD.sub(" ", s)
+    s = _CAMEL_2.sub(" ", _CAMEL_1.sub(" ", s))
+    s = _DEVOPS.sub(" devops ", s)
+    out = []
+    for tok in _NON_ALNUM.split(s):
+        if not tok:
+            continue
+        low = tok.lower()
+        base = _TRAILING_DIGITS.sub("", low)
+        if _WORD_TIER.get(base) or not base:        # an environment word, or digits only
+            continue
+        out.append(low)
+    return out
+
+
+def _evidence_unit(sib):
+    """An attached volume carries its instance's tags and decision, so it is the same piece of evidence as the
+    instance, not a second one. Everything else counts once."""
+    parent = _tags_dict(sib.get("tags")).get("parent_ec2")
+    return str(parent) if parent else str(sib.get("resource_id") or sib.get("id"))      # the instance's own id = its volumes' key
+
+
+def _vote(candidates):
+    """-> (env or None, evidence units). env is None when the candidates are empty or point at different tiers."""
+    by_unit = {}
+    for s in candidates:
+        by_unit.setdefault(_evidence_unit(s), set()).add(s.get("env"))
+    envs = set()
+    for tiers in by_unit.values():
+        envs |= tiers
+    if len(envs) != 1:
+        return None, len(by_unit)
+    return next(iter(envs)), len(by_unit)
+
+
+def _bump(level):
+    return CONFIDENCE[min(CONFIDENCE.index(level) + 1, len(CONFIDENCE) - 1)]
+
+
+def _shown(value, limit=40):
+    v = re.sub(r"[\x00-\x1f\x7f]", " ", str(value))
+    return v if len(v) <= limit else v[:limit - 3] + "..."
+
+
+class SuggestionIndex:
+    """Sibling evidence indexed once, so suggesting for every resource of a page costs a few dict lookups each
+    (a naive scan per resource is quadratic in the size of the account)."""
+
+    def __init__(self, siblings):
+        self.by_app, self.by_stack, self.by_prefix = {}, {}, {}
+        self.size = 0
+        for s in siblings or ():
+            if s.get("env") not in TIERS or s.get("source") not in SUGGESTION_SOURCES:
+                continue
+            self.size += 1
+            v = _tag_value(s.get("tags"), APPLICATION_TAG_KEYS)
+            if v:
+                self.by_app.setdefault(v, []).append(s)
+            v = _tag_value(s.get("tags"), STACK_TAG_KEYS)
+            if v:
+                self.by_stack.setdefault(v, []).append(s)
+            toks = _name_tokens(s.get("name") or s.get("resource_id"))
+            for length in (2, 3):
+                if len(toks) >= length:
+                    self.by_prefix.setdefault((length, tuple(toks[:length])), []).append(s)
+
+    @staticmethod
+    def _others(candidates, target):
+        rid = target.get("resource_id")
+        return [c for c in candidates if c.get("resource_id") != rid]
+
+    def suggest(self, target):
+        if not self.size:
+            return None
+        found = []                               # (basis, env, units, confidence, reason)
+        app_v = _tag_value(target.get("tags"), APPLICATION_TAG_KEYS)
+        if app_v:
+            env, n = _vote(self._others(self.by_app.get(app_v, ()), target))
+            if env:
+                conf = "high" if n >= 3 else "medium" if n == 2 else "low"
+                found.append(("application", env, n, conf,
+                              f"{n} other resource(s) with Application '{_shown(app_v)}' are all {_tier_word(env)}"))
+        stack_v = _tag_value(target.get("tags"), STACK_TAG_KEYS)
+        if stack_v:
+            env, n = _vote(self._others(self.by_stack.get(stack_v, ()), target))
+            if env:
+                conf = "high" if n >= 2 else "medium"
+                found.append(("stack", env, n, conf,
+                              f"{n} other resource(s) in stack or group '{_shown(stack_v)}' are all {_tier_word(env)}"))
+        toks = _name_tokens(target.get("name") or target.get("resource_id"))
+        if len(toks) >= 2:
+            for length in range(min(len(toks), 3), 1, -1):
+                head = tuple(toks[:length])
+                if sum(len(t) for t in head) < MIN_PREFIX_CHARS:
+                    continue
+                cands = self._others(self.by_prefix.get((length, head), ()), target)
+                if not cands:
+                    continue                     # nobody shares this longer prefix, try a shorter one
+                env, n = _vote(cands)
+                if env and n >= 2:
+                    conf = "medium" if n >= 3 else "low"
+                    found.append(("prefix", env, n, conf,
+                                  f"{n} other resource(s) named '{'-'.join(head)}...' are all {_tier_word(env)}"))
+                break                            # the longest shared prefix decides; a split stays a split
+        if not found or len({f[1] for f in found}) > 1:
+            return None                          # nothing found, or two kinds of evidence disagree
+        found.sort(key=lambda f: (CONFIDENCE.index(f[3]), f[2]), reverse=True)
+        basis, env, n, conf, reason = found[0]
+        if len(found) > 1:
+            conf = _bump(conf)
+            reason += f"; also supported by {', '.join(f[0] for f in found[1:])}"
+        own = set(_scan(target.get("name"))[0]) | set(_scan(target.get("resource_id"))[0])
+        if own and env not in own:
+            return None                          # its own name names another tier: leave that to a person
+        return Suggestion(env, conf, basis, _clip(reason), n)
+
+
+def suggest_environment(target, siblings):
+    """Propose an environment for one UNKNOWN resource, or None ("no suggestion" is a normal answer).
+
+    target    dict: resource_id, name, resource_type, tags
+    siblings  iterable of dicts: resource_id, name, tags, env, source (same account, other resources)
+    -> Suggestion(env, confidence, basis, reason, evidence) | None
+    Build a SuggestionIndex once when suggesting for many resources of the same account.
+    """
+    return SuggestionIndex(siblings).suggest(target)
