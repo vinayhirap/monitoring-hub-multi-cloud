@@ -348,8 +348,9 @@ export const getEnvironmentResources = (params = {}) => {
   Object.entries(params).forEach(([k, v]) => { if (v !== "" && v != null) qs.set(k, v); });
   return apiFetch(`/api/environments/resources?${qs.toString()}`);
 };
-export const classifyResources = (resource_ids, env) =>
-  apiFetch("/api/environments/classify", { method: "POST", body: JSON.stringify({ resource_ids, env }) });
+// via: "suggestion" when the person accepted a proposed environment (recorded in the audit entry)
+export const classifyResources = (resource_ids, env, via) =>
+  apiFetch("/api/environments/classify", { method: "POST", body: JSON.stringify(via ? { resource_ids, env, via } : { resource_ids, env }) });
 // every resource of one type in one account that is still waiting for an environment
 export const classifyGroup = (group, env) =>
   apiFetch("/api/environments/classify", { method: "POST", body: JSON.stringify({ group, env }) });
@@ -359,4 +360,22 @@ export const getTagPlan = (params = {}) => {
   const qs = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => { if (v !== "" && v != null) qs.set(k, v); });
   return apiFetch(`/api/environments/tag-plan?${qs.toString()}`);
+};
+
+// Environment governance (workstream C)
+export const previewAccountDefaultEnv = (accountId, env) =>
+  apiFetch(`/api/environments/accounts/${accountId}/default/preview?env=${encodeURIComponent(env || "none")}`);
+export const getEnvironmentHistory = (resourcePk) => apiFetch(`/api/environments/resources/${resourcePk}/history`);
+export const getEnvironmentCompliance = (accountId) =>
+  apiFetch(`/api/environments/compliance${accountId ? `?account_id=${accountId}` : ""}`);
+export const getEnvironmentTrend = (accountId, days = 30) =>
+  apiFetch(`/api/environments/compliance/trend?days=${days}${accountId ? `&account_id=${accountId}` : ""}`);
+export const downloadComplianceCsv = (accountId) =>
+  downloadFile(`/api/environments/compliance.csv${accountId ? `?account_id=${accountId}` : ""}`, "environment-tag-compliance.csv");
+export const downloadTaggingGapsCsv = ({ account_id, resource_type, essential_only } = {}) => {
+  const qs = new URLSearchParams();
+  if (account_id) qs.set("account_id", account_id);
+  if (resource_type) qs.set("resource_type", resource_type);
+  if (essential_only) qs.set("essential_only", "true");
+  return downloadFile(`/api/environments/tagging-gaps.csv?${qs.toString()}`, "tagging-gaps.csv");
 };

@@ -99,3 +99,19 @@ button.env-tagtile:hover { border-color: var(--accent); }
 .env-plan-how { margin: 0; padding-left: 20px; }
 .env-plan-how code { font-family: var(--font-mono); background: var(--bg-input); padding: 1px 5px; border-radius: 3px; }
 .env-quick-more { margin-top: 6px; }
+
+/* governance additions */
+.env-callout { border: 1px solid var(--border-md); border-left: 3px solid var(--accent); background: var(--bg-card); padding: 10px 14px; border-radius: var(--radius-md); margin-bottom: var(--space-4); font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
+.env-suggest { min-width: 200px; font-size: 12px; }
+.env-suggest button { margin-top: 4px; }
+.env-conf { font-size: 11px; color: var(--text-muted); }
+.env-conf-high { color: var(--green, #1a7f37); font-weight: 600; }
+.env-history-row td { background: var(--bg-card); padding: 8px 14px; font-size: 12px; }
+.env-history ul { margin: 6px 0 0 18px; padding: 0; }
+.env-muted { color: var(--text-muted); font-size: 12px; }
+.env-table-wrap { overflow-x: auto; max-width: 100%; }
+.env-comp th, .env-comp td { font-size: 12px; white-space: nowrap; }
+.env-comp-total td { font-weight: 700; background: var(--bg-card); }
+.env-preview { max-width: 620px; }
+.env-compliance h2 { font-size: 14px; margin: var(--space-4) 0 var(--space-2); }
+@media (max-width: 700px) { .env-suggest { min-width: 0; } }

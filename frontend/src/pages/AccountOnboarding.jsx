@@ -489,7 +489,7 @@ export default function AccountOnboarding() {
             </svg>
             <strong>{success}</strong> onboarded successfully!
             {" "}Next: <Link to="/environments" className="ob-success-link">classify its resources as prod, uat or dev</Link>.
-            They appear there after the first discovery run (a few minutes); anything unclassified is alerted at prod strength until then.
+            They appear there after the first discovery run (a few minutes); anything unclassified is alerted at prod strength until then. The Environments page keeps a reminder for this account until its resources are placed.
             <button onClick={() => setSuccess(null)} aria-label="Dismiss"><XIcon size={13} /></button>
           </div>
         )}

@@ -155,3 +155,16 @@ Child resources should not rely on inheritance; tag them at creation.
    an onboarded account has no unknown resources within five working days.
 5. Review the "Decided by" column monthly. The goal is that nearly every resource is decided by
    `Tag`, not `Name`, `Account default` or `Attached resource`.
+
+## 9. Keeping the classification trustworthy (Environments page)
+
+- **Mismatches tab.** A resource whose tag, name, manual choice or attached instance point at different environments is listed with a
+  one-line reason. A warning never changes the environment CloudOps uses.
+- **Suggestions.** For resources nothing could place, the Needs-classification tab proposes an environment from already-placed siblings
+  in the same account (same Application tag, stack or name pattern). Nothing is applied until a person accepts; accepted suggestions go
+  through the normal audited classify call (recorded as "accepted suggestions").
+- **Tag compliance tab.** Percentages per account and resource type by tag status and by how the environment was decided, a daily
+  trend, and a CSV export. Types whose own AWS tags CloudOps does not read are "cannot be checked", never "untagged".
+- **Tagging gaps export.** CSV of checkable resources missing any of the seven standard tags (Tagging tab).
+- **Weekly digest (off by default).** `ENV_DIGEST_ENABLED=true` emails new unplaced resources to the members of the group whose name equals the
+  account's owner team. `ENV_DIGEST_WEEKDAY` (0 = Monday) sets the earliest day.
