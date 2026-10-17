@@ -5,7 +5,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { getAccount, getAlertsPreview } from "../api/api";
 import { metricLabel } from "../utils/metricLabels";
 import { TIMEZONE_OPTIONS } from "../contexts/TimezoneContext";
-import { SunIcon, MoonIcon } from "./icons";
+import { SunIcon, MoonIcon, CheckIcon } from "./icons";
 import { StatusBeacon, SeverityBadge, EmptyState } from "./ui";
 import "./shell.css";
 
@@ -104,7 +104,7 @@ export function UserMenu({ username, role, dark, onToggleTheme, compact, onToggl
             {dark ? <SunIcon size={14} /> : <MoonIcon size={14} />}{dark ? "Light theme" : "Dark theme"}
           </button>
           <button type="button" role="menuitemcheckbox" aria-checked={compact} className="um-item" onClick={onToggleDensity}>
-            <span className="um-check" aria-hidden="true">{compact ? "✓" : ""}</span>Compact density
+            <span className="um-check" aria-hidden="true">{compact ? <CheckIcon size={14} /> : null}</span>Compact density
           </button>
           <label className="um-item um-tz">Timezone
             <select value={timezone} onChange={e => onTimezone(e.target.value)} aria-label="Display timezone">

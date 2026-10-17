@@ -123,7 +123,7 @@ export default function MetricChartCard({
     <div className="mc-badges">
       {alert && <span className="mc-badge mc-sev" style={{ background: `${sevColor}22`, color: SEV_TEXT[alert.severity] || sevColor, borderColor: `${sevColor}66` }}>● {alert.severity} ALERT</span>}
       {meta?.alert && !alert && <span className="mc-badge mc-muted">{meta.alert.state}</span>}
-      {meta?.poll_label && <span className="mc-badge mc-poll" title={pollTip}>⏱ polled every {meta.poll_label}{slowedNote}</span>}
+      {meta?.poll_label && <span className="mc-badge mc-poll" title={pollTip}>polled every {meta.poll_label}{slowedNote}</span>}
       {notCollected && <span className="mc-badge mc-poll" title={pollTip}>not collected on {envName}</span>}
       {th?.mode && th.mode !== "static" && <span className="mc-badge mc-dyn" title="Threshold follows this resource's own baseline (Settings → Thresholds)">{th.mode} threshold</span>}
     </div>

@@ -10,6 +10,7 @@ import { explainAlert, getIncidents, getIncidentDetail, rcaReportUrl } from "../
 import { useTimezone } from "../contexts/TimezoneContext";
 import { Badge, StatusBeacon, AiChip } from "./ui";
 import ResourceEvidence from "./ResourceEvidence";
+import { XIcon } from "./icons";
 import { tsMs, ageText, lifecycle } from "../utils/evidence";
 import { metricLabel, formatMetricValue } from "../utils/metricLabels";
 import "./AlertInvestigation.css";
@@ -90,7 +91,7 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
             <Badge tone={SEV_TONE[sev] || "mute"}><StatusBeacon tone={SEV_TONE[sev] || "mute"} pulse={open && sev === "CRITICAL"} />{sev.toLowerCase()}</Badge>
             <h2>{metricLabel(a.metric_name)}</h2>
           </div>
-          <button className="ai-x" onClick={onClose} aria-label="Close investigation">✕</button>
+          <button className="ai-x" onClick={onClose} aria-label="Close investigation"><XIcon size={16} /></button>
           <div className="ai-sub">{a.resource_name || a.resource} · {a.account_name}{a.region ? ` · ${a.region}` : ""}{a.service ? ` · ${String(a.service).toUpperCase()}` : ""}</div>
         </header>
 
@@ -182,7 +183,7 @@ export default function AlertInvestigation({ alert: a, canAct, acting, onClose, 
               <button className="rev-link" aria-live="polite" onClick={async () => {
                 const ok = await copyText(`${window.location.origin}/alerts?tab=all&q=${encodeURIComponent(a.resource || "")}&alert=${id}`);
                 setCopied(ok ? "ok" : "fail"); setTimeout(() => setCopied(null), 2000);
-              }}>{copied === "ok" ? "Link copied ✓" : copied === "fail" ? "Copy failed: select the address bar URL" : "Copy link"}</button>
+              }}>{copied === "ok" ? "Link copied" : copied === "fail" ? "Copy failed: select the address bar URL" : "Copy link"}</button>
             </div>
           </section>
 

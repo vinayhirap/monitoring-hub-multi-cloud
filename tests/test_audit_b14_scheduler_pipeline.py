@@ -259,19 +259,24 @@ def test_failing_tier_retried_at_its_cadence_not_every_tick():
 
 
 def test_standard_tier_averages_its_configured_5_min_not_6():
-    """The loop wakes every 120 s; `last = now` made the 5-min tier fire every 6 min. Anchored scheduling must average 300 s."""
+    """The standard tier is phase-locked to the 5-min grid (_standard_due_at) and the loop sleeps until the
+    sooner of the next critical tick or that phase point, so the clock must advance by the timeout the loop
+    asks for (a fixed 120 s per wait no longer models it). Over 2 h the gaps must sit on the grid: 300 s
+    apart, never the old every-6-min drift."""
     mod = _load_scheduler()
     ran_at = []
     clock = {"t": 1_000_000.0}
     mod.run_once = lambda tier: ran_at.append(clock["t"]) if tier == "standard" else None
     mod.run_discovery_once = lambda: None
-    stop = _FakeStop(61)            # 60 ticks x 120 s = 2 h
+    limit = clock["t"] + 7200
 
-    def _wait(timeout=None):
-        clock["t"] += 120
-        _FakeStop.wait(stop, timeout)
-    stop.wait = _wait
-    mod._stop_event = stop
+    class _TimeStop:
+        def is_set(self):
+            return clock["t"] >= limit
+
+        def wait(self, timeout=None):
+            clock["t"] += max(1.0, float(timeout if timeout is not None else 120))
+    mod._stop_event = _TimeStop()
     real_time = time.time
     mod.time.time = lambda: clock["t"]
     try:
@@ -279,9 +284,12 @@ def test_standard_tier_averages_its_configured_5_min_not_6():
     finally:
         mod.time.time = real_time
 
-    gaps = [b - a for a, b in zip(ran_at, ran_at[1:])]
-    assert max(gaps) <= 360 and min(gaps) >= 240
-    assert abs(sum(gaps) / len(gaps) - 300) < 10      # was 360
+    # the first run happens "now" (never-run -> due immediately); the schedule is on the grid from the second run on
+    gaps = [b - a for a, b in zip(ran_at[1:], ran_at[2:])]
+    assert len(gaps) >= 20
+    assert min(gaps) >= mod.STANDARD_MIN_GAP_SECONDS and max(gaps) <= 360
+    assert abs(sum(gaps) / len(gaps) - 300) < 10      # was 360 before anchored scheduling
+    assert all(int(t) % 300 == mod.STANDARD_PHASE_SECONDS for t in ran_at[1:])   # on the CloudWatch-aligned grid
 
 
 def test_next_anchor_never_bursts_after_a_stall():

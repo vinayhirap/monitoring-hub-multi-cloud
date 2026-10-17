@@ -491,7 +491,7 @@ export default function Alerts() {
 
       <KpiStrip>
         <KpiCard label="Critical firing" value={displayCounts.critical} tone={displayCounts.critical > 0 ? "crit" : undefined} pulse={displayCounts.critical > 0} onClick={() => { setView("list"); setTab("critical"); }} hint="Show critical alerts" />
-        <KpiCard label="Needs attention" value={displayCounts.attention} tone={displayCounts.attention > 0 ? "warn" : undefined} sub="alerts on resources with health < 70" onClick={() => { setView("list"); setTab("attention"); }} hint="Firing on unhealthy resources" />
+        <KpiCard label="Needs Attention" value={displayCounts.attention} tone={displayCounts.attention > 0 ? "warn" : undefined} sub="alerts on resources with health < 70" onClick={() => { setView("list"); setTab("attention"); }} hint="Firing on unhealthy resources" />
         <KpiCard label="Active" value={displayCounts.active} onClick={() => { setView("list"); setTab("active"); }} />
         <KpiCard label="Acknowledged" value={displayCounts.acknowledged} onClick={() => { setView("list"); setTab("acknowledged"); }} />
         <KpiCard label="No data (stale)" value={displayCounts.stale} onClick={() => { setView("list"); setTab("stale"); }} />
@@ -501,7 +501,7 @@ export default function Alerts() {
       {(tab === "attention" || tab === "tuning") && (
         <div className={`alerts-explain ${tab === "tuning" ? "alerts-explain-tune" : "alerts-explain-attn"}`}>
           {tab === "attention"
-            ? "Firing alerts on resources whose health score is below 70. The Overview “Needs attention” tile counts these same alerts. Start here."
+            ? "Firing alerts on resources whose health score is below 70. The Overview “Resources Need Attention” tile counts these same alerts. Start here."
             : "Firing alerts on resources whose normal range already crosses the static threshold, so they are probably noise, not an incident. The system is switching these to adaptive thresholds on its own — the same alerts the Overview “Flapping (Self-Tuning)” tile counts."}
         </div>
       )}
@@ -605,7 +605,7 @@ export default function Alerts() {
                         {(a.needs_attention || a.auto_tuning) && (
                           <div className="alert-tags">
                             {a.needs_attention && (
-                              <span className="alert-tag alert-tag-attn" title="This resource's health score is below 70. It is counted in the “Needs attention” tiles on the Overview and Alerts pages.">
+                              <span className="alert-tag alert-tag-attn" title="This resource's health score is below 70. It is counted in the “Need Attention” tiles on the Overview and Alerts pages.">
                                 Needs Attention
                               </span>
                             )}

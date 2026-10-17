@@ -2,6 +2,7 @@
 // manual refresh + "updated Ns ago" + retention note. Shared by every metrics
 // panel so range/refresh behave identically for every cloud and service.
 import { useEffect, useState } from "react";
+import { AlertTriangleIcon } from "./icons";
 
 // Charts re-read CloudOps' stored data every 5 min, which is exactly how often
 // the collector writes new points (polling_model.py). Anything faster only
@@ -44,7 +45,7 @@ export default function ChartToolbar({
       </div>
       {limited && (
         <div className="mc-note">
-          ⚠ metric history is kept for {retentionDays} days, so this range shows the last {retentionDays} days (all that exists).
+          <AlertTriangleIcon size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />metric history is kept for {retentionDays} days, so this range shows the last {retentionDays} days (all that exists).
         </div>
       )}
     </>

@@ -31,7 +31,7 @@ def test_no_ai_polished_wording_and_the_new_labels_are_present():
     css = open("frontend/src/pages/Alerts.css", encoding="utf-8").read()
     assert "AI-polished" not in alerts and "explain-ai-badge" not in alerts + css
     assert "Generated summary" in alerts and ".explain-source" in css
-    assert '"Alerts Needs Attention"' in alerts and "Needs attention" not in alerts
+    assert 'label="Needs Attention"' in alerts and "Needs attention" not in alerts   # title case, matches the tab
 
 
 def test_alert_tabs_are_ordered_attention_first_then_lifecycle_then_history():
@@ -51,25 +51,11 @@ def test_the_decorative_live_pill_and_meta_subtitle_are_gone_from_the_alerts_pag
     assert "live-pill" not in alerts and "counts here match the Overview banner" not in alerts
 
 
-def test_overview_banner_red_dot_only_with_critical_alerts():
-    """The Overview alert banner showed a red dot (and a stray separator) even with zero critical
-    alerts. The dot must be conditional on critical > 0 and a warnings-only banner is amber."""
+def test_overview_has_no_explanatory_banner_text_and_keeps_the_renamed_tile_copy():
+    """The Overview alert banner (AlertStrip) was removed; what remains of the original guarantees is that no
+    'not counted' explanatory text or otherAlerts leftovers came back, and the tile copy is the renamed one."""
     src = open("frontend/src/pages/Overview.jsx", encoding="utf-8").read()
-    i = src.index("function AlertStrip(")
-    body = src[i:src.index("\n}\n", i)]
-    assert "{hasCritical && <span className=\"as-dot critical\" />}" in body
-    assert body.count("as-dot") == 1                      # no unconditional dot anywhere in the banner
-    assert "alert-strip-warn" in body
-    assert "{hasCritical && <span style={{ color: \"var(--text-muted)\", marginRight: 8 }}>·</span>}" in body
-    css = open("frontend/src/pages/Overview.css", encoding="utf-8").read()
-    assert ".alert-strip.alert-strip-warn" in css
-
-
-def test_overview_banner_has_no_explanatory_text_and_tile_is_renamed():
-    src = open("frontend/src/pages/Overview.jsx", encoding="utf-8").read()
-    i = src.index("function AlertStrip(")
-    body = src[i:src.index("\n}\n", i)]
-    assert "not counted" not in body and "Not counted above" not in src     # no explanatory text in the banner
-    assert "otherAlerts" not in src
-    assert 'label="Resources Need Attention"' in src and "<h2>Resources Need Attention</h2>" in src
+    assert "function AlertStrip(" not in src                                    # banner is gone, not hidden
+    assert "Not counted above" not in src and "otherAlerts" not in src
+    assert "Resources Need Attention" in src                                    # tile copy referenced in the slide-over
     assert 'label="Need Attention"' not in src
