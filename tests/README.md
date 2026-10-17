@@ -96,3 +96,30 @@ minimal fake DB cursor/connection object exposing an SQL-shape-aware
 `execute()`, `install_stub()` everything the target module imports,
 `load_module()` the target file, call the function under test directly,
 assert on the result.
+
+### Running the real-database tests from a clean checkout
+
+```
+# 1. MySQL 8 (sandbox example; on a dev box use your own instance)
+apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
+(setsid nohup mysqld --user=mysql --port=3307 --bind-address=127.0.0.1 >/tmp/mysqld.log 2>&1 < /dev/null &)
+mysql -uroot -e "select 1"        # repeat until it answers
+mysql -uroot -e "create database if not exists mh_test; create user if not exists 'mh'@'%' identified by 'mh'; grant all on mh_test.* to 'mh'@'%'"
+
+# 2. build the scratch schema: fixture + db/migrations 074 onward (wipes mh_test!)
+MH_TEST_DB_PORT=3307 python3 scripts/build_test_db.py
+
+# 3. run
+MH_TEST_DB=1 MH_TEST_DB_PORT=3307 python -m pytest tests -q -p no:cacheprovider
+```
+
+`build_test_db.py` refuses to wipe a database whose name lacks "test" (unless `--force`). Migrations that
+touch tables the fixture does not have (users, audit_logs, permissions, synthetic_checks, ...) are reported as
+"partly skipped" notes; any other SQL error fails the build. mysqld dies with the shell session in the sandbox:
+start it and run the tests in the same command.
+
+**Keeping the fixture working.** `tests/fixtures/alerts_test_schema.sql` is a frozen baseline. A new migration
+that ALTERs existing tables needs nothing: the script applies it by number. A new TABLE that tests need is appended
+to the END of the fixture file (append-only, never edit earlier tables), because later migrations may depend on them.
+Real-DB test helpers must stub `app.db` with both `get_connection` and `get_db_cursor`, and `DB.age()` ages
+`cycle_at` as well as `last_seen_at` (the evaluator's cycle clock is `cycle_at`).

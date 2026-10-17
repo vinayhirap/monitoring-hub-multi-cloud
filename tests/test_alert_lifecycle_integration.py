@@ -20,6 +20,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 
+from contextlib import contextmanager
 import pytest
 
 # real package first, so install_stub("app.db") does not replace `app` itself
@@ -48,6 +49,19 @@ def _connect():
 TABLES = ["alerts", "alert_pending", "metrics", "thresholds", "metric_baseline",
           "maintenance_windows", "resource_health", "resources", "metric_catalog",
           "aws_accounts", "resource_relationships", "account_metric_selections"]
+
+
+@contextmanager
+def _get_db_cursor(dictionary=False, commit=True):
+    """Stand-in for app.db.get_db_cursor (newer modules such as app.metric_meta import it)."""
+    conn = _connect()
+    conn.autocommit = True
+    cur = conn.cursor(dictionary=dictionary)
+    try:
+        yield cur
+    finally:
+        cur.close()
+        conn.close()
 
 
 def utcnow():
@@ -93,8 +107,12 @@ class DB:
         times in a row therefore counts as ONE cycle at most, and an alert seen a
         minute ago cannot advance at all. Tests that mean "N cycles later" must
         age the rows in between."""
+        # The gate clock is cycle_at since migration 074 (COALESCE(cycle_at, triggered_at | first_breach_at)),
+        # so aging last_seen_at alone no longer simulates a cycle gap: age cycle_at too.
         for table in ("alerts", "alert_pending"):
-            self.x(f"UPDATE {table} SET last_seen_at = last_seen_at - INTERVAL %s MINUTE", (minutes,))
+            self.x(f"UPDATE {table} SET last_seen_at = last_seen_at - INTERVAL %s MINUTE, "
+                   f"cycle_at = cycle_at - INTERVAL %s MINUTE", (minutes, minutes))
+        self.x("UPDATE alert_pending SET first_breach_at = first_breach_at - INTERVAL %s MINUTE", (minutes,))
 
     # -- builders --------------------------------------------------------
     def account(self, aid, name, provider="aws"):
@@ -160,7 +178,7 @@ def db():
 def run_eval(published=None):
     """Load a fresh evaluator wired to the real test DB and run one cycle."""
     published = published if published is not None else []
-    install_stub("app.db", get_connection=_connect)
+    install_stub("app.db", get_connection=_connect, get_db_cursor=_get_db_cursor)
     install_stub("app.ws.publisher",
                  publish_alert=lambda **k: published.append(("new", k)),
                  publish_alert_resolved=lambda **k: published.append(("resolved", k)))
@@ -468,7 +486,7 @@ def test_maintenance_window_on_one_account_does_not_silence_another(db):
     a2 = db.alert(2, "i-same", "cpuutilization")
     db.x("INSERT INTO maintenance_windows (aws_account_id, resource_id, reason, starts_at, ends_at, silence_downstream) "
          "VALUES (1,'i-same','patching',%s,%s,0)", (utcnow() - timedelta(minutes=5), utcnow() + timedelta(hours=1)))
-    install_stub("app.db", get_connection=_connect)
+    install_stub("app.db", get_connection=_connect, get_db_cursor=_get_db_cursor)
     mod = load_module("app/collector/maintenance.py")
     mod.sync_maintenance_silencing()
     assert db.get(a1)["silenced"] == 1 and db.get(a2)["silenced"] == 0
@@ -477,7 +495,12 @@ def test_maintenance_window_on_one_account_does_not_silence_another(db):
 # ── canonical states, counts, and cross-screen agreement ────────────────
 
 def _api():
-    install_stub("app.db", get_connection=_connect)
+    install_stub("app.db", get_connection=_connect, get_db_cursor=_get_db_cursor)
+    # app.metric_meta (get_db_cursor) and app.alert_cache (get_connection) bind app.db names at import time. When an earlier
+    # test in the same session imported them against ITS fake app.db, the cached module keeps that fake
+    # cursor, so these real-DB tests only passed when run alone. Drop the cached copies to rebind.
+    for _name in ("app.metric_meta", "app.alert_cache", "app.api.live_data", "app.api.alerts"):
+        sys.modules.pop(_name, None)
     import importlib
     import app.api.alerts as api
     api = importlib.reload(api)
@@ -560,7 +583,7 @@ def test_every_screen_agrees_on_the_numbers(db):
 
 
 def _live_counts(db):
-    install_stub("app.db", get_connection=_connect)
+    install_stub("app.db", get_connection=_connect, get_db_cursor=_get_db_cursor)
     import importlib
     import app.api.live_data as ld
     ld = importlib.reload(ld) if "app.api.live_data" in sys.modules and hasattr(sys.modules["app.api.live_data"], "router") else ld
@@ -687,7 +710,7 @@ def test_null_account_alerts_are_backfilled_only_when_unambiguous(db):
     sql = open(os.path.join(here, "..", "db", "migrations", "051_alert_lifecycle_hardening.sql")).read()
     import subprocess
     subprocess.run(
-        ["mysql", f"-h{os.getenv('MH_TEST_DB_HOST', '127.0.0.1')}", f"-u{os.getenv('MH_TEST_DB_USER', 'mh')}",
+        ["mysql", f"-h{os.getenv('MH_TEST_DB_HOST', '127.0.0.1')}", f"-P{os.getenv('MH_TEST_DB_PORT', '3306')}", f"-u{os.getenv('MH_TEST_DB_USER', 'mh')}",
          f"-p{os.getenv('MH_TEST_DB_PASSWORD', 'mh')}", os.getenv("MH_TEST_DB_NAME", "mh_test")],
         input=sql.encode(), check=True, capture_output=True)
     assert db.get(u)["aws_account_id"] == 1
@@ -699,7 +722,7 @@ def test_null_account_alerts_are_backfilled_only_when_unambiguous(db):
 def test_status_page_ignores_stale_muted_silenced_and_other_accounts(db):
     db.resource(1, "ec2", "i-web")
     db.resource(2, "ec2", "i-web")
-    install_stub("app.db", get_connection=_connect)
+    install_stub("app.db", get_connection=_connect, get_db_cursor=_get_db_cursor)
     install_stub("app.auth.deps", get_current_user=lambda: None)
     install_stub("app.auth.permissions", require_permission=lambda *a, **k: (lambda: None))
     install_stub("app.auth.authorization", get_accessible_account_ids=lambda u: None)
@@ -730,7 +753,7 @@ def test_health_score_counts_only_firing_alerts_per_account(db):
     db.alert(1, "i-1", "networkout", "CRITICAL", seen_min_ago=90)       # stale -> ignored
     db.alert(1, "i-1", "multivariate_anomaly", "WARNING")               # hidden -> ignored
     db.alert(2, "i-1", "cpuutilization", "WARNING", status="acknowledged")
-    install_stub("app.db", get_connection=_connect)
+    install_stub("app.db", get_connection=_connect, get_db_cursor=_get_db_cursor)
     hs = load_module("app/collector/health_score.py")
     hs.recompute_health_scores()
     rows = {(r["aws_account_id"], r["resource_id"]): r["health_score"] for r in db.q("SELECT * FROM resource_health")}
@@ -743,7 +766,7 @@ def test_health_score_counts_only_firing_alerts_per_account(db):
 
 def test_synthetic_alert_is_written_with_its_account_and_is_visible(db):
     db.resource(1, "synthetic_check", "synthetic-7")
-    install_stub("app.db", get_connection=_connect)
+    install_stub("app.db", get_connection=_connect, get_db_cursor=_get_db_cursor)
     syn = load_module("app/collector/synthetic.py")
     check = {"id": 7, "name": "homepage", "aws_account_id": 1, "environment": "prod",
              "consecutive_failures": 3, "consecutive_failure_threshold": 3}
@@ -768,7 +791,7 @@ def test_synthetic_alert_is_written_with_its_account_and_is_visible(db):
 def test_multivariate_writer_sets_account_and_scopes_lookup(db):
     db.resource(1, "ec2", "i-same")
     db.resource(2, "ec2", "i-same")
-    install_stub("app.db", get_connection=_connect)
+    install_stub("app.db", get_connection=_connect, get_db_cursor=_get_db_cursor)
     mv = load_module("app/collector/multivariate_anomaly.py")
     conn = _connect()
     cur = conn.cursor(dictionary=True)
