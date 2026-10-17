@@ -157,11 +157,12 @@ def build_plan(scenario="current", conn=None):
         if own:
             conn.close()
     rows = _merge(rows)
-    totals = defaultdict(float)
+    # always present, even with no rows (an empty or fresh database must still render)
+    totals = dict.fromkeys(("off_calls_day", "off_units_day", "on_calls_day", "on_units_day", "resources"), 0.0)
     for r in rows:
-        for k in ("off_calls_day", "off_units_day", "on_calls_day", "on_units_day", "resources"):
+        for k in totals:
             totals[k] += r[k]
-    return {"scenario": scenario, "rows": rows, "totals": dict(totals)}
+    return {"scenario": scenario, "rows": rows, "totals": totals}
 
 
 def _merge(rows):

@@ -277,3 +277,17 @@ def test_report_prod_only_fleet_shows_zero_saving(db):
         db.x("UPDATE resources SET env_resolved='prod', env_source='tag' WHERE id=%s", (pk,))
     t = _report()["totals"]
     assert t["on_units_day"] == t["off_units_day"] and t["on_calls_day"] == t["off_calls_day"]
+
+
+def test_report_renders_on_an_empty_database(db):
+    """DEV had nothing to plan and the first version crashed with KeyError: 'off_calls_day'."""
+    env = dict(os.environ, DB_HOST=os.getenv("MH_TEST_DB_HOST", "127.0.0.1"),
+               DB_PORT=os.getenv("MH_TEST_DB_PORT", "3306"), DB_USER=os.getenv("MH_TEST_DB_USER", "mh"),
+               DB_PASSWORD=os.getenv("MH_TEST_DB_PASSWORD", "mh"), DB_NAME=os.getenv("MH_TEST_DB_NAME", "mh_test"))
+    for args in ([], ["--scenario", "defaults-cleared"], ["--json"]):
+        p = subprocess.run([sys.executable, "scripts/polling_plan_report.py", *args],
+                           cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
+        assert p.returncode == 0, p.stderr
+        assert "Traceback" not in p.stderr
+    assert "TOTAL per day" in subprocess.run([sys.executable, "scripts/polling_plan_report.py"], cwd=ROOT,
+                                             env=env, capture_output=True, text=True).stdout
