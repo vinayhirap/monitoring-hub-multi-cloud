@@ -156,17 +156,82 @@ def _by_class_sql(mapping, r="r", acc="acc"):
     )
 
 
+# ── Environment-aware polling (Phase 4c, ENV_POLLING_ENABLED) ───────────
+# A UAT / DEV resource is collected less often (app/collector/env_polling.py), so its newest
+# reading is legitimately older. The evaluation window and the staleness limit therefore grow by
+# the SAME number of minutes the collector skips, per (resource environment, metric); otherwise
+# a deliberately slowed resource would be reported "no data" / stale between its polls. With the
+# flag off this returns None and every SQL string in this module is byte-for-byte what it was.
+_ENV_EXTRA_CACHE = {}
+
+
+def _env_poll_extra_sql(r, acc, metric):
+    """SQL expression -> extra minutes (integer), or None when ENV_POLLING is off. Needs
+    {r}.env_resolved (migration 083; ENV_POLLING_ENABLED implies ENV_AWARE_CLASSIFICATION)."""
+    from app.collector import env_polling as ep
+    if not ep.enabled():
+        return None
+    um, di, dci = ep.uat_multiplier(), ep.dev_interval_seconds(), ep.dev_critical_interval_seconds()
+    ck = (r, acc, metric, um, di, dci)
+    hit = _ENV_EXTRA_CACHE.get(ck)
+    if hit is not None:
+        return hit
+    from app.collector import polling_model as pm
+    import math
+
+    def env_expr(seconds, crit):
+        if seconds >= ep.NEVER_SLOW_AT_OR_ABOVE_SECONDS:
+            return "0"
+        uat = 0 if crit else int(math.ceil(seconds * (um - 1) / 60.0))
+        dev = int(math.ceil(max(0, (dci if crit else di) - seconds) / 60.0))
+        if not uat and not dev:
+            return "0"
+        return f"CASE {r}.env_resolved WHEN 'uat' THEN {uat} WHEN 'dev' THEN {dev} ELSE 0 END"
+
+    p1 = pm.p1_metric_keys()
+    parts = [f"WHEN {acc}.provider <> 'aws' THEN 0 ",
+             f"WHEN {r}.resource_type IN ({_in(sorted(ep.EXEMPT_RESOURCE_TYPES))}) THEN 0 "]
+    # Describe-API metrics keep their own free 60 s poll and are never slowed.
+    desc = sorted(pm.AWS_DESCRIBE_METRICS)
+    parts.append(f"WHEN ({r}.resource_type, LOWER({metric})) IN "
+                 f"({', '.join('(' + _sql_str(t) + ', ' + _sql_str(m) + ')' for t, m in desc)}) THEN 0 ")
+    groups = {}
+    for (provider, rtype, name), seconds in pm.metric_interval_overrides().items():
+        if provider == "aws":
+            groups.setdefault((seconds, (rtype, name) in p1), []).append((rtype, name))
+    for (seconds, crit), keys in sorted(groups.items()):
+        tuples = ", ".join(f"({_sql_str(t)}, {_sql_str(m)})" for t, m in sorted(keys))
+        parts.append(f"WHEN ({r}.resource_type, LOWER({metric})) IN ({tuples}) THEN {env_expr(seconds, crit)} ")
+    for provider, rtype, prefix, seconds in pm.PREFIX_INTERVAL_OVERRIDES:
+        if provider == "aws":
+            like = prefix.replace("_", "\\_") + "%"
+            parts.append(f"WHEN {r}.resource_type = {_sql_str(rtype)} AND LOWER({metric}) LIKE {_sql_str(like)} "
+                         f"THEN {env_expr(seconds, False)} ")
+    fallback = (f"CASE {cadence_class_sql(r, acc)} WHEN 'slow' THEN 0 "
+                f"WHEN 'extended' THEN {env_expr(3600, False)} ELSE {env_expr(300, False)} END")
+    sql = "(CASE " + "".join(parts) + f"ELSE {fallback} END)"
+    _ENV_EXTRA_CACHE[ck] = sql
+    return sql
+
+
+def _with_env_extra(base_sql, r, acc, metric):
+    extra = _env_poll_extra_sql(r, acc, metric)
+    return base_sql if extra is None else f"({base_sql} + {extra})"
+
+
 def stale_minutes_sql(r="r", acc="acc", metric=None):
     if metric is not None:
-        return _metric_case(metric, r, acc, _interval_value("STALE_MIN_BY_INTERVAL"),
-                            _by_class_sql(STALE_MINUTES, r, acc))
+        return _with_env_extra(
+            _metric_case(metric, r, acc, _interval_value("STALE_MIN_BY_INTERVAL"),
+                         _by_class_sql(STALE_MINUTES, r, acc)), r, acc, metric)
     return _by_class_sql(STALE_MINUTES, r, acc)
 
 
 def eval_window_sql(r="r", acc="acc", metric=None):
     if metric is not None:
-        return _metric_case(metric, r, acc, _interval_value("EVAL_WINDOW_MIN_BY_INTERVAL"),
-                            _by_class_sql(EVAL_WINDOW_MINUTES, r, acc))
+        return _with_env_extra(
+            _metric_case(metric, r, acc, _interval_value("EVAL_WINDOW_MIN_BY_INTERVAL"),
+                         _by_class_sql(EVAL_WINDOW_MINUTES, r, acc)), r, acc, metric)
     return _by_class_sql(EVAL_WINDOW_MINUTES, r, acc)
 
 

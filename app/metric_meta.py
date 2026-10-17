@@ -87,6 +87,35 @@ def tier_last_completed():
     return rows
 
 
+def _env_poll_view(env, rtype, db_name, base_seconds):
+    """Phase 4c: the REAL polling cadence of one metric for a UAT / DEV resource (ENV_POLLING_ENABLED).
+    Returns the entry fields that differ from the prod answer, or {} when nothing changes -- so a prod,
+    unknown or unclassified resource, and every response while the flag is off, is exactly what it was."""
+    try:
+        from app.collector import env_polling as ep, polling_model as pm
+        if not env or not base_seconds or not ep.enabled():
+            return {}
+        if pm.base_interval_seconds("aws", rtype, db_name) is None:      # free Describe metric: never slowed
+            return {}
+        crit = ep.is_critical_metric(rtype, db_name)
+        eff = ep.effective_interval(env, base_seconds, crit, rtype)
+        if eff == base_seconds:
+            return {}
+        out = {"poll_env": ep.normalize_env(env), "poll_base_seconds": base_seconds,
+               "poll_base_label": fmt_interval(base_seconds), "last_collected_ts": None}
+        if eff is None:
+            out.update(poll_seconds=None, poll_label=None, poll_not_collected=True, stale_after_seconds=None)
+            return out
+        extra = ep.extra_window_minutes(env, base_seconds, crit, rtype)
+        base_stale = stale_after_seconds(base_seconds)
+        out.update(poll_seconds=eff, poll_label=fmt_interval(eff), poll_slowed=True,
+                   stale_after_seconds=(base_stale + extra * 60) if base_stale is not None else None)
+        return out
+    except Exception as e:                                               # label only -- never fail the page
+        logger.debug(f"env poll view failed [{rtype}/{db_name}]: {e}")
+        return {}
+
+
 def _effective_lines(cur, account_id, resource_id, row, db_name):
     """-> (warning, critical, mode) mirroring alert_evaluator's resolution."""
     warning, critical = row["warning_value"], row["critical_value"]
@@ -132,6 +161,19 @@ def build_metric_meta(account_id, provider, service, resource_ids):
             [account_id, provider] + services)
         rows = cur.fetchall()
 
+        # Phase 4c: environment of the resource on screen (first id, like the threshold lines below).
+        env_label = None
+        if rids and provider == "aws":
+            try:
+                from app.collector import env_polling as _ep
+                if _ep.enabled():
+                    cur.execute("SELECT env_resolved FROM resources WHERE aws_account_id = %s AND resource_id = %s LIMIT 1",
+                                (account_id, rids[0]))
+                    got = cur.fetchone()
+                    env_label = got["env_resolved"] if got else None
+            except Exception as e:
+                logger.debug(f"metric-meta env lookup failed: {e}")
+
         # open alerts for this resource, keyed by lower db metric name
         alerts = {}
         if rids:
@@ -175,6 +217,7 @@ def build_metric_meta(account_id, provider, service, resource_ids):
                 "last_collected_ts": tier_runs.get(poll.get("tier")),
                 "threshold": None, "alert": None,
             }
+            entry.update(_env_poll_view(env_label, rtype, db_name, poll["interval_seconds"]))
             if r.get("warning_value") is not None and r.get("enabled"):
                 w, c, mode = (_effective_lines(cur, account_id, rids[0], r, db_name)
                               if rids else (float(r["warning_value"]), float(r["critical_value"]), "static"))

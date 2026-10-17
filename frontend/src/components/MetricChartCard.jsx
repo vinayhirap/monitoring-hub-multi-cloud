@@ -93,8 +93,18 @@ export default function MetricChartCard({
   // The period of a point can never be finer than the collection period: a 5-min
   // metric charted on 1H still has one point per 5 min (the console says 5 min too).
   const periodLabel = fmtPeriod(Math.max(bucket || 0, meta?.period_seconds || 0) || null);
-  const pollTip = meta?.poll_label
+  // Environment-based polling (phase 4c): a UAT / DEV resource is collected less often than prod. The
+  // API sends the REAL interval in poll_label plus the prod one in poll_base_label; a metric that is
+  // not collected for that environment has poll_not_collected instead.
+  const envName = meta?.poll_env ? String(meta.poll_env).toUpperCase() : "";
+  const notCollected = !!meta?.poll_not_collected;
+  const slowedNote = meta?.poll_slowed && meta?.poll_base_label
+    ? ` (${envName}; ${meta.poll_base_label} on prod)` : "";
+  const pollTip = notCollected
+    ? `Not collected for ${envName} resources to save CloudWatch cost. Normal collection is every ${meta.poll_base_label}. Prod resources are unaffected.`
+    : meta?.poll_label
     ? `Collected every ${meta.poll_label}` +
+      (meta.poll_slowed ? ` because this resource is ${envName} (prod collects every ${meta.poll_base_label}). Each collection still fetches every point since the last one, so the chart has no gaps; the newest point is just later.` : "") +
       (meta.period_seconds ? ` · CloudWatch period ${fmtPeriod(meta.period_seconds)}` : "") +
       (meta.tier ? ` · tier: ${meta.tier}` : "") + (meta.poll_source ? `\nSource: ${meta.poll_source}` : "")
     : null;
@@ -113,7 +123,8 @@ export default function MetricChartCard({
     <div className="mc-badges">
       {alert && <span className="mc-badge mc-sev" style={{ background: `${sevColor}22`, color: SEV_TEXT[alert.severity] || sevColor, borderColor: `${sevColor}66` }}>● {alert.severity} ALERT</span>}
       {meta?.alert && !alert && <span className="mc-badge mc-muted">{meta.alert.state}</span>}
-      {meta?.poll_label && <span className="mc-badge mc-poll" title={pollTip}>⏱ polled every {meta.poll_label}</span>}
+      {meta?.poll_label && <span className="mc-badge mc-poll" title={pollTip}>⏱ polled every {meta.poll_label}{slowedNote}</span>}
+      {notCollected && <span className="mc-badge mc-poll" title={pollTip}>not collected on {envName}</span>}
       {th?.mode && th.mode !== "static" && <span className="mc-badge mc-dyn" title="Threshold follows this resource's own baseline (Settings → Thresholds)">{th.mode} threshold</span>}
     </div>
   );
@@ -123,7 +134,7 @@ export default function MetricChartCard({
       <div id={metricAnchor(metricKey || title)} className={`chart-box mc-card ${alert ? "mc-alert" : ""}`} style={alert ? { borderColor: sevColor } : undefined}>
         {header()}
         {badges}
-        <div className="chart-empty">{emptyReason || `No data in last ${timeRange || "6H"}`}{meta?.poll_label ? ` · collected every ${meta.poll_label}` : ""}</div>
+        <div className="chart-empty">{emptyReason || `No data in last ${timeRange || "6H"}`}{meta?.poll_label ? ` · collected every ${meta.poll_label}${slowedNote}` : ""}{notCollected ? ` · not collected on ${envName}` : ""}</div>
       </div>
     );
   }

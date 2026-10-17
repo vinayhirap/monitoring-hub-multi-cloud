@@ -28,6 +28,7 @@ import logging
 import math
 from app.db import get_connection
 from app import environment_classifier as _envc
+from app.collector import env_polling as _ep
 from app.ws.publisher import publish_alert, publish_alert_resolved
 from app.alert_rules import (
     SYSTEM_METRICS, cadence_class_sql, eval_window_sql, hard_expiry_hours_sql,
@@ -616,6 +617,29 @@ def _db_metric_name_sql(resource_type_col="r.resource_type", catalog_col="mc.met
     return case
 
 
+def _env_poll_row_info(row, p1_keys=None):
+    """(evaluate, alert_for_scale) for one reading under ENV_POLLING_ENABLED (Phase 4c).
+
+    evaluate  False only for a DEV non-critical AWS metric while POLL_DEV_EVAL_CRITICAL_ONLY is
+              on (Vinay's design: DEV evaluates critical-class metrics only).
+    scale     factor on the required breach / healthy cycles for a metric the collector
+              polls less often, so N cycles still means N independent readings (and a UAT
+              alert needs a longer breach before it opens). 1 for everything on prod cadence.
+
+    Flag off, a non-AWS provider, a prod-like or unknown environment -> (True, 1)."""
+    if not _ep.enabled() or (row.get("provider") or "aws") != "aws":
+        return True, 1
+    from app.collector import polling_model as _pm
+    rtype, metric = row.get("resource_type"), (row.get("metric_name") or "").lower()
+    env = row.get("env_resolved")
+    critical = _ep.is_critical_metric(rtype, metric, p1_keys)
+    evaluate = _ep.evaluate_for_alerts(env, critical, rtype)
+    base = _pm.base_interval_seconds("aws", rtype, metric)
+    if base is None:                 # Describe-API metric: never slowed
+        return evaluate, 1
+    return evaluate, _ep.alert_for_scale(env, base, critical, rtype)
+
+
 def _evaluate_alerts_body(conn, cursor, p1_only=False):
     """
     Body of evaluate_alerts(), split out so the connection/cursor acquired in
@@ -641,6 +665,9 @@ def _evaluate_alerts_body(conn, cursor, p1_only=False):
     # so a deploy that races the migration -- or a box that never enables the flag -- runs the
     # exact query it always did.
     env_cols = ", r.env_resolved, r.env_source" if _envc.flag_enabled() else ""
+    # Phase 4c: the provider is only needed to keep env-aware polling AWS-only.
+    if _ep.enabled():
+        env_cols += ", aa.provider AS provider"
 
     # ── Latest metric per resource+metric ─────────────────────
     # `metrics` is a last-value cache with UNIQUE (resource_id, metric_name)
@@ -688,6 +715,11 @@ def _evaluate_alerts_body(conn, cursor, p1_only=False):
     """)
 
     rows = _select_threshold_rows(cursor.fetchall())
+    if _ep.enabled():
+        # Phase 4c: DEV evaluates critical-class metrics only (POLL_DEV_EVAL_CRITICAL_ONLY).
+        from app.collector.polling_model import p1_metric_keys as _p1k
+        _keys = _p1k()
+        rows = [r for r in rows if _env_poll_row_info(r, _keys)[0]]
     if p1_only:
         from app.collector.polling_model import p1_metric_keys
         p1 = p1_metric_keys()
@@ -804,6 +836,14 @@ def _evaluate_row(cursor, row, silenced_map, stats):
             and is_integer_metric(row.get("unit"), metric_name):
         warning_value = integerize_limit(warning_value, comparison)
         critical_value = integerize_limit(critical_value, comparison)
+
+    # Phase 4c: a metric the collector polls less often (UAT / DEV, ENV_POLLING_ENABLED) needs
+    # proportionally more cycles -- N cycles must still mean N independent readings. Applied once,
+    # after the anomaly floor above. Prod cadence, extended/slow cadence and flag-off: unchanged.
+    if cadence == "core" and _ep.enabled():
+        poll_scale = _env_poll_row_info(row)[1]
+        if poll_scale > 1:
+            required_cycles *= poll_scale
 
     is_critical = compare(metric_value, critical_value, comparison) and severity_cap is None
     is_warning  = compare(metric_value, warning_value,  comparison)
