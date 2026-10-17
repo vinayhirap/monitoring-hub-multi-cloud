@@ -460,3 +460,35 @@ def p1_metric_keys():
     for service, names in gcp.CRITICAL_METRICS.items():
         keys |= {(service, n.lower()) for n in names}
     return keys
+
+
+# ── Base polling interval of ONE metric (Phase 4c) ──────────────────────
+_BASE_OVERRIDES_CACHE = None
+
+
+def base_interval_seconds(provider, resource_type, db_metric):
+    """Normal (prod) polling interval in seconds of one stored metric, or None for a metric
+    that is never polled through GetMetricData (the free Describe-API metrics: they keep
+    their own 60 s poll and are never slowed by environment). Same lookup order as
+    metric_display.polling_info(), kept here so the collectors, the evaluator and the API
+    answer from one place."""
+    global _BASE_OVERRIDES_CACHE
+    provider = (provider or "aws").lower()
+    rtype = (resource_type or "").lower()
+    db = (db_metric or "").lower()
+    if provider == "aws" and (rtype, db) in AWS_DESCRIBE_METRICS:
+        return None
+    if provider == "aws":
+        for m in AWS_CORE_METRICS:
+            if m.resource_type == rtype and m.db_name == db:
+                return TIER_SECONDS[m.tier]
+        if rtype == "ec2" and db == "mem_used_percent":
+            return TIER_SECONDS[CWAGENT_MEM_TIER]
+        if rtype == "ec2" and (db == "disk_used_percent" or db.startswith("disk_used_percent__")):
+            return TIER_SECONDS[CWAGENT_DISK_TIER]
+    if _BASE_OVERRIDES_CACHE is None:
+        _BASE_OVERRIDES_CACHE = metric_interval_overrides()
+    ov = _BASE_OVERRIDES_CACHE.get((provider, rtype, db))
+    if ov is not None:
+        return ov
+    return _CLASS_DEFAULT_INTERVAL[_aws_class(rtype)] if provider == "aws" else 300

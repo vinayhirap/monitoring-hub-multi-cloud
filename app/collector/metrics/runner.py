@@ -77,6 +77,7 @@ logger = logging.getLogger(__name__)
 # source of truth shared with the alert evaluator's freshness windows).
 from app.collector import polling_model
 from app.collector import api_usage
+from app.collector import env_polling
 
 CORE_METRICS = polling_model.AWS_CORE_METRICS
 
@@ -483,10 +484,13 @@ def _passes_gate(r, gate):
     return False
 
 
-def _collect_core(cw, resources, resource_type, tier):
+def _collect_core(cw, resources, resource_type, tier, extra_min=0):
     """Every CORE_METRICS definition for (resource_type, tier), grouped by
     look-back and gate so each GetMetricData batch only carries resources
-    the definition applies to."""
+    the definition applies to.
+
+    extra_min (Phase 4c, default 0 = unchanged): extra look-back minutes for resources that
+    env_polling slowed, so the poll that does run still covers every skipped bucket."""
     defs = [m for m in CORE_METRICS if m.resource_type == resource_type and m.tier == tier]
     if not defs:
         return 0
@@ -494,7 +498,7 @@ def _collect_core(cw, resources, resource_type, tier):
         _log_monitoring_mode_mismatch(resources)
     groups = {}
     for m in defs:
-        groups.setdefault((m.lookback_min, m.gate), []).append(
+        groups.setdefault((m.lookback_min + extra_min, m.gate), []).append(
             (m.cw_name, m.db_name, m.stat, m.namespace, m.period_sec))
     total = 0
     for (lookback, gate), metric_defs in groups.items():
@@ -628,7 +632,7 @@ def _ec2_instances_with_cwagent_mem_dims_uncached(cw, resources):
     return result
 
 
-def _collect_ec2_cwagent_mem(cw, resources):
+def _collect_ec2_cwagent_mem(cw, resources, extra_min=0):
     cwagent_map = _ec2_instances_with_cwagent_mem_dims(cw, resources)
     if not cwagent_map:
         return
@@ -650,11 +654,11 @@ def _collect_ec2_cwagent_mem(cw, resources):
         # Sum-only zero-fill (see its docstring) correctly leaves a genuine
         # gap alone rather than fabricating a 0% reading.
         id_map[qid] = (resource["id"], "mem_used_percent", "Average")
-    n = _execute_gmd(cw, queries, id_map, minutes=polling_model.CWAGENT_MEM_LOOKBACK)
+    n = _execute_gmd(cw, queries, id_map, minutes=polling_model.CWAGENT_MEM_LOOKBACK + extra_min)
     logger.info(f"    EC2 CWAgent mem: {n} series / {len(cwagent_map)} of {len(resources)} instances")
 
 
-def _collect_ec2_cwagent_disk(cw, resources, account_id):
+def _collect_ec2_cwagent_disk(cw, resources, account_id, extra_min=0):
     """
     Per-mount disk collection -- supersedes the old root-only
     _ec2_instances_with_cwagent_disk_dims()/single-series approach (see
@@ -724,7 +728,7 @@ def _collect_ec2_cwagent_disk(cw, resources, account_id):
             # same reasoning as the mem_used_percent id_map entry above.
             id_map[qid] = (r["id"], metric_name, "Average")
 
-    n = _execute_gmd(cw, queries, id_map, minutes=polling_model.CWAGENT_DISK_LOOKBACK)
+    n = _execute_gmd(cw, queries, id_map, minutes=polling_model.CWAGENT_DISK_LOOKBACK + extra_min)
     logger.info(f"    EC2 CWAgent disk: {n} datapoints / {instances_reporting} of {len(resources)} instances (all mounts)")
 
 # ── Resource fetcher ──────────────────────────────────────────
@@ -736,11 +740,14 @@ def _get_resources_for_account(account_id, tier):
     not-recently-seen (deleted) resources skipped. ECS is collected by the
     extended collector; ENI has no useful metrics.
     """
+    # Phase 4c: the environment label is only read when ENV_POLLING_ENABLED (and the
+    # classification flag) are on, so flag-off runs the exact query it always did.
+    env_col = ", env_resolved" if env_polling.enabled() else ""
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute("""
-            SELECT id, resource_id, resource_type, name, region, tags
+        cursor.execute(f"""
+            SELECT id, resource_id, resource_type, name, region, tags{env_col}
             FROM resources
             WHERE aws_account_id = %s
               AND (instance_state IS NULL OR instance_state != 'terminated')
@@ -766,6 +773,43 @@ def _get_resources_for_account(account_id, tier):
     return grouped
 
 
+
+# ── Environment-aware gate (Phase 4c, ENV_POLLING_ENABLED) ────────────
+
+def _tier_is_critical(tier):
+    """Every CORE metric on the 2-min tier is in polling_model.p1_metric_keys() and none on
+    the other tiers is (enforced by tests/test_env_polling.py), so criticality is a property
+    of the tier here."""
+    return tier == "critical"
+
+
+def _env_gate(grouped, tier, now=None):
+    """grouped {(resource_type, region): [resources]} -> same shape holding only the resources
+    due on this tick, each annotated with `_poll_extra_min`. Prod-like resources pass through
+    untouched. Caller guarantees env_polling.enabled()."""
+    now = time.time() if now is None else now
+    base = polling_model.TIER_SECONDS[tier]
+    out, due_n, skipped_n = {}, 0, 0
+    for key, resources in grouped.items():
+        due, skipped = env_polling.select_due(resources, tier, base, now,
+                                              critical=_tier_is_critical(tier))
+        skipped_n += skipped
+        if due:
+            out[key] = due
+            due_n += len(due)
+    if skipped_n:
+        logger.info(f"    env polling [{tier}]: {due_n} resources due, {skipped_n} skipped this tick")
+    return out
+
+
+def _split_by_extra(resources):
+    """[(extra_lookback_min, [resources])] -- one group for the normal cadence (extra 0, the
+    original call unchanged), one per 5-minute look-back step for slowed resources."""
+    buckets = {}
+    for r in resources:
+        buckets.setdefault(env_polling.round_extra(r.get("_poll_extra_min", 0)), []).append(r)
+    return sorted(buckets.items())
+
 # ── Per-account collection ────────────────────────────────────
 
 _CORE_TYPES = ("ec2", "ebs", "rds", "elb", "lambda")
@@ -787,16 +831,24 @@ def _collect_account(account, tier="standard"):
     tasks = []  # (callable, args)
     if tier in ("critical", "standard", "low"):
         grouped = _get_resources_for_account(account["id"], tier)
+        env_on = env_polling.enabled()
+        if env_on:
+            grouped = _env_gate(grouped, tier)
         for (resource_type, res_region), resources in grouped.items():
             if resource_type not in _CORE_TYPES:
                 continue
             cw = session.client("cloudwatch", region_name=res_region, config=STANDARD_RETRY)
-            tasks.append((_collect_core, (cw, resources, resource_type, tier)))
-            if resource_type == "ec2":
-                if tier == polling_model.CWAGENT_MEM_TIER:
-                    tasks.append((_collect_ec2_cwagent_mem, (cw, resources)))
-                if tier == polling_model.CWAGENT_DISK_TIER:
-                    tasks.append((_collect_ec2_cwagent_disk, (cw, resources, account["id"])))
+            # Flag off: one group, extra 0 -- the exact calls this loop always made.
+            for extra, subset in (_split_by_extra(resources) if env_on else [(0, resources)]):
+                tasks.append((_collect_core, (cw, subset, resource_type, tier, extra) if extra
+                              else (cw, subset, resource_type, tier)))
+                if resource_type == "ec2":
+                    if tier == polling_model.CWAGENT_MEM_TIER:
+                        tasks.append((_collect_ec2_cwagent_mem, (cw, subset, extra) if extra
+                                      else (cw, subset)))
+                    if tier == polling_model.CWAGENT_DISK_TIER:
+                        tasks.append((_collect_ec2_cwagent_disk, (cw, subset, account["id"], extra) if extra
+                                      else (cw, subset, account["id"])))
 
     with ThreadPoolExecutor(max_workers=6) as ex:
         futures = [ex.submit(fn, *args) for fn, args in tasks]

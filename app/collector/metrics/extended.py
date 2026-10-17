@@ -23,6 +23,7 @@ from app.aws.boto_config import STANDARD_RETRY
 from app.threshold_defaults import resolve_db_metric_name
 from app.collector.metrics.runner import _execute_gmd, STALE_RESOURCE_HOURS
 from app.collector import polling_model
+from app.collector import env_polling
 
 logger = logging.getLogger(__name__)
 
@@ -430,11 +431,13 @@ def _get_extended_resources_for_account(account_id):
     # discovery hasn't re-confirmed for STALE_RESOURCE_HOURS (deleted
     # buckets/log groups/etc. -- billed, always-empty queries every cycle).
     placeholders = ",".join(["%s"] * len(EXTENDED_METRICS))
+    # Phase 4c: environment label read only when ENV_POLLING_ENABLED is on (flag-off = same query).
+    env_col = ", env_resolved" if env_polling.enabled() else ""
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute(f"""
-            SELECT id, resource_id, resource_type, name, region, tags
+            SELECT id, resource_id, resource_type, name, region, tags{env_col}
             FROM resources
             WHERE aws_account_id = %s
               AND resource_type IN ({placeholders})
@@ -455,6 +458,21 @@ def _get_extended_resources_for_account(account_id):
         key = (r["resource_type"], r["region"])
         grouped.setdefault(key, []).append(r)
     return grouped
+
+
+def _extended_env_groups(resources, tier, now=None):
+    """[(extra_lookback_min, [resources])] for resources due on this extended-family tick
+    (Phase 4c). Extended metrics are never in the P1 set, so none is 'critical'."""
+    import time as _time
+    base = polling_model.TIER_SECONDS[tier]
+    due, skipped = env_polling.select_due(resources, tier, base,
+                                          _time.time() if now is None else now, critical=False)
+    if skipped:
+        logger.info(f"    env polling [{tier}]: {len(due)} resources due, {skipped} skipped this tick")
+    buckets = {}
+    for r in due:
+        buckets.setdefault(env_polling.round_extra(r.get("_poll_extra_min", 0)), []).append(r)
+    return sorted(buckets.items())
 
 
 def collect_extended_for_account(session, account, tier="extended"):
@@ -496,6 +514,15 @@ def collect_extended_for_account(session, account, tier="extended"):
                    for d in EXTENDED_METRICS[resource_type]):
             continue
         cw_region = _region_for_service(resource_type, region)
+        # Phase 4c (ENV_POLLING_ENABLED): UAT / DEV resources are collected on fewer ticks; the
+        # poll that does run looks back far enough to cover the skipped ones. Off: one group,
+        # extra 0, the exact call this loop always made. wafv2 is exempt (see env_polling).
+        if env_polling.enabled():
+            groups = _extended_env_groups(resources, tier)
+        else:
+            groups = [(0, resources)]
+        if not groups:
+            continue
         try:
             cw = session.client("cloudwatch", region_name=cw_region, config=STANDARD_RETRY)
             if resource_type == "wafv2" and polling_model.waf_fast_enabled():
@@ -503,8 +530,9 @@ def collect_extended_for_account(session, account, tier="extended"):
                 from app.collector.metrics import waf as waf_collector
                 waf_collector.collect_waf_resources(cw, resources, enabled_keys, tier)
                 continue
-            _collect_extended_service(cw, resources, resource_type, enabled_keys,
-                                      minutes=minutes, tier=tier)
+            for extra, subset in groups:
+                _collect_extended_service(cw, subset, resource_type, enabled_keys,
+                                          minutes=minutes + extra, tier=tier)
         except Exception as e:
             logger.error(f"  Extended collection failed [{resource_type}/{cw_region}] "
                          f"[{account['account_name']}]: {e}")
