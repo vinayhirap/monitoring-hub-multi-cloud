@@ -478,10 +478,17 @@ def _digest(monkeypatch, sent, configured=True, accessible=None):
     sync._pytest_conftest_stub = True
     install_stub("app.collector.env_sync")
     sys.modules["app.collector.env_sync"] = sync
-    install_stub("app.email.mailer", is_configured=lambda: configured, get_public_app_url=lambda: "http://cloudops.test",
-                 send_email=lambda to, subj, body: sent.append((to, subj, body)) or True)
-    install_stub("app.auth.authorization",
-                 get_accessible_account_ids=lambda u: accessible(u) if callable(accessible) else accessible)
+    mailer = install_stub("app.email.mailer", is_configured=lambda: configured, get_public_app_url=lambda: "http://cloudops.test",
+                          send_email=lambda to, subj, body: sent.append((to, subj, body)) or True)
+    authz = install_stub("app.auth.authorization",
+                         get_accessible_account_ids=lambda u: accessible(u) if callable(accessible) else accessible)
+    # `from app.email import mailer` reads the PACKAGE attribute before sys.modules, and a stub left by an
+    # earlier test file (test_auth_session_security's zero-argument send_email) stays bound there after
+    # clear_stubs() removed it from sys.modules: the digest then called that stale stub. Rebind both.
+    for pkg_name, attr, mod in (("app.email", "mailer", mailer), ("app.auth", "authorization", authz)):
+        pkg = sys.modules.get(pkg_name)
+        if pkg is not None:
+            setattr(pkg, attr, mod)
     monkeypatch.setenv("ENV_DIGEST_ENABLED", "true")
     monkeypatch.setenv("ENV_DIGEST_WEEKDAY", "0")
     return load_module("app/env_digest.py"), sync
@@ -493,6 +500,10 @@ NOW = datetime(2026, 10, 19, 9, 0)          # a Monday
 def _unknown(db, rid, name, created=None):
     db.resource(1, "ec2", rid, name=name)
     if created:
+        # MySQL rounds a DATETIME(0) value with microseconds to the NEAREST second, so a resource stamped
+        # "now" could land up to a second AFTER the digest log's (truncated) CURRENT_TIMESTAMP and be listed
+        # as new again in the next digest (failed ~40% of runs). Whole seconds make the comparison exact.
+        created = created.replace(microsecond=0)
         db.x("UPDATE resources SET created_at=%s WHERE resource_id=%s", (created, rid))
 
 
