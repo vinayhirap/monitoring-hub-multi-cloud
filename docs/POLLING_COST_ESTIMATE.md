@@ -1,8 +1,7 @@
 # Environment-based polling: CloudWatch cost estimate (Phase 4c)
 
-Status: the model, the report script and the numbers below are built and tested against a scratch
-MySQL. **No number here was measured on prod.** The prod rows are marked PENDING until the two
-queries in section 6 are run on prod.
+Status: built, tested, deployed to DEV and PROD with the flag OFF. Section 5 is a modelled illustration;
+section 6 holds the real PROD numbers (taken 2026-10-17) and the decision.
 
 ## 1. What changes (flag `ENV_POLLING_ENABLED`, default off)
 
@@ -125,10 +124,36 @@ mysql ... -e "SELECT JSON_UNQUOTE(detail->'$.tier') t, SUM(detail->'$.calls') ca
 (Run it in the standard mysql wrapper.) Compare `units` per tier with the report's flag-off column. A large gap
 means the CWAgent assumption or the extended selection differs from reality; send both and the model is corrected.
 
-| Scenario | Billed metrics/day off | on | Saved | Status |
-|---|---|---|---|---|
-| A. labels as stored | PENDING | PENDING | PENDING | waiting for the prod report |
-| B. defaults cleared (lower bound) | PENDING | PENDING | PENDING | waiting for the prod report |
+### PROD result (2026-10-17, flag off)
+
+Calibration, measured `metric_api_usage` over 24 h versus the report's flag-off column:
+
+| | Billed metrics/day | GetMetricData requests/day |
+|---|---|---|
+| measured (critical 10,800, standard 50,688, low 19,095, extended 744, slow_extended 366) | 81,693 | 7,365 |
+| model, flag off | 77,110 (6% under) | 6,037 (a floor) |
+
+Fleet by environment (334 resources): prod 89, dev 26, uat 10, unknown/unclassified 209. **Every uat and dev label
+comes from a name or an attached parent; none from the account default**, so scenarios A and B are identical.
+The 209 unknown resources are never slowed. Only 22 of them (12 EBS, 10 EC2) are on the 5-minute tier.
+
+| Scenario | Billed metrics/day off -> on | Saved | Requests/day off -> on |
+|---|---|---|---|
+| A. labels as stored | 77,110 -> 65,158 | 15.5% (dev 85.8%, uat 44.4%, prod-like 0%) | 6,037 -> 7,476 (+24%) |
+| B. defaults cleared (lower bound) | 77,110 -> 65,158 | 15.5% | 6,037 -> 7,476 |
+
+Per 30 days: 2,313,300 -> 1,954,740 modelled billed metrics, a saving of about 358,560.
+At the published GetMetricData list rate of $0.01 per 1,000 metrics requested (US East; confirm the ap-south-1 rate on
+the bill) that is **about $3.6 a month, against a total GetMetricData cost of about $25 a month** (measured 81,693/day).
+If a free monthly allowance applies to GetMetricData the saving is smaller still.
+
+### Decision
+
+Not enabled. About $4 a month does not justify slower UAT alerting (3x breach cycles), DEV non-critical metrics
+no longer evaluated, and 24% more requests. The flag stays off; the code is tested and costs nothing while off.
+Revisit if the fleet or the non-prod share grows (section 5 sensitivity), or after classifying the 22 unknown
+EC2/EBS resources. To find the real CloudWatch spend, group the bill by usage type in Cost Explorer and compare the
+`APS1-CW:GMD-Metrics` line with custom metrics (CWAgent), logs ingestion and dashboards.
 
 ## 7. Not built
 
