@@ -384,16 +384,24 @@ def tagging_gap_rows(account_ids, account_id=None, resource_type=None, essential
     try:
         cur = conn.cursor(dictionary=True)
         try:
+            # tag-sync result (NULL unless TAG_SYNC_ENABLED and migration 095): for the types the tag sync covers the
+            # resource's own tags live there, not in r.tags, so the gap list must read them from there
+            try:
+                from app.collector.tag_sync import synced_select
+                synced_sql = synced_select(cur)
+            except Exception:
+                synced_sql = "NULL AS synced_tags"
             cur.execute(f"""
                 SELECT aa.account_name, aa.provider, r.resource_type, r.resource_id, r.name, r.region,
-                       r.env_resolved, r.env_source, r.tag_state, r.tags
+                       r.env_resolved, r.env_source, r.tag_state, r.tags, {synced_sql}
                 FROM resources r JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
                 WHERE {where}
                 ORDER BY aa.account_name, r.resource_type, COALESCE(r.name, r.resource_id)
             """, params)
             out, truncated = [], False
             for r in cur:
-                miss = ec.missing_tags(r["tags"], keys)
+                own = ec.effective_tags(r["resource_type"], r["tags"], ec.parse_synced(r.get("synced_tags")))
+                miss = ec.missing_tags(own, keys)
                 if not miss:
                     continue
                 if len(out) >= GAP_ROW_CAP:

@@ -155,5 +155,64 @@
   "11": {
    "Environment": "prod"
   }
- }
+ },
+ "non_aws": [
+  {
+   "account_name": "Azure Prod (fixture)",
+   "provider": "azure",
+   "resource_type": "vm",
+   "tags": {
+    "Environment": "prod",
+    "Owner": "x"
+   },
+   "age_hours": 3
+  },
+  {
+   "account_name": "Azure Prod (fixture)",
+   "provider": "azure",
+   "resource_type": "vm",
+   "tags": {
+    "Env": "Production"
+   },
+   "age_hours": 3
+  },
+  {
+   "account_name": "Azure Prod (fixture)",
+   "provider": "azure",
+   "resource_type": "storage_account",
+   "tags": {},
+   "age_hours": 3
+  },
+  {
+   "account_name": "Azure Prod (fixture)",
+   "provider": "azure",
+   "resource_type": "some_generic_type",
+   "tags": {},
+   "age_hours": 3
+  },
+  {
+   "account_name": "GCP Dev (fixture)",
+   "provider": "gcp",
+   "resource_type": "compute_instance",
+   "tags": {
+    "environment": "dev",
+    "_gcp_numeric_id": "123"
+   },
+   "age_hours": 20
+  },
+  {
+   "account_name": "GCP Dev (fixture)",
+   "provider": "gcp",
+   "resource_type": "gcs_bucket",
+   "tags": {},
+   "age_hours": 20
+  },
+  {
+   "account_name": "GCP Dev (fixture)",
+   "provider": "gcp",
+   "resource_type": "gke_node",
+   "tags": {},
+   "age_hours": 20
+  }
+ ]
 }

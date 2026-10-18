@@ -186,3 +186,34 @@ def test_an_undecided_direct_lookup_leaves_the_bucket_not_checked(db, monkeypatc
     _sync_direct(monkeypatch, ARNS, lambda account, rows: ({r["id"]: None for r in rows}, len(rows)))
     _classify()
     assert _row(db, "bucket-a")["tag_state"] == "not_checked" and _row(db, "bucket-a")["synced_tags"] is None
+
+
+# ---- Azure / GCP: tag status from the tags discovery already stored
+def _provider_rows(db):
+    db.x("UPDATE aws_accounts SET provider='azure' WHERE id=1")
+    db.x("UPDATE aws_accounts SET provider='gcp' WHERE id=2")
+    db.resource(1, "vm", "az-vm-ok", tags={"Environment": "prod"})
+    db.resource(1, "vm", "az-vm-none", tags={})
+    db.resource(1, "some_generic_type", "az-gen", tags={})
+    db.resource(2, "compute_instance", "gcp-vm-ok", tags={"environment": "dev"})
+    db.resource(2, "gcs_bucket", "gcp-bkt", tags={})
+    db.resource(2, "gke_node", "gcp-node", tags={})
+
+
+def _state(db, rid):
+    return db.one("SELECT tag_state FROM resources WHERE resource_id=%s", (rid,))["tag_state"]
+
+
+def test_azure_and_gcp_get_real_status_only_with_the_flag_on(db, monkeypatch):
+    _provider_rows(db)
+    monkeypatch.delenv("TAG_SYNC_ENABLED", raising=False)
+    _classify()
+    assert {_state(db, r) for r in ("az-vm-ok", "az-vm-none", "az-gen", "gcp-vm-ok", "gcp-bkt", "gcp-node")} == {"not_checked"}
+    monkeypatch.setenv("TAG_SYNC_ENABLED", "true")
+    _classify()
+    got = {r: _state(db, r) for r in ("az-vm-ok", "az-vm-none", "az-gen", "gcp-vm-ok", "gcp-bkt", "gcp-node")}
+    assert got == {"az-vm-ok": "ok", "az-vm-none": "missing", "az-gen": "not_checked",
+                   "gcp-vm-ok": "ok", "gcp-bkt": "missing", "gcp-node": "not_checked"}
+    monkeypatch.setenv("TAG_SYNC_ENABLED", "false")
+    _classify()
+    assert _state(db, "az-vm-none") == "not_checked"                       # roll back by removing the flag

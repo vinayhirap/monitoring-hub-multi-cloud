@@ -149,4 +149,27 @@ nothing reads them. No data is lost and nothing was ever written to AWS.
   type in another region is `not_checked`. Resources in regions CloudOps does not discover (the first PROD report
   showed ACM, load balancers, KMS keys, log groups and rules in AuroGov's us-east-1) are not rows, so they are neither
   matched nor reported.
-- Azure and GCP are not covered. Their discovery code is separate; whether it stores resource tags was not verified here.
+- Azure and GCP: see the next section.
+
+## Azure and GCP
+
+No sweep is needed: their discovery already stores each resource's own tags (Azure) or labels (GCP) in `resources.tags`.
+With `TAG_SYNC_ENABLED` on, `tag_state` is computed from them for the types in
+`environment_classifier.AZURE_TAGGED_TYPES` (19 types) and `GCP_LABELED_TYPES` (12 types). Every other type, and every
+type whose discovery stores a placeholder `{}` (for example `gke_node`), stays `not_checked`; the allow-list exists so
+an empty placeholder is never read as "untagged". Flag off: nothing changes for these providers.
+
+- GCP label keys are always lowercase, so the standard key there is `environment` (Azure keeps `Environment`).
+  The internal `_gcp_numeric_id` key is not counted as a tag.
+- Only `tag_state`, the Needs-tagging counts and the tagging-gap export change. Environment resolution and alerting do not.
+- Freshness: the tags are as of the last onboarding or manual resource sync of that account, not live. Rows not seen for
+  more than 48 hours are outside the live window like any other row.
+- `scripts/tag_sync_report.py` prints an Azure/GCP section (read-only) with per-type tag_state and the age of the
+  oldest row, so check it before relying on the numbers.
+
+## Direct lookups (S3 buckets and WAFv2 ACLs)
+
+`TAG_SYNC_DIRECT_LOOKUP` (default off, `TAG_SYNC_DIRECT_MAX` default 100 calls per run). For rows the sweep left
+undecided only: `s3:GetBucketTagging` (NoSuchTagSet = proven untagged) and `wafv2:ListTagsForResource` (empty list =
+proven untagged). Any other outcome (AccessDenied, throttling, redirect) leaves the row undecided. A direct answer never
+overrides a sweep decision. Needs those two read permissions (included in `ReadOnlyAccess`; not confirmed live).

@@ -46,7 +46,7 @@ _BASE_SELECT = """
     SELECT r.id, r.aws_account_id, r.resource_id, r.resource_type, r.name, r.tags,
            r.env_override, r.env_resolved, r.env_source, r.env_reason, r.tag_state,
            {extra}{synced},
-           aa.default_env
+           aa.default_env, aa.provider
     FROM resources r
     JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
     WHERE (r.instance_state IS NULL OR r.instance_state != 'terminated')
@@ -61,6 +61,16 @@ def _row_synced(row):
     if synced is None or str(row.get("resource_type") or "").lower() not in ec.TAG_SYNC_TYPES:
         return None
     return synced
+
+
+def _row_provider(row):
+    """'azure' / 'gcp' for rows of those clouds while TAG_SYNC_ENABLED is on, else None (AWS rows, and every row with
+    the flag off, are judged exactly as before). Azure and GCP discovery store the resource's own tags / labels for the
+    types listed in environment_classifier.PROVIDER_TAG_TYPES."""
+    if not ec.tag_sync_enabled():
+        return None
+    p = str(row.get("provider") or "").lower()
+    return p if p in ec.PROVIDER_TAG_TYPES else None
 
 
 def resolve_row(row, related=None):
@@ -247,7 +257,7 @@ def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False
                     warn_updates.append((new_w, row["id"], row.get("env_override")))
             _tally(report["by_source"], res.source)
             _tally(report["by_env"], res.env)
-            tstate = ec.tag_state(row.get("resource_type"), row.get("tags"), _row_synced(row))
+            tstate = ec.tag_state(row.get("resource_type"), row.get("tags"), _row_synced(row), _row_provider(row))
             same = (row.get("env_resolved") == res.env
                     and row.get("env_source") == res.source
                     and (row.get("env_reason") or "") == res.reason

@@ -49,3 +49,15 @@ def test_direct_answers_are_applied_only_with_the_flag():
     assert withd["s3"]["direct_absent"] == 1 and withd["s3"]["tag_state"].get("not_checked", 0) == 0
     assert withd["s3"]["tag_state"]["missing"] == 1 + plain["s3"]["tag_state"].get("missing", 0)
     assert withd["wafv2"]["direct_tagged"] == 1 and withd["wafv2"]["tag_state"] == {"ok": 1, "nonstandard": 0, "invalid": 0, "missing": 0, "not_checked": 0}
+
+
+def test_azure_and_gcp_section_reports_the_states_their_stored_tags_give():
+    data = json.loads(_run("--fixtures", FIXTURE, "--json").stdout)["_non_aws"]
+    az = data["Azure Prod (fixture)"]["types"]
+    assert az["vm"]["tag_state"]["ok"] == 1 and az["vm"]["tag_state"]["nonstandard"] == 1
+    assert az["storage_account"]["tag_state"]["missing"] == 1
+    assert az["some_generic_type"]["tag_state"]["not_checked"] == 1 and az["some_generic_type"]["judged"] is False
+    gcp = data["GCP Dev (fixture)"]["types"]
+    assert gcp["compute_instance"]["tag_state"]["ok"] == 1 and gcp["gcs_bucket"]["tag_state"]["missing"] == 1
+    assert gcp["gke_node"]["tag_state"]["not_checked"] == 1 and gcp["gke_node"]["age_hours_max"] == 20
+    assert "as of the last sync" in _run("--fixtures", FIXTURE).stdout

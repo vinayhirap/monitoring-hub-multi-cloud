@@ -20,6 +20,8 @@ explained (resources that really are not tagged show up as "absent", not as unma
 
 With --direct the report also makes one read-only call per undecided S3 bucket / WAFv2 ACL (what
 TAG_SYNC_DIRECT_LOOKUP would do), so you can check those answers before turning that flag on.
+Azure and GCP accounts get a short section of their own: their discovery stores each resource's own tags or labels,
+so the report shows the tag_state they would get (and the age of the snapshot), without any sweep.
 Live mode does not need migration 095. It uses only columns that already exist.
 A fixtures file is JSON: {"account_name", "account_number", "rows": [{id, resource_type, resource_id, region, tags}],
 "sweeps": [{"region", "ok", "error", "items": [{"arn", "tags": {}}]}]}.
@@ -62,6 +64,69 @@ def build_report(rows, sweeps, account_number, absence_types=None, direct=None):
         "other_types_tag_state": {t: v for t, v in by_type.items() if t not in plan["types"]},
         "foreign_arns": plan["foreign_arns"], "unsupported_arns": plan["unsupported_arns"],
     }
+
+
+def build_non_aws_report(rows):
+    """Pure: Azure / GCP rows -> what tag_state they get with the tag-status feature on.
+    rows: [{account_name, provider, resource_type, tags, age_hours}] (age_hours = hours since discovery last saw it).
+    Their discovery stores the resource's own tags / labels, so no sweep is involved; only types in
+    environment_classifier.PROVIDER_TAG_TYPES are judged, every other type stays not_checked."""
+    out = {}
+    for r in rows:
+        acct = out.setdefault(r["account_name"], {"provider": r["provider"], "types": {}})
+        t = str(r["resource_type"]).lower()
+        slot = acct["types"].setdefault(t, {"rows": 0, "tag_state": {s: 0 for s in STATES},
+                                            "age_hours_min": None, "age_hours_max": None,
+                                            "judged": t in ec.PROVIDER_TAG_TYPES.get(str(r["provider"]).lower(), ())})
+        slot["rows"] += 1
+        state = ec.tag_state(t, r.get("tags"), None, r["provider"])
+        slot["tag_state"][state] = slot["tag_state"].get(state, 0) + 1
+        age = r.get("age_hours")
+        if age is not None:
+            slot["age_hours_min"] = age if slot["age_hours_min"] is None else min(slot["age_hours_min"], age)
+            slot["age_hours_max"] = age if slot["age_hours_max"] is None else max(slot["age_hours_max"], age)
+    return out
+
+
+def render_non_aws(rep):
+    out = ["", "=== Azure / GCP (no sweep: discovery stores each resource's own tags or labels) ===",
+           "Their discovery runs only at onboarding or on a manual resource sync, so these states are as of the last sync."]
+    for name in sorted(rep):
+        a = rep[name]
+        out.append("")
+        out.append(f"--- {name} ({a['provider']})")
+        out.append(f"{'type':<26}{'rows':>5}   {'snapshot age (h)':<18}tag_state")
+        for t in sorted(a["types"]):
+            x = a["types"][t]
+            age = "-" if x["age_hours_min"] is None else f"{x['age_hours_min']}-{x['age_hours_max']}"
+            dist = " ".join(f"{k}={v}" for k, v in x["tag_state"].items() if v)
+            out.append(f"{t:<26}{x['rows']:>5}   {age:<18}{dist}{'' if x['judged'] else '   (type not judged: discovery stores no real tags for it)'}")
+    return "\n".join(out)
+
+
+def _live_non_aws(account_id):
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(_ROOT, ".env"))
+    from app.db import get_connection
+    from app.collector import tag_sync
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        sql = ("SELECT aa.account_name, aa.provider, r.resource_type, r.tags, "
+               "TIMESTAMPDIFF(HOUR, r.last_seen_at, NOW()) AS age_hours "
+               "FROM resources r JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active' "
+               "WHERE aa.provider IN ('azure', 'gcp') AND (r.instance_state IS NULL OR r.instance_state != 'terminated') "
+               "AND (r.last_seen_at IS NULL OR r.last_seen_at >= DATE_SUB(NOW(), INTERVAL %s HOUR))")
+        params = [tag_sync.STALE_RESOURCE_HOURS]
+        if account_id is not None:
+            sql += " AND aa.id = %s"
+            params.append(account_id)
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+        conn.commit()
+        return rows
+    finally:
+        conn.close()
 
 
 def render(account_name, rep, show=20):
@@ -155,6 +220,11 @@ def _live(account_id, direct=False):
         yield a["account_name"], rows, sweeps, number, results
 
 
+def _fixture_non_aws(path):
+    with open(path) as f:
+        return json.load(f).get("non_aws") or []
+
+
 def _fixtures(path, direct=False):
     with open(path) as f:
         data = json.load(f)
@@ -185,6 +255,12 @@ def main(argv=None):
                 print("")
             print(render(name, rep, args.show))
             first = False
+    non_aws_rows = _fixture_non_aws(args.fixtures) if args.fixtures else _live_non_aws(args.account_id)
+    non_aws = build_non_aws_report(non_aws_rows) if non_aws_rows else {}
+    if non_aws:
+        out["_non_aws"] = non_aws
+        if not args.json:
+            print(render_non_aws(non_aws))
     if args.json:
         print(json.dumps(out, indent=2, default=str))
     else:

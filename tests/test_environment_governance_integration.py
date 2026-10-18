@@ -607,3 +607,16 @@ def test_summary_flags_recently_onboarded_accounts(gov_db):
     flags = {a["account_id"]: a["recently_onboarded"] for a in s["accounts"]}
     assert flags[1] is True and flags[2] is False
     assert [a["needs_classification"] for a in s["accounts"] if a["account_id"] == 1] == [1]
+
+
+def test_tagging_gaps_use_synced_tags_for_types_discovery_does_not_tag(gov_db, monkeypatch):
+    monkeypatch.setenv("TAG_SYNC_ENABLED", "true")
+    sync, gov = _wire()
+    full = {k: "x" for k in ("Environment", "Application", "Owner", "CostCenter", "Criticality", "DataClassification", "ManagedBy")}
+    gov_db.resource(1, "sqs", "q-full")
+    gov_db.resource(1, "sqs", "q-none")
+    gov_db.x("UPDATE resources SET synced_tags=%s, tags_synced_at=NOW() WHERE resource_id='q-full'", (json.dumps(full),))
+    gov_db.x("UPDATE resources SET synced_tags='{}', tags_synced_at=NOW() WHERE resource_id='q-none'")
+    sync.sync_resource_environments()
+    rows, _ = gov.tagging_gap_rows(None)
+    assert {r[3] for r in rows} == {"q-none"}                      # fully tagged queue is not exported as missing everything

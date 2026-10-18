@@ -271,6 +271,26 @@ TAG_SYNC_TYPES = frozenset({
 })
 
 
+# Azure and GCP discovery store each resource's OWN tags / labels straight from the list API (no index, no sweep), but
+# only for these types, verified one by one in app/providers/{azure,gcp}/discovery.py. Deliberately NOT listed:
+#   GCP gke_node, firestore_database, nat_gateway   discovery stores a {} placeholder, not real labels
+#   GCP bigquery_project                            labels are read with a hasattr() fallback to {}
+#   Azure / GCP types found by the generic Resource Graph / asset-inventory path ("other")
+# An unlisted type stays "not_checked": an empty stored value there would otherwise read as "untagged".
+AZURE_TAGGED_TYPES = frozenset({
+    "vm", "storage_account", "sql_database", "app_service", "function_app", "vmss", "aks_cluster",
+    "cosmosdb_account", "redis_cache", "service_bus_namespace", "eventhub_namespace", "load_balancer",
+    "application_gateway", "vpn_gateway", "key_vault", "container_instance", "cdn_profile", "data_factory",
+    "managed_disk",
+})
+GCP_LABELED_TYPES = frozenset({
+    "compute_instance", "gcs_bucket", "cloudsql_instance", "cloud_run_service", "gke_cluster",
+    "cloudfunctions_function", "pubsub_topic", "pubsub_subscription", "cloud_lb", "redis_instance",
+    "spanner_instance", "gce_persistent_disk",
+})
+PROVIDER_TAG_TYPES = {"azure": AZURE_TAGGED_TYPES, "gcp": GCP_LABELED_TYPES}
+
+
 def tag_sync_enabled():
     """TAG_SYNC_ENABLED gates the Tagging-API sweep and every use of its result. Default: off."""
     return os.getenv("TAG_SYNC_ENABLED", "false").strip().lower() in ("true", "1", "yes")
@@ -308,8 +328,8 @@ def effective_tags(resource_type, tags, synced=None):
     return synced if _synced_usable(resource_type, synced) else _tags_dict(tags)
 
 
-def tags_known(resource_type, tags, synced=None):
-    """True when the stored tags are the resource's own AWS tags.
+def tags_known(resource_type, tags, synced=None, provider=None):
+    """True when the stored tags are the resource's own tags / labels.
 
     An attached EBS volume is stored WITH ITS INSTANCE'S TAGS (discovery copies them on purpose
     so alerts inherit the instance's environment, plus a parent_ec2 key). Its own tags are not
@@ -317,8 +337,14 @@ def tags_known(resource_type, tags, synced=None):
 
     `synced` is the FRESH tag-sync result for the row (dict, {} = swept and absent) or None. It makes the
     row known only for TAG_SYNC_TYPES; a stale or missing result is passed as None by the caller.
+
+    `provider` is "azure" or "gcp" for rows of those clouds (None for AWS, and None for everything while the
+    tag-status feature is off): their types are known only when listed in PROVIDER_TAG_TYPES.
     """
     t = str(resource_type or "").lower()
+    p = str(provider or "").lower()
+    if p in PROVIDER_TAG_TYPES:
+        return t in PROVIDER_TAG_TYPES[p]
     if t in TAGS_COLLECTED_TYPES:
         return True
     if _synced_usable(t, synced):
@@ -328,19 +354,21 @@ def tags_known(resource_type, tags, synced=None):
     return False
 
 
-def tag_state(resource_type, tags, synced=None):
+def tag_state(resource_type, tags, synced=None, provider=None):
     """ok | nonstandard | invalid | missing | not_checked.
 
     ok          Environment tag, exactly the standard key and one of prod / uat / dev
+                (GCP labels cannot hold capitals, so there the key is `environment`)
     nonstandard understood but not to the standard (Env=Production, environment=prod, ...)
     invalid     an environment-style tag is present but its value means nothing / is ambiguous
     missing     no environment-style tag at all
     not_checked the stored tags are not this resource's own AWS tags (cannot say)
     """
-    if not tags_known(resource_type, tags, synced):
+    if not tags_known(resource_type, tags, synced, provider):
         return "not_checked"
     d = effective_tags(resource_type, tags, synced)
-    if str(d.get("Environment", "")) in TIERS:
+    key = "environment" if str(provider or "").lower() == "gcp" else "Environment"
+    if str(d.get(key, "")) in TIERS:
         return "ok"
     if not any(_fold_key(k) in TAG_KEYS for k in d):
         return "missing"
