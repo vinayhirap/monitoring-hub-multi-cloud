@@ -12,11 +12,14 @@ explained (resources that really are not tagged show up as "absent", not as unma
     /opt/monitoring-hub/venv/bin/python3 scripts/tag_sync_report.py                  # live: DB read + GetResources
     /opt/monitoring-hub/venv/bin/python3 scripts/tag_sync_report.py --account-id 7
     /opt/monitoring-hub/venv/bin/python3 scripts/tag_sync_report.py --show 50        # list more unmatched items
+    /opt/monitoring-hub/venv/bin/python3 scripts/tag_sync_report.py --direct         # + read S3 / WAFv2 tags directly
     /opt/monitoring-hub/venv/bin/python3 scripts/tag_sync_report.py --json
 
     # No AWS credentials, no database: run the same logic on a recorded sweep (also how it is tested)
     python3 scripts/tag_sync_report.py --fixtures tests/fixtures/tag_sync_report_fixture.json
 
+With --direct the report also makes one read-only call per undecided S3 bucket / WAFv2 ACL (what
+TAG_SYNC_DIRECT_LOOKUP would do), so you can check those answers before turning that flag on.
 Live mode does not need migration 095. It uses only columns that already exist.
 A fixtures file is JSON: {"account_name", "account_number", "rows": [{id, resource_type, resource_id, region, tags}],
 "sweeps": [{"region", "ok", "error", "items": [{"arn", "tags": {}}]}]}.
@@ -35,10 +38,13 @@ from app.aws import arn_match  # noqa: E402
 STATES = ("ok", "nonstandard", "invalid", "missing", "not_checked")
 
 
-def build_report(rows, sweeps, account_number, absence_types=None):
-    """Pure: rows + sweeps -> report dict (what the sync would decide, nothing applied)."""
+def build_report(rows, sweeps, account_number, absence_types=None, direct=None):
+    """Pure: rows + sweeps -> report dict (what the sync would decide, nothing applied).
+    `direct` {row id: tags | None} are direct-lookup answers (S3 / WAFv2), merged like the sync does."""
     plan = arn_match.plan_account(rows, sweeps, account_number,
                                   arn_match.ABSENCE_VERIFIED_TYPES if absence_types is None else absence_types)
+    if direct:
+        arn_match.merge_direct(plan, rows, {int(k): v for k, v in direct.items()})
     by_type = {}
     for r in rows:
         t = str(r.get("resource_type") or "").lower()
@@ -66,11 +72,11 @@ def render(account_name, rep, show=20):
     out.append(f"ARNs of types the sync does not handle (ignored): {rep['unsupported_arns']}   "
                f"ARNs of other accounts (ignored): {len(rep['foreign_arns'])}")
     out.append("")
-    out.append(f"{'type':<20}{'rows':>5}{'matched':>8}{'absent':>7}{'unknown':>8}{'badrows':>8}{'badarns':>8}   tag_state   (claims untagged?)")
+    out.append(f"{'type':<20}{'rows':>5}{'matched':>8}{'absent':>7}{'direct':>7}{'unknown':>8}{'badrows':>8}{'badarns':>8}   tag_state   (claims untagged?)")
     for t in sorted(rep["types"]):
         x = rep["types"][t]
         dist = " ".join(f"{k}={v}" for k, v in x["tag_state"].items() if v)
-        out.append(f"{t:<20}{x['rows']:>5}{x['matched']:>8}{x['absent']:>7}{x['unknown']:>8}"
+        out.append(f"{t:<20}{x['rows']:>5}{x['matched']:>8}{x['absent']:>7}{x['direct_tagged'] + x['direct_absent']:>7}{x['unknown']:>8}"
                    f"{len(x['unmatched_rows']):>8}{len(x['unmatched_arns']):>8}   {dist or '-'}   "
                    f"({'yes' if x['may_claim_untagged'] else 'never, type not verified'})")
     for t in sorted(rep["types"]):
@@ -100,7 +106,7 @@ def render(account_name, rep, show=20):
 
 
 # ---------------------------------------------------------------------------------------------
-def _live(account_id):
+def _live(account_id, direct=False):
     from dotenv import load_dotenv
     load_dotenv(os.path.join(_ROOT, ".env"))
     from app.db import get_connection
@@ -140,13 +146,20 @@ def _live(account_id):
             continue
         sweeps = [tag_sync.sweep_region(session, sp["region"], sp["filters"], sp["scope"])
                   for sp in tag_sync.sweep_plan(a, rows)]
-        yield a["account_name"], rows, sweeps, number
+        results = None
+        if direct:
+            # the same candidates the sync would look at: S3 / WAFv2 rows the sweeps could not decide (read-only calls)
+            plan = arn_match.plan_account(rows, sweeps, number)
+            cands = arn_match.direct_candidates(rows, plan, tag_sync.direct_max())
+            results, _calls = tag_sync.direct_lookup(session, a, number, cands) if cands else ({}, 0)
+        yield a["account_name"], rows, sweeps, number, results
 
 
-def _fixtures(path):
+def _fixtures(path, direct=False):
     with open(path) as f:
         data = json.load(f)
-    yield data.get("account_name", "fixture"), data["rows"], data["sweeps"], str(data["account_number"])
+    yield (data.get("account_name", "fixture"), data["rows"], data["sweeps"], str(data["account_number"]),
+           data.get("direct") if direct else None)
 
 
 def main(argv=None):
@@ -154,14 +167,18 @@ def main(argv=None):
     ap.add_argument("--fixtures", metavar="FILE", help="run on a recorded sweep: no AWS, no database")
     ap.add_argument("--account-id", type=int, default=None, help="limit to one aws_accounts.id (live mode)")
     ap.add_argument("--show", type=int, default=20, help="how many unmatched items to list per type (default 20)")
+    ap.add_argument("--direct", action="store_true",
+                    help="also read S3 bucket / WAFv2 ACL tags directly for rows the sweeps could not decide "
+                         "(GetBucketTagging, ListTagsForResource: read-only calls); fixtures mode uses the file's "
+                         '"direct" answers')
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args(argv)
 
-    source = _fixtures(args.fixtures) if args.fixtures else _live(args.account_id)
+    source = _fixtures(args.fixtures, args.direct) if args.fixtures else _live(args.account_id, args.direct)
     out = {}
     first = True
-    for name, rows, sweeps, number in source:
-        rep = build_report(rows, sweeps, number)
+    for name, rows, sweeps, number, direct in source:
+        rep = build_report(rows, sweeps, number, direct=direct)
         out[name] = rep
         if not args.json:
             if not first:

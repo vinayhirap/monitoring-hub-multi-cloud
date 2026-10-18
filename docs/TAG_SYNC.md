@@ -47,6 +47,27 @@ only) and WAFv2 (no WAF ARN has appeared in any PROD sweep yet, so the ACL-name 
 To promote one, run the report, confirm zero unexplained unmatched rows and ARNs, then add the type to
 `ABSENCE_VERIFIED_TYPES` in a reviewed change. It cannot be switched on by an environment setting.
 
+## Direct lookups for what the sweep cannot decide (`TAG_SYNC_DIRECT_LOOKUP`, off by default)
+
+The Tagging-API index cannot prove that an S3 bucket or a WAFv2 ACL is untagged (absence from the index proves
+nothing), so those rows stay `not_checked`. With this flag on, each sweep also reads the tags of just those undecided
+rows directly, one call each:
+
+| Type | Call | Proven result |
+|---|---|---|
+| S3 | `GetBucketTagging` in the bucket's own region | A tag set means tagged; error `NoSuchTagSet` means **untagged**. |
+| WAFv2 | `ListTagsForResource` on the regional ACL's ARN (needs the `acl_id` discovery stored) | A tag list means tagged; an empty list means **untagged**. |
+
+Any other outcome (AccessDenied, a region redirect, throttling after retries, a deleted resource, a missing `acl_id`)
+leaves the row undecided, exactly as before. Rows the sweep already decided are never looked up, and a direct answer
+never overrides a sweep result. At most `TAG_SYNC_DIRECT_MAX` rows per account per sweep. Cost on PROD today: about 17
+buckets plus 2 ACLs = 19 calls per sweep, 19 x 24 = about 460 calls a day. This is a deliberate exception to the
+"one paginated call per region" design: it is bounded, read-only, and only for rows nothing else can decide.
+
+Permissions: `s3:GetBucketTagging` and `wafv2:ListTagsForResource`. The managed `ReadOnlyAccess` policy should include
+both; this has not been confirmed against a live account, so run `scripts/tag_sync_report.py --direct` on PROD first. It
+makes the same calls read-only and prints what the sync would store.
+
 ## Where the tags live, and why no merge into `resources.tags`
 
 `resources.synced_tags` (JSON) and `resources.tags_synced_at` (migration 095). `{}` means "the sweep completed and the
@@ -67,6 +88,8 @@ Tags starting `aws:` (CloudFormation and similar system tags) are dropped.
 | `TAG_SYNC_ABSENCE_TYPES` | unset = all verified types | Can only **narrow** the list: `none`, or `logs,kms`. It cannot add a type. |
 | `TAG_SYNC_MAX_AGE_HOURS` | 6 | How long a stored result is trusted. |
 | `TAG_SYNC_INTERVAL_MINUTES` | 60 (minimum 5) | How often the discovery hook sweeps. |
+| `TAG_SYNC_DIRECT_LOOKUP` | off | For S3 buckets and WAFv2 ACLs the sweep could not decide, read their tags directly (see below). Needs `TAG_SYNC_ENABLED`. |
+| `TAG_SYNC_DIRECT_MAX` | 100 | Most direct lookups per account per sweep. |
 | `TAG_SYNC_FEED_ENVIRONMENT` | off | Also lets an `Environment` tag found by the sync decide the resource's environment (source `tag`). **This changes alert strength** (a bucket tagged `dev` becomes dev) and is off on purpose; turn it on separately, later. |
 
 ## AWS call volume

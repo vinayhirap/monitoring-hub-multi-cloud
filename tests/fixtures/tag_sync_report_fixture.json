@@ -79,6 +79,15 @@
    "tags": {
     "Name": "web-prod-1"
    }
+  },
+  {
+   "id": 11,
+   "resource_type": "wafv2",
+   "resource_id": "web-acl-prod",
+   "region": "ap-south-1",
+   "tags": {
+    "acl_id": "a1b2c3d4-1111-2222-3333-444455556666"
+   }
   }
  ],
  "sweeps": [
@@ -140,5 +149,11 @@
    ],
    "scope": "global"
   }
- ]
+ ],
+ "direct": {
+  "8": {},
+  "11": {
+   "Environment": "prod"
+  }
+ }
 }

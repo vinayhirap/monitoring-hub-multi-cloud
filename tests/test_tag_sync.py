@@ -411,3 +411,133 @@ def test_a_non_filter_error_is_not_retried():
     ts = load_module("app/collector/tag_sync.py")
     out = ts.sweep_region(FakeSession([_page()], fail_after=0), REG, ["s3"], "global")
     assert out["ok"] is False and out["items"] == []
+
+
+# ---------------------------------------------------------------- direct lookups
+class ClientError(Exception):
+    def __init__(self, code):
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
+
+
+class DirectSession:
+    def __init__(self, s3=None, waf=None):
+        self.s3, self.waf, self.calls, self.regions = s3 or {}, waf or {}, [], []
+
+    def client(self, name, region_name=None, config=None):
+        sess = self
+        sess.regions.append((name, region_name))
+
+        class C:
+            def get_bucket_tagging(self, Bucket):
+                sess.calls.append(("s3", Bucket))
+                v = sess.s3[Bucket]
+                if isinstance(v, Exception):
+                    raise v
+                return {"TagSet": [{"Key": k, "Value": x} for k, x in v.items()]}
+
+            def list_tags_for_resource(self, ResourceARN):
+                sess.calls.append(("waf", ResourceARN))
+                v = sess.waf[ResourceARN]
+                if isinstance(v, Exception):
+                    raise v
+                return {"TagInfoForResource": {"ResourceARN": ResourceARN,
+                                               "TagList": [{"Key": k, "Value": x} for k, x in v.items()]}}
+        return C()
+
+
+WAF_ARN = f"arn:aws:wafv2:{REG}:{ACCT}:regional/webacl/acl1/id-1"
+
+
+def _drow(pk, rtype, rid, region=REG, tags=None):
+    return {"id": pk, "resource_type": rtype, "resource_id": rid, "region": region, "tags": tags or {}}
+
+
+def test_direct_lookup_reads_s3_and_waf_and_classifies_every_outcome():
+    ts = load_module("app/collector/tag_sync.py")
+    sess = DirectSession(
+        s3={"tagged": {"Owner": "a"}, "plain": ClientError("NoSuchTagSet"), "denied": ClientError("AccessDenied"),
+            "moved": ClientError("PermanentRedirect")},
+        waf={WAF_ARN: {}})
+    rows = [_drow(1, "s3", "tagged", "ap-south-2"), _drow(2, "s3", "plain", "ap-south-2"),
+            _drow(3, "s3", "denied", "ap-south-2"), _drow(4, "s3", "moved", "ap-south-1"),
+            _drow(5, "wafv2", "acl1", REG, {"acl_id": "id-1"}), _drow(6, "wafv2", "acl2", REG),
+            _drow(7, "s3", "nowhere", "global")]
+    results, calls = ts.direct_lookup(sess, {"id": 1, "account_name": "A"}, ACCT, rows)
+    assert results == {1: {"Owner": "a"}, 2: {}, 3: None, 4: None, 5: {}, 6: None, 7: None}
+    assert calls == 5                                         # rows 6 and 7 could not even be asked
+    assert ("s3", "ap-south-2") in sess.regions               # the bucket's own region, not the account's
+
+
+def test_waf_error_leaves_the_row_undecided():
+    ts = load_module("app/collector/tag_sync.py")
+    sess = DirectSession(waf={WAF_ARN: ClientError("WAFNonexistentItemException")})
+    results, _ = ts.direct_lookup(sess, {"id": 1}, ACCT, [_drow(1, "wafv2", "acl1", REG, {"acl_id": "id-1"})])
+    assert results == {1: None}
+
+
+def test_direct_flag_defaults_off_and_needs_the_main_flag(monkeypatch):
+    ts = load_module("app/collector/tag_sync.py")
+    monkeypatch.delenv("TAG_SYNC_ENABLED", raising=False)
+    monkeypatch.delenv("TAG_SYNC_DIRECT_LOOKUP", raising=False)
+    assert not ts.direct_enabled()
+    monkeypatch.setenv("TAG_SYNC_DIRECT_LOOKUP", "true")
+    assert not ts.direct_enabled()
+    monkeypatch.setenv("TAG_SYNC_ENABLED", "true")
+    assert ts.direct_enabled()
+    monkeypatch.delenv("TAG_SYNC_DIRECT_MAX", raising=False)
+    assert ts.direct_max() == 100
+    monkeypatch.setenv("TAG_SYNC_DIRECT_MAX", "7")
+    assert ts.direct_max() == 7
+
+
+def _looker(results, seen):
+    def f(account, rows):
+        seen.append([r["id"] for r in rows])
+        return results, len(rows)
+    return f
+
+
+def test_run_sync_with_direct_off_never_looks(monkeypatch):
+    db = FakeDB([_db_row(1, "s3", "ghost", region="ap-south-2")])
+    ts = _load_sync(monkeypatch, db)
+    monkeypatch.delenv("TAG_SYNC_DIRECT_LOOKUP", raising=False)
+    seen = []
+    ts.run_tag_sync(sweeper=_sweeper([("arn:aws:states:r:a:stateMachine:x", {})]), looker=_looker({1: {}}, seen))
+    assert seen == [] and db.updates == []
+
+
+def test_run_sync_with_direct_on_stores_proven_answers_for_undecided_rows_only(monkeypatch):
+    db = FakeDB([_db_row(1, "s3", "ghost", region="ap-south-2"), _db_row(2, "s3", "tagged", region="ap-south-1"),
+                 _db_row(3, "s3", "unreadable", region="ap-south-2"), _db_row(4, "sqs", "orders")])
+    ts = _load_sync(monkeypatch, db)
+    monkeypatch.setenv("TAG_SYNC_DIRECT_LOOKUP", "true")
+    seen = []
+    rep = ts.run_tag_sync(sweeper=_sweeper([("arn:aws:s3:::tagged", {"Owner": "a"}),
+                                              (f"arn:aws:sqs:{REG}:{ACCT}:orders", {"k": "v"})]),
+                          looker=_looker({1: {}, 3: None}, seen))
+    assert seen == [[1, 3]]                                    # the tagged bucket and the queue were decided by the sweep
+    stored = {pk: v for v, pk in db.updates}
+    assert stored[1] == "{}" and stored[2] == '{"Owner":"a"}' and 3 not in stored
+    assert rep["accounts"]["AuroGov"]["direct_calls"] == 2 and rep["calls"] >= 2
+
+
+def test_a_failing_looker_does_not_break_the_sweep_results(monkeypatch):
+    db = FakeDB([_db_row(1, "s3", "ghost", region="ap-south-2"), _db_row(4, "sqs", "orders")])
+    ts = _load_sync(monkeypatch, db)
+    monkeypatch.setenv("TAG_SYNC_DIRECT_LOOKUP", "true")
+
+    def boom(account, rows):
+        raise RuntimeError("s3 down")
+    ts.run_tag_sync(sweeper=_sweeper([(f"arn:aws:sqs:{REG}:{ACCT}:orders", {"k": "v"})]), looker=boom)
+    assert {pk for _, pk in db.updates} == {4}
+
+
+def test_direct_max_caps_the_lookups_per_account(monkeypatch):
+    db = FakeDB([_db_row(i, "s3", f"b{i}", region="ap-south-2") for i in range(1, 6)])
+    ts = _load_sync(monkeypatch, db)
+    monkeypatch.setenv("TAG_SYNC_DIRECT_LOOKUP", "true")
+    monkeypatch.setenv("TAG_SYNC_DIRECT_MAX", "2")
+    seen = []
+    ts.run_tag_sync(sweeper=_sweeper([("arn:aws:states:r:a:stateMachine:x", {})]), looker=_looker({}, seen))
+    assert seen == [[1, 2]]

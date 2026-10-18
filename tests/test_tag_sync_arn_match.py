@@ -254,3 +254,43 @@ def test_s3_stays_unknown_when_absent_even_with_filtered_sweeps_of_its_region():
 def test_unknown_scope_speaks_for_nothing():
     out = plan([row("sqs", "q1", REG)], [dict(sweep([(f"arn:aws:sqs:{REG}:{ACCT}:q1", {"a": "b"})]), scope="weird")])
     assert out["decisions"] == {}
+
+
+# ---- direct lookups: waf_acl_arn, direct_candidates, merge_direct
+def test_waf_acl_arn_is_built_only_from_a_complete_row():
+    ok = row("wafv2", "web-acl-prod", REG, tags={"acl_id": "a1b2c3d4-1111-2222-3333-444455556666"})
+    assert am.waf_acl_arn(ok, ACCT) == CASES["wafv2"][2]
+    assert am.waf_acl_arn(row("wafv2", "web-acl-prod", REG), ACCT) is None                          # no stored acl_id
+    assert am.waf_acl_arn(row("wafv2", "web-acl-prod", "global", tags={"acl_id": "x"}), ACCT) is None
+    assert am.waf_acl_arn(row("wafv2", "a/b", REG, tags={"acl_id": "x"}), ACCT) is None             # malformed name
+    assert am.waf_acl_arn(ok, "") is None
+
+
+def test_direct_candidates_are_undecided_s3_and_waf_rows_only_in_id_order():
+    rows = [row("s3", "tagged", "ap-south-1", pk=5), row("s3", "ghost", "ap-south-2", pk=3),
+            row("wafv2", "acl", REG, pk=4), row("sqs", "q", REG, pk=1), row("logs", "/l", REG, pk=2)]
+    out = plan(rows, [sweep([(FILLER, {}), ("arn:aws:s3:::tagged", {"Owner": "a"})])])
+    assert [r["id"] for r in am.direct_candidates(rows, out)] == [3, 4]
+    assert [r["id"] for r in am.direct_candidates(rows, out, limit=1)] == [3]
+
+
+def test_merge_direct_turns_proven_answers_into_decisions_and_leaves_unknowns_alone():
+    rows = [row("s3", "untagged", "ap-south-2", pk=1), row("s3", "tagged", "ap-south-2", pk=2),
+            row("s3", "unreadable", "ap-south-2", pk=3)]
+    out = plan(rows, [sweep([(FILLER, {})])])
+    assert out["types"]["s3"]["unknown"] == 3
+    am.merge_direct(out, rows, {1: {}, 2: {"Environment": "dev", "aws:x": "y"}, 3: None})
+    assert out["decisions"][1].status == "absent" and out["decisions"][1].tags == {}
+    assert out["decisions"][2].status == "tagged" and out["decisions"][2].tags == {"Environment": "dev"}
+    assert 3 not in out["decisions"]
+    s = out["types"]["s3"]
+    assert (s["direct_absent"], s["direct_tagged"], s["unknown"]) == (1, 1, 1)
+    assert [x[0] for x in s["unmatched_rows"]] == [3]
+
+
+def test_merge_direct_never_overrides_a_sweep_decision_or_touches_other_types():
+    rows = [row("s3", "b", "ap-south-1", pk=1), row("dms", "task-1", REG, pk=2)]
+    out = plan(rows, [sweep([("arn:aws:s3:::b", {"Owner": "a"}), (FILLER, {})])])
+    am.merge_direct(out, rows, {1: {}, 2: {}})
+    assert out["decisions"][1].status == "tagged" and out["decisions"][1].tags == {"Owner": "a"}
+    assert 2 not in out["decisions"]

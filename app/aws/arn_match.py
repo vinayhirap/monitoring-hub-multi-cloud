@@ -66,6 +66,11 @@ SCOPE_TYPES = {"full": None, "global": frozenset({"s3", "cloudfront"}), "s3": fr
 
 assert ABSENCE_VERIFIED_TYPES <= SYNC_TYPES
 
+# Types whose tags can be read AUTHORITATIVELY, one resource at a time, when a sweep cannot decide a row
+# (TAG_SYNC_DIRECT_LOOKUP, default off): S3 GetBucketTagging answers "NoSuchTagSet" for an untagged bucket and
+# WAFv2 ListTagsForResource returns an empty list. Used only for rows the sweep left undecided.
+DIRECT_TYPES = frozenset({"s3", "wafv2"})
+
 
 def parse_arn(arn):
     """'arn:aws:sqs:ap-south-1:123456789012:q' -> Arn(...) or None. Never raises."""
@@ -232,6 +237,7 @@ def plan_account(rows, sweeps, account_number, absence_types=ABSENCE_VERIFIED_TY
 
     def st(t):
         return stats.setdefault(t, {"rows": 0, "matched": 0, "absent": 0, "unknown": 0,
+                                    "direct_tagged": 0, "direct_absent": 0,
                                     "unmatched_rows": [], "unmatched_arns": [],
                                     "ambiguous": [], "absence_blocked": []})
 
@@ -337,6 +343,56 @@ def plan_account(rows, sweeps, account_number, absence_types=ABSENCE_VERIFIED_TY
             if e[0] not in matched_arns:
                 st(key.rtype)["unmatched_arns"].append(e[0])
     return {"decisions": decisions, "types": stats, "foreign_arns": foreign, "unsupported_arns": unsupported}
+
+
+clean_tags = _clean_tags
+
+
+def waf_acl_arn(row, account_number):
+    """ARN of a REGIONAL WAFv2 web ACL row (resource_id = ACL name, tags.acl_id = its id), or None when anything
+    needed is missing or malformed. Nothing is guessed: no stored acl_id, no lookup."""
+    name, acl_id, region = row.get("resource_id"), _tags_acl_id(row.get("tags")), str(row.get("region") or "")
+    if not (name and acl_id and account_number) or not region or region == "global":
+        return None
+    for part in (str(name), str(acl_id), region, str(account_number)):
+        if not part or "/" in part or ":" in part or " " in part:
+            return None
+    return f"arn:aws:wafv2:{region}:{account_number}:regional/webacl/{name}/{acl_id}"
+
+
+def direct_candidates(rows, plan, limit=None):
+    """Rows of DIRECT_TYPES the sweep left without a decision, in id order."""
+    out = [r for r in sorted(rows, key=lambda r: r["id"])
+           if str(r.get("resource_type") or "").lower() in DIRECT_TYPES and r["id"] not in plan["decisions"]]
+    return out if limit is None else out[:limit]
+
+
+def merge_direct(plan, rows, results):
+    """Fold direct-lookup results into a plan_account() result (in place, returned).
+    results {row id: dict of tags | None}: a dict is an AUTHORITATIVE answer ({} = the resource has no tags),
+    None means the lookup could not tell (error, access denied, wrong region) and the row stays undecided.
+    Only rows the sweep left undecided are considered, and only DIRECT_TYPES."""
+    by_id = {r["id"]: r for r in rows}
+    for rid, tags in (results or {}).items():
+        r = by_id.get(rid)
+        if r is None or tags is None or rid in plan["decisions"]:
+            continue
+        t = str(r.get("resource_type") or "").lower()
+        if t not in DIRECT_TYPES:
+            continue
+        s = plan["types"].setdefault(t, {"rows": 0, "matched": 0, "absent": 0, "unknown": 0, "direct_tagged": 0,
+                                         "direct_absent": 0, "unmatched_rows": [], "unmatched_arns": [],
+                                         "ambiguous": [], "absence_blocked": []})
+        clean = _clean_tags(tags)
+        if clean:
+            plan["decisions"][rid] = Decision("tagged", clean, "direct lookup")
+            s["direct_tagged"] += 1
+        else:
+            plan["decisions"][rid] = Decision("absent", {}, "direct lookup: the resource has no tags")
+            s["direct_absent"] += 1
+        s["unknown"] = max(0, s["unknown"] - 1)
+        s["unmatched_rows"] = [x for x in s["unmatched_rows"] if x[0] != rid]
+    return plan
 
 
 def _tags_acl_id(tags):

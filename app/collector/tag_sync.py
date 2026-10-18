@@ -55,6 +55,22 @@ def max_age_hours():
         return DEFAULT_MAX_AGE_HOURS
 
 
+def direct_enabled():
+    """TAG_SYNC_DIRECT_LOOKUP (needs TAG_SYNC_ENABLED, default off): for S3 buckets and WAFv2 ACLs the sweep could
+    not decide, read their tags directly (GetBucketTagging / ListTagsForResource), one call per such resource per
+    sweep. Gives an authoritative tagged / untagged answer where the Tagging-API index cannot."""
+    return enabled() and os.getenv("TAG_SYNC_DIRECT_LOOKUP", "false").strip().lower() in ("true", "1", "yes")
+
+
+def direct_max():
+    """TAG_SYNC_DIRECT_MAX (default 100): most direct lookups per account per sweep."""
+    try:
+        v = int(os.getenv("TAG_SYNC_DIRECT_MAX", "100"))
+        return v if v > 0 else 100
+    except ValueError:
+        return 100
+
+
 def interval_minutes():
     """TAG_SYNC_INTERVAL_MINUTES (default 60, minimum 5): how often the discovery hook actually sweeps."""
     try:
@@ -145,6 +161,72 @@ def sweep_region(session, region, filters=None, scope="full"):
         out["error"] = e
         out["items"] = []
     return out
+
+
+def _client_error_code(e):
+    resp = getattr(e, "response", None)
+    return ((resp or {}).get("Error") or {}).get("Code") if isinstance(resp, dict) else None
+
+
+def _log_lookup_failure(account, what, e):
+    code = _client_error_code(e) or type(e).__name__
+    key = (account.get("id"), what, code)
+    now = time.time()
+    if now - _last_error_log.get(key, 0) < _ERROR_LOG_INTERVAL:
+        return
+    _last_error_log[key] = now
+    logger.warning(f"[tag-sync] {account.get('account_name')}: direct {what} lookup failed ({code}: {e}); "
+                   f"those resources stay undecided (logged once per day)")
+
+
+def direct_lookup(session, account, account_number, rows):
+    """Authoritative tags for S3 buckets and WAFv2 ACLs, one call each. -> ({row id: tags dict | None}, calls).
+    A dict is a proven answer (S3 'NoSuchTagSet' and an empty WAF tag list both mean {}); None means unknown --
+    any other error (AccessDenied, wrong region redirect, throttling after retries, a deleted resource). Never raises."""
+    from app.aws.boto_config import STANDARD_RETRY
+    results, calls, clients = {}, 0, {}
+
+    def client(service, region):
+        k = (service, region)
+        if k not in clients:
+            clients[k] = session.client(service, region_name=region, config=STANDARD_RETRY)
+        return clients[k]
+
+    for r in rows:
+        rid, rtype = r["id"], str(r.get("resource_type") or "").lower()
+        try:
+            if rtype == "s3":
+                region = str(r.get("region") or "")
+                if not region or region == "global" or not r.get("resource_id"):
+                    results[rid] = None
+                    continue
+                calls += 1
+                try:
+                    resp = client("s3", region).get_bucket_tagging(Bucket=str(r["resource_id"]))
+                    results[rid] = {t["Key"]: t.get("Value", "") for t in resp.get("TagSet", []) if t.get("Key")}
+                except Exception as e:
+                    if _client_error_code(e) == "NoSuchTagSet":
+                        results[rid] = {}
+                    else:
+                        results[rid] = None
+                        _log_lookup_failure(account, "S3 GetBucketTagging", e)
+            elif rtype == "wafv2":
+                arn = arn_match.waf_acl_arn(r, account_number)
+                if arn is None:
+                    results[rid] = None
+                    continue
+                calls += 1
+                try:
+                    resp = client("wafv2", str(r.get("region"))).list_tags_for_resource(ResourceARN=arn)
+                    tag_list = (resp.get("TagInfoForResource") or {}).get("TagList") or []
+                    results[rid] = {t["Key"]: t.get("Value", "") for t in tag_list if t.get("Key")}
+                except Exception as e:
+                    results[rid] = None
+                    _log_lookup_failure(account, "WAFv2 ListTagsForResource", e)
+        except Exception as e:                     # belt and braces: one resource can never break the sync
+            results[rid] = None
+            _log_lookup_failure(account, "direct", e)
+    return results, calls
 
 
 def _error_code(e):
@@ -245,11 +327,12 @@ def _get_session(account):
     return _get_session(account)
 
 
-def run_tag_sync(account_ids=None, dry_run=False, sweeper=None):
+def run_tag_sync(account_ids=None, dry_run=False, sweeper=None, looker=None):
     """Sweep, match, store. Returns a report dict; never raises.
         {"accounts": {account name: {"regions": {...}, "types": {...}, "written": n}}, "calls": pages,
          "written": n, "skipped": reason|None}
-    `sweeper(account, spec) -> sweep dict` replaces the AWS call (tests); spec is a sweep_plan() entry."""
+    `sweeper(account, spec) -> sweep dict` replaces the AWS call (tests); spec is a sweep_plan() entry.
+    `looker(account, rows) -> ({row id: tags | None}, calls)` replaces direct_lookup (tests)."""
     from app.db import get_connection
     report = {"accounts": {}, "calls": 0, "written": 0, "skipped": None, "dry_run": bool(dry_run)}
     try:
@@ -280,8 +363,9 @@ def run_tag_sync(account_ids=None, dry_run=False, sweeper=None):
                 report["accounts"][name] = {"regions": {}, "types": {}, "written": 0}
                 continue
 
-            session = None if sweeper else _get_session(account)
-            if sweeper is None and session is None:
+            need_session = sweeper is None or (direct_enabled() and looker is None)
+            session = _get_session(account) if need_session else None
+            if need_session and session is None:
                 report["accounts"][name] = {"skipped": "no session"}
                 continue
             sweeps = []
@@ -295,6 +379,17 @@ def run_tag_sync(account_ids=None, dry_run=False, sweeper=None):
                 sweeps.append(sw)
 
             plan = arn_match.plan_account(rows, sweeps, number, absence_types())
+            direct_calls = 0
+            if direct_enabled():
+                cands = arn_match.direct_candidates(rows, plan, direct_max())
+                if cands:
+                    try:
+                        results, direct_calls = (looker(account, cands) if looker
+                                                 else direct_lookup(session, account, number, cands))
+                        arn_match.merge_direct(plan, rows, results)
+                    except Exception as e:
+                        logger.warning(f"[tag-sync] {name}: direct lookups failed (non-fatal): {e}")
+                    report["calls"] += direct_calls
             writes = writes_for(rows, plan["decisions"])
             written = 0
             if writes and not dry_run:
@@ -316,7 +411,7 @@ def run_tag_sync(account_ids=None, dry_run=False, sweeper=None):
                 "regions": {f"{s['region']}/{s.get('scope', 'full')}": {
                     "ok": bool(s.get("ok")), "resources": len(s.get("items") or []), "pages": s.get("pages", 0)}
                     for s in sweeps},
-                "types": plan["types"], "written": written,
+                "types": plan["types"], "written": written, "direct_calls": direct_calls,
             }
         except Exception as e:
             try:

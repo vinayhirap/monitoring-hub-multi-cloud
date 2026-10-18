@@ -40,3 +40,12 @@ def test_script_contains_no_write_statements():
     code = re.sub(r'""".*?"""', "", src, flags=re.S)
     assert not re.search(r"\b(INSERT|UPDATE|DELETE|REPLACE|ALTER|DROP|TRUNCATE)\b", code)
     assert "executemany" not in code and "tag_resources" not in code and "untag_resources" not in code
+
+
+def test_direct_answers_are_applied_only_with_the_flag():
+    plain = json.loads(_run("--fixtures", FIXTURE, "--json").stdout)["AuroGov (fixture)"]["types"]
+    withd = json.loads(_run("--fixtures", FIXTURE, "--direct", "--json").stdout)["AuroGov (fixture)"]["types"]
+    assert plain["s3"]["tag_state"].get("not_checked") == 1 and plain["wafv2"]["tag_state"].get("not_checked") == 1
+    assert withd["s3"]["direct_absent"] == 1 and withd["s3"]["tag_state"].get("not_checked", 0) == 0
+    assert withd["s3"]["tag_state"]["missing"] == 1 + plain["s3"]["tag_state"].get("missing", 0)
+    assert withd["wafv2"]["direct_tagged"] == 1 and withd["wafv2"]["tag_state"] == {"ok": 1, "nonstandard": 0, "invalid": 0, "missing": 0, "not_checked": 0}

@@ -136,3 +136,53 @@ def test_environment_tag_feeds_classification_only_with_its_own_flag(db, monkeyp
     _classify()
     r = db.one("SELECT env_resolved, env_source FROM resources WHERE resource_id='orders'")
     assert (r["env_resolved"], r["env_source"]) == ("dev", "tag")
+
+
+def _sync_direct(monkeypatch, items, looker, direct_on=True):
+    monkeypatch.setenv("TAG_SYNC_ENABLED", "true")
+    if direct_on:
+        monkeypatch.setenv("TAG_SYNC_DIRECT_LOOKUP", "true")
+    else:
+        monkeypatch.delenv("TAG_SYNC_DIRECT_LOOKUP", raising=False)
+    install_stub("app.db", get_connection=_connect)
+    ts = load_module("app/collector/tag_sync.py")
+
+    def accounts():
+        c = _connect()
+        try:
+            cur = c.cursor(dictionary=True)
+            cur.execute("SELECT id, account_name, account_id, default_region FROM aws_accounts WHERE id = 2")
+            return cur.fetchall()
+        finally:
+            c.close()
+    ts._get_accounts = accounts
+    ts._get_session = lambda a: object()
+    sweeper = lambda account, spec: {"region": spec["region"], "scope": spec["scope"], "ok": True, "pages": 1,
+                                     "items": [{"arn": a, "tags": t} for a, t in items]}
+    return ts.run_tag_sync(sweeper=sweeper, looker=looker)
+
+
+def test_direct_lookup_proves_an_untagged_bucket_and_flag_off_does_not(db, monkeypatch):
+    _setup(db)
+    db.x("UPDATE resources SET region='ap-south-2' WHERE aws_account_id=2 AND resource_id='bucket-a'")
+    asked = []
+
+    def looker(account, rows):
+        asked.append([r["resource_id"] for r in rows])
+        return {r["id"]: {} for r in rows}, len(rows)
+
+    _sync_direct(monkeypatch, ARNS, looker, direct_on=False)
+    _classify()
+    assert asked == [] and _row(db, "bucket-a")["tag_state"] == "not_checked"
+
+    _sync_direct(monkeypatch, ARNS, looker, direct_on=True)
+    assert asked == [["bucket-a"]]                    # only the undecided S3 row; the queues and the key were decided
+    _classify()
+    assert json.loads(_row(db, "bucket-a")["synced_tags"]) == {} and _row(db, "bucket-a")["tag_state"] == "missing"
+
+
+def test_an_undecided_direct_lookup_leaves_the_bucket_not_checked(db, monkeypatch):
+    _setup(db)
+    _sync_direct(monkeypatch, ARNS, lambda account, rows: ({r["id"]: None for r in rows}, len(rows)))
+    _classify()
+    assert _row(db, "bucket-a")["tag_state"] == "not_checked" and _row(db, "bucket-a")["synced_tags"] is None
