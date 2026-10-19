@@ -351,17 +351,53 @@ STATIC_ONLY_METRIC_PREFIXES = (
     "numberofnotificationsfailed",
     "errorportallocation",
     "freestorage",
+    # Audit A6 (2026-10-19) -- cert-expiry alerts were still tagged "Auto-tuning / likely noise" in the UI
+    # (the flapping query only excluded disk/mem), and the A5 list above covered little of the catalog.
+    # Same rule for every cloud: the absolute value IS the signal.
+    #   expiry / countdown (a countdown has a huge baseline stddev, so it always LOOKS like noise):
+    "secondsuntil",                                    # KMS SecondsUntilKeyMaterialExpiration
+    #   state / health / availability (0 or "red" is the incident, not a new normal):
+    "healthcheckstatus",                               # Route53, Azure App Service
+    "clusterstatus",                                   # OpenSearch ClusterStatus.green/yellow/red
+    "tunnelstate", "connectionstate",                  # VPN tunnel, Direct Connect
+    "groupinserviceinstances",                         # Auto Scaling group in-service count
+    #   capacity / credit / saturation meters against a hard ceiling:
+    "freeablememory", "burstbalance", "burstcreditbalance",
+    "cpucreditbalance", "cpusurpluscreditbalance",
+    "percentagediskspaceused", "kafkadatalogsdiskused",
+    "databasememoryusagepercentage", "jvmmemorypressure", "memoryutilization",
+    "percentiolimit", "volumethroughputpercentage",
+    #   failure counters where any non-zero reading is a defect:
+    "executionsfailed", "executionstimedout", "failedinvocations",
+    "offlinepartitionscount", "underreplicatedpartitions", "clusterindexwritesblocked",
+    "cluster_failed_node_count", "deadlettererrors", "deliveryerrors", "deliverytos3.success",
+    "pipelinefailedruns", "activityfailedruns",
 )
+
+# Exact (lower-cased) names for Azure / GCP metrics whose names are too short or generic to match by prefix
+# (e.g. GCP "up", Azure "Availability"). Same rule as above: state / availability, capacity %, saturation.
+STATIC_ONLY_METRIC_NAMES = frozenset({
+    # Azure
+    "vm availability metric", "cpu credits remaining", "availability", "vipavailability", "dipavailability",
+    "storage_percent", "dtu_consumption_percent", "normalizedruconsumption", "usedmemorypercentage",
+    "node_disk_usage_percentage", "node_memory_working_set_percentage",
+    "kube_pod_status_phase", "kube_node_status_condition", "saturationshoebox",
+    # GCP
+    "uptime", "up", "replication/role",
+    "disk/utilization", "memory/utilization", "memory/utilizations",
+    "memory/limit_utilization", "memory/allocatable_utilization", "stats/memory/usage_ratio",
+    "nat_allocation_failed", "port_usage",
+})
 
 
 def is_static_only_metric(metric_name):
     """True when a metric must never use a learned/dynamic band: capacity
-    percentages (disk/mem used %) plus availability and absolute-limit
-    metrics (see STATIC_ONLY_METRIC_PREFIXES)."""
+    percentages (disk/mem used %) plus availability, expiry and absolute-limit
+    metrics on every cloud (see STATIC_ONLY_METRIC_PREFIXES / _NAMES)."""
     if is_capacity_percent_metric(metric_name):
         return True
     name = (metric_name or "").lower()
-    return any(name.startswith(prefix) for prefix in STATIC_ONLY_METRIC_PREFIXES)
+    return name in STATIC_ONLY_METRIC_NAMES or any(name.startswith(prefix) for prefix in STATIC_ONLY_METRIC_PREFIXES)
 
 
 # Used when a metric_name has no explicit entry above (e.g. a "directory"

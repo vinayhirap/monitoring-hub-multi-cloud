@@ -269,7 +269,7 @@ def likely_flapping_alert_ids(aws_account_ids=None) -> list:
 
         from app import alert_rules
         cursor.execute(f"""
-            SELECT DISTINCT a.id AS alert_id
+            SELECT DISTINCT a.id AS alert_id, a.metric_name AS metric_name
             FROM alerts a
             JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
             JOIN aws_accounts acc ON acc.id = a.aws_account_id AND acc.status = 'active'
@@ -298,7 +298,12 @@ def likely_flapping_alert_ids(aws_account_ids=None) -> list:
                     AND (b.typical_value - COALESCE(t.dynamic_k, %s) * b.typical_stddev) < t.warning_value)
               )
         """, [MIN_CONFIDENT_SAMPLES] + params + [NOISE_K, NOISE_K])
-        return [int(r["alert_id"]) for r in cursor.fetchall()]
+        # Static-only metrics (cert expiry, availability, capacity, ...) are never "noise": the value is the
+        # signal and the tuner will never switch them. A countdown such as DaysToExpiry has a huge baseline
+        # stddev, so the SQL above mistakes it for flapping -- drop them here, one definition shared with
+        # the tuner, the evaluator and the settings API (threshold_defaults.is_static_only_metric).
+        return [int(r["alert_id"]) for r in cursor.fetchall()
+                if not is_static_only_metric(r.get("metric_name"))]
     finally:
         cursor.close()
         conn.close()

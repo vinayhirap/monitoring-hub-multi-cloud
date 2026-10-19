@@ -431,3 +431,43 @@ def test_flapping_count_query_excludes_capacity_metrics():
     mod.count_likely_flapping_alerts()
     assert "a.metric_name <> 'mem_used_percent'" in seen[0]
     assert "LEFT(a.metric_name, 17) <> 'disk_used_percent'" in seen[0]
+
+
+# ── Audit A6: the "Auto-tuning" tag/tab must never list static-only metrics (cert expiry screenshot) ──
+
+def _flapping_rows_install(rows):
+    class _Cursor(FakeCursor):
+        def execute(self, sql, params=None):
+            self._pending = list(rows)
+
+    class _Conn(FakeConn):
+        def cursor(self, dictionary=True):
+            return _Cursor([])
+
+    install_stub("app.db", get_connection=lambda: _Conn([]))
+    return load_module("app/collector/threshold_tuning.py")
+
+
+def test_flapping_ids_drop_certificate_expiry_and_other_static_only_metrics():
+    # DaysToExpiry counts down (40 -> 26 days), so its baseline stddev is big and the SQL's
+    # "mean + k*stddev crosses the line" test matches it. It is not noise: it must not be listed.
+    mod = _flapping_rows_install([
+        {"alert_id": 1, "metric_name": "daystoexpiry"},
+        {"alert_id": 2, "metric_name": "networkout"},
+        {"alert_id": 3, "metric_name": "secondsuntilkeymaterialexpiration"},
+        {"alert_id": 4, "metric_name": "freeablememory"},
+        {"alert_id": 5, "metric_name": "up"},
+        {"alert_id": 6, "metric_name": "percentage cpu"},
+    ])
+    assert mod.likely_flapping_alert_ids() == [2, 6]
+    assert mod.count_likely_flapping_alerts() == 2
+
+
+def test_tuner_never_switches_certificate_expiry_even_with_chronic_alert():
+    row = _threshold_row(id=77, metric_name="DaysToExpiry", warning_value=30, critical_value=7, comparison="<")
+    baselines = [_baseline("arn:aws:acm:cert-1", 40.0, stddev=8.0), _baseline("arn:aws:acm:cert-2", 90.0, stddev=20.0)]
+    updates = _install_stub([row], baselines, chronic_alert_resource_ids={"arn:aws:acm:cert-1"})
+    mod = load_module("app/collector/threshold_tuning.py")
+
+    assert mod.auto_tune_static_thresholds() == 0
+    assert updates == []

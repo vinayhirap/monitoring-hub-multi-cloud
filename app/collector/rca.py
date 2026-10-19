@@ -346,6 +346,12 @@ def _check_flapping(cursor, aws_account_id, resource_id, metric_name):
     """
     if (metric_name or "").lower() in _CAPACITY_METRIC_NAMES_LOWER:
         return False
+    # Cert expiry, availability, capacity and other absolute-limit metrics are static by design on every cloud
+    # (threshold_defaults.is_static_only_metric): a countdown's baseline stddev fakes the flapping signature,
+    # and "widen this threshold" is the wrong advice for them.
+    from app.threshold_defaults import is_static_only_metric
+    if is_static_only_metric(metric_name):
+        return False
     cursor.execute("""
         SELECT t.critical_value, t.comparison, t.dynamic_k
         FROM alerts a
