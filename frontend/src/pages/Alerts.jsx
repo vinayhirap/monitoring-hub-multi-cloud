@@ -19,6 +19,7 @@ import { redirectToSignIn } from "../utils/loginFlow";
 import { serviceLabelFor } from "../utils/dashboardModel";
 import DownloadButton from "../components/DownloadButton";
 import PriorityStrip from "../components/PriorityStrip";
+import AlertGuide from "../components/AlertGuide";
 
 
 // Tab order: what needs a person first, then the lifecycle states, then history.
@@ -509,6 +510,7 @@ export default function Alerts() {
         </div>
       )}
 
+      <AlertGuide accountId={accountId} />
       <PriorityStrip accountId={accountId} active={priorityFilter} onPick={setPriorityFilter} />
 
       <div className="alerts-tabs">

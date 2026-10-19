@@ -93,3 +93,4 @@
 .dash-skel { display: grid; gap: 12px; padding: 18px 16px; min-height: 150px; align-content: start; }
 .ui-skel-line { display: block; height: 12px; }
 .dash-hero-reasons .ui-skel-line { width: 260px; max-width: 80%; }
+.dash-legend > span { display: inline-flex; align-items: center; }

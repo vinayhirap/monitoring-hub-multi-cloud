@@ -302,3 +302,21 @@ button.prio-card { cursor: pointer; }
 .prio-card.prio-on { outline: 2px solid currentColor; }
 .prio-card-label { font-weight: 700; }
 .prio-card-n { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* ── "How to read alerts" guide (components/AlertGuide.jsx) ── */
+.ag { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px; margin: 10px 0; font-size: 12px; }
+.ag summary { cursor: pointer; font-weight: 700; }
+.ag h3 { font-size: 12px; font-weight: 700; margin: 14px 0 6px; }
+.ag-note { margin: 0 0 8px; color: var(--text-muted); line-height: 1.5; }
+.ag-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; line-height: 1.5; }
+.ag-list li { display: flex; gap: 8px; align-items: flex-start; }
+.ag-list li span { color: var(--text-muted); }
+.ag-list li strong { color: var(--text); }
+.ag-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; margin-top: 4px; }
+.ag-dot-crit { background: var(--crit-fill); } .ag-dot-warn { background: var(--warn-fill); }
+.ag-dot-info { background: var(--info-fill); } .ag-dot-ok { background: var(--ok-fill); }
+.ag-table { border-collapse: collapse; width: 100%; max-width: 760px; }
+.ag-table th, .ag-table td { text-align: left; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+.ag-table th { color: var(--text-muted); font-weight: 600; }
+.ag-table .prio-chip { margin-left: 0; }
+@media (max-width: 640px) { .ag-table { display: block; overflow-x: auto; } }
