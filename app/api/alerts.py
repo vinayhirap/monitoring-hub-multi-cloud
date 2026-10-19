@@ -51,6 +51,7 @@ _STALE_AFTER_MINUTES = 20
 # docstring for the drift this fixes. _hidden_metrics_sql kept as a thin
 # alias so nothing below in this file needs to change.
 from app.alert_visibility import hidden_metrics_sql as _hidden_metrics_sql
+from app import priority as _priority
 
 
 def _filter_rows_by_scope(rows: list, current_user: dict) -> list:
@@ -212,7 +213,8 @@ _MAX_LIMIT = 1000
 
 def _fetch_alerts_from_db(current_user: dict, tab: str = "all", limit: int = 500,
                           offset: int = 0, account_id: Optional[int] = None,
-                          q: Optional[str] = None, open_only: bool = False):
+                          q: Optional[str] = None, open_only: bool = False,
+                          priority: Optional[int] = None):
     """Returns (rows, total). Filtering, scoping, paging and the total are all
     done in SQL so the list can never disagree with the tab badge."""
     scope = _scope_sql(current_user)
@@ -227,6 +229,10 @@ def _fetch_alerts_from_db(current_user: dict, tab: str = "all", limit: int = 500
     if account_id is not None:
         where += " AND a.aws_account_id = %s"
         params.append(account_id)
+    prio_on = _priority.enabled()
+    if prio_on and priority is not None:
+        where += " AND a.priority = %s"
+        params.append(int(priority))
     if q:
         like = f"%{q}%"
         where += (" AND (a.metric_name LIKE %s OR a.resource_id LIKE %s"
@@ -236,7 +242,7 @@ def _fetch_alerts_from_db(current_user: dict, tab: str = "all", limit: int = 500
     if tab == "resolved":
         order = "a.resolved_at DESC, a.id DESC"
     else:
-        order = ("(a.status = 'resolved') ASC, FIELD(UPPER(a.severity), 'CRITICAL', 'WARNING', 'INFO'), "
+        order = ("(a.status = 'resolved') ASC, " + ("(a.priority IS NULL) ASC, a.priority ASC, " if prio_on else "") + "FIELD(UPPER(a.severity), 'CRITICAL', 'WARNING', 'INFO'), "
                  "a.triggered_at DESC, a.id DESC")
 
     conn = get_connection()
@@ -268,6 +274,7 @@ def _fetch_alerts_from_db(current_user: dict, tab: str = "all", limit: int = 500
                 a.silenced_reason,
                 a.resolution_reason,
                 a.environment,
+                {"a.priority," if prio_on else ""}
                 a.marked_false_positive,
                 ({alert_rules.state_sql()} = 'firing' AND {_ATTN_EXISTS}) AS needs_attention,
                 r.resource_type                        AS service,
@@ -299,9 +306,11 @@ def get_alerts(
     offset: int = Query(0, ge=0),
     account_id: Optional[int] = Query(None),
     q: Optional[str] = Query(None, max_length=100),
+    priority: Optional[int] = Query(None, ge=1, le=4),
     current_user: dict = Depends(require_permission("alerts.view")),
 ):
     """
+    `priority` (1-4) filters by P-level and is ignored unless PRIORITY_ENABLED is on.
     `tab` is one of all|active|stale|critical|acknowledged|resolved|suppressed
     and means EXACTLY what the same-named badge from /alerts/counts counts.
     The full match count is returned in the X-Total-Count header so the UI
@@ -310,7 +319,7 @@ def get_alerts(
     """
     if tab not in _TABS:
         raise HTTPException(status_code=400, detail=f"tab must be one of {', '.join(_TABS)}")
-    rows, total = _fetch_alerts_from_db(current_user, tab, limit, offset, account_id, q)
+    rows, total = _fetch_alerts_from_db(current_user, tab, limit, offset, account_id, q, priority=priority)
     response.headers["X-Total-Count"] = str(total)
     return rows
 
@@ -399,6 +408,39 @@ def alert_counts(account_id: Optional[int] = Query(None),
     """Tab-badge counts. Exactly the tab definitions in _tab_where(); pass
     account_id so the badges match a list filtered to that account."""
     return _aggregate_counts_for_user(_counts_fp.get(_fetch_counts_from_db), current_user, account_id)
+
+
+@router.get("/priority-summary")
+def priority_summary(account_id: Optional[int] = Query(None),
+                     current_user: dict = Depends(require_permission("alerts.view"))):
+    """FIRING alerts per priority (same 'firing' rule as every other count). `enabled` is false, and counts
+    are empty, until PRIORITY_ENABLED is on, so the UI shows nothing before then."""
+    empty = {"enabled": _priority.enabled(), "counts": {str(p): 0 for p in _priority.PRIORITIES}, "total": 0}
+    if not empty["enabled"]:
+        return {"enabled": False, "counts": {}, "total": 0}
+    scope = _scope_sql(current_user)
+    if scope is None:
+        return empty
+    scope_sql, scope_params = scope
+    where = (f" WHERE {alert_rules.base_where()}{scope_sql} AND ({alert_rules.state_sql()}) = 'firing'"
+             " AND a.priority IS NOT NULL")
+    params = list(scope_params)
+    if account_id is not None:
+        where += " AND a.aws_account_id = %s"
+        params.append(account_id)
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT a.priority AS p, COUNT(*) AS n {alert_rules.alert_base_from()}{where} "
+                       "GROUP BY a.priority", params)
+        for r in cursor.fetchall():
+            if str(r["p"]) in empty["counts"]:
+                empty["counts"][str(r["p"])] = int(r["n"])
+    finally:
+        cursor.close()
+        conn.close()
+    empty["total"] = sum(empty["counts"].values())
+    return empty
 
 
 @router.get("/version")

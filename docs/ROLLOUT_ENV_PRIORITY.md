@@ -5,7 +5,7 @@ Flags (all default OFF, read from `.env` at call time, so edit + restart is the 
 | Flag | Changes |
 |---|---|
 | `ENV_AWARE_CLASSIFICATION` | environment label and WARNING/INFO severity of NEWLY raised alerts use the classification (name/tag/override/account default). CRITICAL is unchanged; unknown and ignore stay prod-like. |
-| `PRIORITY_ENABLED` | P1-P4 stored and shown on alerts. (phase 4b, patch 0014) |
+| `PRIORITY_ENABLED` | P1-P4 stored and shown on alerts. (phase 4b patch 1, migration 101) |
 | `PRIORITY_ROUTING_ENABLED` | channel `min_priority`/digest and priority escalation policies apply. (phase 4b) |
 | `DIGEST_INTERVAL_MINUTES` | digest flush interval for channels set to `digest`. (phase 4b) |
 
@@ -77,7 +77,7 @@ Open alerts are NOT relabelled in place at the current tip; they keep old values
 Success: no evaluator errors for 24 h; every new INFO alert is on a resource you consider non-prod; no real incident was
 demoted (check the Alerts page filtered by INFO). Rollback: `sed -i '/^ENV_AWARE_CLASSIFICATION=/d' .env && sudo systemctl restart monitoring-hub`. Data stays; alerts raised meanwhile keep their labels.
 
-## 2. PRIORITY_ENABLED (needs patch 0014)
+## 2. PRIORITY_ENABLED (needs phase 4b patch 1, migration 101)
 
 Same pattern: confirm absent with `grep -n '^PRIORITY_ENABLED' .env`, append `PRIORITY_ENABLED=true`, restart, verify
 `SELECT priority, COUNT(*) FROM alerts WHERE status IN ('active','acknowledged') GROUP BY priority;` (expect values 1-4, none NULL after the evaluator's next cycle; run `scripts/backfill_alert_priority.py` dry-run first). Watch the Alerts page P-chips and the Overview "Firing by priority" strip. Rollback as above.

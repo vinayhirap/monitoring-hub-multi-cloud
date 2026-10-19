@@ -218,9 +218,10 @@ def _priority_section():
         return ("NOT AVAILABLE in this checkout: phase 4b (app/priority.py, app/collector/priority_backfill.py,\n"
                 "notification min_priority, escalation_priority_policies) is not present, so there is\n"
                 "nothing to measure. Deploy patch 0014 first, then re-run this report.")
-    return ("Phase 4b code is present in this checkout, but this version of the report does not measure\n"
-            "it yet (no P1-P4 distribution, no channel routing or escalation comparison). Do not read the\n"
-            "absence of numbers here as 'no impact'.")
+    return ("PRIORITY_ENABLED: priority (phase 4b patch 1) is present. For the P1-P4 distribution of the open\n"
+            "alerts, run scripts/backfill_alert_priority.py (a dry run, writes nothing).\n"
+            "PRIORITY_ROUTING_ENABLED: channel routing and priority escalation are not built yet (phase 4b\n"
+            "patch 2), so there is nothing to measure. Do not read the absence of numbers here as 'no impact'.")
 
 
 def write_csv(rows, path):

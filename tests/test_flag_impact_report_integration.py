@@ -167,7 +167,7 @@ def test_text_and_csv_output(db, tmp_path):
     mod, ev, rows, s = _run(db)
     text = mod.render_text(s, None, mod._in_place_note(ev))
     assert "open alerts (active + acknowledged)        : 9" in text
-    assert "WARNING->INFO" in text and "NOT AVAILABLE in this checkout" in text
+    assert "WARNING->INFO" in text and "backfill_alert_priority.py" in text
     out = tmp_path / "impact.csv"
     mod.write_csv(rows, str(out))
     with open(out, newline="", encoding="utf-8") as f:

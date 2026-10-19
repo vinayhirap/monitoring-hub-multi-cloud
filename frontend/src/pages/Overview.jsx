@@ -9,6 +9,7 @@ import { summarize, ageLabel } from "../utils/dashboardModel";
 import { buildServiceChips, syncFreshness } from "../utils/serviceChips";
 import { StatusHero, KpiRow, ActivityPanel, FeedPanel, MatrixPanel, TopResourcesPanel, IncidentsPanel, IntelligencePanel, CoveragePanel, PanelSkeleton } from "./overview/panels";
 import { PageHeader } from "../components/ui";
+import PriorityStrip from "../components/PriorityStrip";
 import { AlertOctagonIcon, AlertTriangleIcon, RefreshCwIcon } from "../components/icons";
 import "./Overview.css";
 import "./overview/dash.css";
@@ -264,6 +265,7 @@ export default function Overview() {
         <>
           <StatusHero verdict={view.verdict} kpi={view.kpi} fetchedAt={showSnap ? snap.ts : dash.fetchedAt} now={now} revalidating={revalidating || showSnap} pending={pend} />
           <KpiRow kpi={view.kpi} onGo={go} pending={pend} />
+          <PriorityStrip />
         </>
       )}
 

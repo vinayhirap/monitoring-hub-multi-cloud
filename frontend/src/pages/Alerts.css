@@ -285,3 +285,20 @@
 
 /* a disabled row action must look disabled (e.g. bulk-ack of a group whose key the server cannot address) */
 .alerts-table .btn-console-detail:disabled { opacity: .4; cursor: not-allowed; filter: grayscale(.6); }
+
+/* ── Alert priority P1-P4 (phase 4b); only rendered when PRIORITY_ENABLED ── */
+.prio-chip { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: .02em; border: 1px solid transparent; vertical-align: middle; }
+.prio-p1 { color: #ff6b6b; border-color: rgba(255,107,107,.45); background: rgba(255,107,107,.12); }
+.prio-p2 { color: #ffa94d; border-color: rgba(255,169,77,.45); background: rgba(255,169,77,.12); }
+.prio-p3 { color: #74c0fc; border-color: rgba(116,192,252,.45); background: rgba(116,192,252,.12); }
+.prio-p4 { color: var(--text-muted, #8b98a9); border-color: rgba(139,152,169,.4); background: rgba(139,152,169,.1); }
+.prio-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.prio-strip-title { font-size: 12px; font-weight: 600; color: var(--text-muted, #8b98a9); margin-right: 4px; }
+.prio-card { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 8px; font: inherit; font-size: 13px; border: 1px solid rgba(139,152,169,.3); background: transparent; color: var(--text-muted, #8b98a9); }
+button.prio-card { cursor: pointer; }
+.prio-card.prio-has.prio-p1 { color: #ff6b6b; border-color: rgba(255,107,107,.5); }
+.prio-card.prio-has.prio-p2 { color: #ffa94d; border-color: rgba(255,169,77,.5); }
+.prio-card.prio-has.prio-p3 { color: #74c0fc; border-color: rgba(116,192,252,.5); }
+.prio-card.prio-on { outline: 2px solid currentColor; }
+.prio-card-label { font-weight: 700; }
+.prio-card-n { font-variant-numeric: tabular-nums; font-weight: 600; }

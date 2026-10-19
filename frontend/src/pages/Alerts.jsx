@@ -18,6 +18,7 @@ import { clearAllCached } from "../utils/dataCache";
 import { redirectToSignIn } from "../utils/loginFlow";
 import { serviceLabelFor } from "../utils/dashboardModel";
 import DownloadButton from "../components/DownloadButton";
+import PriorityStrip from "../components/PriorityStrip";
 
 
 // Tab order: what needs a person first, then the lifecycle states, then history.
@@ -213,6 +214,7 @@ export default function Alerts() {
   const [search,  setSearch]  = useState(() => searchParams.get("q") || "");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [accountId, setAccountId] = useState("");
+  const [priorityFilter, setPriorityFilter] = useState("");   // "" | "1".."4" (only offered when priorities exist)
   const [acting,  setActing]  = useState(null);
   const [soundOn, setSoundOn] = useState(true);
   const [openingConsole, setOpeningConsole] = useState(null);
@@ -250,7 +252,7 @@ export default function Alerts() {
   }, [search]);
 
   // changing tab / account / search starts a fresh page
-  useEffect(() => { setLimit(PAGE_SIZE); }, [tab, accountId, debouncedSearch]);
+  useEffect(() => { setLimit(PAGE_SIZE); }, [tab, accountId, debouncedSearch, priorityFilter]);
 
   const loadAlerts = useCallback(async () => {
     setError(null);
@@ -258,6 +260,7 @@ export default function Alerts() {
       const qs = new URLSearchParams({ tab, limit: String(limit), offset: "0" });
       if (accountId) qs.set("account_id", accountId);
       if (debouncedSearch) qs.set("q", debouncedSearch);
+      if (priorityFilter) qs.set("priority", priorityFilter);
       const { rows, total: t } = await apiFetchList(`/api/alerts?${qs}`);
       // Seed knownIds so existing alerts never trigger a beep
       rows.forEach(a => knownIds.current.add(a.id));
@@ -273,7 +276,7 @@ export default function Alerts() {
     } catch {
       // keep showing the last-known counts rather than blanking badges
     }
-  }, [tab, limit, accountId, debouncedSearch]);
+  }, [tab, limit, accountId, debouncedSearch, priorityFilter]);
 
   useEffect(() => {
     loadAlerts();
@@ -506,6 +509,8 @@ export default function Alerts() {
         </div>
       )}
 
+      <PriorityStrip accountId={accountId} active={priorityFilter} onPick={setPriorityFilter} />
+
       <div className="alerts-tabs">
         {TAB_GROUPS.map((group, gi) => (
           <Fragment key={gi}>
@@ -595,7 +600,7 @@ export default function Alerts() {
                     )}
                     <tr className={`alert-row sev-row-${sev.toLowerCase()}${selId === a.id ? " alert-row-sel" : ""}`} onClick={e => { if (!e.target.closest("button,a,select,input,.res-deeplink")) openAlert(a); }} style={{ cursor: "pointer" }}>
 
-                      <td data-label="Severity"><SevBadge sev={sev} /></td>
+                      <td data-label="Severity"><SevBadge sev={sev} />{a.priority ? <span className={`prio-chip prio-p${a.priority}`} title={`Priority P${a.priority}, from environment and severity`}>P{a.priority}</span> : null}</td>
 
                       <td className="alert-metric" data-label="Metric">
                         <div>{metricLabel(a.metric_name)}</div>

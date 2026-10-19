@@ -28,6 +28,7 @@ import logging
 import math
 from app.db import get_connection
 from app import environment_classifier as _envc
+from app import priority as _priority
 from app.collector import env_polling as _ep
 from app.ws.publisher import publish_alert, publish_alert_resolved
 from app.alert_rules import (
@@ -766,6 +767,25 @@ def _evaluate_alerts_body(conn, cursor, p1_only=False):
     if stats["new"] or stats["resolved"] or stats["reopened"]:
         invalidate_accounts_cache()
         _invalidate_cache()
+
+    # Phase 4b: priority P1-P4 for every open alert (PRIORITY_ENABLED, default off). One set-based pass, so
+    # it also covers alerts raised by synthetic checks and anomaly detection, and a reclassified resource
+    # moves its open alerts. It never touches severity, status or notifications, and a failure here is
+    # logged and skipped.
+    if _priority.enabled():
+        try:
+            pr = _priority.refresh_open_alert_priorities(cursor, use_resolved_env=_envc.flag_enabled())
+            conn.commit()
+            if pr["changed"]:
+                logger.info(f"Alert priority updated on {pr['changed']} of {pr['checked']} open alert(s)")
+                invalidate_accounts_cache()
+                _invalidate_cache()
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.warning(f"Alert priority refresh failed: {e}")
 
     logger.info(
         f"Alert evaluation complete — "
