@@ -43,7 +43,7 @@ const TAG_HINT = {
   nonstandard: "A tag exists but its name or value is not the standard one (for example Env=Production).",
   invalid: "An environment tag exists but its value is not prod, uat or dev.",
   missing: "The resource has no Environment tag in AWS.",
-  not_checked: "CloudOps does not read AWS tags for this type of resource (certificates and backups, for example), so it cannot tell.",
+  not_checked: "CloudOps has no reading of this resource's own AWS tags (for example EBS volumes, or any type the tag sync does not cover or while it is off), so it cannot tell.",
 };
 const WARNING_LABEL = {
   manual_vs_tag: "Placed here, tag says otherwise", tag_vs_name: "Tag and name disagree",
