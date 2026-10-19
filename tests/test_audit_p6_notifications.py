@@ -169,6 +169,25 @@ def test_message_content_is_minimal_and_useful():
     assert "L2-platform" in esc["text"]
 
 
+def test_priority_leads_the_headline_only_when_the_alert_has_one():
+    m, _, _ = _sender()
+    plain = m.build_message("opened", _alert())
+    assert "P1" not in plain["headline"] and "priority" not in plain["alert"]      # flag off: message unchanged
+    withp = m.build_message("opened", _alert(priority=2))
+    assert "P2 CRITICAL" in withp["headline"] and withp["alert"]["priority"] == "P2"
+    bad = m.build_message("opened", _alert(priority=9))
+    assert "P9" not in bad["headline"] and "priority" not in bad["alert"]          # out-of-range value is ignored
+
+
+def test_new_alert_push_carries_priority_only_when_given(monkeypatch):
+    import app.ws.publisher as pub
+    sent = []
+    monkeypatch.setattr(pub, "publish", lambda channel, data: sent.append(data))
+    pub.publish_alert(1, "WARNING", "CPUUtilization", 91.0, 80.0, 5)
+    pub.publish_alert(2, "WARNING", "CPUUtilization", 91.0, 80.0, 5, priority=3)
+    assert "priority" not in sent[0] and sent[1]["priority"] == 3
+
+
 # ── wiring ───────────────────────────────────────────────────────────
 
 def test_hooks_are_wired_after_commit_and_failures_are_contained():

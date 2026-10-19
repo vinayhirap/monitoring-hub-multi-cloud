@@ -46,8 +46,9 @@ def publish_metric_update(account_id: int, service: str, cpu: float, memory: flo
 
 def publish_alert(alert_id: int, severity: str, metric: str,
                   value: float, threshold: float, account_id: int,
-                  account_name: str = None, region: str = None):
-    publish("alerts", {
+                  account_name: str = None, region: str = None,
+                  priority: Optional[int] = None):
+    payload = {
         "type": "new_alert",
         # `id` is what the Alerts page keys rows on; `alert_id` kept for any
         # existing consumer. (The page read `id`, got undefined, and inserted
@@ -61,7 +62,12 @@ def publish_alert(alert_id: int, severity: str, metric: str,
         "account_id": account_id,
         "account_name": account_name,
         "region": region,
-    })
+    }
+    # P1-P4 (phase 4b). Only present when PRIORITY_ENABLED is on, so with the flag off the payload is
+    # byte-for-byte what it was and the popup shows no priority.
+    if priority in (1, 2, 3, 4):
+        payload["priority"] = int(priority)
+    publish("alerts", payload)
 
 
 def publish_alert_resolved(alert_id: int | None, account_id: int | None, bulk: bool = False):

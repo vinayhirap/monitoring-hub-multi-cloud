@@ -80,7 +80,7 @@ demoted (check the Alerts page filtered by INFO). Rollback: `sed -i '/^ENV_AWARE
 ## 2. PRIORITY_ENABLED (needs phase 4b patch 1, migration 101)
 
 Same pattern: confirm absent with `grep -n '^PRIORITY_ENABLED' .env`, append `PRIORITY_ENABLED=true`, restart, verify
-`SELECT priority, COUNT(*) FROM alerts WHERE status IN ('active','acknowledged') GROUP BY priority;` (expect values 1-4, none NULL after the evaluator's next cycle; run `scripts/backfill_alert_priority.py` dry-run first). Watch the Alerts page P-chips and the Overview "Firing by priority" strip. Rollback as above.
+`SELECT priority, COUNT(*) FROM alerts WHERE status IN ('active','acknowledged') GROUP BY priority;` (expect values 1-4, none NULL after the evaluator's next cycle; run `scripts/backfill_alert_priority.py` dry-run first). Watch the Alerts page P-chips and "Firing by priority" strip, and the P-level on the new-alert popup. Rollback as above.
 
 ## 3. PRIORITY_ROUTING_ENABLED (needs patch 0014)
 

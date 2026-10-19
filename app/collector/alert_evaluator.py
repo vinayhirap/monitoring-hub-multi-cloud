@@ -1029,6 +1029,15 @@ def _evaluate_row(cursor, row, silenced_map, stats):
         return publishes   # born silenced by a maintenance window: no toast/sound/page
     region = row["region"] or row["default_region"]
     account_name = row["account_name"]
+    # Priority for the popup and the channel messages (PRIORITY_ENABLED). Same rule and same inputs as the
+    # end-of-cycle refresh (environment label + severity + Criticality tag), so the popup never disagrees
+    # with the Alerts page. A failure here only means the popup carries no priority.
+    new_priority = None
+    if _priority.enabled():
+        try:
+            new_priority = _priority.compute_priority(environment, promoted_severity, row.get("tags"))
+        except Exception as e:
+            logger.warning(f"Alert priority for popup failed: {e}")
     publishes.append(lambda: publish_alert(
         alert_id     = new_alert_id,
         severity     = promoted_severity,
@@ -1038,6 +1047,7 @@ def _evaluate_row(cursor, row, silenced_map, stats):
         account_id   = aws_account_id,
         account_name = account_name,
         region       = region,
+        priority     = new_priority,
     ))
 
     def _notify_channels():
@@ -1048,7 +1058,7 @@ def _evaluate_row(cursor, row, silenced_map, stats):
             "id": new_alert_id, "severity": promoted_severity, "metric_name": metric_name,
             "resource_id": aws_resource_id, "account_name": account_name,
             "aws_account_id": aws_account_id, "value": metric_value, "threshold": threshold_value,
-            "silenced": False,
+            "silenced": False, "priority": new_priority,
         })
     publishes.append(_notify_channels)
     return publishes

@@ -23,7 +23,7 @@ described at the bottom and is not built yet.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `PRIORITY_ENABLED` | off | Computes and stores `alerts.priority`. Shows P-chips, the "Firing by priority" strip (Alerts and Overview), click-to-filter on the Alerts page, and P1-first ordering. **Changes no severity, escalation, notification, silence or auto-resolve.** |
+| `PRIORITY_ENABLED` | off | Computes and stores `alerts.priority`. Shows P-chips on the Alerts page, the "Firing by priority" strip (Alerts page only; removed from Overview), click-to-filter on the Alerts page, and P1-first ordering. The new-alert popup shows the level next to the severity, and notification messages (email, Slack, Teams, webhook) for newly opened alerts lead with it (for example `P2 WARNING: ...`). **Changes no severity, escalation, who is notified, silence or auto-resolve.** |
 
 With the flag off nothing reads or writes the column, the API returns no `priority` field, and the UI shows nothing.
 

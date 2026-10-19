@@ -30,6 +30,8 @@ export default function AlertToast() {
       account_id:  alertMsg.account_id,
       account_name:alertMsg.account_name,
       region:      alertMsg.region,
+      // P1-P4; only sent by the server when PRIORITY_ENABLED is on, so the popup shows nothing before then.
+      priority:    [1, 2, 3, 4].includes(Number(alertMsg.priority)) ? Number(alertMsg.priority) : null,
     };
     setToasts(prev => [toast, ...prev].slice(0, 5));
 
@@ -94,6 +96,10 @@ function ToastItem({ toast, onClose }) {
       <div style={{ flex: 1 }}>
         <div style={{ fontWeight: 800, fontSize: 14, color, marginBottom: 3, letterSpacing: "0.01em" }}>
           {toast.severity} ALERT
+          {toast.priority ? (
+            <span className={`toast-prio toast-prio-p${toast.priority}`}
+                  title={`Priority P${toast.priority}, from environment and severity`}>P{toast.priority}</span>
+          ) : null}
         </div>
         <div style={{ fontSize: 13, color: "var(--ink-1)", marginBottom: 2 }}>
           {metricLabel(toast.metric)} — <strong>{formatMetricValue(toast.metric, toast.value)}</strong> (threshold: {formatMetricValue(toast.metric, toast.threshold)})

@@ -96,7 +96,11 @@ def _fmt(v):
 def build_message(event: str, a: dict) -> dict:
     title = {"opened": "Alert opened", "escalated": "Alert escalated"}.get(event, "Alert")
     sev = a.get("severity", "")
-    bits = [f"{sev}: {a.get('metric_name', '')}", f"on {a.get('resource_id', '')}"]
+    # Priority (P1-P4) leads the headline so it is the first thing read in an email subject or a Slack line.
+    # Absent when PRIORITY_ENABLED is off, in which case the message is exactly what it was.
+    prio = a.get("priority") if a.get("priority") in (1, 2, 3, 4) else None
+    prio_tag = f"P{prio} " if prio else ""
+    bits = [f"{prio_tag}{sev}: {a.get('metric_name', '')}", f"on {a.get('resource_id', '')}"]
     if a.get("account_name"):
         bits.append(f"({a['account_name']})")
     headline = f"[CloudOps] {title} - " + " ".join(bits)
@@ -108,11 +112,14 @@ def build_message(event: str, a: dict) -> dict:
     url = _app_url()
     if url:
         lines.append(f"Open: {url}/alerts")
-    return {"headline": headline, "text": "\n".join(lines), "alert": {
+    payload = {
         "id": a.get("id"), "severity": sev, "metric": a.get("metric_name"),
         "resource_id": a.get("resource_id"), "account": a.get("account_name"),
         "value": a.get("value"), "threshold": a.get("threshold"), "event": event,
-    }}
+    }
+    if prio:
+        payload["priority"] = f"P{prio}"
+    return {"headline": headline, "text": "\n".join(lines), "alert": payload}
 
 
 # ── transport ────────────────────────────────────────────────────────
