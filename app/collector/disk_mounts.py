@@ -69,6 +69,12 @@ against a live account -- see apply_cleanup_disk_mount_noise.py.
 import logging
 import re
 
+try:
+    from app.collector import api_usage
+except ImportError:  # metering is best-effort: never break the call path
+    import types as _types
+    api_usage = _types.SimpleNamespace(record=lambda *a, **k: None,
+                                       billed_metric_queries=lambda q: 0)
 from app.db import get_connection
 from app.threshold_defaults import DEFAULT_THRESHOLDS
 
@@ -150,7 +156,7 @@ def metric_name_for_mount(path: str) -> str:
     return f"{BASE_METRIC_NAME}__{slugify_mount_path(path)}"
 
 
-def all_cwagent_disk_dims(cw, instance_id):
+def all_cwagent_disk_dims(cw, instance_id, usage_source="collector", usage_tier=None):
     """
     Returns [(dimensions, path, metric_name, cw_metric_name, invert), ...]
     for EVERY mount point CWAgent has published disk data under for this
@@ -172,6 +178,7 @@ def all_cwagent_disk_dims(cw, instance_id):
     lookup only runs when the Linux one found nothing.
     """
     try:
+        api_usage.record("aws", usage_tier, calls=1, units=1, source=usage_source, operation="ListMetrics")
         resp = cw.list_metrics(
             Namespace="CWAgent", MetricName=BASE_METRIC_NAME,
             Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
@@ -183,6 +190,7 @@ def all_cwagent_disk_dims(cw, instance_id):
 
     if not found:
         try:
+            api_usage.record("aws", usage_tier, calls=1, units=1, source=usage_source, operation="ListMetrics")
             resp = cw.list_metrics(
                 Namespace="CWAgent", MetricName=WINDOWS_DISK_METRIC_NAME,
                 Dimensions=[{"Name": "InstanceId", "Value": instance_id}],

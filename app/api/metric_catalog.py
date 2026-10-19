@@ -14,6 +14,12 @@ CloudWatch metric catalog + per-account metric selection.
 from fastapi import APIRouter, HTTPException, Body, Query, Response, Depends
 from app.db import get_connection, get_db_cursor
 from app.auth.permissions import require_permission
+try:
+    from app.collector import api_usage
+except ImportError:  # metering is best-effort: never break the call path
+    import types as _types
+    api_usage = _types.SimpleNamespace(record=lambda *a, **k: None,
+                                       billed_metric_queries=lambda q: 0)
 from app.auth.authorization import get_accessible_account_ids
 from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type, normalize_service_key
 import datetime
@@ -521,6 +527,7 @@ def _discover_aws_metrics(acc: dict, namespace: str, region: str) -> set:
     seen = {}
     paginator = cw.get_paginator("list_metrics")
     for page in paginator.paginate(Namespace=namespace):
+        api_usage.record("aws", "discovery", calls=1, units=1, source="discovery", operation="ListMetrics")
         for m in page.get("Metrics", []):
             seen[m["MetricName"]] = True
             if len(seen) >= 200:  # sane cap per discovery call

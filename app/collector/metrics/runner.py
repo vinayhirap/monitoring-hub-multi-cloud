@@ -536,7 +536,7 @@ def _cached_disk_dims(cw, r):
     ok, val = _cache_get(key)
     if ok:
         return val
-    val = all_cwagent_disk_dims(cw, r["resource_id"])
+    val = all_cwagent_disk_dims(cw, r["resource_id"], usage_tier=_CURRENT_TIER)
     _cache_put(key, val)
     return val
 
@@ -589,6 +589,7 @@ def _ec2_instances_with_cwagent_mem_dims_uncached(cw, resources):
     result = {}
     for r in resources:
         try:
+            api_usage.record("aws", _CURRENT_TIER, calls=1, units=1, operation="ListMetrics")
             resp = cw.list_metrics(
                 Namespace="CWAgent",
                 MetricName="mem_used_percent",
@@ -619,6 +620,7 @@ def _ec2_instances_with_cwagent_mem_dims_uncached(cw, resources):
         # (higher = more memory pressure, no inversion needed, unlike
         # the disk metric).
         try:
+            api_usage.record("aws", _CURRENT_TIER, calls=1, units=1, operation="ListMetrics")
             resp = cw.list_metrics(
                 Namespace="CWAgent",
                 MetricName="Memory % Committed Bytes In Use",

@@ -28,6 +28,12 @@ Two GMD helpers (unchanged, still used for the boto3 fallback paths):
   _gmd_series(cw, queries)    — time-series arrays (for chart/detail views)
 """
 import boto3, logging, time, math, threading
+try:
+    from app.collector import api_usage
+except ImportError:  # metering is best-effort: never break the call path
+    import types as _types
+    api_usage = _types.SimpleNamespace(record=lambda *a, **k: None,
+                                       billed_metric_queries=lambda q: 0)
 from app.collector.disk_mounts import all_cwagent_disk_dims
 from datetime import datetime, timedelta, timezone
 # vm_client fully retired from THIS file (apply_final_cleanup.py): vm_query_all went in Phase 4b, vm_query's only use (StatusCheckFailed) is fixed by describe_polling.py now also writing locally. vm_client.py itself is NOT retired overall -- see that script's docstring for its one remaining legitimate use (ALB target-group health, external-Grafana-compatible, in app/aws/describe_polling.py).
@@ -364,6 +370,7 @@ def _gmd_pages(cw, chunk, start, end, scan_by):
         kwargs = dict(MetricDataQueries=chunk, StartTime=start, EndTime=end, ScanBy=scan_by)
         if token:
             kwargs["NextToken"] = token
+        api_usage.record("aws", "ui", calls=1, units=0 if token else api_usage.billed_metric_queries(chunk), source="ui", operation="GetMetricData")
         resp = cw.get_metric_data(**kwargs)
         for r in resp.get("MetricDataResults", []):
             yield r
@@ -774,6 +781,7 @@ def _get_s3_metric_series_raw(bucket_name: str, hours: int = 24, account=None) -
         ]
         from botocore.exceptions import ClientError
         try:
+            api_usage.record("aws", "ui", calls=1, units=1, source="ui", operation="GetMetricStatistics")
             r = cw.get_metric_statistics(
                 Namespace="AWS/S3", MetricName=metric, Dimensions=dims,
                 StartTime=start, EndTime=end, Period=period,
@@ -792,6 +800,7 @@ def _get_s3_metric_series_raw(bucket_name: str, hours: int = 24, account=None) -
             {"Name": "FilterId",   "Value": "EntireBucket"},
         ]
         try:
+            api_usage.record("aws", "ui", calls=1, units=1, source="ui", operation="GetMetricStatistics")
             r = cw.get_metric_statistics(
                 Namespace="AWS/S3", MetricName=metric, Dimensions=dims,
                 StartTime=end - timedelta(hours=min(hours, 168)),
@@ -1477,6 +1486,7 @@ def _ec2_cwagent_installed(instance_id, region=None, account=None) -> bool:
 def _ec2_cwagent_installed_raw(instance_id, region=None, account=None) -> bool:
     try:
         cw = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
+        api_usage.record("aws", "ui", calls=1, units=1, source="ui", operation="ListMetrics")
         resp = cw.list_metrics(
             Namespace="CWAgent",
             Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
@@ -1500,6 +1510,7 @@ def _ec2_cwagent_dimensions(cw, metric_name, instance_id):
     which returns every mount rather than picking one.
     """
     try:
+        api_usage.record("aws", "ui", calls=1, units=1, source="ui", operation="ListMetrics")
         resp = cw.list_metrics(
             Namespace="CWAgent", MetricName=metric_name,
             Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
@@ -1584,7 +1595,7 @@ def _get_ec2_metric_series_raw(instance_id, region=None, hours=6, account=None) 
                     # i-0424cb66e22e05a21 / U4RAD-JUMP).
                     mem_cw_metric_name = "Memory % Committed Bytes In Use"
                     mem_dims = _ec2_cwagent_dimensions(cw, mem_cw_metric_name, instance_id)
-                mounts = all_cwagent_disk_dims(cw, instance_id)  # [(dims, path, metric_name, cw_metric_name, invert), ...] -- every mount
+                mounts = all_cwagent_disk_dims(cw, instance_id, usage_source="ui")  # [(dims, path, metric_name, cw_metric_name, invert), ...] -- every mount
                 if mounts:
                     _root = next((m for m in mounts if m[1] in ("/", "C:")), mounts[0])
                     disk_cw_label, disk_inverted = _root[3], bool(_root[4])
