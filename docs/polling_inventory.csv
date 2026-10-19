@@ -1,405 +1,405 @@
-provider,service,metric,db_metric,tier,interval_s,source,evaluated_every_2min,static_only
-aws,ec2,CPUUtilization,cpuutilization,standard,300,core,False,False
-aws,ec2,NetworkIn,networkin,standard,300,core,False,False
-aws,ec2,NetworkOut,networkout,standard,300,core,False,False
-aws,ec2,CPUCreditBalance,cpucreditbalance,low,900,core,False,True
-aws,ebs,VolumeQueueLength,volumequeuelength,standard,300,core,False,False
-aws,ebs,VolumeReadOps,volumereadops,low,900,core,False,False
-aws,ebs,VolumeWriteOps,volumewriteops,low,900,core,False,False
-aws,ebs,VolumeReadBytes,volumereadbytes,low,900,core,False,False
-aws,ebs,VolumeWriteBytes,volumewritebytes,low,900,core,False,False
-aws,rds,CPUUtilization,cpuutilization,critical,120,core,True,False
-aws,rds,DatabaseConnections,dbconnections,critical,120,core,True,False
-aws,rds,FreeableMemory,freeablememory,critical,120,core,True,True
-aws,rds,ReadLatency,readlatency,standard,300,core,False,False
-aws,rds,WriteLatency,writelatency,standard,300,core,False,False
-aws,rds,DiskQueueDepth,diskqueuedepth,standard,300,core,False,False
-aws,rds,ReplicaLag,replicalag,standard,300,core,False,False
-aws,rds,ReadIOPS,readiops,low,900,core,False,False
-aws,rds,WriteIOPS,writeiops,low,900,core,False,False
-aws,rds,FreeStorageSpace,freestorage,low,900,core,False,True
-aws,rds,SwapUsage,swapusage,low,900,core,False,False
-aws,elb,RequestCount,requestcount,critical,120,core,True,False
-aws,elb,HTTPCode_Target_5XX_Count,errors5xx,critical,120,core,True,False
-aws,elb,HTTPCode_ELB_5XX_Count,httpcode_elb_5xx_count,critical,120,core,True,False
-aws,elb,TargetResponseTime,responselatency,standard,300,core,False,False
-aws,elb,TargetConnectionErrorCount,targetconnectionerrorcount,standard,300,core,False,False
-aws,elb,RejectedConnectionCount,rejectedconnectioncount,standard,300,core,False,False
-aws,elb,HTTPCode_Target_4XX_Count,httpcode_target_4xx_count,standard,300,core,False,False
-aws,elb,ActiveConnectionCount,activeconnectioncount,standard,300,core,False,False
-aws,elb,NewConnectionCount,newconnectioncount,standard,300,core,False,False
-aws,elb,ActiveFlowCount,activeflowcount,standard,300,core,False,False
-aws,elb,NewFlowCount,newflowcount,standard,300,core,False,False
-aws,elb,ProcessedBytes,processedbytes,standard,300,core,False,False
-aws,elb,TCP_Client_Reset_Count,tcp_client_reset_count,standard,300,core,False,False
-aws,lambda,Errors,errors,standard,300,core,False,False
-aws,lambda,Throttles,throttles,standard,300,core,False,False
-aws,lambda,Duration,duration,standard,300,core,False,False
-aws,lambda,ConcurrentExecutions,concurrentexecutions,standard,300,core,False,False
-aws,lambda,Invocations,invocations,low,900,core,False,False
-aws,lambda,IteratorAge,iteratorage,low,900,core,False,False
-aws,ec2,mem_used_percent,mem_used_percent,standard,300,cwagent,False,True
-aws,ec2,disk_used_percent,disk_used_percent,low,900,cwagent,False,True
-aws,ec2,statuscheckfailed,statuscheckfailed,describe,60,describe API (free),True,True
-aws,elb,healthyhosts_describe,healthyhosts_describe,describe,60,describe API (free),True,True
-aws,elb,unhealthyhosts_describe,unhealthyhosts_describe,describe,60,describe API (free),True,True
-aws,s3,BucketSizeBytes,bucketsizebytes,slow_extended,86400,extended,False,False
-aws,s3,NumberOfObjects,numberofobjects,slow_extended,86400,extended,False,False
-aws,s3,AllRequests,allrequests,low,900,extended,False,False
-aws,s3,4xxErrors,4xxerrors,low,900,extended,False,False
-aws,s3,5xxErrors,5xxerrors,low,900,extended,False,False
-aws,s3,FirstByteLatency,firstbytelatency,low,900,extended,False,False
-aws,s3,TotalRequestLatency,totalrequestlatency,low,900,extended,False,False
-aws,ecs,CPUUtilization,cpuutilization,standard,300,extended,False,False
-aws,ecs,MemoryUtilization,memoryutilization,standard,300,extended,False,True
-aws,ecs,RunningTaskCount,runningtaskcount,standard,300,extended,False,False
-aws,ecs,PendingTaskCount,pendingtaskcount,standard,300,extended,False,False
-aws,apigateway,Count,count,extended,3600,extended,False,False
-aws,apigateway,4XXError,4xxerror,extended,3600,extended,False,False
-aws,apigateway,5XXError,5xxerror,standard,300,extended,False,False
-aws,apigateway,Latency,latency,low,900,extended,False,False
-aws,apigateway,IntegrationLatency,integrationlatency,low,900,extended,False,False
-aws,apigateway,CacheHitCount,cachehitcount,extended,3600,extended,False,False
-aws,apigateway,CacheMissCount,cachemisscount,extended,3600,extended,False,False
-aws,dynamodb,ConsumedReadCapacityUnits,consumedreadcapacityunits,extended,3600,extended,False,False
-aws,dynamodb,ConsumedWriteCapacityUnits,consumedwritecapacityunits,extended,3600,extended,False,False
-aws,dynamodb,ThrottledRequests,throttledrequests,standard,300,extended,False,False
-aws,dynamodb,ReadThrottleEvents,readthrottleevents,standard,300,extended,False,False
-aws,dynamodb,WriteThrottleEvents,writethrottleevents,standard,300,extended,False,False
-aws,dynamodb,SuccessfulRequestLatency,successfulrequestlatency,extended,3600,extended,False,False
-aws,dynamodb,SystemErrors,systemerrors,standard,300,extended,False,False
-aws,dynamodb,UserErrors,usererrors,extended,3600,extended,False,False
-aws,dynamodb,ConditionalCheckFailedRequests,conditionalcheckfailedrequests,extended,3600,extended,False,False
-aws,sqs,ApproximateNumberOfMessagesVisible,approximatenumberofmessagesvisible,standard,300,extended,False,False
-aws,sqs,ApproximateAgeOfOldestMessage,approximateageofoldestmessage,standard,300,extended,False,False
-aws,sqs,NumberOfMessagesSent,numberofmessagessent,extended,3600,extended,False,False
-aws,sqs,NumberOfMessagesReceived,numberofmessagesreceived,extended,3600,extended,False,False
-aws,sqs,NumberOfMessagesDeleted,numberofmessagesdeleted,extended,3600,extended,False,False
-aws,sqs,NumberOfEmptyReceives,numberofemptyreceives,extended,3600,extended,False,False
-aws,sqs,ApproximateNumberOfMessagesNotVisible,approximatenumberofmessagesnotvisible,extended,3600,extended,False,False
-aws,sns,NumberOfMessagesPublished,numberofmessagespublished,extended,3600,extended,False,False
-aws,sns,NumberOfNotificationsFailed,numberofnotificationsfailed,extended,3600,extended,False,True
-aws,sns,NumberOfNotificationsDelivered,numberofnotificationsdelivered,extended,3600,extended,False,False
-aws,sns,PublishSize,publishsize,extended,3600,extended,False,False
-aws,cloudfront,Requests,requests,slow_extended,86400,extended,False,False
-aws,cloudfront,BytesDownloaded,bytesdownloaded,slow_extended,86400,extended,False,False
-aws,cloudfront,BytesUploaded,bytesuploaded,slow_extended,86400,extended,False,False
-aws,cloudfront,4xxErrorRate,4xxerrorrate,slow_extended,86400,extended,False,False
-aws,cloudfront,5xxErrorRate,5xxerrorrate,low,900,extended,False,False
-aws,cloudfront,TotalErrorRate,totalerrorrate,low,900,extended,False,False
-aws,cloudfront,OriginLatency,originlatency,slow_extended,86400,extended,False,False
-aws,cloudfront,CacheHitRate,cachehitrate,slow_extended,86400,extended,False,False
-aws,elasticache,CPUUtilization,cpuutilization,standard,300,extended,False,False
-aws,elasticache,DatabaseMemoryUsagePercentage,databasememoryusagepercentage,standard,300,extended,False,True
-aws,elasticache,CurrConnections,currconnections,extended,3600,extended,False,False
-aws,elasticache,Evictions,evictions,standard,300,extended,False,False
-aws,elasticache,CacheHits,cachehits,extended,3600,extended,False,False
-aws,elasticache,CacheMisses,cachemisses,extended,3600,extended,False,False
-aws,elasticache,ReplicationLag,replicationlag,low,900,extended,False,False
-aws,elasticache,SwapUsage,swapusage,extended,3600,extended,False,False
-aws,elasticache,NetworkBytesIn,networkbytesin,extended,3600,extended,False,False
-aws,elasticache,NetworkBytesOut,networkbytesout,extended,3600,extended,False,False
-aws,opensearch,ClusterStatus.green,clusterstatus.green,extended,3600,extended,False,True
-aws,opensearch,ClusterStatus.yellow,clusterstatus.yellow,standard,300,extended,False,True
-aws,opensearch,ClusterStatus.red,clusterstatus.red,standard,300,extended,False,True
-aws,opensearch,CPUUtilization,cpuutilization,low,900,extended,False,False
-aws,opensearch,JVMMemoryPressure,jvmmemorypressure,standard,300,extended,False,True
-aws,opensearch,FreeStorageSpace,freestoragespace,low,900,extended,False,True
-aws,opensearch,ClusterIndexWritesBlocked,clusterindexwritesblocked,standard,300,extended,False,True
-aws,opensearch,Nodes,nodes,extended,3600,extended,False,False
-aws,opensearch,SearchLatency,searchlatency,extended,3600,extended,False,False
-aws,opensearch,IndexingLatency,indexinglatency,extended,3600,extended,False,False
-aws,eks,cluster_failed_node_count,cluster_failed_node_count,standard,300,extended,False,True
-aws,eks,cluster_node_count,cluster_node_count,extended,3600,extended,False,False
-aws,efs,PercentIOLimit,percentiolimit,low,900,extended,False,True
-aws,efs,BurstCreditBalance,burstcreditbalance,low,900,extended,False,True
-aws,efs,ClientConnections,clientconnections,extended,3600,extended,False,False
-aws,efs,StorageBytes,storagebytes,extended,3600,extended,False,False
-aws,efs,DataReadIOBytes,datareadiobytes,extended,3600,extended,False,False
-aws,efs,DataWriteIOBytes,datawriteiobytes,extended,3600,extended,False,False
-aws,documentdb,CPUUtilization,cpuutilization,low,900,extended,False,False
-aws,documentdb,DatabaseConnections,databaseconnections,extended,3600,extended,False,False
-aws,documentdb,FreeableMemory,freeablememory,low,900,extended,False,True
-aws,documentdb,VolumeBytesUsed,volumebytesused,extended,3600,extended,False,False
-aws,documentdb,BufferCacheHitRatio,buffercachehitratio,extended,3600,extended,False,False
-aws,neptune,CPUUtilization,cpuutilization,low,900,extended,False,False
-aws,neptune,GremlinRequestsPerSec,gremlinrequestspersec,extended,3600,extended,False,False
-aws,neptune,SparqlRequestsPerSec,sparqlrequestspersec,extended,3600,extended,False,False
-aws,neptune,VolumeBytesUsed,volumebytesused,extended,3600,extended,False,False
-aws,msk,CpuUser,cpuuser,low,900,extended,False,False
-aws,msk,KafkaDataLogsDiskUsed,kafkadatalogsdiskused,low,900,extended,False,True
-aws,msk,UnderReplicatedPartitions,underreplicatedpartitions,standard,300,extended,False,True
-aws,msk,OfflinePartitionsCount,offlinepartitionscount,standard,300,extended,False,True
-aws,msk,BytesInPerSec,bytesinpersec,extended,3600,extended,False,False
-aws,msk,BytesOutPerSec,bytesoutpersec,extended,3600,extended,False,False
-aws,kinesis,IncomingBytes,incomingbytes,extended,3600,extended,False,False
-aws,kinesis,IncomingRecords,incomingrecords,extended,3600,extended,False,False
-aws,kinesis,ReadProvisionedThroughputExceeded,readprovisionedthroughputexceeded,low,900,extended,False,False
-aws,kinesis,WriteProvisionedThroughputExceeded,writeprovisionedthroughputexceeded,low,900,extended,False,False
-aws,kinesis,GetRecords.IteratorAgeMilliseconds,getrecords.iteratoragemilliseconds,low,900,extended,False,False
-aws,firehose,DeliveryToS3.Success,deliverytos3.success,extended,3600,extended,False,True
-aws,firehose,IncomingBytes,incomingbytes,extended,3600,extended,False,False
-aws,firehose,IncomingRecords,incomingrecords,extended,3600,extended,False,False
-aws,firehose,DeliveryToS3.DataFreshness,deliverytos3.datafreshness,low,900,extended,False,False
-aws,autoscaling,GroupInServiceInstances,groupinserviceinstances,extended,3600,extended,False,True
-aws,autoscaling,GroupDesiredCapacity,groupdesiredcapacity,extended,3600,extended,False,False
-aws,autoscaling,GroupMinSize,groupminsize,extended,3600,extended,False,False
-aws,autoscaling,GroupMaxSize,groupmaxsize,extended,3600,extended,False,False
-aws,autoscaling,GroupPendingInstances,grouppendinginstances,extended,3600,extended,False,False
-aws,autoscaling,GroupTerminatingInstances,groupterminatinginstances,extended,3600,extended,False,False
-aws,natgateway,BytesOutToDestination,bytesouttodestination,extended,3600,extended,False,False
-aws,natgateway,BytesInFromSource,bytesinfromsource,extended,3600,extended,False,False
-aws,natgateway,ErrorPortAllocation,errorportallocation,low,900,extended,False,True
-aws,natgateway,ActiveConnectionCount,activeconnectioncount,extended,3600,extended,False,False
-aws,natgateway,PacketsDropCount,packetsdropcount,low,900,extended,False,False
-aws,transitgateway,BytesIn,bytesin,extended,3600,extended,False,False
-aws,transitgateway,BytesOut,bytesout,extended,3600,extended,False,False
-aws,transitgateway,PacketDropCountBlackhole,packetdropcountblackhole,low,900,extended,False,False
-aws,transitgateway,PacketDropCountNoRoute,packetdropcountnoroute,low,900,extended,False,False
-aws,route53,HealthCheckStatus,healthcheckstatus,standard,300,extended,False,True
-aws,route53,HealthCheckPercentageHealthy,healthcheckpercentagehealthy,extended,3600,extended,False,True
-aws,route53,ConnectionTime,connectiontime,extended,3600,extended,False,False
-aws,wafv2,AllowedRequests,allowedrequests,slow_extended,86400,extended,False,False
-aws,wafv2,BlockedRequests,blockedrequests,slow_extended,86400,extended,False,False
-aws,wafv2,CountedRequests,countedrequests,slow_extended,86400,extended,False,False
-aws,wafv2,PassedRequests,passedrequests,slow_extended,86400,extended,False,False
-aws,wafv2,CaptchaRequests,captcharequests,slow_extended,86400,extended,False,False
-aws,wafv2,ChallengeRequests,challengerequests,slow_extended,86400,extended,False,False
-aws,wafv2,RequestsWithValidCaptchaToken,requestswithvalidcaptchatoken,slow_extended,86400,extended,False,False
-aws,wafv2,RequestsWithValidChallengeToken,requestswithvalidchallengetoken,slow_extended,86400,extended,False,False
-aws,wafv2,BlockRatio,blockratio,slow_extended,86400,extended,False,False
-aws,redshift,CPUUtilization,cpuutilization,low,900,extended,False,False
-aws,redshift,PercentageDiskSpaceUsed,percentagediskspaceused,low,900,extended,False,True
-aws,redshift,DatabaseConnections,databaseconnections,extended,3600,extended,False,False
-aws,redshift,QueryDuration,queryduration,extended,3600,extended,False,False
-aws,redshift,ReadIOPS,readiops,extended,3600,extended,False,False
-aws,redshift,WriteIOPS,writeiops,extended,3600,extended,False,False
-aws,redshift,WLMQueueLength,wlmqueuelength,extended,3600,extended,False,False
-aws,memorydb,CPUUtilization,cpuutilization,low,900,extended,False,False
-aws,memorydb,DatabaseMemoryUsagePercentage,databasememoryusagepercentage,standard,300,extended,False,True
-aws,memorydb,CurrConnections,currconnections,extended,3600,extended,False,False
-aws,memorydb,Evictions,evictions,standard,300,extended,False,False
-aws,dax,CPUUtilization,cpuutilization,extended,3600,extended,False,False
-aws,dax,FaultRequestCount,faultrequestcount,extended,3600,extended,False,False
-aws,dax,ItemCacheHits,itemcachehits,extended,3600,extended,False,False
-aws,dax,ItemCacheMisses,itemcachemisses,extended,3600,extended,False,False
-aws,states,ExecutionsFailed,executionsfailed,low,900,extended,False,True
-aws,states,ExecutionsSucceeded,executionssucceeded,extended,3600,extended,False,False
-aws,states,ExecutionsTimedOut,executionstimedout,low,900,extended,False,True
-aws,states,ExecutionThrottled,executionthrottled,extended,3600,extended,False,False
-aws,states,ExecutionTime,executiontime,extended,3600,extended,False,False
-aws,events,Invocations,invocations,extended,3600,extended,False,False
-aws,events,FailedInvocations,failedinvocations,low,900,extended,False,True
-aws,events,ThrottledRules,throttledrules,extended,3600,extended,False,False
-aws,events,MatchedEvents,matchedevents,extended,3600,extended,False,False
-aws,kms,SecondsUntilKeyMaterialExpiration,secondsuntilkeymaterialexpiration,slow_extended,86400,extended,False,True
-aws,certificatemanager,DaysToExpiry,daystoexpiry,slow_extended,86400,extended,False,True
-aws,backup,NumberOfBackupJobsFailed,numberofbackupjobsfailed,slow_extended,86400,extended,False,True
-aws,backup,NumberOfBackupJobsCompleted,numberofbackupjobscompleted,slow_extended,86400,extended,False,False
-aws,backup,NumberOfRestoreJobsFailed,numberofrestorejobsfailed,slow_extended,86400,extended,False,True
-aws,cognito,SignInSuccesses,signinsuccesses,extended,3600,extended,False,False
-aws,cognito,SignUpSuccesses,signupsuccesses,extended,3600,extended,False,False
-aws,cognito,ThrottledEvents,throttledevents,extended,3600,extended,False,False
-aws,logs,IncomingBytes,incomingbytes,slow_extended,86400,extended,False,False
-aws,logs,IncomingLogEvents,incominglogevents,slow_extended,86400,extended,False,False
-aws,logs,DeliveryErrors,deliveryerrors,slow_extended,86400,extended,False,True
-aws,vpn,TunnelState,tunnelstate,low,900,extended,False,True
-aws,vpn,TunnelDataIn,tunneldatain,extended,3600,extended,False,False
-aws,vpn,TunnelDataOut,tunneldataout,extended,3600,extended,False,False
-aws,globalaccelerator,NewFlowCount,newflowcount,extended,3600,extended,False,False
-aws,globalaccelerator,ProcessedBytesIn,processedbytesin,extended,3600,extended,False,False
-aws,globalaccelerator,ProcessedBytesOut,processedbytesout,extended,3600,extended,False,False
-aws,dms,CDCLatencySource,cdclatencysource,low,900,extended,False,False
-aws,dms,CDCLatencyTarget,cdclatencytarget,low,900,extended,False,False
-aws,dms,FreeableMemory,freeablememory,extended,3600,extended,False,True
-aws,dms,CPUUtilization,cpuutilization,extended,3600,extended,False,False
-aws,directconnect,ConnectionState,connectionstate,low,900,extended,False,True
-aws,directconnect,ConnectionBpsEgress,connectionbpsegress,extended,3600,extended,False,False
-aws,directconnect,ConnectionBpsIngress,connectionbpsingress,extended,3600,extended,False,False
-aws,directconnect,ConnectionErrorCount,connectionerrorcount,low,900,extended,False,False
-azure,aks_cluster,apiserver_current_inflight_requests,apiserver_current_inflight_requests,extended,900,catalog,False,False
-azure,aks_cluster,kube_node_status_condition,kube_node_status_condition,standard,300,catalog,False,True
-azure,aks_cluster,kube_pod_status_phase,kube_pod_status_phase,standard,300,catalog,False,True
-azure,aks_cluster,node_cpu_usage_percentage,node_cpu_usage_percentage,standard,300,catalog,False,False
-azure,aks_cluster,node_disk_usage_percentage,node_disk_usage_percentage,extended,900,catalog,False,True
-azure,aks_cluster,node_memory_working_set_percentage,node_memory_working_set_percentage,standard,300,catalog,False,True
-azure,app_service,AverageResponseTime,averageresponsetime,standard,300,catalog,False,False
-azure,app_service,CpuTime,cputime,low,900,catalog,False,False
-azure,app_service,HealthCheckStatus,healthcheckstatus,critical,120,catalog,True,True
-azure,app_service,Http4xx,http4xx,low,900,catalog,False,False
-azure,app_service,Http5xx,http5xx,critical,120,catalog,True,False
-azure,app_service,MemoryWorkingSet,memoryworkingset,low,900,catalog,False,False
-azure,app_service,Requests,requests,standard,300,catalog,False,False
-azure,application_gateway,CurrentConnections,currentconnections,extended,900,catalog,False,False
-azure,application_gateway,ResponseStatus,responsestatus,extended,900,catalog,False,False
-azure,application_gateway,Throughput,throughput,extended,900,catalog,False,False
-azure,application_gateway,TotalRequests,totalrequests,extended,900,catalog,False,False
-azure,application_gateway,UnhealthyHostCount,unhealthyhostcount,standard,300,catalog,False,True
-azure,cdn_profile,OriginRequestCount,originrequestcount,slow_extended,3600,catalog,False,False
-azure,cdn_profile,RequestCount,requestcount,slow_extended,3600,catalog,False,False
-azure,cdn_profile,ResponseSize,responsesize,slow_extended,3600,catalog,False,False
-azure,cdn_profile,TotalLatency,totallatency,slow_extended,3600,catalog,False,False
-azure,container_instance,CpuUsage,cpuusage,extended,900,catalog,False,False
-azure,container_instance,MemoryUsage,memoryusage,extended,900,catalog,False,False
-azure,container_instance,NetworkBytesReceivedPerSecond,networkbytesreceivedpersecond,extended,900,catalog,False,False
-azure,container_instance,NetworkBytesTransmittedPerSecond,networkbytestransmittedpersecond,extended,900,catalog,False,False
-azure,cosmosdb_account,DataUsage,datausage,extended,900,catalog,False,False
-azure,cosmosdb_account,NormalizedRUConsumption,normalizedruconsumption,standard,300,catalog,False,True
-azure,cosmosdb_account,ProvisionedThroughput,provisionedthroughput,extended,900,catalog,False,False
-azure,cosmosdb_account,ServerSideLatency,serversidelatency,extended,900,catalog,False,False
-azure,cosmosdb_account,TotalRequestUnits,totalrequestunits,extended,900,catalog,False,False
-azure,cosmosdb_account,TotalRequests,totalrequests,extended,900,catalog,False,False
-azure,data_factory,ActivityFailedRuns,activityfailedruns,slow_extended,3600,catalog,False,True
-azure,data_factory,ActivitySucceededRuns,activitysucceededruns,slow_extended,3600,catalog,False,False
-azure,data_factory,PipelineFailedRuns,pipelinefailedruns,low,900,catalog,False,True
-azure,data_factory,PipelineSucceededRuns,pipelinesucceededruns,slow_extended,3600,catalog,False,False
-azure,eventhub_namespace,IncomingBytes,incomingbytes,extended,900,catalog,False,False
-azure,eventhub_namespace,IncomingMessages,incomingmessages,extended,900,catalog,False,False
-azure,eventhub_namespace,OutgoingMessages,outgoingmessages,extended,900,catalog,False,False
-azure,eventhub_namespace,ThrottledRequests,throttledrequests,extended,900,catalog,False,False
-azure,function_app,AverageResponseTime,averageresponsetime,extended,900,catalog,False,False
-azure,function_app,FunctionExecutionCount,functionexecutioncount,extended,900,catalog,False,False
-azure,function_app,FunctionExecutionUnits,functionexecutionunits,extended,900,catalog,False,False
-azure,function_app,Http5xx,http5xx,standard,300,catalog,False,False
-azure,key_vault,Availability,availability,standard,300,catalog,False,True
-azure,key_vault,SaturationShoebox,saturationshoebox,slow_extended,3600,catalog,False,True
-azure,key_vault,ServiceApiHit,serviceapihit,slow_extended,3600,catalog,False,False
-azure,key_vault,ServiceApiLatency,serviceapilatency,slow_extended,3600,catalog,False,False
-azure,load_balancer,ByteCount,bytecount,extended,900,catalog,False,False
-azure,load_balancer,DipAvailability,dipavailability,standard,300,catalog,False,True
-azure,load_balancer,PacketCount,packetcount,extended,900,catalog,False,False
-azure,load_balancer,SYNCount,syncount,extended,900,catalog,False,False
-azure,load_balancer,VipAvailability,vipavailability,standard,300,catalog,False,True
-azure,managed_disk,Composite Disk Read Bytes/sec,composite disk read bytes/sec,slow_extended,3600,catalog,False,False
-azure,managed_disk,Composite Disk Read Operations/sec,composite disk read operations/sec,slow_extended,3600,catalog,False,False
-azure,managed_disk,Composite Disk Write Bytes/sec,composite disk write bytes/sec,slow_extended,3600,catalog,False,False
-azure,managed_disk,Composite Disk Write Operations/sec,composite disk write operations/sec,slow_extended,3600,catalog,False,False
-azure,redis_cache,PercentProcessorTime,percentprocessortime,standard,300,catalog,False,False
-azure,redis_cache,UsedMemoryPercentage,usedmemorypercentage,standard,300,catalog,False,True
-azure,redis_cache,cachehits,cachehits,extended,900,catalog,False,False
-azure,redis_cache,cachemisses,cachemisses,extended,900,catalog,False,False
-azure,redis_cache,connectedclients,connectedclients,extended,900,catalog,False,False
-azure,redis_cache,evictedkeys,evictedkeys,extended,900,catalog,False,False
-azure,redis_cache,serverLoad,serverload,extended,900,catalog,False,False
-azure,service_bus_namespace,ActiveMessages,activemessages,extended,900,catalog,False,False
-azure,service_bus_namespace,IncomingMessages,incomingmessages,extended,900,catalog,False,False
-azure,service_bus_namespace,OutgoingMessages,outgoingmessages,extended,900,catalog,False,False
-azure,service_bus_namespace,ServerErrors,servererrors,extended,900,catalog,False,False
-azure,service_bus_namespace,ThrottledRequests,throttledrequests,extended,900,catalog,False,False
-azure,sql_database,blocked_by_firewall,blocked_by_firewall,low,900,catalog,False,False
-azure,sql_database,connection_failed,connection_failed,critical,120,catalog,True,False
-azure,sql_database,connection_successful,connection_successful,low,900,catalog,False,False
-azure,sql_database,cpu_percent,cpu_percent,standard,300,catalog,False,False
-azure,sql_database,deadlock,deadlock,low,900,catalog,False,False
-azure,sql_database,dtu_consumption_percent,dtu_consumption_percent,standard,300,catalog,False,True
-azure,sql_database,storage_percent,storage_percent,standard,300,catalog,False,True
-azure,storage_account,Availability,availability,critical,120,catalog,True,True
-azure,storage_account,Egress,egress,low,900,catalog,False,False
-azure,storage_account,Ingress,ingress,low,900,catalog,False,False
-azure,storage_account,SuccessE2ELatency,successe2elatency,low,900,catalog,False,False
-azure,storage_account,SuccessServerLatency,successserverlatency,standard,300,catalog,False,False
-azure,storage_account,Transactions,transactions,standard,300,catalog,False,False
-azure,storage_account,UsedCapacity,usedcapacity,low,900,catalog,False,False
-azure,vm,CPU Credits Remaining,cpu credits remaining,low,900,catalog,False,True
-azure,vm,Disk Read Bytes,disk read bytes,low,900,catalog,False,False
-azure,vm,Disk Read Operations/Sec,disk read operations/sec,low,900,catalog,False,False
-azure,vm,Disk Write Bytes,disk write bytes,low,900,catalog,False,False
-azure,vm,Disk Write Operations/Sec,disk write operations/sec,low,900,catalog,False,False
-azure,vm,Network In Total,network in total,standard,300,catalog,False,False
-azure,vm,Network Out Total,network out total,standard,300,catalog,False,False
-azure,vm,OS Disk Queue Depth,os disk queue depth,low,900,catalog,False,False
-azure,vm,Percentage CPU,percentage cpu,standard,300,catalog,False,False
-azure,vm,VM Availability Metric,vm availability metric,critical,120,catalog,True,True
-azure,vmss,Disk Read Bytes,disk read bytes,extended,900,catalog,False,False
-azure,vmss,Disk Write Bytes,disk write bytes,extended,900,catalog,False,False
-azure,vmss,Network In Total,network in total,extended,900,catalog,False,False
-azure,vmss,Network Out Total,network out total,extended,900,catalog,False,False
-azure,vmss,Percentage CPU,percentage cpu,extended,900,catalog,False,False
-azure,vpn_gateway,P2SConnectionCount,p2sconnectioncount,slow_extended,3600,catalog,False,False
-azure,vpn_gateway,TunnelAverageBandwidth,tunnelaveragebandwidth,slow_extended,3600,catalog,False,False
-azure,vpn_gateway,TunnelEgressBytes,tunnelegressbytes,slow_extended,3600,catalog,False,False
-azure,vpn_gateway,TunnelIngressBytes,tunnelingressbytes,slow_extended,3600,catalog,False,False
-gcp,bigquery_project,query/count,query/count,extended,3600,catalog,False,False
-gcp,bigquery_project,query/execution_times,query/execution_times,extended,3600,catalog,False,False
-gcp,bigquery_project,slots/allocated_for_project,slots/allocated_for_project,extended,3600,catalog,False,False
-gcp,bigquery_project,storage/stored_bytes,storage/stored_bytes,extended,3600,catalog,False,False
-gcp,cloud_lb,backend_latencies,backend_latencies,low,900,catalog,False,False
-gcp,cloud_lb,backend_request_count,backend_request_count,extended,3600,catalog,False,False
-gcp,cloud_lb,request_count,request_count,extended,3600,catalog,False,False
-gcp,cloud_lb,total_latencies,total_latencies,low,900,catalog,False,False
-gcp,cloud_run_service,billable_instance_time,billable_instance_time,low,900,catalog,False,False
-gcp,cloud_run_service,cpu/utilizations,cpu/utilizations,standard,300,catalog,False,False
-gcp,cloud_run_service,instance_count,instance_count,standard,300,catalog,False,False
-gcp,cloud_run_service,memory/utilizations,memory/utilizations,standard,300,catalog,False,True
-gcp,cloud_run_service,request_count,request_count,standard,300,catalog,False,False
-gcp,cloud_run_service,request_latencies,request_latencies,standard,300,catalog,False,False
-gcp,cloud_run_service,startup_latencies,startup_latencies,low,900,catalog,False,False
-gcp,cloudfunctions_function,active_instances,active_instances,extended,3600,catalog,False,False
-gcp,cloudfunctions_function,execution_count,execution_count,extended,3600,catalog,False,False
-gcp,cloudfunctions_function,execution_times,execution_times,extended,3600,catalog,False,False
-gcp,cloudfunctions_function,network_egress,network_egress,extended,3600,catalog,False,False
-gcp,cloudfunctions_function,user_memory_bytes,user_memory_bytes,extended,3600,catalog,False,False
-gcp,cloudsql_instance,cpu/utilization,cpu/utilization,standard,300,catalog,False,False
-gcp,cloudsql_instance,disk/read_ops_count,disk/read_ops_count,low,900,catalog,False,False
-gcp,cloudsql_instance,disk/utilization,disk/utilization,standard,300,catalog,False,True
-gcp,cloudsql_instance,disk/write_ops_count,disk/write_ops_count,low,900,catalog,False,False
-gcp,cloudsql_instance,memory/utilization,memory/utilization,standard,300,catalog,False,True
-gcp,cloudsql_instance,mysql/replication/seconds_behind_master,mysql/replication/seconds_behind_master,low,900,catalog,False,False
-gcp,cloudsql_instance,network/connections,network/connections,standard,300,catalog,False,False
-gcp,cloudsql_instance,postgresql/replication/replica_byte_lag,postgresql/replication/replica_byte_lag,low,900,catalog,False,False
-gcp,cloudsql_instance,up,up,critical,120,catalog,True,True
-gcp,compute_instance,cpu/utilization,cpu/utilization,standard,300,catalog,False,False
-gcp,compute_instance,disk/read_bytes_count,disk/read_bytes_count,low,900,catalog,False,False
-gcp,compute_instance,disk/read_ops_count,disk/read_ops_count,low,900,catalog,False,False
-gcp,compute_instance,disk/write_bytes_count,disk/write_bytes_count,low,900,catalog,False,False
-gcp,compute_instance,disk/write_ops_count,disk/write_ops_count,low,900,catalog,False,False
-gcp,compute_instance,network/received_bytes_count,network/received_bytes_count,standard,300,catalog,False,False
-gcp,compute_instance,network/sent_bytes_count,network/sent_bytes_count,standard,300,catalog,False,False
-gcp,compute_instance,uptime,uptime,standard,300,catalog,False,True
-gcp,firestore_database,document/delete_count,document/delete_count,extended,3600,catalog,False,False
-gcp,firestore_database,document/read_count,document/read_count,extended,3600,catalog,False,False
-gcp,firestore_database,document/write_count,document/write_count,extended,3600,catalog,False,False
-gcp,firestore_database,network/active_connections,network/active_connections,extended,3600,catalog,False,False
-gcp,gce_persistent_disk,read_bytes_count,read_bytes_count,extended,3600,catalog,False,False
-gcp,gce_persistent_disk,read_ops_count,read_ops_count,extended,3600,catalog,False,False
-gcp,gce_persistent_disk,write_bytes_count,write_bytes_count,extended,3600,catalog,False,False
-gcp,gce_persistent_disk,write_ops_count,write_ops_count,extended,3600,catalog,False,False
-gcp,gcs_bucket,api/request_count,api/request_count,standard,300,catalog,False,False
-gcp,gcs_bucket,network/sent_bytes_count,network/sent_bytes_count,low,900,catalog,False,False
-gcp,gcs_bucket,object_count,object_count,low,900,catalog,False,False
-gcp,gcs_bucket,total_byte_seconds,total_byte_seconds,low,900,catalog,False,False
-gcp,gcs_bucket,total_bytes,total_bytes,low,900,catalog,False,False
-gcp,gke_cluster,cpu/core_usage_time,cpu/core_usage_time,extended,3600,catalog,False,False
-gcp,gke_cluster,cpu/limit_utilization,cpu/limit_utilization,low,900,catalog,False,False
-gcp,gke_cluster,cpu/request_utilization,cpu/request_utilization,extended,3600,catalog,False,False
-gcp,gke_cluster,memory/limit_utilization,memory/limit_utilization,low,900,catalog,False,True
-gcp,gke_cluster,memory/used_bytes,memory/used_bytes,extended,3600,catalog,False,False
-gcp,gke_cluster,restart_count,restart_count,low,900,catalog,False,False
-gcp,gke_cluster,uptime,uptime,extended,3600,catalog,False,True
-gcp,gke_node,cpu/allocatable_utilization,cpu/allocatable_utilization,low,900,catalog,False,False
-gcp,gke_node,cpu/core_usage_time,cpu/core_usage_time,extended,3600,catalog,False,False
-gcp,gke_node,ephemeral_storage/used_bytes,ephemeral_storage/used_bytes,low,900,catalog,False,False
-gcp,gke_node,memory/allocatable_utilization,memory/allocatable_utilization,low,900,catalog,False,True
-gcp,nat_gateway,dropped_sent_packets_count,dropped_sent_packets_count,low,900,catalog,False,False
-gcp,nat_gateway,nat_allocation_failed,nat_allocation_failed,standard,300,catalog,False,True
-gcp,nat_gateway,port_usage,port_usage,low,900,catalog,False,True
-gcp,nat_gateway,received_bytes_count,received_bytes_count,extended,3600,catalog,False,False
-gcp,nat_gateway,sent_bytes_count,sent_bytes_count,extended,3600,catalog,False,False
-gcp,pubsub_subscription,ack_message_count,ack_message_count,extended,3600,catalog,False,False
-gcp,pubsub_subscription,num_undelivered_messages,num_undelivered_messages,standard,300,catalog,False,False
-gcp,pubsub_subscription,oldest_unacked_message_age,oldest_unacked_message_age,standard,300,catalog,False,False
-gcp,pubsub_subscription,pull_ack_message_operation_count,pull_ack_message_operation_count,extended,3600,catalog,False,False
-gcp,pubsub_subscription,unacked_bytes_by_region,unacked_bytes_by_region,extended,3600,catalog,False,False
-gcp,pubsub_topic,byte_cost,byte_cost,extended,3600,catalog,False,False
-gcp,pubsub_topic,message_sizes,message_sizes,extended,3600,catalog,False,False
-gcp,pubsub_topic,send_message_operation_count,send_message_operation_count,extended,3600,catalog,False,False
-gcp,redis_instance,clients/connected,clients/connected,extended,3600,catalog,False,False
-gcp,redis_instance,keyspace/avg_ttl,keyspace/avg_ttl,extended,3600,catalog,False,False
-gcp,redis_instance,replication/role,replication/role,extended,3600,catalog,False,True
-gcp,redis_instance,stats/cache_hit_ratio,stats/cache_hit_ratio,extended,3600,catalog,False,False
-gcp,redis_instance,stats/cpu_utilization,stats/cpu_utilization,low,900,catalog,False,False
-gcp,redis_instance,stats/memory/usage_ratio,stats/memory/usage_ratio,standard,300,catalog,False,True
-gcp,spanner_instance,api/request_count,api/request_count,extended,3600,catalog,False,False
-gcp,spanner_instance,api/request_latencies,api/request_latencies,low,900,catalog,False,False
-gcp,spanner_instance,instance/cpu/utilization,instance/cpu/utilization,low,900,catalog,False,False
-gcp,spanner_instance,instance/storage/used_bytes,instance/storage/used_bytes,extended,3600,catalog,False,False
+provider,service,metric,db_metric,tier,interval_s,source,evaluated_every_2min,static_only,publish_s,publish_status,billing,billed_unit,units_per_resource_day,cost_note
+aws,ec2,CPUUtilization,cpuutilization,standard,300,core,False,False,300,repo,paid,metrics_requested,288.0,
+aws,ec2,NetworkIn,networkin,standard,300,core,False,False,300,repo,paid,metrics_requested,288.0,
+aws,ec2,NetworkOut,networkout,standard,300,core,False,False,300,repo,paid,metrics_requested,288.0,
+aws,ec2,CPUCreditBalance,cpucreditbalance,low,900,core,False,True,300,repo,paid,metrics_requested,96.0,only resources passing the 'tclass' gate are queried
+aws,ebs,VolumeQueueLength,volumequeuelength,standard,300,core,False,False,300,repo,paid,metrics_requested,288.0,
+aws,ebs,VolumeReadOps,volumereadops,low,900,core,False,False,300,repo,paid,metrics_requested,96.0,
+aws,ebs,VolumeWriteOps,volumewriteops,low,900,core,False,False,300,repo,paid,metrics_requested,96.0,
+aws,ebs,VolumeReadBytes,volumereadbytes,low,900,core,False,False,300,repo,paid,metrics_requested,96.0,
+aws,ebs,VolumeWriteBytes,volumewritebytes,low,900,core,False,False,300,repo,paid,metrics_requested,96.0,
+aws,rds,CPUUtilization,cpuutilization,critical,120,core,True,False,60,repo,paid,metrics_requested,720.0,
+aws,rds,DatabaseConnections,dbconnections,critical,120,core,True,False,60,repo,paid,metrics_requested,720.0,
+aws,rds,FreeableMemory,freeablememory,critical,120,core,True,True,60,repo,paid,metrics_requested,720.0,
+aws,rds,ReadLatency,readlatency,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,
+aws,rds,WriteLatency,writelatency,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,
+aws,rds,DiskQueueDepth,diskqueuedepth,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,
+aws,rds,ReplicaLag,replicalag,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,only resources passing the 'replica' gate are queried
+aws,rds,ReadIOPS,readiops,low,900,core,False,False,60,repo,paid,metrics_requested,96.0,
+aws,rds,WriteIOPS,writeiops,low,900,core,False,False,60,repo,paid,metrics_requested,96.0,
+aws,rds,FreeStorageSpace,freestorage,low,900,core,False,True,60,repo,paid,metrics_requested,96.0,
+aws,rds,SwapUsage,swapusage,low,900,core,False,False,60,repo,paid,metrics_requested,96.0,
+aws,elb,RequestCount,requestcount,critical,120,core,True,False,60,repo,paid,metrics_requested,720.0,only resources passing the 'alb' gate are queried
+aws,elb,HTTPCode_Target_5XX_Count,errors5xx,critical,120,core,True,False,60,repo,paid,metrics_requested,720.0,only resources passing the 'alb' gate are queried
+aws,elb,HTTPCode_ELB_5XX_Count,httpcode_elb_5xx_count,critical,120,core,True,False,60,repo,paid,metrics_requested,720.0,only resources passing the 'alb' gate are queried
+aws,elb,TargetResponseTime,responselatency,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,only resources passing the 'alb' gate are queried
+aws,elb,TargetConnectionErrorCount,targetconnectionerrorcount,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,only resources passing the 'alb' gate are queried
+aws,elb,RejectedConnectionCount,rejectedconnectioncount,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,only resources passing the 'alb' gate are queried
+aws,elb,HTTPCode_Target_4XX_Count,httpcode_target_4xx_count,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,only resources passing the 'alb' gate are queried
+aws,elb,ActiveConnectionCount,activeconnectioncount,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,only resources passing the 'alb' gate are queried
+aws,elb,NewConnectionCount,newconnectioncount,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,only resources passing the 'alb' gate are queried
+aws,elb,ActiveFlowCount,activeflowcount,standard,300,core,False,False,60,unverified,paid,metrics_requested,288.0,only resources passing the 'nlb' gate are queried
+aws,elb,NewFlowCount,newflowcount,standard,300,core,False,False,60,unverified,paid,metrics_requested,288.0,only resources passing the 'nlb' gate are queried
+aws,elb,ProcessedBytes,processedbytes,standard,300,core,False,False,60,unverified,paid,metrics_requested,288.0,only resources passing the 'nlb' gate are queried
+aws,elb,TCP_Client_Reset_Count,tcp_client_reset_count,standard,300,core,False,False,60,unverified,paid,metrics_requested,288.0,only resources passing the 'nlb' gate are queried
+aws,lambda,Errors,errors,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,
+aws,lambda,Throttles,throttles,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,
+aws,lambda,Duration,duration,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,
+aws,lambda,ConcurrentExecutions,concurrentexecutions,standard,300,core,False,False,60,repo,paid,metrics_requested,288.0,
+aws,lambda,Invocations,invocations,low,900,core,False,False,60,repo,paid,metrics_requested,96.0,
+aws,lambda,IteratorAge,iteratorage,low,900,core,False,False,60,repo,paid,metrics_requested,96.0,
+aws,ec2,mem_used_percent,mem_used_percent,standard,300,cwagent,False,True,60,repo,paid,metrics_requested,288.0,
+aws,ec2,disk_used_percent,disk_used_percent,low,900,cwagent,False,True,60,repo,paid,metrics_requested,96.0,
+aws,ec2,statuscheckfailed,statuscheckfailed,describe,60,describe API (free),True,True,60,repo,free,none,0.0,"Describe API (free); about 1440 calls/day per account+region, not per metric"
+aws,elb,healthyhosts_describe,healthyhosts_describe,describe,60,describe API (free),True,True,60,repo,free,none,0.0,"Describe API (free); about 1440 calls/day per account+region, not per metric"
+aws,elb,unhealthyhosts_describe,unhealthyhosts_describe,describe,60,describe API (free),True,True,60,repo,free,none,0.0,"Describe API (free); about 1440 calls/day per account+region, not per metric"
+aws,s3,BucketSizeBytes,bucketsizebytes,slow_extended,86400,extended,False,False,86400,repo,paid,metrics_requested,1.0,
+aws,s3,NumberOfObjects,numberofobjects,slow_extended,86400,extended,False,False,86400,repo,paid,metrics_requested,1.0,
+aws,s3,AllRequests,allrequests,low,900,extended,False,False,60,repo,paid,metrics_requested,96.0,
+aws,s3,4xxErrors,4xxerrors,low,900,extended,False,False,60,repo,paid,metrics_requested,96.0,
+aws,s3,5xxErrors,5xxerrors,low,900,extended,False,False,60,repo,paid,metrics_requested,96.0,
+aws,s3,FirstByteLatency,firstbytelatency,low,900,extended,False,False,60,repo,paid,metrics_requested,96.0,
+aws,s3,TotalRequestLatency,totalrequestlatency,low,900,extended,False,False,60,repo,paid,metrics_requested,96.0,
+aws,ecs,CPUUtilization,cpuutilization,standard,300,extended,False,False,60,unverified,paid,metrics_requested,288.0,
+aws,ecs,MemoryUtilization,memoryutilization,standard,300,extended,False,True,60,unverified,paid,metrics_requested,288.0,
+aws,ecs,RunningTaskCount,runningtaskcount,standard,300,extended,False,False,60,unverified,paid,metrics_requested,288.0,
+aws,ecs,PendingTaskCount,pendingtaskcount,standard,300,extended,False,False,60,unverified,paid,metrics_requested,288.0,
+aws,apigateway,Count,count,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,apigateway,4XXError,4xxerror,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,apigateway,5XXError,5xxerror,standard,300,extended,False,False,60,unverified,paid,metrics_requested,288.0,
+aws,apigateway,Latency,latency,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,apigateway,IntegrationLatency,integrationlatency,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,apigateway,CacheHitCount,cachehitcount,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,apigateway,CacheMissCount,cachemisscount,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,dynamodb,ConsumedReadCapacityUnits,consumedreadcapacityunits,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,dynamodb,ConsumedWriteCapacityUnits,consumedwritecapacityunits,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,dynamodb,ThrottledRequests,throttledrequests,standard,300,extended,False,False,60,unverified,paid,metrics_requested,288.0,"SEARCH expression: billed per matching series, the collector counts 1 (a floor), real units may be higher"
+aws,dynamodb,ReadThrottleEvents,readthrottleevents,standard,300,extended,False,False,60,unverified,paid,metrics_requested,288.0,
+aws,dynamodb,WriteThrottleEvents,writethrottleevents,standard,300,extended,False,False,60,unverified,paid,metrics_requested,288.0,
+aws,dynamodb,SuccessfulRequestLatency,successfulrequestlatency,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,"SEARCH expression: billed per matching series, the collector counts 1 (a floor), real units may be higher"
+aws,dynamodb,SystemErrors,systemerrors,standard,300,extended,False,False,60,unverified,paid,metrics_requested,288.0,"SEARCH expression: billed per matching series, the collector counts 1 (a floor), real units may be higher"
+aws,dynamodb,UserErrors,usererrors,extended,3600,extended,False,False,60,unverified,free,none,0.0,never sent to CloudWatch (derived locally or only published at account level)
+aws,dynamodb,ConditionalCheckFailedRequests,conditionalcheckfailedrequests,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,sqs,ApproximateNumberOfMessagesVisible,approximatenumberofmessagesvisible,standard,300,extended,False,False,60,unverified,paid,metrics_requested,288.0,
+aws,sqs,ApproximateAgeOfOldestMessage,approximateageofoldestmessage,standard,300,extended,False,False,60,unverified,paid,metrics_requested,288.0,
+aws,sqs,NumberOfMessagesSent,numberofmessagessent,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,sqs,NumberOfMessagesReceived,numberofmessagesreceived,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,sqs,NumberOfMessagesDeleted,numberofmessagesdeleted,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,sqs,NumberOfEmptyReceives,numberofemptyreceives,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,sqs,ApproximateNumberOfMessagesNotVisible,approximatenumberofmessagesnotvisible,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,sns,NumberOfMessagesPublished,numberofmessagespublished,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,sns,NumberOfNotificationsFailed,numberofnotificationsfailed,extended,3600,extended,False,True,60,unverified,paid,metrics_requested,24.0,
+aws,sns,NumberOfNotificationsDelivered,numberofnotificationsdelivered,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,sns,PublishSize,publishsize,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,cloudfront,Requests,requests,slow_extended,86400,extended,False,False,60,unverified,paid,metrics_requested,1.0,
+aws,cloudfront,BytesDownloaded,bytesdownloaded,slow_extended,86400,extended,False,False,60,unverified,paid,metrics_requested,1.0,
+aws,cloudfront,BytesUploaded,bytesuploaded,slow_extended,86400,extended,False,False,60,unverified,paid,metrics_requested,1.0,
+aws,cloudfront,4xxErrorRate,4xxerrorrate,slow_extended,86400,extended,False,False,60,unverified,paid,metrics_requested,1.0,
+aws,cloudfront,5xxErrorRate,5xxerrorrate,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,cloudfront,TotalErrorRate,totalerrorrate,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,cloudfront,OriginLatency,originlatency,slow_extended,86400,extended,False,False,60,unverified,paid,metrics_requested,1.0,
+aws,cloudfront,CacheHitRate,cachehitrate,slow_extended,86400,extended,False,False,60,unverified,paid,metrics_requested,1.0,
+aws,elasticache,CPUUtilization,cpuutilization,standard,300,extended,False,False,60,unverified,paid,metrics_requested,288.0,
+aws,elasticache,DatabaseMemoryUsagePercentage,databasememoryusagepercentage,standard,300,extended,False,True,60,unverified,paid,metrics_requested,288.0,
+aws,elasticache,CurrConnections,currconnections,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,elasticache,Evictions,evictions,standard,300,extended,False,False,60,unverified,paid,metrics_requested,288.0,
+aws,elasticache,CacheHits,cachehits,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,elasticache,CacheMisses,cachemisses,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,elasticache,ReplicationLag,replicationlag,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,elasticache,SwapUsage,swapusage,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,elasticache,NetworkBytesIn,networkbytesin,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,elasticache,NetworkBytesOut,networkbytesout,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,opensearch,ClusterStatus.green,clusterstatus.green,extended,3600,extended,False,True,60,unverified,paid,metrics_requested,24.0,
+aws,opensearch,ClusterStatus.yellow,clusterstatus.yellow,standard,300,extended,False,True,60,unverified,paid,metrics_requested,288.0,
+aws,opensearch,ClusterStatus.red,clusterstatus.red,standard,300,extended,False,True,60,unverified,paid,metrics_requested,288.0,
+aws,opensearch,CPUUtilization,cpuutilization,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,opensearch,JVMMemoryPressure,jvmmemorypressure,standard,300,extended,False,True,60,unverified,paid,metrics_requested,288.0,
+aws,opensearch,FreeStorageSpace,freestoragespace,low,900,extended,False,True,60,unverified,paid,metrics_requested,96.0,
+aws,opensearch,ClusterIndexWritesBlocked,clusterindexwritesblocked,standard,300,extended,False,True,60,unverified,paid,metrics_requested,288.0,
+aws,opensearch,Nodes,nodes,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,opensearch,SearchLatency,searchlatency,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,opensearch,IndexingLatency,indexinglatency,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,eks,cluster_failed_node_count,cluster_failed_node_count,standard,300,extended,False,True,60,unverified,paid,metrics_requested,288.0,
+aws,eks,cluster_node_count,cluster_node_count,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,efs,PercentIOLimit,percentiolimit,low,900,extended,False,True,60,unverified,paid,metrics_requested,96.0,
+aws,efs,BurstCreditBalance,burstcreditbalance,low,900,extended,False,True,60,unverified,paid,metrics_requested,96.0,
+aws,efs,ClientConnections,clientconnections,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,efs,StorageBytes,storagebytes,extended,3600,extended,False,False,900,unverified,paid,metrics_requested,24.0,
+aws,efs,DataReadIOBytes,datareadiobytes,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,efs,DataWriteIOBytes,datawriteiobytes,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,documentdb,CPUUtilization,cpuutilization,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,documentdb,DatabaseConnections,databaseconnections,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,documentdb,FreeableMemory,freeablememory,low,900,extended,False,True,60,unverified,paid,metrics_requested,96.0,
+aws,documentdb,VolumeBytesUsed,volumebytesused,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,documentdb,BufferCacheHitRatio,buffercachehitratio,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,neptune,CPUUtilization,cpuutilization,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,neptune,GremlinRequestsPerSec,gremlinrequestspersec,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,neptune,SparqlRequestsPerSec,sparqlrequestspersec,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,neptune,VolumeBytesUsed,volumebytesused,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,msk,CpuUser,cpuuser,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,"SEARCH expression: billed per matching series, the collector counts 1 (a floor), real units may be higher"
+aws,msk,KafkaDataLogsDiskUsed,kafkadatalogsdiskused,low,900,extended,False,True,60,unverified,paid,metrics_requested,96.0,"SEARCH expression: billed per matching series, the collector counts 1 (a floor), real units may be higher"
+aws,msk,UnderReplicatedPartitions,underreplicatedpartitions,standard,300,extended,False,True,60,unverified,paid,metrics_requested,288.0,"SEARCH expression: billed per matching series, the collector counts 1 (a floor), real units may be higher"
+aws,msk,OfflinePartitionsCount,offlinepartitionscount,standard,300,extended,False,True,60,unverified,paid,metrics_requested,288.0,
+aws,msk,BytesInPerSec,bytesinpersec,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,msk,BytesOutPerSec,bytesoutpersec,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,kinesis,IncomingBytes,incomingbytes,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,kinesis,IncomingRecords,incomingrecords,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,kinesis,ReadProvisionedThroughputExceeded,readprovisionedthroughputexceeded,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,kinesis,WriteProvisionedThroughputExceeded,writeprovisionedthroughputexceeded,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,kinesis,GetRecords.IteratorAgeMilliseconds,getrecords.iteratoragemilliseconds,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,firehose,DeliveryToS3.Success,deliverytos3.success,extended,3600,extended,False,True,60,unverified,paid,metrics_requested,24.0,
+aws,firehose,IncomingBytes,incomingbytes,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,firehose,IncomingRecords,incomingrecords,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,firehose,DeliveryToS3.DataFreshness,deliverytos3.datafreshness,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,autoscaling,GroupInServiceInstances,groupinserviceinstances,extended,3600,extended,False,True,60,unverified,paid,metrics_requested,24.0,
+aws,autoscaling,GroupDesiredCapacity,groupdesiredcapacity,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,autoscaling,GroupMinSize,groupminsize,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,autoscaling,GroupMaxSize,groupmaxsize,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,autoscaling,GroupPendingInstances,grouppendinginstances,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,autoscaling,GroupTerminatingInstances,groupterminatinginstances,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,natgateway,BytesOutToDestination,bytesouttodestination,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,natgateway,BytesInFromSource,bytesinfromsource,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,natgateway,ErrorPortAllocation,errorportallocation,low,900,extended,False,True,60,unverified,paid,metrics_requested,96.0,
+aws,natgateway,ActiveConnectionCount,activeconnectioncount,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,natgateway,PacketsDropCount,packetsdropcount,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,transitgateway,BytesIn,bytesin,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,transitgateway,BytesOut,bytesout,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,transitgateway,PacketDropCountBlackhole,packetdropcountblackhole,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,transitgateway,PacketDropCountNoRoute,packetdropcountnoroute,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,route53,HealthCheckStatus,healthcheckstatus,standard,300,extended,False,True,60,unverified,paid,metrics_requested,288.0,
+aws,route53,HealthCheckPercentageHealthy,healthcheckpercentagehealthy,extended,3600,extended,False,True,60,unverified,paid,metrics_requested,24.0,
+aws,route53,ConnectionTime,connectiontime,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,wafv2,AllowedRequests,allowedrequests,slow_extended,86400,extended,False,False,60,repo,paid,metrics_requested,1.0,
+aws,wafv2,BlockedRequests,blockedrequests,slow_extended,86400,extended,False,False,60,repo,paid,metrics_requested,1.0,
+aws,wafv2,CountedRequests,countedrequests,slow_extended,86400,extended,False,False,60,repo,paid,metrics_requested,1.0,
+aws,wafv2,PassedRequests,passedrequests,slow_extended,86400,extended,False,False,60,repo,paid,metrics_requested,1.0,
+aws,wafv2,CaptchaRequests,captcharequests,slow_extended,86400,extended,False,False,60,repo,paid,metrics_requested,1.0,
+aws,wafv2,ChallengeRequests,challengerequests,slow_extended,86400,extended,False,False,60,repo,paid,metrics_requested,1.0,
+aws,wafv2,RequestsWithValidCaptchaToken,requestswithvalidcaptchatoken,slow_extended,86400,extended,False,False,60,repo,paid,metrics_requested,1.0,
+aws,wafv2,RequestsWithValidChallengeToken,requestswithvalidchallengetoken,slow_extended,86400,extended,False,False,60,repo,paid,metrics_requested,1.0,
+aws,wafv2,BlockRatio,blockratio,slow_extended,86400,extended,False,False,60,repo,free,none,0.0,never sent to CloudWatch (derived locally or only published at account level)
+aws,redshift,CPUUtilization,cpuutilization,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,redshift,PercentageDiskSpaceUsed,percentagediskspaceused,low,900,extended,False,True,60,unverified,paid,metrics_requested,96.0,
+aws,redshift,DatabaseConnections,databaseconnections,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,redshift,QueryDuration,queryduration,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,redshift,ReadIOPS,readiops,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,redshift,WriteIOPS,writeiops,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,redshift,WLMQueueLength,wlmqueuelength,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,memorydb,CPUUtilization,cpuutilization,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,memorydb,DatabaseMemoryUsagePercentage,databasememoryusagepercentage,standard,300,extended,False,True,60,unverified,paid,metrics_requested,288.0,
+aws,memorydb,CurrConnections,currconnections,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,memorydb,Evictions,evictions,standard,300,extended,False,False,60,unverified,paid,metrics_requested,288.0,
+aws,dax,CPUUtilization,cpuutilization,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,dax,FaultRequestCount,faultrequestcount,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,dax,ItemCacheHits,itemcachehits,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,dax,ItemCacheMisses,itemcachemisses,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,states,ExecutionsFailed,executionsfailed,low,900,extended,False,True,60,unverified,paid,metrics_requested,96.0,
+aws,states,ExecutionsSucceeded,executionssucceeded,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,states,ExecutionsTimedOut,executionstimedout,low,900,extended,False,True,60,unverified,paid,metrics_requested,96.0,
+aws,states,ExecutionThrottled,executionthrottled,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,states,ExecutionTime,executiontime,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,events,Invocations,invocations,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,events,FailedInvocations,failedinvocations,low,900,extended,False,True,60,unverified,paid,metrics_requested,96.0,
+aws,events,ThrottledRules,throttledrules,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,events,MatchedEvents,matchedevents,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,kms,SecondsUntilKeyMaterialExpiration,secondsuntilkeymaterialexpiration,slow_extended,86400,extended,False,True,86400,repo,paid,metrics_requested,1.0,
+aws,certificatemanager,DaysToExpiry,daystoexpiry,slow_extended,86400,extended,False,True,86400,repo,paid,metrics_requested,1.0,
+aws,backup,NumberOfBackupJobsFailed,numberofbackupjobsfailed,slow_extended,86400,extended,False,True,300,unverified,paid,metrics_requested,1.0,
+aws,backup,NumberOfBackupJobsCompleted,numberofbackupjobscompleted,slow_extended,86400,extended,False,False,300,unverified,paid,metrics_requested,1.0,
+aws,backup,NumberOfRestoreJobsFailed,numberofrestorejobsfailed,slow_extended,86400,extended,False,True,300,unverified,paid,metrics_requested,1.0,
+aws,cognito,SignInSuccesses,signinsuccesses,extended,3600,extended,False,False,300,unverified,paid,metrics_requested,24.0,
+aws,cognito,SignUpSuccesses,signupsuccesses,extended,3600,extended,False,False,300,unverified,paid,metrics_requested,24.0,
+aws,cognito,ThrottledEvents,throttledevents,extended,3600,extended,False,False,300,unverified,paid,metrics_requested,24.0,
+aws,logs,IncomingBytes,incomingbytes,slow_extended,86400,extended,False,False,60,unverified,paid,metrics_requested,1.0,
+aws,logs,IncomingLogEvents,incominglogevents,slow_extended,86400,extended,False,False,60,unverified,paid,metrics_requested,1.0,
+aws,logs,DeliveryErrors,deliveryerrors,slow_extended,86400,extended,False,True,60,unverified,paid,metrics_requested,1.0,
+aws,vpn,TunnelState,tunnelstate,low,900,extended,False,True,300,unverified,paid,metrics_requested,96.0,
+aws,vpn,TunnelDataIn,tunneldatain,extended,3600,extended,False,False,300,unverified,paid,metrics_requested,24.0,
+aws,vpn,TunnelDataOut,tunneldataout,extended,3600,extended,False,False,300,unverified,paid,metrics_requested,24.0,
+aws,globalaccelerator,NewFlowCount,newflowcount,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,globalaccelerator,ProcessedBytesIn,processedbytesin,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,globalaccelerator,ProcessedBytesOut,processedbytesout,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,dms,CDCLatencySource,cdclatencysource,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,dms,CDCLatencyTarget,cdclatencytarget,low,900,extended,False,False,60,unverified,paid,metrics_requested,96.0,
+aws,dms,FreeableMemory,freeablememory,extended,3600,extended,False,True,60,unverified,paid,metrics_requested,24.0,
+aws,dms,CPUUtilization,cpuutilization,extended,3600,extended,False,False,60,unverified,paid,metrics_requested,24.0,
+aws,directconnect,ConnectionState,connectionstate,low,900,extended,False,True,300,unverified,paid,metrics_requested,96.0,
+aws,directconnect,ConnectionBpsEgress,connectionbpsegress,extended,3600,extended,False,False,300,unverified,paid,metrics_requested,24.0,
+aws,directconnect,ConnectionBpsIngress,connectionbpsingress,extended,3600,extended,False,False,300,unverified,paid,metrics_requested,24.0,
+aws,directconnect,ConnectionErrorCount,connectionerrorcount,low,900,extended,False,False,300,unverified,paid,metrics_requested,96.0,
+azure,aks_cluster,apiserver_current_inflight_requests,apiserver_current_inflight_requests,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,aks_cluster,kube_node_status_condition,kube_node_status_condition,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,aks_cluster,kube_pod_status_phase,kube_pod_status_phase,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,aks_cluster,node_cpu_usage_percentage,node_cpu_usage_percentage,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,aks_cluster,node_disk_usage_percentage,node_disk_usage_percentage,extended,900,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,aks_cluster,node_memory_working_set_percentage,node_memory_working_set_percentage,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,app_service,AverageResponseTime,averageresponsetime,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,app_service,CpuTime,cputime,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,app_service,HealthCheckStatus,healthcheckstatus,critical,120,catalog,True,True,60,repo,paid_after_free_tier,api_calls,14.4,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 720 calls/day"
+azure,app_service,Http4xx,http4xx,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,app_service,Http5xx,http5xx,critical,120,catalog,True,False,60,repo,paid_after_free_tier,api_calls,14.4,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 720 calls/day"
+azure,app_service,MemoryWorkingSet,memoryworkingset,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,app_service,Requests,requests,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,application_gateway,CurrentConnections,currentconnections,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,application_gateway,ResponseStatus,responsestatus,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,application_gateway,Throughput,throughput,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,application_gateway,TotalRequests,totalrequests,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,application_gateway,UnhealthyHostCount,unhealthyhostcount,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,cdn_profile,OriginRequestCount,originrequestcount,slow_extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,cdn_profile,RequestCount,requestcount,slow_extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,cdn_profile,ResponseSize,responsesize,slow_extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,cdn_profile,TotalLatency,totallatency,slow_extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,container_instance,CpuUsage,cpuusage,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,container_instance,MemoryUsage,memoryusage,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,container_instance,NetworkBytesReceivedPerSecond,networkbytesreceivedpersecond,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,container_instance,NetworkBytesTransmittedPerSecond,networkbytestransmittedpersecond,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,cosmosdb_account,DataUsage,datausage,extended,900,catalog,False,False,300,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,cosmosdb_account,NormalizedRUConsumption,normalizedruconsumption,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,cosmosdb_account,ProvisionedThroughput,provisionedthroughput,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,cosmosdb_account,ServerSideLatency,serversidelatency,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,cosmosdb_account,TotalRequestUnits,totalrequestunits,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,cosmosdb_account,TotalRequests,totalrequests,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,data_factory,ActivityFailedRuns,activityfailedruns,slow_extended,3600,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,data_factory,ActivitySucceededRuns,activitysucceededruns,slow_extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,data_factory,PipelineFailedRuns,pipelinefailedruns,low,900,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,data_factory,PipelineSucceededRuns,pipelinesucceededruns,slow_extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,eventhub_namespace,IncomingBytes,incomingbytes,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,eventhub_namespace,IncomingMessages,incomingmessages,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,eventhub_namespace,OutgoingMessages,outgoingmessages,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,eventhub_namespace,ThrottledRequests,throttledrequests,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,function_app,AverageResponseTime,averageresponsetime,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,function_app,FunctionExecutionCount,functionexecutioncount,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,function_app,FunctionExecutionUnits,functionexecutionunits,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,function_app,Http5xx,http5xx,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,key_vault,Availability,availability,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,key_vault,SaturationShoebox,saturationshoebox,slow_extended,3600,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,key_vault,ServiceApiHit,serviceapihit,slow_extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,key_vault,ServiceApiLatency,serviceapilatency,slow_extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,load_balancer,ByteCount,bytecount,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,load_balancer,DipAvailability,dipavailability,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,load_balancer,PacketCount,packetcount,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,load_balancer,SYNCount,syncount,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,load_balancer,VipAvailability,vipavailability,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,managed_disk,Composite Disk Read Bytes/sec,composite disk read bytes/sec,slow_extended,3600,catalog,False,False,300,repo,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,managed_disk,Composite Disk Read Operations/sec,composite disk read operations/sec,slow_extended,3600,catalog,False,False,300,repo,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,managed_disk,Composite Disk Write Bytes/sec,composite disk write bytes/sec,slow_extended,3600,catalog,False,False,300,repo,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,managed_disk,Composite Disk Write Operations/sec,composite disk write operations/sec,slow_extended,3600,catalog,False,False,300,repo,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,redis_cache,PercentProcessorTime,percentprocessortime,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,redis_cache,UsedMemoryPercentage,usedmemorypercentage,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,redis_cache,cachehits,cachehits,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,redis_cache,cachemisses,cachemisses,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,redis_cache,connectedclients,connectedclients,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,redis_cache,evictedkeys,evictedkeys,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,redis_cache,serverLoad,serverload,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,service_bus_namespace,ActiveMessages,activemessages,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,service_bus_namespace,IncomingMessages,incomingmessages,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,service_bus_namespace,OutgoingMessages,outgoingmessages,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,service_bus_namespace,ServerErrors,servererrors,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,service_bus_namespace,ThrottledRequests,throttledrequests,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,sql_database,blocked_by_firewall,blocked_by_firewall,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,sql_database,connection_failed,connection_failed,critical,120,catalog,True,False,60,repo,paid_after_free_tier,api_calls,14.4,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 720 calls/day"
+azure,sql_database,connection_successful,connection_successful,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,sql_database,cpu_percent,cpu_percent,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,sql_database,deadlock,deadlock,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,sql_database,dtu_consumption_percent,dtu_consumption_percent,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,sql_database,storage_percent,storage_percent,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,storage_account,Availability,availability,critical,120,catalog,True,True,60,repo,paid_after_free_tier,api_calls,14.4,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 720 calls/day"
+azure,storage_account,Egress,egress,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,storage_account,Ingress,ingress,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,storage_account,SuccessE2ELatency,successe2elatency,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,storage_account,SuccessServerLatency,successserverlatency,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,storage_account,Transactions,transactions,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,storage_account,UsedCapacity,usedcapacity,low,900,catalog,False,False,3600,verified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,vm,CPU Credits Remaining,cpu credits remaining,low,900,catalog,False,True,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,vm,Disk Read Bytes,disk read bytes,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,vm,Disk Read Operations/Sec,disk read operations/sec,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,vm,Disk Write Bytes,disk write bytes,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,vm,Disk Write Operations/Sec,disk write operations/sec,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,vm,Network In Total,network in total,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,vm,Network Out Total,network out total,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,vm,OS Disk Queue Depth,os disk queue depth,low,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,vm,Percentage CPU,percentage cpu,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,5.76,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 288 calls/day"
+azure,vm,VM Availability Metric,vm availability metric,critical,120,catalog,True,True,60,repo,paid_after_free_tier,api_calls,14.4,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 720 calls/day"
+azure,vmss,Disk Read Bytes,disk read bytes,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,vmss,Disk Write Bytes,disk write bytes,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,vmss,Network In Total,network in total,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,vmss,Network Out Total,network out total,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,vmss,Percentage CPU,percentage cpu,extended,900,catalog,False,False,60,unverified,paid_after_free_tier,api_calls,1.92,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 96 calls/day"
+azure,vpn_gateway,P2SConnectionCount,p2sconnectioncount,slow_extended,3600,catalog,False,False,300,repo,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,vpn_gateway,TunnelAverageBandwidth,tunnelaveragebandwidth,slow_extended,3600,catalog,False,False,300,repo,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,vpn_gateway,TunnelEgressBytes,tunnelegressbytes,slow_extended,3600,catalog,False,False,300,repo,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+azure,vpn_gateway,TunnelIngressBytes,tunnelingressbytes,slow_extended,3600,catalog,False,False,300,repo,paid_after_free_tier,api_calls,0.48,"amortised over a full batch of 50 resources; one call per service+tier pass is shared by every metric of that service in the tier, so do not sum this column per metric; worst case (1 resource) = 24 calls/day"
+gcp,bigquery_project,query/count,query/count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,bigquery_project,query/execution_times,query/execution_times,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,bigquery_project,slots/allocated_for_project,slots/allocated_for_project,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,bigquery_project,storage/stored_bytes,storage/stored_bytes,extended,3600,catalog,False,False,1800,secondary,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloud_lb,backend_latencies,backend_latencies,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloud_lb,backend_request_count,backend_request_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloud_lb,request_count,request_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloud_lb,total_latencies,total_latencies,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloud_run_service,billable_instance_time,billable_instance_time,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloud_run_service,cpu/utilizations,cpu/utilizations,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloud_run_service,instance_count,instance_count,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloud_run_service,memory/utilizations,memory/utilizations,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloud_run_service,request_count,request_count,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloud_run_service,request_latencies,request_latencies,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloud_run_service,startup_latencies,startup_latencies,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudfunctions_function,active_instances,active_instances,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudfunctions_function,execution_count,execution_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudfunctions_function,execution_times,execution_times,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudfunctions_function,network_egress,network_egress,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudfunctions_function,user_memory_bytes,user_memory_bytes,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudsql_instance,cpu/utilization,cpu/utilization,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudsql_instance,disk/read_ops_count,disk/read_ops_count,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudsql_instance,disk/utilization,disk/utilization,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudsql_instance,disk/write_ops_count,disk/write_ops_count,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudsql_instance,memory/utilization,memory/utilization,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudsql_instance,mysql/replication/seconds_behind_master,mysql/replication/seconds_behind_master,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudsql_instance,network/connections,network/connections,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudsql_instance,postgresql/replication/replica_byte_lag,postgresql/replication/replica_byte_lag,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,cloudsql_instance,up,up,critical,120,catalog,True,True,60,unverified,paid_after_free_tier,series_returned,720.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,compute_instance,cpu/utilization,cpu/utilization,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,compute_instance,disk/read_bytes_count,disk/read_bytes_count,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,compute_instance,disk/read_ops_count,disk/read_ops_count,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,compute_instance,disk/write_bytes_count,disk/write_bytes_count,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,compute_instance,disk/write_ops_count,disk/write_ops_count,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,compute_instance,network/received_bytes_count,network/received_bytes_count,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,compute_instance,network/sent_bytes_count,network/sent_bytes_count,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,compute_instance,uptime,uptime,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,firestore_database,document/delete_count,document/delete_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,firestore_database,document/read_count,document/read_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,firestore_database,document/write_count,document/write_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,firestore_database,network/active_connections,network/active_connections,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gce_persistent_disk,read_bytes_count,read_bytes_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gce_persistent_disk,read_ops_count,read_ops_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gce_persistent_disk,write_bytes_count,write_bytes_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gce_persistent_disk,write_ops_count,write_ops_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gcs_bucket,api/request_count,api/request_count,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gcs_bucket,network/sent_bytes_count,network/sent_bytes_count,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gcs_bucket,object_count,object_count,low,900,catalog,False,False,86400,verified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gcs_bucket,total_byte_seconds,total_byte_seconds,low,900,catalog,False,False,86400,verified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gcs_bucket,total_bytes,total_bytes,low,900,catalog,False,False,86400,verified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gke_cluster,cpu/core_usage_time,cpu/core_usage_time,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gke_cluster,cpu/limit_utilization,cpu/limit_utilization,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gke_cluster,cpu/request_utilization,cpu/request_utilization,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gke_cluster,memory/limit_utilization,memory/limit_utilization,low,900,catalog,False,True,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gke_cluster,memory/used_bytes,memory/used_bytes,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gke_cluster,restart_count,restart_count,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gke_cluster,uptime,uptime,extended,3600,catalog,False,True,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gke_node,cpu/allocatable_utilization,cpu/allocatable_utilization,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gke_node,cpu/core_usage_time,cpu/core_usage_time,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gke_node,ephemeral_storage/used_bytes,ephemeral_storage/used_bytes,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,gke_node,memory/allocatable_utilization,memory/allocatable_utilization,low,900,catalog,False,True,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,nat_gateway,dropped_sent_packets_count,dropped_sent_packets_count,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,nat_gateway,nat_allocation_failed,nat_allocation_failed,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,nat_gateway,port_usage,port_usage,low,900,catalog,False,True,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,nat_gateway,received_bytes_count,received_bytes_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,nat_gateway,sent_bytes_count,sent_bytes_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,pubsub_subscription,ack_message_count,ack_message_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,pubsub_subscription,num_undelivered_messages,num_undelivered_messages,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,pubsub_subscription,oldest_unacked_message_age,oldest_unacked_message_age,standard,300,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,pubsub_subscription,pull_ack_message_operation_count,pull_ack_message_operation_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,pubsub_subscription,unacked_bytes_by_region,unacked_bytes_by_region,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,pubsub_topic,byte_cost,byte_cost,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,pubsub_topic,message_sizes,message_sizes,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,pubsub_topic,send_message_operation_count,send_message_operation_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,redis_instance,clients/connected,clients/connected,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,redis_instance,keyspace/avg_ttl,keyspace/avg_ttl,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,redis_instance,replication/role,replication/role,extended,3600,catalog,False,True,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,redis_instance,stats/cache_hit_ratio,stats/cache_hit_ratio,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,redis_instance,stats/cpu_utilization,stats/cpu_utilization,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,redis_instance,stats/memory/usage_ratio,stats/memory/usage_ratio,standard,300,catalog,False,True,60,unverified,paid_after_free_tier,series_returned,288.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,spanner_instance,api/request_count,api/request_count,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,spanner_instance,api/request_latencies,api/request_latencies,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,spanner_instance,instance/cpu/utilization,instance/cpu/utilization,low,900,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,96.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll
+gcp,spanner_instance,instance/storage/used_bytes,instance/storage/used_bytes,extended,3600,catalog,False,False,60,unverified,paid_after_free_tier,series_returned,24.0,ListTimeSeries is billed per series returned; modelled as 1 series per resource per poll

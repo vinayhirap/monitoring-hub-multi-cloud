@@ -79,3 +79,80 @@ priority and polling tests treat as a critical-class key, so it needs its own pa
 
 Until the tags exist, further slowing would be guesswork, and at about $25 a month of GetMetricData the cost is not
 the problem; detection time on the metrics in 2a was.
+
+## 4. Guardrails (Phase B1, 2026-10-19; audit script and tests only, no runtime change)
+
+`scripts/polling_audit.py --check` now also enforces the rules below on the real catalogs, and
+`tests/test_polling_audit_guards.py` proves each rule catches a deliberately broken input. Nothing here touches app
+code, the database or a cloud API, so it runs identically on DEV and PROD. `--check --strict` also fails on the open
+findings in section 4c; `--report` prints the per-metric table; `docs/polling_inventory.csv` gained the columns
+`publish_s, publish_status, billing, billed_unit, units_per_resource_day, cost_note`.
+
+### 4a. Rules
+
+| Rule | What it enforces |
+|---|---|
+| `publish_interval` | A metric is never polled faster than the cloud publishes it. Source per entry in `PUBLISH_TABLE`. |
+| `daily_fast_tier` | A daily publisher is never on the critical or standard tier; `AWS_EXTENDED_PERIOD_OVERRIDES` and the audit table agree. |
+| `p1_set` | Every `p1_metric_keys()` key matches a real metric polled at 120 s or faster and published at 120 s or faster; every critical-tier metric is in the P1 set. |
+| `env_invariants` | With `ENV_POLLING_ENABLED` on: effective interval never below base, `wafv2` never slowed, base of 24 h or more never slowed, UAT critical-class unchanged, prod-like unchanged, correct under extreme `POLL_*` values and junk values, and `base_interval_seconds()` agrees with the catalog tier. The SQL arithmetic in `alert_rules._env_poll_extra_sql` is cross-checked against `env_polling.extra_window_minutes`. |
+| `staleness` | `STALE_MIN_BY_INTERVAL` and `EVAL_WINDOW_MIN_BY_INTERVAL` exceed the interval for every base interval and every env-slowed interval (base value plus the extra minutes the slowing adds). |
+| `period_vs_publish` | GetMetricData `Period` is never finer than the native publish interval (the timestamp-shift bug class from 2026-09-29). Added beyond the brief. |
+| `expiry_static` | Expiry metrics stay `static_only`. |
+| `tier_map_in_catalog` | Every name in a tier allowlist or AWS override exists in the curated catalog. `metric_tiers()` turns every allowlisted name into a scheduled row, so a typo would otherwise be a phantom paid poll. Found by mutation testing, added beyond the brief. |
+| `classified` | Every scheduled metric has a `PUBLISH_TABLE` entry and no entry is dead. A new metric must be classified or marked `unverified`. |
+
+All rules also run with `WAF_FAST_POLLING_ENABLED=true`, which moves WAF metrics to the 5-min and 15-min tiers.
+
+### 4b. Evidence behind the publish intervals
+
+Levels: `verified` (vendor page read 2026-10-19), `secondary` (third-party mirror of the vendor list), `repo` (taken from
+a comment in this repo's code, not re-checked), `unverified`. Only the first three can fail a rule. An unverified entry
+that would violate a rule is printed as a WARNING, never promoted to a failure.
+
+Over 404 scheduled metrics: 4 verified, 1 secondary, 71 repo, 328 unverified. The unverified ones are the AWS extended
+services, Azure and GCP services outside the repo's own comments (all assumed to publish at 1 min, which cannot fail any
+rule below the 5-min tier). Two unverified entries do matter and are reported as warnings: GCP `cloudsql_instance/up`
+(a P1 key; Google's Cloud SQL page lists 60 s sampling but the page extract could not be tied to the `up` row) and AWS EFS
+`StorageBytes` (believed 15-min but queried at Period=300).
+
+### 4c. Rules that fail on the real catalog today (runtime tier is wrong; reported, not fixed here)
+
+All four are `publish_interval`, all `verified`, and all need an app-code change, so they sit in `KNOWN_OPEN` in the
+script: reported on every run, failing only under `--strict`.
+
+| Cloud | Metric | Polled | Published | Effect |
+|---|---|---|---|---|
+| Azure | storage_account `UsedCapacity` | 15 min (low) | hourly (PT1H) | 3 of 4 polls return the same point; wasted calls against the free allowance |
+| GCP | gcs_bucket `total_bytes` | 15 min (low) | once a day | 95 of 96 polls a day return the same point; billed per series above the free allowance |
+| GCP | gcs_bucket `object_count` | 15 min (low) | once a day | same |
+| GCP | gcs_bucket `total_byte_seconds` | 15 min (low) | once a day | same |
+
+Google states the daily value is repeated at every sampling interval, so unless the writer de-duplicates on
+(resource, metric, timestamp) the repeats also reach the history table. Whether it does was not checked here.
+GCP has no daily tier today (`TIER_INTERVAL_SECONDS` stops at `extended` = 3600 s), and removing a metric from
+`LOW_METRICS` makes it fall through to `standard`, which the `daily_fast_tier` rule then flags, so the fix needs a new
+tier or an explicit hourly/daily pass in `app/providers/gcp/severity_tiers.py`. Azure `UsedCapacity` needs a 3600 s slot
+in `app/providers/azure/severity_tiers.py`. When a later phase fixes one, delete its line from `KNOWN_OPEN`; a line that no
+longer reproduces is printed as a NOTE.
+
+### 4d. Cost model (units, no prices)
+
+Paid or free per metric, and billed units per resource per day (`--report`):
+
+- **AWS**: Describe-API metrics and the two never-sent metrics (`wafv2 BlockRatio` is derived locally, `dynamodb UserErrors`
+  is account-level only) are free, 0 units. Every other metric is one CloudWatch GetMetricData metric requested per
+  poll: 86400 / interval units a day (a 5-min metric = 288). DynamoDB and MSK SEARCH metrics are billed per matching series and the
+  collector counts 1 (`_billed_units`), so their real units are higher than shown.
+- **Azure**: one call covers up to 50 resources and all metrics of a service in a tier, so the per-metric figure is amortised
+  over a full batch (86400 / interval / 50) and must not be summed across metrics; worst case with one resource is 86400 /
+  interval calls a day per service and tier.
+- **GCP**: modelled as one series returned per resource per poll (the collector counts `units=series`).
+- The `AWS_PRICE_PER_1000` constant that already existed for the section 2 dollar lines was not re-confirmed on the bill.
+
+### 4e. Not verified in this phase
+
+PROD op_events volumes were not queried (the figures in the brief are used as given); no rule was run against a live
+cloud; the `alert_rules` SQL is checked through a mirror of its arithmetic, not by executing the generated MySQL; the
+staleness rule checks "exceeds the interval", not interval plus the provider's publication delay.
+
