@@ -22,6 +22,11 @@ def main():
     ap.add_argument("--apply", action="store_true", help="write the priorities (default: dry run)")
     args = ap.parse_args()
 
+    # app.db refuses to import without DB_PASSWORD, and the environment flags decide which label is used,
+    # so load the service's .env first, like the other scripts.
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+
     from app.db import get_connection
     from app import environment_classifier as envc
     from app.collector import priority_backfill
