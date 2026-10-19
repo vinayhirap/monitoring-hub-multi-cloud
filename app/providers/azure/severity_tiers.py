@@ -77,7 +77,9 @@ EXTENDED_STANDARD_METRICS = {
     "redis_cache":         {"UsedMemoryPercentage", "PercentProcessorTime"},
     "cosmosdb_account":    {"NormalizedRUConsumption"},
     "aks_cluster":         {"node_cpu_usage_percentage", "node_memory_working_set_percentage",
-                            "kube_pod_status_phase"},
+                            "kube_pod_status_phase",
+                            # audit 2026-10-19: a NotReady node is an availability signal
+                            "kube_node_status_condition"},
     "function_app":        {"Http5xx"},
 }
 

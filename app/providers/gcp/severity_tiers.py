@@ -71,6 +71,12 @@ EXTENDED_STANDARD_METRICS = {
 EXTENDED_LOW_METRICS = {
     "gke_cluster": {"restart_count", "memory/limit_utilization", "cpu/limit_utilization"},
     "cloud_lb":    {"backend_latencies", "total_latencies"},
+    # audit 2026-10-19: saturation / failure signals that were on the hourly extended tier
+    "gke_node":          {"cpu/allocatable_utilization", "memory/allocatable_utilization",
+                            "ephemeral_storage/used_bytes"},
+    "spanner_instance":  {"instance/cpu/utilization", "api/request_latencies"},
+    "redis_instance":    {"stats/cpu_utilization"},
+    "nat_gateway":       {"dropped_sent_packets_count", "port_usage"},
 }
 
 TIER_INTERVAL_SECONDS = {"critical": 120, "standard": 300, "low": 900, "extended": 3600}

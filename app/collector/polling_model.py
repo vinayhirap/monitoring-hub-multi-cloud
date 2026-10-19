@@ -183,6 +183,26 @@ AWS_EXTENDED_TIER_OVERRIDES = {
     # daily publishers that were on the hourly tier
     ("certificatemanager", "DaysToExpiry"):        "slow_extended",
     ("kms", "SecondsUntilKeyMaterialExpiration"):  "slow_extended",
+    # Polling audit 2026-10-19 (scripts/polling_audit.py, docs/POLLING_AUDIT_2026-10-19.md): failure and
+    # saturation signals that sat on the hourly / daily tier while their sibling services were polled
+    # every 5-15 min. A slow poll means a real incident is only noticed after the poll plus the
+    # evaluation window (up to ~75 min hourly, a day for slow_extended). 15 min, never faster.
+    ("apigateway", "Latency"):                   "low",
+    ("apigateway", "IntegrationLatency"):        "low",
+    ("elasticache", "ReplicationLag"):           "low",
+    ("transitgateway", "PacketDropCountBlackhole"): "low",
+    ("transitgateway", "PacketDropCountNoRoute"):   "low",
+    ("documentdb", "CPUUtilization"):            "low",
+    ("documentdb", "FreeableMemory"):            "low",
+    ("neptune", "CPUUtilization"):               "low",
+    ("redshift", "CPUUtilization"):              "low",
+    ("opensearch", "CPUUtilization"):            "low",
+    ("opensearch", "FreeStorageSpace"):          "low",
+    ("memorydb", "CPUUtilization"):              "low",
+    ("dms", "CDCLatencySource"):                 "low",
+    ("dms", "CDCLatencyTarget"):                 "low",
+    ("cloudfront", "5xxErrorRate"):              "low",
+    ("cloudfront", "TotalErrorRate"):            "low",
 }
 
 # Extended-tier GetMetricData look-back per tier (Period=300 buckets).
