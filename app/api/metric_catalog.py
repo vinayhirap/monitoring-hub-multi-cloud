@@ -24,6 +24,7 @@ from app.auth.authorization import get_accessible_account_ids
 from app.threshold_defaults import DEFAULT_THRESHOLDS, FALLBACK_THRESHOLD, normalize_threshold_resource_type, normalize_service_key
 import datetime
 from app.utils.time_json import to_utc_iso
+from app.utils import shared_cache
 import json
 import logging
 import yaml
@@ -633,8 +634,37 @@ def _discover_azure_metrics(acc: dict, namespace: str) -> set:
     return seen
 
 
+# B2: live discovery is a billed/rate-limited cloud call (AWS ListMetrics is charged per request) that returns the
+# same names every time someone expands the same service. The result (a list of metric NAMES, not credentials or
+# data points) is shared through app/utils/shared_cache.py for a short while; ?refresh=true bypasses it. A failed
+# discovery raises and is never stored, and an EMPTY result is never stored either (a namespace that has just
+# started publishing must show up on the next look).
+_DISCOVERY_CACHE_TTL = 600
+
+
+def _discover_cached(provider, acc, account_id, namespace, region, refresh):
+    """-> (set of metric names, shared_cache.CacheResult)."""
+    def load():
+        if provider == "aws":
+            seen = _discover_aws_metrics(acc, namespace, region)
+        elif provider == "gcp":
+            seen = _discover_gcp_metrics(acc, namespace)
+        elif provider == "azure":
+            seen = _discover_azure_metrics(acc, namespace)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown provider '{provider}'")
+        return sorted(seen)
+
+    resolved_region = (region or acc.get("default_region") or "") if provider == "aws" else ""
+    res = shared_cache.get_or_load_ex(
+        f"discover:{provider}:{account_id}:{namespace}:{resolved_region}", load,
+        ttl=_DISCOVERY_CACHE_TTL, bypass=refresh, cacheable=lambda names: len(names) > 0)
+    return set(res.value), res
+
+
 @router.post("/api/account-metrics/{account_id}/discover")
 def discover_namespace_metrics(account_id: int, namespace: str = Query(...), region: str = Query(None),
+                                refresh: bool = Query(False, description="skip the short-lived discovery cache"),
                                 current_user: dict = Depends(require_permission("metric_catalog.discover"))):
     """
     Live metric discovery for a 'directory' namespace — used when a user
@@ -673,21 +703,15 @@ def discover_namespace_metrics(account_id: int, namespace: str = Query(...), reg
     provider = acc.get("provider") or "aws"
 
     try:
-        if provider == "aws":
-            seen = _discover_aws_metrics(acc, namespace, region)
-        elif provider == "gcp":
-            seen = _discover_gcp_metrics(acc, namespace)
-        elif provider == "azure":
-            seen = _discover_azure_metrics(acc, namespace)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown provider '{provider}'")
+        seen, cres = _discover_cached(provider, acc, account_id, namespace, region, refresh)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Discovery failed: {str(e)}")
 
+    cache_info = {"cached": bool(cres.hit or cres.shared), "cache_age_s": int(cres.age_s)}
     if not seen:
-        return {"namespace": namespace, "discovered": 0, "metrics": []}
+        return {"namespace": namespace, "discovered": 0, "metrics": [], **cache_info}
 
     with get_db_cursor(commit=True) as (conn, cur):
         display_service = None
@@ -711,7 +735,7 @@ def discover_namespace_metrics(account_id: int, namespace: str = Query(...), reg
                  f"{account_label(account_id)}: discovered {len(seen)} {provider} {plural(len(seen), 'metric')} "
                  f"in namespace {namespace}",
                  role=current_user["role"].upper())
-    return {"namespace": namespace, "discovered": len(seen), "metrics": sorted(seen)}
+    return {"namespace": namespace, "discovered": len(seen), "metrics": sorted(seen), **cache_info}
 
 
 # ── YACE config generation ───────────────────────────────────────

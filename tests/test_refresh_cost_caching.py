@@ -49,14 +49,19 @@ def test_ecs_billed_getmetricdata_is_cached_across_refreshes():
     assert len(calls) == 2, calls
 
 
-def test_ecs_cache_is_per_range_and_per_service():
+def test_ecs_cache_is_per_period_and_per_service():
+    """Phase B2: ranges CloudWatch would query at the SAME period (6H and 1D: both 60 s) share one entry, a range with a
+    different period (1W) and another service each get their own."""
     mod, aws = _mod()
     calls = []
     mod._gmd_series = lambda cw, queries, hours=6: calls.append(hours) or {}
     mod._get_ecs_metric_series("c1", "svc1", "r", 6, account={"id": 7})
-    mod._get_ecs_metric_series("c1", "svc1", "r", 24, account={"id": 7})   # other range -> own data
-    mod._get_ecs_metric_series("c1", "svc2", "r", 6, account={"id": 7})    # other service -> own data
+    mod._get_ecs_metric_series("c1", "svc1", "r", 24, account={"id": 7})    # same period as 6H -> shared, no new call
+    assert len(calls) == 2, calls                                          # one fallback + one Container Insights
+    mod._get_ecs_metric_series("c1", "svc1", "r", 168, account={"id": 7})   # 420 s period -> own data
+    mod._get_ecs_metric_series("c1", "svc2", "r", 6, account={"id": 7})     # other service -> own data
     assert len(calls) == 6, calls
+    assert calls[:2] == [24, 24], "the shared entry is fetched once, at the canonical (largest same-period) range"
 
 
 def test_elb_dimension_lookup_is_cached():

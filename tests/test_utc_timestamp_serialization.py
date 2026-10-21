@@ -75,7 +75,7 @@ def test_metric_history_chart_series_actually_uses_the_shared_helper():
     confirms a naive metric_timestamp comes out Z-suffixed end to end --
     the same shape test_collector_direct.py's own tests now pin."""
     sys.modules["app.utils.time_json"] = load_module("app/utils/time_json.py")
-    from tests.conftest import install_stub
+    from tests.conftest import install_stub, install_real_utils_package
 
     class _Cursor:
         def __init__(self, rows):
@@ -102,6 +102,7 @@ def test_metric_history_chart_series_actually_uses_the_shared_helper():
     install_stub("app.clients.vm_client", vm_query=lambda p: None, vm_query_all=lambda p, d: {})
     install_stub("app.collector.disk_mounts", all_cwagent_disk_dims=lambda cw, iid: [])
     install_stub("app.aws.boto_config", STANDARD_RETRY=None, CONCURRENT_CLIENT_RETRY=None)
+    install_real_utils_package()   # Phase B2: collector_direct.py imports app.utils.shared_cache / cwagent_cache
     mod = load_module("app/aws/collector_direct.py")
 
     result = mod._metric_history_query_range(

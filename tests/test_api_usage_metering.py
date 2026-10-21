@@ -16,7 +16,7 @@ import types
 import pytest
 
 sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
-from tests.conftest import load_module, install_stub, install_polling_modules
+from tests.conftest import load_module, install_stub, install_polling_modules, install_real_utils_package
 
 
 # ── isolation ───────────────────────────────────────────────────────────
@@ -315,6 +315,7 @@ def test_billed_metric_queries_rule():
 
 def test_billed_metric_queries_matches_collector_rule():
     """The UI path must count GetMetricData units exactly like the collector."""
+    install_real_utils_package()   # Phase B2: runner imports app.utils.cwagent_cache / shared_cache
     install_stub("app.db", get_connection=lambda: None)
     install_stub("app.aws.sts", get_boto3_session=lambda *a, **k: None)
     install_stub("app.aws.boto_config", STANDARD_RETRY={})
@@ -403,6 +404,7 @@ def test_disk_mounts_works_when_metering_is_broken():
 # ── 5. hooks: runner (CWAgent memory dimensions, tier = current tier) ───
 
 def _load_runner(seen_disk_kwargs=None):
+    install_real_utils_package()   # Phase B2: runner imports app.utils.cwagent_cache / shared_cache
     au, rows = _usage()
     install_stub("app.db", get_connection=lambda: None)
     install_stub("app.aws.sts", get_boto3_session=lambda *a, **k: None)
@@ -448,8 +450,7 @@ def test_runner_mem_dimension_failure_counts_and_does_not_raise():
 def test_runner_passes_current_tier_to_disk_lookup():
     seen = []
     runner, _ = _load_runner(seen)
-    runner._CURRENT_TIER = "low"
-    runner._cwagent_cache.clear()
+    runner._CURRENT_TIER = "low"      # (the shared cache starts empty: tests/conftest.py resets it around every test)
     runner._cached_disk_dims(FakeCW(), {"region": "r", "resource_id": "i-9"})
     assert seen == [{"usage_tier": "low"}]
 
@@ -457,6 +458,7 @@ def test_runner_passes_current_tier_to_disk_lookup():
 # ── 6. hooks: collector_direct (every call there is UI-triggered) ───────
 
 def _load_direct():
+    install_real_utils_package()   # Phase B2: collector_direct imports app.utils.shared_cache / cwagent_cache
     au, rows = _usage()
     install_stub("app.db", get_connection=lambda: None)
     install_stub("app.clients.vm_client", vm_query=lambda p: None, vm_query_all=lambda p, d: {})
@@ -545,16 +547,23 @@ def test_s3_failed_requests_are_counted_and_not_raised():
 
 
 def test_collector_direct_passes_ui_source_to_the_shared_disk_helper():
+    """Behavioural (was a source-text match, which a cache wrapper around the call naturally changes): the detail page
+    really calls the shared disk helper with usage_source="ui", so a real call is attributed to the UI."""
     seen = []
     mod, _ = _load_direct()
     mod.all_cwagent_disk_dims = lambda cw, iid, **k: seen.append(k) or []
-    src = open(mod.__file__).read()
-    assert 'all_cwagent_disk_dims(cw, instance_id, usage_source="ui")' in src
+    cw = FakeCW(list_pages=[[{"Dimensions": [{"Name": "InstanceId", "Value": "i-1"}]}]])
+    mod.get_session = lambda *a, **k: FakeSession(cw)
+    mod._ec2_cwagent_installed = lambda *a, **k: True
+    mod._metric_history_query_range = lambda *a, **k: []
+    mod._get_ec2_metric_series_raw("i-1", "ap-south-1", 6, None)
+    assert seen == [{"usage_source": "ui"}]
 
 
 # ── 7. hooks: metric-catalog discovery (one record per page fetched) ────
 
 def _load_catalog(cw):
+    install_real_utils_package()   # Phase B2: metric_catalog imports app.utils.shared_cache
     au, rows = _usage()
     install_stub("app.db", get_connection=lambda: None, get_db_cursor=lambda: None)
     install_stub("app.auth.permissions", require_permission=lambda code: (lambda: None))

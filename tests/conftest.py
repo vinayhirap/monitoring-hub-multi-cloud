@@ -217,6 +217,33 @@ def clean_sys_modules():
     clear_stubs()
 
 
+@pytest.fixture(autouse=True)
+def shared_cache_memory_only(monkeypatch):
+    """Phase B2: app/utils/shared_cache.py talks to Redis by default. A test must never read or write a real Redis
+    (a box that has one running would make results depend on earlier runs), so every test uses the in-process backend
+    and starts and ends with an empty cache."""
+    monkeypatch.setenv("SHARED_CACHE_BACKEND", "memory")
+
+    def _reset():
+        sc = sys.modules.get("app.utils.shared_cache")
+        if sc is not None and hasattr(sc, "reset_for_tests"):
+            sc.reset_for_tests()
+    _reset()
+    yield
+    _reset()
+
+
+def install_real_utils_package():
+    """The isolated loaders (load_module) run collector_direct.py / runner.py under a fake `app` with no __path__, so
+    `from app.utils import shared_cache` cannot resolve. Register `app.utils` pointing at the real directory (unless a
+    real package is already loaded) so the real, dependency-free app/utils modules import normally."""
+    m = sys.modules.get("app.utils")
+    if m is None or not hasattr(m, "__path__"):
+        m = install_stub("app.utils")
+        m.__path__ = [os.path.join(REPO_ROOT, "app", "utils")]
+    return m
+
+
 def install_polling_modules():
     """Register the REAL, dependency-free app.collector.polling_model and
     app.collector.api_usage modules (pure data / in-memory counters) so a

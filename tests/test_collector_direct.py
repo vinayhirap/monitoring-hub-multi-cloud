@@ -14,7 +14,7 @@ import sys
 from datetime import datetime
 
 sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
-from tests.conftest import load_module, install_stub
+from tests.conftest import load_module, install_stub, install_real_utils_package
 
 
 class _RoutingCursor:
@@ -96,6 +96,8 @@ def _stub_and_load(conn):
     # exercises the actual conversion logic, not a fake standing in for it.
     import sys as _sys
     _sys.modules["app.utils.time_json"] = load_module("app/utils/time_json.py")
+    # Phase B2: collector_direct.py also imports the real, dependency-free app.utils.shared_cache / cwagent_cache.
+    install_real_utils_package()
     return load_module("app/aws/collector_direct.py")
 
 

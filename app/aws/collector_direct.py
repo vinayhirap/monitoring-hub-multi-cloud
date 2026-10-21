@@ -40,6 +40,7 @@ from datetime import datetime, timedelta, timezone
 from app.db import get_connection
 from app.aws.boto_config import STANDARD_RETRY, CONCURRENT_CLIENT_RETRY
 from app.utils.time_json import to_utc_iso
+from app.utils import shared_cache, cwagent_cache
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,7 @@ def _metric_history_query_range(resource_type, identifier, db_metric_name,
         ]
     except Exception as e:
         logger.warning(f"metric_history query_range failed [{resource_type}/{identifier}/{db_metric_name}]: {e}")
+        shared_cache.note_error("metric_history", e)   # B2: a payload built around this failure must not be cached
         return []
 
 _cache: dict = {}
@@ -322,6 +324,15 @@ def _smart_period(hours: int) -> int:
     return math.ceil(period / step) * step
 
 
+def _ladder():
+    """The UI's range presets (app/metric_display.py RANGE_LADDER_HOURS, the ladder app/api/live_data.py uses)."""
+    try:
+        from app.metric_display import RANGE_LADDER_HOURS
+        return RANGE_LADDER_HOURS
+    except Exception:  # pragma: no cover - keeps the cache usable if that module cannot be imported
+        return (1, 3, 6, 24, 168, 720)
+
+
 # ── GMD core helpers (still used for ECS / Lambda / uncovered-ALB) ──────
 
 def _make_query(qid, namespace, metric_name, dimensions, stat, period=60):
@@ -457,6 +468,7 @@ def _gmd_series(cw, queries, hours=6):
                 )
         except Exception as e:
             logger.error(f"GMD series failed (chunk {i // 500}): {e}")
+            shared_cache.note_error("gmd_series", e)   # B2: partial/empty because the call failed, not because there is no data
     return out
 
 
@@ -744,16 +756,24 @@ def _s3_bucket_region(session, bucket_name, account=None) -> str:
     return _cached(f"s3_region_{acc_key}_{bucket_name}", _lookup, ttl=_S3_REGION_CACHE_TTL)
 
 
+_S3_REQUEST_KEYS = frozenset({"all_requests", "get_requests", "put_requests", "errors_4xx", "errors_5xx",
+                              "bytes_download", "bytes_upload"})
+
+
 def get_s3_metric_series(bucket_name: str, hours: int = 24, account=None) -> dict:
     # audit(b11): 9 billed GetMetricStatistics calls per chart open were
     # uncached; cache per account+bucket+hours. Failures are not cached
     # (_cached never stores a raised exception).
     acc_key = (account or {}).get("id", "none")
     try:
-        return _cached(
-            f"s3_series_{acc_key}_{bucket_name}_{hours}",
-            lambda: _get_s3_metric_series_raw(bucket_name, hours, account),
+        # B2: shared (Redis) cache; 1H/3H/6H/1D share one entry. The storage series are deliberately the same 14-day
+        # window for every range <= 14 days (daily metrics), so only the request series are cut back to `hours`.
+        return shared_cache.get_or_load_range(
+            f"s3series:{acc_key}:{bucket_name}", hours,
+            lambda h: _get_s3_metric_series_raw(bucket_name, h, account),
             ttl=_S3_SERIES_CACHE_TTL,
+            period_fn=lambda h: (max(_smart_period(h), 300), max(_smart_period(max(h, 24 * 14)), 86400)),
+            ladder=_ladder(), trim_keys=_S3_REQUEST_KEYS,
         )
     except Exception as e:
         logger.error(f"S3 metrics [{bucket_name}]: {e}")
@@ -791,7 +811,8 @@ def _get_s3_metric_series_raw(bucket_name: str, hours: int = 24, account=None) -
                 [{"t": p["Timestamp"].isoformat(), "v": round(p["Average"], 2)} for p in r["Datapoints"]],
                 key=lambda x: x["t"]
             )
-        except ClientError:
+        except ClientError as e:
+            shared_cache.note_error("s3.storage_series", e)
             return []
 
     def request_series(metric):
@@ -811,7 +832,8 @@ def _get_s3_metric_series_raw(bucket_name: str, hours: int = 24, account=None) -
                 [{"t": p["Timestamp"].isoformat(), "v": round(p["Sum"], 2)} for p in r["Datapoints"]],
                 key=lambda x: x["t"]
             )
-        except Exception:
+        except Exception as e:
+            shared_cache.note_error("s3.request_series", e)
             return []
 
     return {
@@ -1476,10 +1498,12 @@ def _ec2_cwagent_installed(instance_id, region=None, account=None) -> bool:
     running and publishing). Cached briefly since this runs on every
     EC2 detail-page open.
     """
-    return _cached(
-        f"cwagent_present_{instance_id}_{region}",
+    # B2: shared cache. Present is remembered 1 h (as the collector used to), "absent" only 5 min (unchanged) because
+    # this runs on a page a person is looking at right after installing the agent. A failed check is never stored.
+    return shared_cache.get_or_load(
+        f"cwagent:present:{region}:{instance_id}",
         lambda: _ec2_cwagent_installed_raw(instance_id, region, account),
-        ttl=300,
+        ttl=lambda present: 3600 if present else 300,
     )
 
 
@@ -1494,6 +1518,7 @@ def _ec2_cwagent_installed_raw(instance_id, region=None, account=None) -> bool:
         return bool(resp.get("Metrics"))
     except Exception as e:
         logger.warning(f"CWAgent presence check [{instance_id}]: {e}")
+        shared_cache.note_error("cwagent.present", e)
         return False
 
 
@@ -1519,15 +1544,29 @@ def _ec2_cwagent_dimensions(cw, metric_name, instance_id):
         return metrics[0]["Dimensions"] if metrics else None
     except Exception as e:
         logger.warning(f"CWAgent dimension lookup [{instance_id}/{metric_name}]: {e}")
+        shared_cache.note_error("cwagent.dimensions", e)
         return None
+
+
+def _ec2_cwagent_mem_lookup(cw, instance_id):
+    """[dims, metric_name] for the memory metric CWAgent publishes (Linux name, else the Windows one), or None."""
+    for name in ("mem_used_percent", "Memory % Committed Bytes In Use"):
+        dims = _ec2_cwagent_dimensions(cw, name, instance_id)
+        if dims is not None:
+            return [dims, name]
+    return None
 
 
 def get_ec2_metric_series(instance_id, region=None, hours=6, account=None) -> dict:
     """Cached 5 min per (instance, region, hours, account): the CWAgent part
     of this page makes billed ListMetrics + GetMetricData calls on every
     view (polling audit 2026-09-23); EC2 data itself refreshes every 5 min."""
-    return _cached(f"ec2series_{(account or {}).get('id')}_{region}_{instance_id}_{hours}",
-                   lambda: _get_ec2_metric_series_raw(instance_id, region, hours, account), ttl=300)
+    # B2: shared (Redis) cache, one entry for every range with the same CloudWatch period (1H/3H/6H/1D), cut back to
+    # the requested window on the way out; a result built around a failed call is returned but never stored.
+    return shared_cache.get_or_load_range(
+        f"ec2series:{(account or {}).get('id')}:{region}:{instance_id}", hours,
+        lambda h: _get_ec2_metric_series_raw(instance_id, region, h, account),
+        ttl=300, period_fn=_smart_period, ladder=_ladder())
 
 
 def _get_ec2_metric_series_raw(instance_id, region=None, hours=6, account=None) -> dict:
@@ -1583,19 +1622,20 @@ def _get_ec2_metric_series_raw(instance_id, region=None, hours=6, account=None) 
                 cw        = get_session(region, account=account).client("cloudwatch", config=STANDARD_RETRY)
                 cw_period = max(period, 60)  # CWAgent's own default reporting interval
 
-                mem_dims = _ec2_cwagent_dimensions(cw, mem_cw_metric_name, instance_id)
-                if mem_dims is None:
-                    # Linux name found nothing -- try Windows' equivalent
-                    # before giving up (CWAgent's memory metric name is
-                    # OS-dependent; an instance only ever reports one).
-                    # See WINDOWS_DISK_METRIC_NAME in
-                    # app/collector/disk_mounts.py for the full incident
-                    # writeup this and the disk fix below address (same
-                    # root cause, confirmed live against
-                    # i-0424cb66e22e05a21 / U4RAD-JUMP).
+                # B2: dimension discovery is shared with the collector via cwagent_cache (Redis, error-aware)
+                mem_found = cwagent_cache.cached_discovery(
+                    "mem", region, instance_id, lambda: _ec2_cwagent_mem_lookup(cw, instance_id))
+                mem_dims = None
+                if mem_found:
+                    mem_dims, mem_cw_metric_name = mem_found[0], mem_found[1]
+                if not mem_found:
+                    # Neither name found anything: the label has always ended up as the Windows one in this case
+                    # (CWAgent's memory metric name is OS-dependent; see WINDOWS_DISK_METRIC_NAME in
+                    # app/collector/disk_mounts.py for the incident writeup), so the response keeps saying that.
                     mem_cw_metric_name = "Memory % Committed Bytes In Use"
-                    mem_dims = _ec2_cwagent_dimensions(cw, mem_cw_metric_name, instance_id)
-                mounts = all_cwagent_disk_dims(cw, instance_id, usage_source="ui")  # [(dims, path, metric_name, cw_metric_name, invert), ...] -- every mount
+                mounts = cwagent_cache.cached_discovery(      # [(dims, path, metric_name, cw_metric_name, invert), ...] -- every mount
+                    "disk", region, instance_id,
+                    lambda: all_cwagent_disk_dims(shared_cache.track(cw, "cwagent.disk"), instance_id, usage_source="ui"))
                 if mounts:
                     _root = next((m for m in mounts if m[1] in ("/", "C:")), mounts[0])
                     disk_cw_label, disk_inverted = _root[3], bool(_root[4])
@@ -1638,6 +1678,7 @@ def _get_ec2_metric_series_raw(instance_id, region=None, hours=6, account=None) 
                         disk_used_percent = next(iter(disk_used_percent_by_mount.values()))
             except Exception as e:
                 logger.warning(f"CWAgent series [{instance_id}]: {e}")
+                shared_cache.note_error("cwagent.series", e)
 
         return {
             "instance_id":               instance_id,
@@ -1658,6 +1699,7 @@ def _get_ec2_metric_series_raw(instance_id, region=None, hours=6, account=None) 
         }
     except Exception as e:
         logger.warning(f"EC2 series [{instance_id}]: {e}")
+        shared_cache.note_error("ec2_series", e)
         return {"instance_id": instance_id, "cpu": [], "network_in": [],
                 "network_out": [], "disk_read": [], "disk_write": [],
                 "cwagent_installed": False, "mem_utilization": [], "disk_used_percent": [],
@@ -1719,10 +1761,10 @@ def _get_lambda_metric_series(function_name, region=None, hours=6, account=None)
     # e.g. "process-orders", and without this the cache would silently
     # hand one account's data to the other).
     acc_key = (account or {}).get("id", "none")
-    return _cached(
-        f"lambda_series_{acc_key}_{function_name}_{region}_{hours}",
-        lambda: _get_lambda_metric_series_raw(function_name, region, hours, account),
-        ttl=_LAMBDA_SERIES_CACHE_TTL,
+    return shared_cache.get_or_load_range(
+        f"lambda_series:{acc_key}:{function_name}:{region}", hours,
+        lambda h: _get_lambda_metric_series_raw(function_name, region, h, account),
+        ttl=_LAMBDA_SERIES_CACHE_TTL, period_fn=_smart_period, ladder=_ladder(),
     )
 
 
@@ -1782,6 +1824,7 @@ def _get_lambda_metric_series_raw(function_name, region=None, hours=6, account=N
         }
     except Exception as e:
         logger.warning(f"Lambda series [{function_name}]: {e}")
+        shared_cache.note_error("lambda_series", e)
         return {"function_name": function_name, "invocations": [], "errors": [],
                 "duration": [], "throttles": [], "concurrent": []}
 
@@ -2013,7 +2056,14 @@ def _get_ecs_metric_series(cluster_name: str, service_name: str = None,
         # view and every auto-refresh tick (5-7 metrics each); the data itself
         # only changes every few minutes, so share one result per
         # (account, region, cluster, service, range) for _ECS_SERIES_CACHE_TTL.
-        ckey = f"ecs_cw_{(account or {}).get('id')}_{region}_{cluster_name}_{service_name}_{hours}"
+        # B2: the billed calls are stored in the shared cache under the CANONICAL range (1H/3H/6H/1D share one entry)
+        # and the returned series are cut back to the requested window.
+        chours = shared_cache.canonical_hours(hours, _smart_period, _ladder())
+        ckey = f"ecs_cw:{(account or {}).get('id')}:{region}:{cluster_name}:{service_name}"
+
+        def _shared_gmd(suffix, loader):
+            res = shared_cache.get_or_load_ex(f"{ckey}:{suffix}:h{chours}", loader, ttl=_ECS_SERIES_CACHE_TTL)
+            return res.value if chours == hours else shared_cache.trim_series(res.value, hours, res.ts)
 
         if not cpu or not mem:
             def _ecs_fallback():
@@ -2021,8 +2071,8 @@ def _get_ecs_metric_series(cluster_name: str, service_name: str = None,
                 return _gmd_series(cw, [
                     _make_query("cpu", "AWS/ECS", "CPUUtilization",    dims, "Average"),
                     _make_query("mem", "AWS/ECS", "MemoryUtilization", dims, "Average"),
-                ], hours)
-            fb = _cached(ckey + "_fb", _ecs_fallback, ttl=_ECS_SERIES_CACHE_TTL)
+                ], chours)
+            fb = _shared_gmd("fb", _ecs_fallback)
             cpu = cpu or fb.get("cpu", [])
             mem = mem or fb.get("mem", [])
 
@@ -2035,8 +2085,8 @@ def _get_ecs_metric_series(cluster_name: str, service_name: str = None,
                 _make_query("desired",  ci_ns, "DesiredTaskCount",  dims, "Average"),
                 _make_query("cpu_res",  ci_ns, "CpuReserved",       dims, "Average"),
                 _make_query("mem_res",  ci_ns, "MemoryReserved",    dims, "Average"),
-            ], hours)
-        ci = _cached(ckey + "_ci", _ecs_container_insights, ttl=_ECS_SERIES_CACHE_TTL)
+            ], chours)
+        ci = _shared_gmd("ci", _ecs_container_insights)
 
         return {
             "cluster_name":       cluster_name,
@@ -2053,6 +2103,7 @@ def _get_ecs_metric_series(cluster_name: str, service_name: str = None,
         }
     except Exception as e:
         logger.warning(f"ECS series [{cluster_name}/{service_name}]: {e}")
+        shared_cache.note_error("ecs_series", e)
         return {"cluster_name": cluster_name, "service_name": service_name,
                 "cpu_utilization": [], "mem_utilization": [],
                 "running_task_count": [], "pending_task_count": [],

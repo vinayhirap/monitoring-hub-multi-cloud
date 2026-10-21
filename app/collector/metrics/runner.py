@@ -78,6 +78,7 @@ logger = logging.getLogger(__name__)
 from app.collector import polling_model
 from app.collector import api_usage
 from app.collector import env_polling
+from app.utils import cwagent_cache, shared_cache
 
 CORE_METRICS = polling_model.AWS_CORE_METRICS
 
@@ -510,55 +511,42 @@ def _collect_core(cw, resources, resource_type, tier, extra_min=0):
 
 
 # ── CWAgent dimension cache ─────────────────────────────────────────────
-# ListMetrics per instance per poll was the dominant non-GMD call volume
-# (and a billed "standard" API above the 1M free tier). Dimension sets
-# only change when the agent config changes -- re-discover hourly.
-_CWAGENT_DIM_TTL = 3600
-_cwagent_cache = {}          # (kind, region, instance_id) -> (expires, value)
-_cwagent_cache_lock = threading.Lock()
-
-
-def _cache_get(key):
-    with _cwagent_cache_lock:
-        hit = _cwagent_cache.get(key)
-        if hit and hit[0] > time.time():
-            return True, hit[1]
-    return False, None
-
-
-def _cache_put(key, value):
-    with _cwagent_cache_lock:
-        _cwagent_cache[key] = (time.time() + _CWAGENT_DIM_TTL, value)
-
-
+# ListMetrics per instance per poll was the dominant non-GMD call volume (and a billed "standard" API above the 1M free
+# tier). Dimension sets only change when the agent config changes. Phase B2: the cache moved out of this module's memory
+# into app/utils/cwagent_cache.py (Redis-backed via app/utils/shared_cache.py, shared with the instance detail page,
+# longer TTLs, negative caching for "no CWAgent", never stores a failed ListMetrics, fingerprinted per instance).
+# See the comment block in cwagent_cache.py for the TTLs and why.
 def _cached_disk_dims(cw, r):
-    key = ("disk", r.get("region"), r["resource_id"])
-    ok, val = _cache_get(key)
-    if ok:
-        return val
-    val = all_cwagent_disk_dims(cw, r["resource_id"], usage_tier=_CURRENT_TIER)
-    _cache_put(key, val)
-    return val
+    # Phase A metering: the ListMetrics inside is recorded against the tier being polled (only a real call, i.e. a
+    # cache miss, is recorded)
+    return cwagent_cache.cached_disk_dims(cw, r, usage_tier=_CURRENT_TIER)
 
 
 def _ec2_instances_with_cwagent_mem_dims(cw, resources):
     """Cached wrapper: {instance_id: (resource, dims, cw_metric_name)}."""
     result, misses = {}, []
     for r in resources:
-        ok, val = _cache_get(("mem", r.get("region"), r["resource_id"]))
+        ok, val = cwagent_cache.cwagent_cache_get("mem", r.get("region"), r["resource_id"],
+                                                cwagent_cache.resource_fingerprint(r))
         if ok:
             if val:
                 result[r["resource_id"]] = (r, val[0], val[1])
         else:
             misses.append(r)
     if misses:
-        found = _ec2_instances_with_cwagent_mem_dims_uncached(cw, misses)
+        # One batch of ListMetrics for every miss. If ANY of them failed (the uncached helper logs and moves on), an
+        # instance missing from `found` may simply be one whose call failed, so "absent" is only remembered for a batch
+        # in which nothing failed. Instances that WERE found are always safe to remember.
+        with shared_cache.error_scope() as sc:
+            found = _ec2_instances_with_cwagent_mem_dims_uncached(shared_cache.track(cw, "cwagent.mem"), misses)
         for r in misses:
             hit = found.get(r["resource_id"])
-            _cache_put(("mem", r.get("region"), r["resource_id"]),
-                       (hit[1], hit[2]) if hit else None)
+            fp = cwagent_cache.resource_fingerprint(r)
             if hit:
+                cwagent_cache.cwagent_cache_put("mem", r.get("region"), r["resource_id"], [hit[1], hit[2]], fp)
                 result[r["resource_id"]] = hit
+            elif sc.count == 0:
+                cwagent_cache.cwagent_cache_put("mem", r.get("region"), r["resource_id"], None, fp)
     return result
 
 
