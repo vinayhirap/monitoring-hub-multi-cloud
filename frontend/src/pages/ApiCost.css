@@ -1,0 +1,27 @@
+/* Cloud API cost panel: tokens only, plain SVG bars, no chart library. */
+.ac-page { max-width: var(--page-max); }
+.ac-loading { display: grid; gap: 12px; }
+.ac-banner, .ac-warn {
+  margin: 0 0 var(--space-4); padding: 10px 14px; border-radius: var(--radius); font-size: 13px; line-height: 1.5;
+  border: 1px solid var(--border-md); background: var(--bg-elevated); color: var(--text-primary);
+}
+.ac-warn { border-color: rgba(245, 158, 11, .5); background: rgba(245, 158, 11, .1); }
+.ac-p { margin: 0 0 6px; font-size: 13.5px; line-height: 1.55; }
+.ac-dim { color: var(--text-muted); font-size: 12px; line-height: 1.5; margin: 6px 0 0; }
+.ac-list { margin: 0; padding-left: 20px; font-size: 13.5px; line-height: 1.6; }
+.ac-bars { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.ac-bar-row { display: grid; grid-template-columns: 180px minmax(120px, 1fr) 170px 150px; gap: 12px; align-items: center; font-size: 13px; }
+.ac-bar-name { color: var(--text-primary); overflow-wrap: anywhere; }
+.ac-bar-svg { width: 100%; height: 10px; display: block; }
+.ac-bar-bg { fill: var(--bg-elevated); }
+.ac-bar-fill { fill: var(--accent); }
+.ac-bar-free { fill: var(--ok-fg, #16a34a); }
+.ac-bar-over { fill: var(--crit-fg, #dc2626); }
+.ac-bar-num { font-family: var(--font-mono); font-size: 12.5px; text-align: right; }
+.ac-bar-sub { color: var(--text-muted); font-size: 12px; }
+.ac-allow { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.ac-allow-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 13px; margin-bottom: 6px; }
+@media (max-width: 800px) {
+  .ac-bar-row { grid-template-columns: 1fr; gap: 4px; }
+  .ac-bar-num { text-align: left; }
+}
