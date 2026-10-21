@@ -39,6 +39,7 @@ from app.api.sso            import router as sso_router
 from app.api.slo            import router as slo_router
 from app.api.security       import router as security_router
 from app.api.maintenance    import router as maintenance_router
+from app.api.help           import router as help_router, usage_router
 from app.api.status_page    import admin_router as status_page_admin_router, public_router as status_page_public_router
 from app.auth.deps          import get_current_user, COOKIE_NAME, validate_session_claims
 from app.auth import csrf as _csrf
@@ -415,6 +416,8 @@ app.include_router(sso_router)
 app.include_router(slo_router,            dependencies=_auth_dep)
 app.include_router(security_router,       dependencies=_auth_dep)
 app.include_router(maintenance_router,    dependencies=_auth_dep)
+app.include_router(help_router,           dependencies=_auth_dep)   # permission help.view
+app.include_router(usage_router(),         dependencies=[Depends(require_permission("usage.view"))])   # Phase F endpoint, gated here
 app.include_router(status_page_admin_router, dependencies=_auth_dep)
 # NOTE: status_page_public_router deliberately has NO _auth_dep -- this
 # IS the public status page (status.yourcompany.com style), meant to

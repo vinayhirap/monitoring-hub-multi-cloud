@@ -114,6 +114,7 @@ _BASELINE_UNUSED = frozenset({
     "status_page.view", "synthetic.run", "system.admin", "system.config.manage",
     "system.smtp.manage", "topology.view", "troubleshooting.execute",
     "webhooks.manage", "webhooks.view",
+    "usage.manage",   # reserved for future cost settings (migration 110); remove once an endpoint enforces it
 })
 
 

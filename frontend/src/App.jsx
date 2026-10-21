@@ -37,6 +37,19 @@ const Reports = lazyWithRetry(() => import("./pages/Reports"));
 const StatusPageAdmin = lazyWithRetry(() => import("./pages/StatusPageAdmin"));
 const StatusPagePublic = lazyWithRetry(() => import("./pages/StatusPagePublic"));
 
+// Help Center (Phase D) and API Cost (Phase F) are built by separate patches. import.meta.glob resolves to an empty
+// object when a file is absent, so this patch builds and deploys before they land; once the file exists the real page
+// is code-split exactly like the lazy imports above. Until then the route shows a plain "not installed" message.
+const OPTIONAL_PAGES = import.meta.glob(["./pages/HelpCenter.jsx", "./pages/ApiCost.jsx"]);
+function PageNotInstalled({ title }) {
+  return <div style={{ padding: "2rem", color: "#888" }}>{title} is not installed on this server yet.</div>;
+}
+function optionalPage(path, title) {
+  return lazyWithRetry(OPTIONAL_PAGES[path] || (() => Promise.resolve({ default: () => <PageNotInstalled title={title} /> })));
+}
+const HelpCenter = optionalPage("./pages/HelpCenter.jsx", "Help Center");
+const ApiCost = optionalPage("./pages/ApiCost.jsx", "API Cost");
+
 function SessionCheckingScreen() {
   // Shown only for the brief moment while AuthContext asks the backend
   // "am I logged in" on first load — avoids flashing the login page
@@ -92,6 +105,8 @@ const ROUTE_ACCESS = {
   "status-page-admin":   { roles: ["admin","editor"],          perm: "status_page.manage" },
   "reports":             { roles: ["admin","editor","viewer"], perm: "reports.view", feature: "reports" },
   "settings":            { roles: ["admin","editor"] },
+  "help":                { roles: ["admin","editor","viewer"], perm: "help.view" },
+  "api-cost":            { roles: ["admin","editor"],          perm: "usage.view" },
 };
 
 function RequireAccess({ path, children }) {
@@ -141,6 +156,8 @@ function AppRoutes() {
         <Route path="status-page-admin"         element={<RequireAccess path="status-page-admin"><StatusPageAdmin /></RequireAccess>} />
         <Route path="reports"                   element={<RequireAccess path="reports"><Reports /></RequireAccess>} />
         <Route path="settings"                  element={<RequireAccess path="settings"><Settings /></RequireAccess>} />
+        <Route path="help"                      element={<RequireAccess path="help"><HelpCenter /></RequireAccess>} />
+        <Route path="api-cost"                  element={<RequireAccess path="api-cost"><ApiCost /></RequireAccess>} />
         <Route path="rbac-admin"                element={<Navigate to="/access/roles" replace />} />
         <Route path="accounts/:id/services"     element={<ServiceList />} />
         <Route path="accounts/:id/topology"     element={<Topology />} />
