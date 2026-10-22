@@ -32,6 +32,8 @@ PUBLIC_ALLOWLIST = {
     ("GET", "/api/health/ready"),
     ("GET", "/api/status-page"),                    # the public status page, by design
     ("POST", "/api/webhooks/deploy"),               # authenticates with its own bearer token
+    ("POST", "/api/host-agents/enroll"),            # host agent enrollment: the one-time enrollment key is the credential; rate-limited per IP; 404 unless HOST_AGENT_ENABLED
+    ("POST", "/api/host-agents/ingest"),            # host agent ingest: authenticates with its own agent bearer token (authenticate_agent); 501 stub until phase C; 404 unless HOST_AGENT_ENABLED
 }
 
 # State-changing routes open to ANY signed-in user (no specific permission). Keep this list tiny.
