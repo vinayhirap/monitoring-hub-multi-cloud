@@ -200,9 +200,56 @@ def test_coverage_table_points_at_real_sections():
 
 
 def test_unverified_blocks_are_flagged_and_listed():
+    # The mechanism must keep working for future content, whether or not any block is flagged today.
+    from app.help_content.blocks import p
+    assert p("x", unverified=True)["unverified"] is True
+    assert "unverified" not in p("x")
     listed = hc.unverified_blocks()
-    assert listed
     assert all(b.get("unverified") is True for _sid, b in listed)
+
+
+def _section_text(sid):
+    s = next(x for x in SECTIONS if x["id"] == sid)
+    parts = [s["title"], s.get("summary", "")]
+    for b in s["blocks"]:
+        if "text" in b:
+            parts.append(b["text"])
+        parts += b.get("items", [])
+        for r in b.get("rows", []):
+            parts += r
+    return " ".join(parts)
+
+
+def _source(rel):
+    return open(os.path.join(ROOT, rel), encoding="utf-8").read()
+
+
+def test_previously_unverified_topics_are_now_documented_from_code():
+    """The six notes that used to say 'not verified' now state what the code does. Each assertion below ties a
+    statement in the guide to the source line that makes it true, so the guide cannot silently drift."""
+    # incident correlation window and root-cause rule
+    window = re.search(r"CORRELATION_WINDOW_MINUTES\s*=\s*(\d+)", _source("app/collector/correlate.py")).group(1)
+    assert f"{window} minutes" in _section_text("incidents")
+    assert "topology" in _section_text("incidents").lower()
+    # notification channel filters
+    sender = _source("app/notifications/sender.py")
+    assert 'VALID_EVENTS = ("opened", "escalated")' in sender
+    assert "minimum severity" in _section_text("notifications").lower()
+    assert "not a filter" in _section_text("notifications")
+    # encryption at rest
+    assert "Fernet" in _source("app/credentials.py") and "Fernet" in _section_text("accounts-credentials")
+    assert "CREDENTIAL_ENCRYPTION_KEY" in _section_text("accounts-credentials")
+    # deny beats grant
+    assert "DENIED. Nothing overrides a deny" in _source("app/auth/rbac.py")
+    assert "deny" in _section_text("access-control").lower() and "wins" in _section_text("access-control").lower()
+    # priority routing is a flag nobody reads yet
+    users = [p for p in glob.glob(os.path.join(ROOT, "app", "**", "*.py"), recursive=True)
+             if "routing_enabled(" in open(p, encoding="utf-8").read() and not p.endswith("priority.py")]
+    assert not users, f"routing is now used by {users}: update the Priority help text"
+    assert "reserved for a later release" in _section_text("priority-routing")
+    # one AWS region per account
+    assert 'region = account.get("default_region")' in _source("app/collector/discovery/runner.py")
+    assert "One region per account" in _section_text("accounts-onboarding")
 
 
 def test_content_is_json_serialisable():

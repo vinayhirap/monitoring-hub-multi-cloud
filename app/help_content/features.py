@@ -16,8 +16,19 @@ def incidents():
         ul(["Incident detail (including a postmortem) opens from the incident list; viewing needs incidents.view.",
             "Capacity forecast: a linear trend fitted over the last 14 days of a capacity metric, cached for about 2 minutes.",
             "Scope: you only see incidents for accounts you have access to."]),
-        note("The incident correlation rules (what groups alerts together) were not documented here because they were not "
-             "reviewed in code.", unverified=True),
+        h("How alerts are grouped into an incident"),
+        ul(["Correlation runs every 15 minutes and only looks at active alerts that are not already in an active incident.",
+            "Two alerts are grouped when their resources are linked by a topology relationship (either direction, "
+            "automatic or manual) and they started within 30 minutes of each other. Example: a load balancer breach and "
+            "the breaches of its target instances become one incident.",
+            "An alert joins an existing open incident when its resource is related to a resource already in it and it "
+            "falls within 30 minutes of the incident start.",
+            "Matching never crosses accounts: an incident only contains alerts from one account.",
+            "A breach with no related active alert stays a normal alert; it does not become an incident.",
+            "The incident takes the worst severity of its alerts. The title and start time come from the earliest "
+            "breach, which is treated as the probable root; a probable cause is ranked for each new incident.",
+            "An incident resolves on its own once every alert in it is resolved. An acknowledged alert still counts "
+            "as open."]),
     ], "Correlated incidents, health scores, forecasts")
 
 
@@ -48,7 +59,14 @@ def notifications():
             "Test sends one message now and reports the real outcome. The delivery log keeps the last 100 attempts.",
             "A message reads like '[CloudOps] Alert opened - P2 WARNING: metric on resource (account)' with value, threshold and a link to Alerts. The P-level appears when priorities are on."]),
         p("Maintenance windows suppress paging while active; alerts are still recorded."),
-        note("Which severities or priorities each channel receives was not verified for this guide.", unverified=True),
+        h("Which alerts a channel receives"),
+        ul(["Minimum severity: WARNING (receives warning and critical) or CRITICAL (critical only). The default is CRITICAL.",
+            "Events: opened (a new alert) and escalated (an unacknowledged alert was escalated). A channel can take either "
+            "or both.",
+            "Account: a channel can be tied to one account, or left without an account to receive every account.",
+            "Silenced alerts send nothing.",
+            "Priority (P1-P4) is shown in the message when priorities are on, but it is not a filter: a channel cannot "
+            "be limited to P1 only."]),
     ], "Email, Slack, Teams and webhook channels")
 
 
@@ -229,7 +247,14 @@ def access():
             "Deny overrides (rbac.override.manage) are explicit denies of a permission.",
             "Hiding a page is not authorization: every API call checks the permission and the account scope."]),
         link("Route-by-route permission list: docs/RBAC_MATRIX.md in the repository", "https://github.com/vinayhirap/monitoring-hub-multi-cloud/blob/main/docs/RBAC_MATRIX.md"),
-        note("Precedence between a deny override and a grant was not verified for this guide.", unverified=True),
+        h("Deny always wins"),
+        ul(["Order of decision: 1) an explicit deny that matches the permission and covers the target blocks it, "
+            "2) otherwise any role binding that grants the permission and covers the target allows it, "
+            "3) otherwise it is refused.",
+            "A deny beats every grant, even a binding that covers all accounts. It works like an explicit deny in AWS IAM.",
+            "An unscoped deny (applies everywhere) removes the permission everywhere and the page is hidden too. "
+            "A scoped deny removes only the accounts, regions or services it covers.",
+            "The built-in admin role passes the page and route permission check regardless of a deny; row-level checks inside data endpoints still apply a deny."]),
     ], "Roles, permissions, groups, scopes")
 
 

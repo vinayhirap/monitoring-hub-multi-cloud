@@ -66,8 +66,22 @@ def accounts():
         h("Discovery"),
         p("After onboarding, resources are discovered (POST /api/admin/accounts/{id}/discover re-runs it). Stopped and "
           "terminated EC2 instances are skipped by the metrics collector."),
-        note("Which regions are scanned, and how Azure and GCP scopes are chosen, was not confirmed in code for this guide.",
-             unverified=True),
+        h("What each cloud scans"),
+        table(["Cloud", "Scope of discovery", "What the region field does"], [
+            ["AWS", "One region per account: the Default region chosen at onboarding. Resources in other regions are not "
+                    "discovered. To monitor a second region, onboard the account again with that region.",
+             "Selects the region that is scanned"],
+            ["Azure", "The whole subscription: VMs, storage, databases, web apps, caches, messaging, load balancers and "
+                      "more are listed across every location.",
+             "Short name (for example centralindia) used for the metrics endpoint; lowercase letters and digits only"],
+            ["GCP", "The whole project: Compute instances in every zone, Cloud Storage buckets and Cloud SQL instances. "
+                    "Cloud Run has no cross-region list, so 12 fixed regions are probed (asia-south1, asia-south2, "
+                    "asia-southeast1, asia-east1, asia-northeast1, australia-southeast1, us-central1, us-east1, us-west1, "
+                    "europe-west1, europe-west2, europe-central2).",
+             "Stored as the account's default region"],
+        ]),
+        note("A Cloud Run service in a region outside that list of 12 will not appear. A discovery step that fails for "
+             "one service (for example a missing permission) is skipped and does not stop the others.", "warn"),
     ], "Connect AWS, Azure and GCP accounts")
 
 
@@ -81,7 +95,16 @@ def accounts_admin():
             "Deleting an account is an admin action (accounts.delete). Exporting an account's data "
             "(GET /api/admin/accounts/{id}/export) also requires accounts.delete.",
             "Console links to the cloud are created on demand (POST .../console-url) and AWS opens are audit-logged."]),
-        note("How the secrets are encrypted at rest was not verified for this guide.", unverified=True),
+        h("How secrets are stored"),
+        ul(["Azure client secrets, GCP service-account keys and AWS static access keys are encrypted with Fernet "
+            "(AES-128-CBC with an HMAC) before they are written to the provider_credentials table. The account row only "
+            "keeps an opaque reference, never the secret.",
+            "The key comes from the CREDENTIAL_ENCRYPTION_KEY setting in the server .env. If it is unset, a key file is "
+            "auto-created under config/ (intended for local development only).",
+            "IAM role ARNs and External IDs are identifiers, not long-lived secrets, so they are not stored this way."]),
+        note("Keep CREDENTIAL_ENCRYPTION_KEY safe and unchanged. If it is lost or replaced, every stored secret becomes "
+             "unreadable and each account's credentials must be entered again. The deploy script reuses the existing key "
+             "on redeploy for this reason.", "warn"),
     ], "Rotation, offboarding and secret handling (admin)")
 
 
@@ -150,8 +173,9 @@ def priority():
             "Priority is recomputed for every open alert each cycle; resolved alerts keep their last value."]),
         p("Switch: PRIORITY_ENABLED (default off). Off: no priority is stored or shown. On: P-chips, the Firing by priority strip "
           "on the Alerts page, P1-first ordering, and the level at the front of new-alert popups and notification messages."),
-        p("PRIORITY_ROUTING_ENABLED (escalation by priority, per-channel minimum level) needs PRIORITY_ENABLED too. "
-          "In app/priority.py it is described as 'patch 2'; whether routing is built was not verified.", unverified=True),
+        p("PRIORITY_ROUTING_ENABLED is reserved for a later release (escalation by priority and per-channel minimum "
+          "level). The flag exists but nothing reads it yet, so turning it on changes no behaviour today. Escalation and "
+          "notification channels still route by severity, not by P-level."),
         link("The same table in the app: Alerts, 'How to read alerts'", "/alerts"),
     ], "P1-P4 rule and flags")
 
