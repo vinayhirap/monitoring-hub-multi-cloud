@@ -61,9 +61,11 @@ On DEV leave the paid collection as it is. These three are read-only or offline:
 cd /opt/monitoring-hub/app
 /opt/monitoring-hub/venv/bin/python3 scripts/env_polling_verify.py --config-only
 /opt/monitoring-hub/venv/bin/python3 -m pytest tests/test_env_polling_rollout.py tests/test_env_polling.py -q
-/opt/monitoring-hub/venv/bin/python3 scripts/polling_plan_report.py
+/opt/monitoring-hub/venv/bin/python3 -c "from dotenv import load_dotenv; load_dotenv('.env'); import runpy, sys; sys.argv=['scripts/polling_plan_report.py']; runpy.run_path('scripts/polling_plan_report.py', run_name='__main__')"
 ```
 Expect: `OK: no rule violated`, all tests passed, and a plan whose flag-on column is below flag-off.
+`polling_plan_report.py` does not read `.env` itself (it fails with `DB_PASSWORD is not set`), so it is started through the
+`load_dotenv` wrapper above; `env_polling_verify.py` and `flag_impact_report.py` load `.env` on their own.
 Do not set `ENV_POLLING_ENABLED` on DEV just to test: DEV would then call CloudWatch on the new schedule, and the
 point of Phase C is to verify it, not to spend on it.
 
@@ -98,7 +100,7 @@ Expect `env polling is OFF`, `no rule violated`. Read every `FALSE_STALE` line: 
 stop being refreshed. Close or accept them before turning on. A `STALE_LIMIT_TIGHT` line is a FAIL: stop and report it.
 6. The modelled after-numbers for your fleet:
 ```
-cd /opt/monitoring-hub/app && /opt/monitoring-hub/venv/bin/python3 scripts/polling_plan_report.py
+cd /opt/monitoring-hub/app && /opt/monitoring-hub/venv/bin/python3 -c "from dotenv import load_dotenv; load_dotenv('.env'); import runpy, sys; sys.argv=['scripts/polling_plan_report.py']; runpy.run_path('scripts/polling_plan_report.py', run_name='__main__')"
 ```
 
 ## 5. PROD (prod): turn it on
@@ -161,6 +163,14 @@ mysql -u"$(grep -m1 '^DB_USER=' .env | cut -d= -f2-)" -p"$(grep -m1 '^DB_PASSWOR
 ```
 Expect: no new error event types versus section 4; UAT and DEV alert counts not jumping; the `no_data_expired`
 closures on DEV non-critical alerts you listed in section 4 (and nothing else) as they pass 72 h.
+
+### Known effect found on PROD (2026-10-22): DEV ACM certificate-expiry alert
+
+`env_polling_verify.py` flagged one open alert: 11462, U4RAD, a DEV-classified ACM certificate, `daystoexpiry`.
+That metric is daily and is never slowed, but `evaluate_for_alerts()` only checks "DEV and not critical-class", so with the flag
+ON the alert is no longer evaluated (Stale after about 50 h, closed `no_data_expired` 72 h later). The expiry of a
+DEV certificate would stop alerting. [code]. Decide before turning on: accept it, or ask for a minimal change that keeps
+evaluating metrics whose base interval is 24 h or longer (not made here: `app/collector/*` is out of scope for Phase C).
 
 ## 7. The 22 unclassified EC2/EBS on the 5-minute tier
 
