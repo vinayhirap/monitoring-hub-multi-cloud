@@ -50,22 +50,49 @@ class _FakeConn:
         pass
 
 
+_STUBBED = ("fastapi", "app.auth.deps", "app.db", "app.api.usage")
+
+
+def _snapshot():
+    # install_stub MUTATES a module that already exists (it sets APIRouter on the real fastapi), so restoring the
+    # sys.modules entry is not enough: keep a copy of each existing module's namespace too.
+    return {k: (sys.modules[k], dict(sys.modules[k].__dict__)) for k in _STUBBED if k in sys.modules}
+
+
+def _restore(snap):
+    for k in _STUBBED:
+        if k not in snap:
+            sys.modules.pop(k, None)
+            continue
+        mod, ns = snap[k]
+        for extra in set(mod.__dict__) - set(ns):
+            mod.__dict__.pop(extra, None)
+        mod.__dict__.update(ns)
+        sys.modules[k] = mod
+
+
 @pytest.fixture
 def usage():
+    snap = _snapshot()
     install_stub("fastapi", APIRouter=_Router, Depends=lambda f=None: f, Query=lambda d=None, **k: d,
                  HTTPException=_HTTPException)
     install_stub("app.auth.deps", get_current_user=lambda: {"id": 1})
     install_stub("app.db", get_connection=lambda: None)
-    return load_module("app/api/usage.py")
+    try:
+        yield load_module("app/api/usage.py")
+    finally:
+        _restore(snap)
 
 
-def row(provider, tier, calls, units, price=None, end=None, source=None):
+def row(provider, tier, calls, units, price=None, end=None, source=None, operation=None):
     unit_price = {"aws": 0.01 / 1000, "azure": 0.01 / 1000, "gcp": 0.50 / 1_000_000}.get(provider, 0.0)
     d = {"provider": provider, "tier": tier, "calls": calls, "units": units,
          "list_price_usd": round(units * unit_price, 6) if price is None else price,
          "window_start": (end or 1_700_000_000) - 3600, "window_end": end or 1_700_000_000}
     if source:
         d["source"] = source
+    if operation:
+        d["operation"] = operation
     return json.dumps(d)
 
 
@@ -270,3 +297,20 @@ def test_endpoint_database_error_is_a_clean_500(usage, monkeypatch):
 def test_no_price_is_hard_coded_in_the_module(usage):
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app", "api", "usage.py")).read()
     assert "0.01" not in src and "0.50" not in src and "$" not in src
+
+
+def test_phase_a_operation_marks_listmetrics_and_getmetricstatistics_as_metered(usage):
+    later = PROD + [row("aws", "ui", 4, 4, source="ui", operation="ListMetrics"),
+                    row("aws", "ui", 2, 2, source="ui", operation="GetMetricStatistics")]
+    r = usage.build_report(later, 7)
+    assert r["not_metered"] == []
+
+
+def test_listmetrics_requests_are_not_added_to_metric_units_or_price(usage):
+    base = usage.build_report(PROD, 7)["providers"][0]
+    r = usage.build_report(PROD + [row("aws", "standard", 50, 50, source="collector", operation="ListMetrics")], 7)
+    p = r["providers"][0]
+    assert p["units"] == base["units"] and p["list_price_usd"] == base["list_price_usd"]
+    assert p["request_units"] == 50 and p["calls"] == base["calls"] + 50
+    lm = [t for t in p["tiers"] if t["operation"] == "ListMetrics"][0]
+    assert lm["unit"] == "requests" and lm["share_of_units_pct"] is None

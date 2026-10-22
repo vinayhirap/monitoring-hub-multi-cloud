@@ -45,7 +45,11 @@ FREE_ALLOWANCE = {
     "gcp": {"per": "billing account", "unit": "time_series_returned", "limit": 1_000_000},
 }
 # Paid reads and how a metered row proves each is metered. A call kind is "metered" once any row carries a
-# `source` containing the key (case and punctuation ignored). Only the first group is metered by today's collectors.
+# `source` OR `operation` containing the key (case and punctuation ignored): Phase A writes the billed API in `operation`. Only the first group is metered by today's collectors.
+# Operations whose `units` are REQUESTS, not metrics requested (CloudWatch ListMetrics bills per request). They are
+# listed on their own rows and never added into the provider's metric units, share percentages or list-price total.
+REQUEST_OPERATIONS = {"listmetrics"}
+
 PAID_CALL_KINDS = [
     {"provider": "aws", "call": "CloudWatch GetMetricData", "key": None, "metered_today": True},
     {"provider": "aws", "call": "CloudWatch ListMetrics", "key": "listmetrics", "metered_today": False},
@@ -81,13 +85,14 @@ def parse_detail(raw):
 
 def aggregate(rows, now=None):
     """rows: iterable of op_events.detail values. Returns (providers, meta).
-    providers: {provider: {"calls","units","list_price_usd","tiers": {(tier, source): {...}}}}.
+    providers: {provider: {"calls","units","list_price_usd","tiers": {(tier, source, operation): {...}}}}.
     meta: row counts, last window_end, distinct flush hours. Rows that are not usable are counted, not dropped silently."""
     providers = {}
     used = skipped = 0
     last_end = None
     hours = set()
     sources = set()
+    operations = set()
     for raw in rows:
         d = parse_detail(raw)
         if not d or not d.get("provider"):
@@ -97,14 +102,25 @@ def aggregate(rows, now=None):
         tier = str(d.get("tier") or "unknown")
         source = d.get("source")
         source = str(source) if source else None
+        operation = d.get("operation")
+        operation = str(operation) if operation else None
+        is_request = _norm(operation) in REQUEST_OPERATIONS
         calls, units, price = int(_num(d.get("calls"))), int(_num(d.get("units"))), _num(d.get("list_price_usd"))
-        p = providers.setdefault(provider, {"calls": 0, "units": 0, "list_price_usd": 0.0, "tiers": {}})
-        t = p["tiers"].setdefault((tier, source), {"calls": 0, "units": 0, "list_price_usd": 0.0, "rows": 0})
-        for bucket in (p, t):
-            bucket["calls"] += calls
-            bucket["units"] += units
-            bucket["list_price_usd"] += price
+        p = providers.setdefault(provider, {"calls": 0, "units": 0, "request_units": 0, "list_price_usd": 0.0, "tiers": {}})
+        t = p["tiers"].setdefault((tier, source, operation), {"calls": 0, "units": 0, "list_price_usd": 0.0, "rows": 0,
+                                                              "is_request": is_request})
+        p["calls"] += calls
+        t["calls"] += calls
+        t["units"] += units
+        t["list_price_usd"] += price
+        if is_request:
+            p["request_units"] += units
+        else:
+            p["units"] += units
+            p["list_price_usd"] += price
         t["rows"] += 1
+        if operation:
+            operations.add(operation)
         used += 1
         if source:
             sources.add(source)
@@ -113,7 +129,7 @@ def aggregate(rows, now=None):
             last_end = end if last_end is None else max(last_end, end)
             hours.add(int(end) // 3600)
     return providers, {"rows_used": used, "rows_skipped": skipped, "last_window_end": last_end,
-                       "flush_hours": hours, "sources": sources}
+                       "flush_hours": hours, "sources": sources, "operations": operations}
 
 
 def freshness(meta, days, now=None):
@@ -185,18 +201,20 @@ def build_report(rows, days, month_rows=(), now=None):
     for name in sorted(providers):
         p = providers[name]
         tiers = []
-        for (tier, source), t in sorted(p["tiers"].items(), key=lambda kv: -kv[1]["units"]):
-            tiers.append({"tier": tier, "source": source, "calls": t["calls"], "units": t["units"],
+        for (tier, source, operation), t in sorted(p["tiers"].items(), key=lambda kv: (kv[1]["is_request"], -kv[1]["units"])):
+            tiers.append({"tier": tier, "source": source, "operation": operation, "calls": t["calls"], "units": t["units"],
+                          "unit": "requests" if t["is_request"] else UNITS.get(name, "units"),
                           "list_price_usd": round(t["list_price_usd"], 4), "rows": t["rows"],
                           "free": tier in FREE_TIERS, "free_reason": FREE_TIERS.get(tier),
-                          "share_of_units_pct": round(100.0 * t["units"] / p["units"], 1) if p["units"] else 0.0})
+                          "share_of_units_pct": (None if t["is_request"] else
+                                                 round(100.0 * t["units"] / p["units"], 1) if p["units"] else 0.0)})
         allowance = free_allowance_position(name, month_providers.get(name, {}).get("units", 0), now)
         out.append({"provider": name, "known_provider": name in UNITS, "unit": UNITS.get(name, "units"),
-                    "calls": p["calls"], "units": p["units"], "list_price_usd": round(p["list_price_usd"], 4),
-                    "tiers": tiers, "free_allowance": allowance})
+                    "calls": p["calls"], "units": p["units"], "request_units": p["request_units"],
+                    "list_price_usd": round(p["list_price_usd"], 4), "tiers": tiers, "free_allowance": allowance})
         all_calls += p["calls"]
         all_price += p["list_price_usd"]
-    seen = {_norm(s) for s in meta["sources"]}
+    seen = {_norm(s) for s in meta["sources"]} | {_norm(o) for o in meta["operations"]}
     not_metered = [k["call"] for k in PAID_CALL_KINDS
                    if not k["metered_today"] and not any(k["key"] in s for s in seen)]
     fresh = freshness(meta, days, now)

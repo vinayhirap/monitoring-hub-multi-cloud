@@ -26,8 +26,8 @@ function TierBars({ tiers }) {
   return (
     <ul className="ac-bars">
       {tiers.map((t, i) => (
-        <li key={`${t.tier}-${t.source || ""}-${i}`} className="ac-bar-row">
-          <span className="ac-bar-name">{TIER_LABEL[t.tier] || t.tier}{t.source ? ` · ${t.source}` : ""}</span>
+        <li key={`${t.tier}-${t.source || ""}-${t.operation || ""}-${i}`} className="ac-bar-row">
+          <span className="ac-bar-name">{TIER_LABEL[t.tier] || t.tier}{t.source ? ` · ${t.source}` : ""}{t.operation ? ` · ${t.operation}` : ""}{t.unit === "requests" ? " (requests)" : ""}</span>
           <svg className="ac-bar-svg" viewBox="0 0 100 8" preserveAspectRatio="none" role="img"
                aria-label={`${n(t.units)} units, ${t.share_of_units_pct}% of this cloud`}>
             <rect className="ac-bar-bg" x="0" y="0" width="100" height="8" rx="2" />
