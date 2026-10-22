@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { apiFetch } from "../api/api";
+import { copyText } from "../utils/copyText";
 import { PageHeader, EmptyState, Skeleton } from "../components/ui";
 import BlockRenderer from "../help/BlockRenderer";
 import {
@@ -23,7 +24,7 @@ export default function HelpCenter() {
   const [query, setQuery] = useState("");
   const [openGroups, setOpenGroups] = useState({});
   const [navShown, setNavShown] = useState(false);     // small screens: the topic list is folded away until asked for
-  const [linkCopied, setLinkCopied] = useState(false);
+  const [linkState, setLinkState] = useState(null);      // null | "ok" | "fail"
   const searchRef = useRef(null);
   const articleRef = useRef(null);
 
@@ -65,7 +66,7 @@ export default function HelpCenter() {
     if (target) setOpenGroups(o => ({ ...o, [target.group]: true }));
     navigate({ hash: `#${id}` }, { replace: true });
     setNavShown(false);
-    setLinkCopied(false);
+    setLinkState(null);
     // Scroll the article into view (works whichever element the app scrolls, unlike window.scrollTo).
     requestAnimationFrame(() => articleRef.current?.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" }));
   }, [navigate, sections]);
@@ -77,11 +78,10 @@ export default function HelpCenter() {
   const copyLink = useCallback(async () => {
     if (!selected) return;
     const url = `${window.location.origin}${window.location.pathname}#${selected.id}`;
-    try {
-      await navigator.clipboard.writeText(url);
-      setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 1800);
-    } catch { /* clipboard blocked: the address bar already holds the link */ }
+    // copyText works on plain http:// too (navigator.clipboard alone does not), which is how the servers are reached.
+    const ok = await copyText(url);
+    setLinkState(ok ? "ok" : "fail");
+    setTimeout(() => setLinkState(null), 2200);
   }, [selected]);
 
   const searching = query.trim().length > 0;
@@ -176,7 +176,7 @@ export default function HelpCenter() {
                 <div className="hc-crumb">{selected.group}</div>
                 <div className="hc-titlerow">
                   <h2 className="hc-title">{selected.title}</h2>
-                  <button type="button" className="ui-btn hc-copylink" onClick={copyLink}>{linkCopied ? "Link copied" : "Copy link"}</button>
+                  <button type="button" className="ui-btn hc-copylink" onClick={copyLink}>{linkState === "ok" ? "Link copied" : linkState === "fail" ? "Copy failed: use the address bar" : "Copy link"}</button>
                 </div>
                 {selected.summary && <p className="hc-lead">{selected.summary}</p>}
                 <div className="hc-meta">

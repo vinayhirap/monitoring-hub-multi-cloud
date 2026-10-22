@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { headingId } from "./searchSections";
+import { copyText } from "../utils/copyText";
 
 function Unverified() {
   return (
@@ -26,18 +27,16 @@ function HelpLink({ block, onSelectSection, hasSection }) {
 }
 
 function CodeBlock({ text }) {
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState(null);      // null | "ok" | "fail"
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
-    } catch { /* clipboard blocked (insecure origin): the text stays selectable */ }
+    const ok = await copyText(text);               // works on plain http:// as well as https
+    setState(ok ? "ok" : "fail");
+    setTimeout(() => setState(null), 1800);
   };
   return (
     <div className="hc-code-wrap">
       <button type="button" className="ui-btn hc-copy" onClick={copy} aria-label="Copy this code to the clipboard">
-        {copied ? "Copied" : "Copy"}
+        {state === "ok" ? "Copied" : state === "fail" ? "Copy failed" : "Copy"}
       </button>
       <pre className="hc-code"><code>{text}</code></pre>
     </div>
