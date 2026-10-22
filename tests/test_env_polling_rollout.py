@@ -396,6 +396,12 @@ def test_analyse_series_does_not_judge_sparse_metrics(verify):
     assert late == [] and g[0]["sparse_not_judged"] == 1 and g[0]["verdict"] == "SPARSE_ONLY"
 
 
+def test_alert_findings_dev_daily_metric_is_not_false_stale(verify):
+    """DEV ACM DaysToExpiry (daily, never slowed) is still evaluated, so it is not reported as FALSE_STALE."""
+    f = verify.alert_findings([_alert(1, "certificatemanager", "dev", "daystoexpiry", stale_on=3000)])
+    assert not [x for x in f if x["kind"] == "FALSE_STALE"]
+
+
 def _alert(i, rtype, env, metric, stale_on=20, status="active", hard=72):
     return {"id": i, "resource_id": f"r{i}", "resource_type": rtype, "name": f"n{i}", "account": "A", "env": env,
             "metric_name": metric, "status": status, "severity": "WARNING", "age_min": 5,

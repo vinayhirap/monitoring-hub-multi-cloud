@@ -634,8 +634,8 @@ def _env_poll_row_info(row, p1_keys=None):
     rtype, metric = row.get("resource_type"), (row.get("metric_name") or "").lower()
     env = row.get("env_resolved")
     critical = _ep.is_critical_metric(rtype, metric, p1_keys)
-    evaluate = _ep.evaluate_for_alerts(env, critical, rtype)
     base = _pm.base_interval_seconds("aws", rtype, metric)
+    evaluate = _ep.evaluate_for_alerts(env, critical, rtype, base_interval=base)
     if base is None:                 # Describe-API metric: never slowed
         return evaluate, 1
     return evaluate, _ep.alert_for_scale(env, base, critical, rtype)

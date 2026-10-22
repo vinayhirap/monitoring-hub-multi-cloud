@@ -726,6 +726,25 @@ def test_evaluator_dev_skips_non_critical_and_keeps_critical(on):
     assert ev._env_poll_row_info(_row("dev", "rds", "cpuutilization")) == (True, 2)
 
 
+def test_evaluator_dev_still_evaluates_daily_metrics(on):
+    """A DEV certificate-expiry (or S3 storage) metric is polled once a day and never slowed, so its alert is
+    still evaluated: found on PROD (alert on a DEV ACM cert) before ENV_POLLING_ENABLED was turned on."""
+    ev = _load_evaluator()
+    assert ev._env_poll_row_info(_row("dev", "certificatemanager", "daystoexpiry")) == (True, 1)
+    assert ev._env_poll_row_info(_row("dev", "s3", "bucketsizebytes"))[0] is True
+    assert ev._env_poll_row_info(_row("uat", "certificatemanager", "daystoexpiry")) == (True, 1)
+    # the same DEV non-critical rule still applies to every sub-daily metric
+    assert ev._env_poll_row_info(_row("dev", "ec2", "cpuutilization"))[0] is False
+    assert ev._env_poll_row_info(_row("dev", "ebs", "volumereadops"))[0] is False
+
+
+def test_evaluate_for_alerts_base_interval_argument(on, monkeypatch):
+    assert ep.evaluate_for_alerts("dev", False, "ec2", base_interval=86400) is True
+    assert ep.evaluate_for_alerts("dev", False, "ec2", base_interval=3600) is False
+    assert ep.evaluate_for_alerts("dev", False, "ec2", base_interval=None) is False      # unknown base: old answer
+    assert ep.evaluate_for_alerts("dev", False, "ec2", force_enabled=False, base_interval=300) is True
+
+
 def test_evaluator_ignores_non_aws_and_describe_metrics(on):
     ev = _load_evaluator()
     assert ev._env_poll_row_info(_row("dev", "vm", "cpu", provider="azure")) == (True, 1)

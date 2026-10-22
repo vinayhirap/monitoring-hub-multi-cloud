@@ -144,6 +144,14 @@ def test_alert_findings_dev_non_critical_is_false_stale(db):
     assert ("i-dev1", "FALSE_STALE") in {(f["resource_id"], f["kind"]) for f in off["alerts"]["findings"]}
 
 
+def test_dev_certificate_expiry_alert_is_not_false_stale(db):
+    """PROD 2026-10-22: alert on a DEV ACM certificate (daily, never slowed) must stay evaluated with the flag ON."""
+    _res(db, "arn:aws:acm:ap-south-1:1:certificate/abc", "certificatemanager", "dev", name="test.example.com")
+    _open_alert(db, "arn:aws:acm:ap-south-1:1:certificate/abc", "daystoexpiry")
+    rep = _json(_run("--json", "--only", "alerts", flags=ON))
+    assert not [f for f in rep["alerts"]["findings"] if f["kind"] == "FALSE_STALE"], rep["alerts"]
+
+
 def test_alert_findings_use_the_real_window_sql_and_bound_account(db):
     _res(db, "i-uat1", "ec2", "uat")
     _open_alert(db, "i-uat1", "cpuutilization")

@@ -337,7 +337,7 @@ def alert_findings(rows):
         rtype, metric = r["resource_type"], (r["metric_name"] or "").lower()
         critical = (rtype, metric) in p1
         base = pm.base_interval_seconds("aws", rtype, metric)
-        evaluate = ep.evaluate_for_alerts(env, critical, rtype, force_enabled=True)
+        evaluate = ep.evaluate_for_alerts(env, critical, rtype, force_enabled=True, base_interval=base)
         eff = None if base is None else ep.effective_interval(env, base, critical, rtype, force_enabled=True)
         stale_on = r.get("stale_on_min")
         head = {"alert_id": r["id"], "account": r.get("account"), "resource_id": r["resource_id"],

@@ -164,16 +164,18 @@ mysql -u"$(grep -m1 '^DB_USER=' .env | cut -d= -f2-)" -p"$(grep -m1 '^DB_PASSWOR
 Expect: no new error event types versus section 4; UAT and DEV alert counts not jumping; the `no_data_expired`
 closures on DEV non-critical alerts you listed in section 4 (and nothing else) as they pass 72 h.
 
-### Known effect found on PROD (2026-10-22): DEV ACM certificate-expiry alert
+### Found on PROD (2026-10-22) and fixed before turning on: DEV certificate-expiry alert
 
-`env_polling_verify.py` flagged one open alert: 11462, U4RAD, a DEV-classified ACM certificate, `daystoexpiry`.
-That metric is daily and is never slowed, but `evaluate_for_alerts()` only checks "DEV and not critical-class", so with the flag
-ON the alert is no longer evaluated (Stale after about 50 h, closed `no_data_expired` 72 h later). The expiry of a
-DEV certificate would stop alerting. [code]. Decide before turning on: accept it, or ask for a minimal change that keeps
-evaluating metrics whose base interval is 24 h or longer (not made here: `app/collector/*` is out of scope for Phase C).
+`env_polling_verify.py` flagged one open alert: 11462, U4RAD, ACM certificate `test.u4rad.com`, classified DEV by the name
+token `test`, metric `daystoexpiry`. That metric is daily and never slowed, but the alert gate (`evaluate_for_alerts`)
+only asked "DEV and not critical-class", so with the flag ON the alert would stop being evaluated (Stale, then closed as
+`no_data_expired`). Fix (patch pcC-0003): `evaluate_for_alerts(..., base_interval=)` returns True for any metric whose
+base interval is 24 h or more; every sub-daily DEV non-critical metric is still skipped. [test]
+After the patch the verify script reports no `FALSE_STALE` for that alert.
 
-## 7. The 22 unclassified EC2/EBS on the 5-minute tier
+## 7. The unclassified EC2/EBS on the 5-minute tier (22 on 2026-10-17, 15 on 2026-10-22)
 
+On PROD 2026-10-22 the verifier listed 15 (12 EBS, 3 EC2), all in AuroGov Mumbai; the EBS volumes belong to 10 instances.
 They are polled at the full rate and stay so until they are classified: an unknown environment is treated as prod,
 on purpose. Classify them and the saving grows. List them (read-only, writes only the CSV you name):
 ```

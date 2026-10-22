@@ -191,10 +191,17 @@ def alert_for_scale(env, base_interval, critical, resource_type=None, force_enab
     return max(1, int(math.ceil(eff / float(max(base, CYCLE_SECONDS)))))
 
 
-def evaluate_for_alerts(env, critical, resource_type=None, force_enabled=None):
-    """False only for DEV non-critical metrics when POLL_DEV_EVAL_CRITICAL_ONLY is on."""
+def evaluate_for_alerts(env, critical, resource_type=None, force_enabled=None, base_interval=None):
+    """False only for DEV non-critical metrics when POLL_DEV_EVAL_CRITICAL_ONLY is on.
+
+    A metric whose base interval is a day or longer (certificate expiry, S3 storage) is never slowed by
+    this feature, so it is always evaluated: skipping it would silence a rare daily signal (a DEV
+    certificate nearing expiry) for no saving. `base_interval=None` (callers that do not know it) keeps
+    the old answer."""
     on = enabled() if force_enabled is None else force_enabled
     if not on or resource_type in EXEMPT_RESOURCE_TYPES:
+        return True
+    if base_interval is not None and base_interval >= NEVER_SLOW_AT_OR_ABOVE_SECONDS:
         return True
     if normalize_env(env) != DEV:
         return True
