@@ -381,6 +381,33 @@ def test_analyse_series_groups_expected_and_flags(verify):
     assert [x["resource_id"] for x in late] == ["d1"]
 
 
+def test_metric_with_no_datapoint_is_not_a_late_schedule(verify):
+    """PROD 2026-10-22: idle EBS volumes had no VolumeQueueLength for weeks while the same volume's other metrics
+    (and the other volumes' 5-min metrics) were fresh. The resource was collected; CloudWatch had no datapoint."""
+    rows = [_ser(f"v{i}", "ebs", "prod", "volumeidletime", 100 + 10 * i) for i in range(8)]      # 5-min tier, fresh
+    rows += [_ser("v0", "ebs", "prod", "volumequeuelength", 3_600_000, pk="v0")]                  # same tier, 60,000 min old
+    rows += [_ser("v0", "ebs", "prod", "volumereadops", 5)]                                       # 15-min tier, fresh
+    groups, late = verify.analyse_series(rows, on=False, sparse_fn=lambda t, m: False)
+    assert [(x["metric"], x["kind"]) for x in late] == [("volumequeuelength", "NO_DATAPOINT")]
+    assert all(g["verdict"] == "OK" for g in groups)
+
+
+def test_a_whole_old_resource_or_tier_is_still_late(verify):
+    sf = lambda t, m: False                                                                       # noqa: E731
+    # the resource has nothing fresh at all: late
+    rows = [_ser(f"v{i}", "ebs", "prod", "volumeidletime", 100 + 10 * i) for i in range(8)]
+    rows += [_ser("gone", "ebs", "prod", "volumeidletime", 3_600_000), _ser("gone", "ebs", "prod", "volumequeuelength", 3_600_000)]
+    groups, late = verify.analyse_series(rows, on=False, sparse_fn=sf)
+    assert {x["kind"] for x in late if x["resource_id"] == "gone"} == {"LATE"}
+    assert next(g for g in groups if g["base_s"] == 300)["verdict"] == "SLOWER"
+    # the whole 5-min tier is old although the resources' 15-min metrics are fresh: late, not "no datapoint"
+    rows = [_ser(f"w{i}", "ebs", "prod", "volumeidletime", 3_600_000) for i in range(8)]
+    rows += [_ser(f"w{i}", "ebs", "prod", "volumereadops", 5) for i in range(8)]
+    groups, late = verify.analyse_series(rows, on=False, sparse_fn=sf)
+    assert {x["kind"] for x in late} == {"LATE"}
+    assert next(g for g in groups if g["base_s"] == 300)["verdict"] == "SLOWER"
+
+
 def test_analyse_series_flags_a_slowdown_that_is_not_applied(verify):
     """flag expected ON but UAT resources are still polled every 5 min (service not restarted / flag not read)."""
     rows = [_ser(f"u{i}", "ec2", "uat", "cpuutilization", 60 + 30 * i) for i in range(8)]

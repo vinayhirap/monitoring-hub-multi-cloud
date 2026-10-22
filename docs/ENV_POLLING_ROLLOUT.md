@@ -131,7 +131,10 @@ cd /opt/monitoring-hub/app && /opt/monitoring-hub/venv/bin/python3 scripts/env_p
 ```
 Verdicts per (resource type, environment, base tier) [code]: `OK`; `SLOWER` (older than promised: collection is late, FAIL);
 `FASTER` (UAT/DEV still polled at the old rate: the flag is not being applied, FAIL); `STILL_COLLECTED` (DEV not-collected
-mode only); `UNPROVEN` / `TOO_EARLY` / `FEW` (not enough information to judge, never a failure). The age is the time
+mode only); `UNPROVEN` / `TOO_EARLY` / `FEW` (not enough information to judge, never a failure). A series that is old while the same
+resource and the same group have fresh readings is listed under `NO RECENT DATAPOINT` and is not counted: CloudWatch had no value
+(idle EBS volume without VolumeQueueLength, non-gp2 volume without BurstBalance). Found on PROD 2026-10-22: series up to 42 days old.
+Run the cadence check no earlier than 4 hours after the restart; at 0 minutes nothing slowed can be judged. The age is the time
 since the last collection, from `metrics.metric_timestamp`, which is the write time. The call count below is the definitive proof.
 
 **After 24 h** compare with the section 4 baseline:

@@ -273,6 +273,34 @@ def analyse_series(rows, on, uptime_min=None, sparse_fn=None):
     older than expected + slack."""
     sparse_fn = sparse_fn or _sparse_default
     groups, late = {}, []
+    # A series is "NO_DATAPOINT" (not a late schedule) when it is old but the SAME resource has a fresh reading on
+    # some other metric (so the resource is being collected) and the group has fresh series too (so its tier runs):
+    # CloudWatch simply had no value for that metric (an idle EBS volume has no VolumeQueueLength, a non-gp2
+    # volume no BurstBalance). If the whole group is old, or the whole resource, the schedule IS late.
+    def _row_limit(r):
+        m = (r["metric_name"] or "").lower()
+        b = pm.base_interval_seconds("aws", r["resource_type"], m)
+        d = b is None
+        if d:
+            b = pm.DESCRIBE_POLL_SECONDS
+        exp = b if d else ep.effective_interval(r.get("env"), b, ep.is_critical_metric(r["resource_type"], m),
+                                                r["resource_type"], force_enabled=on)
+        return None if exp is None else exp + slack_seconds(b)
+
+    def _gkey(r):
+        m = (r["metric_name"] or "").lower()
+        e = r.get("env")
+        return (r["resource_type"], e if e in ("prod", "uat", "dev", "unknown", "ignore") else "unclassified",
+                pm.base_interval_seconds("aws", r["resource_type"], m))
+
+    alive, group_fresh = set(), set()
+    for r in rows:
+        if sparse_fn(r["resource_type"], (r["metric_name"] or "").lower()):
+            continue
+        lim = _row_limit(r)
+        if lim is not None and int(r["age_s"]) <= lim:
+            alive.add(r.get("resource_pk", r.get("resource_id")))
+            group_fresh.add(_gkey(r))
     for r in rows:
         metric = (r["metric_name"] or "").lower()
         rtype = r["resource_type"]
@@ -293,9 +321,17 @@ def analyse_series(rows, on, uptime_min=None, sparse_fn=None):
             g["sparse"] += 1
             continue
         g["resources"].add(r.get("resource_pk", r.get("resource_id")))
-        g["ages"].append(int(r["age_s"]))
-        if expected is not None and int(r["age_s"]) > expected + slack_seconds(base):
-            late.append({"account": r.get("account"), "resource_id": r.get("resource_id"), "name": r.get("name"),
+        limit = None if expected is None else expected + slack_seconds(base)
+        no_datapoint = (limit is not None and int(r["age_s"]) > limit
+                        and r.get("resource_pk", r.get("resource_id")) in alive and _gkey(r) in group_fresh)
+        if not no_datapoint:
+            g["ages"].append(int(r["age_s"]))
+        if no_datapoint:
+            late.append({"kind": "NO_DATAPOINT", "account": r.get("account"), "resource_id": r.get("resource_id"),
+                         "name": r.get("name"), "resource_type": rtype, "env": label, "metric": metric,
+                         "age_s": int(r["age_s"]), "expected_s": expected, "base_s": base})
+        elif expected is not None and int(r["age_s"]) > expected + slack_seconds(base):
+            late.append({"kind": "LATE", "account": r.get("account"), "resource_id": r.get("resource_id"), "name": r.get("name"),
                          "resource_type": rtype, "env": label, "metric": metric, "age_s": int(r["age_s"]),
                          "expected_s": expected, "base_s": base})
     out = []
@@ -622,6 +658,16 @@ def render_series(groups, late, on, uptime_min):
     out.append("   verdicts: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     if any(g["verdict"] == "UNPROVEN" for g in groups):
         out.append("   UNPROVEN = a slowed group cannot be judged without --uptime-min (minutes since the restart)")
+    nodata = [x for x in late if x.get("kind") == "NO_DATAPOINT"]
+    late = [x for x in late if x.get("kind") != "NO_DATAPOINT"]
+    if nodata:
+        out.append(f"   NO RECENT DATAPOINT ({len(nodata)} series): the resource was collected on time but CloudWatch "
+                   f"had no value for this metric (idle volume, metric not published). Not a schedule problem:")
+        for x in nodata[:15]:
+            out.append(f"     {x['account']}  {x['resource_type']} {x['resource_id']}  {x['env']}  {x['metric']}  "
+                       f"last value {x['age_s'] / 60:.0f} min ago")
+        if len(nodata) > 15:
+            out.append(f"     ... and {len(nodata) - 15} more (--json lists all)")
     if late:
         out.append(f"   SERIES OLDER THAN EXPECTED + TOLERANCE ({len(late)}), worst first:")
         for x in late[:40]:
