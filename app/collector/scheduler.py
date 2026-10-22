@@ -746,6 +746,12 @@ def run_loop(leader_event=None):
         except Exception as e:
             logger.error(f"api_usage flush error: {e}")
 
+        try:
+            from app.aws import cost_explorer
+            cost_explorer.maybe_refresh_async()      # no-op unless ACTUAL_COST_ENABLED=1; at most once a day per account
+        except Exception as e:
+            logger.error(f"actual-cost refresh error: {e}")
+
         # Sleep until next critical cycle
         elapsed = time.time() - now
         # Wake for whichever comes first: the next critical tick or the standard-tier phase point.

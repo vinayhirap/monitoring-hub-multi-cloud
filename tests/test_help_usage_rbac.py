@@ -317,9 +317,13 @@ def test_matrix_shows_both_routes_gated_by_their_permission(matrix):
     assert (u["level"], u["permissions"], u["methods"]) == ("permission", ["usage.view"], ["GET"])
 
 
-def test_nothing_under_help_or_usage_is_open_or_state_changing(matrix):
+def test_nothing_under_help_or_usage_is_open_or_state_changing_except_the_cost_refresh(matrix):
     rows = [r for r in matrix if r["path"].startswith(("/api/help", "/api/usage"))]
-    assert rows and all(r["level"] == "permission" and not r["mutating"] for r in rows)
+    assert rows and all(r["level"] == "permission" for r in rows)
+    # The one deliberate exception: the manual Cost Explorer refresh (it spends $0.01 per request), admin-only.
+    mutating = [r for r in rows if r["mutating"]]
+    assert [(r["path"], r["methods"], r["permissions"]) for r in mutating] == [
+        ("/api/usage/actual-cost/refresh", ["POST"], ["usage.manage", "usage.view"])]
 
 
 def test_every_code_those_routes_name_is_seeded(matrix):

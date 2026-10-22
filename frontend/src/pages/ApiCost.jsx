@@ -4,12 +4,20 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../api/api";
 import { PageHeader, KpiCard, KpiStrip, Panel, SegmentedControl, EmptyState, Skeleton, Badge } from "../components/ui";
+import { useAuth } from "../auth/AuthContext";
 import "./ApiCost.css";
 
 const RANGES = [{ key: 1, label: "24 hours" }, { key: 7, label: "7 days" }, { key: 30, label: "30 days" }];
 const CLOUD = { aws: "AWS", azure: "Azure", gcp: "GCP" };
 const UNIT_LABEL = { metrics_requested: "metrics requested", api_calls: "API calls", time_series_returned: "series returned", units: "units" };
-const TIER_LABEL = { critical: "Critical (2 min)", standard: "Standard (5 min)", low: "Low (15 min)", extended: "Extended", slow_extended: "Daily", tag_sync: "Tag sync" };
+const TIER_LABEL = { critical: "Critical (2 min)", standard: "Standard (5 min)", low: "Low (15 min)", extended: "Extended", slow_extended: "Daily", tag_sync: "Tag sync", ui: "Pages opened by users", discovery: "Metric discovery" };
+
+const STATUS_TEXT = {
+  ok: "up to date",
+  permission_missing: "permission missing: add ce:GetCostAndUsage to the role",
+  not_enabled: "Cost Explorer is not enabled in this account yet",
+  error: "could not read",
+};
 
 const n = v => Number(v || 0).toLocaleString();
 const usd = v => `$${Number(v || 0).toFixed(Number(v) >= 1 ? 2 : 4)}`;
@@ -27,7 +35,7 @@ function TierBars({ tiers }) {
     <ul className="ac-bars">
       {tiers.map((t, i) => (
         <li key={`${t.tier}-${t.source || ""}-${t.operation || ""}-${i}`} className="ac-bar-row">
-          <span className="ac-bar-name">{TIER_LABEL[t.tier] || t.tier}{t.source ? ` · ${t.source}` : ""}{t.operation ? ` · ${t.operation}` : ""}{t.unit === "requests" ? " (requests)" : ""}</span>
+          <span className="ac-bar-name">{TIER_LABEL[t.tier] || t.tier}{t.source && t.source !== t.tier && t.source !== "collector" ? ` · ${t.source}` : ""}{t.operation ? ` · ${t.operation}` : ""}{t.unit === "requests" ? " (requests)" : ""}</span>
           <svg className="ac-bar-svg" viewBox="0 0 100 8" preserveAspectRatio="none" role="img"
                aria-label={`${n(t.units)} units, ${t.share_of_units_pct}% of this cloud`}>
             <rect className="ac-bar-bg" x="0" y="0" width="100" height="8" rx="2" />
@@ -61,7 +69,99 @@ function Allowance({ a }) {
   );
 }
 
+function ActualCost({ days }) {
+  const [a, setA] = useState(null);
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    setA(null); setErr(null);
+    apiFetch(`/api/usage/actual-cost?days=${days}`).then(d => { if (live) setA(d); }).catch(e => { if (live) setErr(e); });
+    return () => { live = false; };
+  }, [days, tick]);
+
+  const refresh = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await apiFetch("/api/usage/actual-cost/refresh", { method: "POST" });
+      setMsg(r.message || "Refreshed.");
+      setTick(t => t + 1);
+    } catch (e) {
+      setMsg(e?.message || "Refresh failed.");
+    } finally { setBusy(false); }
+  };
+
+  if (err) return <Panel title="Actual AWS charge"><p className="ac-dim">Could not be loaded.</p></Panel>;
+  if (!a) return <Panel title="Actual AWS charge"><Skeleton h={64} /></Panel>;
+  if (a.state === "migration_pending") return <Panel title="Actual AWS charge"><p className="ac-p">{a.notes?.[0]}</p></Panel>;
+  if (a.state === "disabled") return (
+    <Panel title="Actual AWS charge" subtitle="What AWS really billed for CloudWatch">
+      <p className="ac-p">Not turned on. It needs the read-only permission ce:GetCostAndUsage on each AWS role and ACTUAL_COST_ENABLED=1 on the server. Each refresh costs $0.01 per account, at most once a day.</p>
+      <p className="ac-dim">Setup steps: {a.setup_doc}</p>
+    </Panel>
+  );
+
+  const hasData = a.by_usage_type?.length > 0;
+  const max = Math.max(0.0001, ...(a.daily || []).map(d => d.usd));
+  return (
+    <Panel title="Actual AWS charge" subtitle="What AWS billed for the CloudWatch service (Cost Explorer), after free tiers"
+           actions={<button className="ac-btn" disabled={busy} onClick={refresh}>{busy ? "Refreshing..." : "Refresh now"}</button>}>
+      {msg && <p className="ac-dim" role="status">{msg}</p>}
+      <KpiStrip>
+        <KpiCard label="Actual billed" value={hasData ? usd(a.total_usd) : "no data yet"}
+                 sub={a.through_date ? `through ${a.through_date} (AWS lags up to ~48 h)` : "waiting for the first Cost Explorer read"} />
+        <KpiCard label="CloudOps estimate" value={a.estimate_usd == null ? "n/a" : usd(a.estimate_usd)} sub="list price, ceiling (AWS only)" />
+        <KpiCard label="Cost of checking" value={usd(a.lookup_cost_usd)} sub={`${n(a.lookup_requests)} Cost Explorer requests at $0.01`} />
+      </KpiStrip>
+
+      {a.accounts.map(x => (
+        <p key={x.account} className={x.status === "ok" ? "ac-dim" : "ac-p"}>
+          {x.account}: {STATUS_TEXT[x.status] || x.status}{x.fetched_at ? `, read ${new Date(x.fetched_at).toLocaleString()}` : ""}
+          {x.status !== "ok" && x.error ? ` (${x.error})` : ""}
+        </p>
+      ))}
+
+      {hasData && (
+        <>
+          <ul className="ac-bars">
+            {a.by_usage_type.map(u => (
+              <li key={u.usage_type} className="ac-bar-row">
+                <span className="ac-bar-name">{u.label}</span>
+                <svg className="ac-bar-svg" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label={`${usd(u.usd)}`}>
+                  <rect className="ac-bar-bg" x="0" y="0" width="100" height="8" rx="2" />
+                  <rect className="ac-bar-fill" x="0" y="0" width={Math.max(1, (100 * u.usd) / Math.max(0.0001, a.by_usage_type[0].usd))} height="8" rx="2" />
+                </svg>
+                <span className="ac-bar-num">{usd(u.usd)}</span>
+                <span className="ac-bar-sub">{u.usage_type}</span>
+              </li>
+            ))}
+          </ul>
+          <ul className="ac-bars" aria-label="Daily actual charge">
+            {a.daily.map(d => (
+              <li key={d.date} className="ac-bar-row">
+                <span className="ac-bar-name">{d.date}</span>
+                <svg className="ac-bar-svg" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label={`${usd(d.usd)}`}>
+                  <rect className="ac-bar-bg" x="0" y="0" width="100" height="8" rx="2" />
+                  <rect className={d.estimated ? "ac-bar-free" : "ac-bar-fill"} x="0" y="0" width={Math.max(1, (100 * d.usd) / max)} height="8" rx="2" />
+                </svg>
+                <span className="ac-bar-num">{usd(d.usd)}</span>
+                <span className="ac-bar-sub">{d.estimated ? "partial day" : "complete"}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <ul className="ac-list">{a.notes.map((t, i) => <li key={i}>{t}</li>)}</ul>
+    </Panel>
+  );
+}
+
 export default function ApiCost() {
+  const { hasPermission } = useAuth();
+  const isAdmin = hasPermission("usage.manage");      // actual AWS charge is admin-only (usage.manage)
   const [days, setDays] = useState(7);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -114,6 +214,8 @@ export default function ApiCost() {
               <Allowance a={p.free_allowance} />
             </Panel>
           ))}
+
+          {isAdmin && <ActualCost days={days} />}
 
           {data.not_metered.length > 0 && (
             <Panel title="Not metered yet" subtitle="These paid reads are not counted anywhere, so the totals above exclude them">

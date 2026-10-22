@@ -52,7 +52,8 @@ def accounts():
             ["Access Key ID + Secret Access Key", "Static keys alternative. Choose either the role or the keys, not both."],
         ]),
         p("The assumed role is expected to carry the AWS managed ReadOnlyAccess policy (app/aws/sts.py). A narrower custom "
-          "policy needs tag:GetResources added if tag sync is used (docs/TAG_SYNC.md)."),
+          "policy needs tag:GetResources added if tag sync is used (docs/TAG_SYNC.md), and ce:GetCostAndUsage "
+          "if the actual AWS cost panel is turned on (docs/AWS_ACTUAL_COST.md)."),
         h("Azure"),
         table(["Field", "Meaning"], [["Tenant (Directory) ID", "GUID of the Entra tenant."],
                                      ["Subscription ID", "GUID of the subscription."],
@@ -307,7 +308,7 @@ def api_cost():
         table(["Call", "Class"], [
             ["Describe* / List* resource APIs, Resource Groups Tagging, STS, CloudTrail LookupEvents", "Free; polled freely"],
             ["CloudWatch GetMetricData", "Paid per metric requested"],
-            ["CloudWatch ListMetrics, GetMetricStatistics", "Paid (per request / per metric)"],
+            ["CloudWatch ListMetrics, GetMetricStatistics", "Paid (per request / per metric); counted separately, with no estimated price"],
             ["Azure Monitor", "Per 1,000 calls after 1M free per subscription per month"],
             ["GCP ListTimeSeries", "Per series after 1M free per billing account per month"],
         ]),
@@ -316,3 +317,33 @@ def api_cost():
           "Read the totals from those events on PROD."),
         note("This guide states no prices: confirm them on the cloud bill."),
     ], "Which calls cost money and how usage is measured")
+
+
+def api_actual_cost():
+    return section("cloud-actual-cost", "Actual AWS charge (Cost Explorer)", "Administration", "admin", "usage.manage", [
+        p("The Cloud API cost page estimates cost from CloudOps's own counters. The Actual AWS charge panel on the same "
+          "page shows what AWS really billed for the CloudWatch service, so the estimate can be checked. Only admins "
+          "(permission usage.manage) can see this panel or refresh it."),
+        h("What it needs"),
+        ul(["One read-only IAM action on each monitored AWS role: ce:GetCostAndUsage. It cannot change anything. "
+            "The policy and the steps are in docs/AWS_ACTUAL_COST.md (deploy/iam/monitoring-hub-cost-read.json).",
+            "Cost Explorer enabled in the AWS account (first data can take up to a day).",
+            "ACTUAL_COST_ENABLED=1 on the PROD server. Leave it off on DEV: DEV does not poll metrics."]),
+        h("What it costs"),
+        p("AWS bills every Cost Explorer request. CloudOps asks at most once a day per account and never on page load. "
+          "The Refresh now button is limited to once an hour per account. The panel shows how many requests were made."),
+        h("Reading it"),
+        table(["Status", "Meaning"], [
+            ["up to date", "The last read worked."],
+            ["permission missing", "The role lacks ce:GetCostAndUsage. Attach the policy, then Refresh now."],
+            ["Cost Explorer not enabled", "Enable Cost Explorer in that AWS account."],
+            ["could not read", "AWS returned another error; the message is shown."],
+        ]),
+        ul(["AWS lags real usage by up to about 48 hours, so the newest day is partial and lower than the estimate. "
+            "Compare the two only for complete days.",
+            "The actual figure covers everything CloudWatch bills (alarms, custom metrics, logs, API requests), not only "
+            "CloudOps's reads. The usage-type list shows how much is GetMetricData.",
+            "A member account shows only its own charges; a management (payer) account's role shows every linked account."]),
+        note("Troubleshooting: AccessDenied with the policy attached usually means the account setting \"IAM user and role "
+             "access to Billing information\" is off. Only the account root user can change it."),
+    ], "What AWS really billed for CloudWatch, and how to turn it on")

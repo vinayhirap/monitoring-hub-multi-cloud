@@ -16,7 +16,13 @@ but counts held in memory when a process restarts before its hourly flush are lo
 carry no process id, so overlapping windows from two processes cannot be told apart. The response says so.
 
 Auth: this router only requires a signed-in user (Depends(get_current_user)). Phase E adds
-require_permission("usage.view") when it registers the router in app/main.py.
+require_permission("usage.view") when it registers the router in app/main.py. The two actual-charge endpoints
+(GET /actual-cost, POST /actual-cost/refresh) additionally require usage.manage, which only the admin role holds
+(migration 110): editors can see the estimate, only admins see or refresh what AWS actually billed.
+
+ACTUAL COST: what AWS really billed for CloudWatch, read from Cost Explorer by app/aws/cost_explorer.py into
+aws_cost_actuals. It is shown NEXT TO the estimate, never merged into it: Cost Explorer lags real usage by up to ~48h,
+so the two only agree for days that are complete.
 """
 import json
 import logging
@@ -27,6 +33,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.deps import get_current_user
+from app.auth.permissions import require_permission
 from app.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -215,8 +222,12 @@ def build_report(rows, days, month_rows=(), now=None):
         all_calls += p["calls"]
         all_price += p["list_price_usd"]
     seen = {_norm(s) for s in meta["sources"]} | {_norm(o) for o in meta["operations"]}
+    # A row that carries an `operation` comes from a collector that meters ListMetrics and GetMetricStatistics itself,
+    # so they are metered even when none ran in this window (GetMetricStatistics only runs when someone opens a page).
+    # Only data from before per-operation metering is judged by the older source/operation keys.
+    per_operation_metering = bool(meta["operations"])
     not_metered = [k["call"] for k in PAID_CALL_KINDS
-                   if not k["metered_today"] and not any(k["key"] in s for s in seen)]
+                   if not k["metered_today"] and not per_operation_metering and not any(k["key"] in s for s in seen)]
     fresh = freshness(meta, days, now)
     notes = [
         "List-price estimate, not the invoice: free tiers are ignored and prices are whatever the collector stored.",
@@ -278,3 +289,129 @@ def cloud_cost(days: int = Query(7), current_user: dict = Depends(get_current_us
     if truncated or month_truncated:
         report["notes"].append(f"More than {MAX_ROWS:,} usage rows in range: only the newest are included, totals are too low.")
     return report
+
+
+# ── actual AWS charge (Cost Explorer) ───────────────────────────────────────
+def _as_date(v):
+    if isinstance(v, datetime):
+        return v.date()
+    if hasattr(v, "year") and hasattr(v, "month") and hasattr(v, "day"):
+        return v
+    try:
+        return datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def build_actual_report(actual_rows, log_rows, days, estimate_usd, enabled, now=None):
+    """actual_rows: (billed_account_id, usage_type, usage_date, amount_usd, estimated) tuples.
+    log_rows: (aws_account_id, account_name, status, ce_requests, error, fetched_at_epoch) newest first.
+    Pure: no database, no AWS. The window is the last `days` UTC dates including today."""
+    from app.aws.cost_explorer import classify_usage_type, CE_PRICE_PER_REQUEST
+    now = time.time() if now is None else now
+    today = datetime.fromtimestamp(now, tz=timezone.utc).date()
+    first = today.fromordinal(today.toordinal() - days + 1)
+    by_type, by_account, daily = {}, {}, {}
+    complete_dates = set()
+    for acct, utype, d, amt, est in actual_rows:
+        d = _as_date(d)
+        if d is None or d < first or d > today:
+            continue
+        amt = float(amt or 0)
+        by_type[utype] = by_type.get(utype, 0.0) + amt
+        by_account[acct] = by_account.get(acct, 0.0) + amt
+        day = daily.setdefault(d, {"usd": 0.0, "estimated": False})
+        day["usd"] += amt
+        day["estimated"] = day["estimated"] or bool(est)
+        if not est:
+            complete_dates.add(d)
+    total = sum(by_type.values())
+    latest_seen = max(daily) if daily else None
+    through_complete = max(complete_dates) if complete_dates else None
+
+    accounts, seen = [], set()
+    ce_requests = 0
+    for pk, name, status, reqs, err, at in log_rows:
+        if at is not None and at >= now - days * 86400:
+            ce_requests += int(reqs or 0)
+        if pk in seen:
+            continue
+        seen.add(pk)
+        accounts.append({"account": name, "status": status, "ce_requests": int(reqs or 0),
+                         "error": err, "fetched_at": datetime.fromtimestamp(at, tz=timezone.utc).isoformat() if at else None})
+    states = {a["status"] for a in accounts}
+    if not enabled:
+        state = "disabled"
+    elif not accounts:
+        state = "waiting"          # enabled, nothing fetched yet
+    elif "ok" in states:
+        state = "ok"
+    elif "permission_missing" in states:
+        state = "permission_missing"
+    elif "not_enabled" in states:
+        state = "not_enabled"
+    else:
+        state = "error"
+    lag = (today - latest_seen).days if latest_seen else None
+    notes = ["Actual figures come from AWS Cost Explorer (service: CloudWatch, unblended cost). They are what AWS billed, "
+             "after free tiers, but Cost Explorer lags real usage by up to about 48 hours.",
+             "Compare the two only for complete days: the newest day is partial, so the actual figure is expected to be "
+             "lower than the estimate for it."]
+    if latest_seen and lag and lag > 2:
+        notes.append(f"The newest Cost Explorer data is {lag} days old. Check the account's refresh status below.")
+    return {"days": days, "state": state, "enabled": bool(enabled),
+            "total_usd": round(total, 4), "estimate_usd": None if estimate_usd is None else round(estimate_usd, 4),
+            "through_date": latest_seen.isoformat() if latest_seen else None,
+            "complete_through": through_complete.isoformat() if through_complete else None,
+            "by_usage_type": [{"usage_type": k, "label": classify_usage_type(k), "usd": round(v, 4)}
+                              for k, v in sorted(by_type.items(), key=lambda kv: -kv[1])],
+            "by_account": [{"billed_account_id": k, "usd": round(v, 4)} for k, v in sorted(by_account.items(), key=lambda kv: -kv[1])],
+            "daily": [{"date": d.isoformat(), "usd": round(v["usd"], 4), "estimated": v["estimated"]} for d, v in sorted(daily.items())],
+            "accounts": accounts,
+            "lookup_cost_usd": round(ce_requests * CE_PRICE_PER_REQUEST, 2), "lookup_requests": ce_requests,
+            "setup_doc": "docs/AWS_ACTUAL_COST.md", "notes": notes}
+
+
+def _estimate_aws_usd(rows, days, now):
+    providers, _ = aggregate(rows)
+    aws = providers.get("aws")
+    return None if aws is None else aws["list_price_usd"]
+
+
+@router.get("/actual-cost")
+def actual_cost(days: int = Query(7), current_user: dict = Depends(require_permission("usage.manage"))):
+    if days not in ALLOWED_DAYS:
+        raise HTTPException(status_code=400, detail=f"days must be one of {list(ALLOWED_DAYS)}")
+    from app.aws import cost_explorer
+    now = time.time()
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT billed_account_id, usage_type, usage_date, amount_usd, estimated FROM aws_cost_actuals "
+                    "WHERE usage_date >= UTC_DATE() - INTERVAL %s DAY", (int(days),))
+        actual = [tuple(r) for r in cur.fetchall()]
+        cur.execute("SELECT aws_account_id, account_name, status, ce_requests, error, UNIX_TIMESTAMP(fetched_at) "
+                    "FROM aws_cost_fetch_log WHERE fetched_at >= UTC_TIMESTAMP() - INTERVAL 31 DAY ORDER BY id DESC LIMIT 2000")
+        log = [tuple(r) for r in cur.fetchall()]
+        est_rows, _ = _fetch(days, cur)
+    except Exception as e:
+        if "doesn't exist" in str(e) or "1146" in str(e):
+            return {"days": days, "state": "migration_pending", "enabled": cost_explorer.enabled(),
+                    "notes": ["Run migration 111_aws_actual_cost.sql (migrate.py apply --all-pending)."]}
+        logger.exception("actual-cost query failed")
+        raise HTTPException(status_code=500, detail="Could not read actual cost data")
+    finally:
+        cur.close()
+        conn.close()
+    return build_actual_report(actual, log, days, _estimate_aws_usd(est_rows, days, now), cost_explorer.enabled(), now)
+
+
+@router.post("/actual-cost/refresh")
+def actual_cost_refresh(current_user: dict = Depends(require_permission("usage.manage"))):
+    """Ask AWS now (Cost Explorer bills every request). At most one refresh per account per hour."""
+    from app.aws import cost_explorer
+    if not cost_explorer.enabled():
+        raise HTTPException(status_code=409, detail="Actual cost is off. Set ACTUAL_COST_ENABLED=1 and restart.")
+    results = cost_explorer.refresh_due(force=True)
+    return {"results": results,
+            "message": None if results else "Nothing refreshed: every account was refreshed within the last hour, or a refresh is already running."}

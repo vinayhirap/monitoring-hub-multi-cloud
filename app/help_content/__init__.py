@@ -49,6 +49,7 @@ COVERAGE = {
     "Access control and RBAC": "access-control",
     "RBAC administration": "rbac-administration",
     "Cloud API cost": "cloud-api-cost",
+    "Actual AWS charge (Cost Explorer)": "cloud-actual-cost",
     "Glossary": "glossary",
     "FAQ": "faq",
     "Services (every cataloged service, 3 clouds)": "svc-* and services-directory",
@@ -63,7 +64,7 @@ def all_sections():
         features.incidents(), features.escalation(), features.notifications(), features.status_page(),
         features.slos(), features.synthetic(), features.maintenance(), features.waf(), features.security(),
         features.topology(), features.search(), features.reports(), features.audit(), features.settings(),
-        features.access(), features.rbac_admin(), concepts.polling_admin(), concepts.api_cost(),
+        features.access(), features.rbac_admin(), concepts.polling_admin(), concepts.api_cost(), concepts.api_actual_cost(),
     ]
     tail = [features.glossary(), features.faq()]
     return static + [directory_section()] + list(service_sections()) + tail

@@ -25,3 +25,9 @@
   .ac-bar-row { grid-template-columns: 1fr; gap: 4px; }
   .ac-bar-num { text-align: left; }
 }
+.ac-btn {
+  padding: 6px 12px; border-radius: var(--radius); border: 1px solid var(--border-md); cursor: pointer;
+  background: var(--bg-elevated); color: var(--text-primary); font-size: 13px;
+}
+.ac-btn:disabled { opacity: .6; cursor: default; }
+.ac-btn:hover:not(:disabled) { border-color: var(--accent); }

@@ -24,6 +24,9 @@ class _Router:
     def get(self, *a, **k):
         return lambda f: f
 
+    def post(self, *a, **k):
+        return lambda f: f
+
 
 class _FakeCur:
     def __init__(self, rows_by_call):
@@ -50,7 +53,7 @@ class _FakeConn:
         pass
 
 
-_STUBBED = ("fastapi", "app.auth.deps", "app.db", "app.api.usage")
+_STUBBED = ("fastapi", "app.auth.deps", "app.auth.permissions", "app.db", "app.api.usage")
 
 
 def _snapshot():
@@ -77,6 +80,7 @@ def usage():
     install_stub("fastapi", APIRouter=_Router, Depends=lambda f=None: f, Query=lambda d=None, **k: d,
                  HTTPException=_HTTPException)
     install_stub("app.auth.deps", get_current_user=lambda: {"id": 1})
+    install_stub("app.auth.permissions", require_permission=lambda code: (lambda: None))
     install_stub("app.db", get_connection=lambda: None)
     try:
         yield load_module("app/api/usage.py")
@@ -314,3 +318,40 @@ def test_listmetrics_requests_are_not_added_to_metric_units_or_price(usage):
     assert p["request_units"] == 50 and p["calls"] == base["calls"] + 50
     lm = [t for t in p["tiers"] if t["operation"] == "ListMetrics"][0]
     assert lm["unit"] == "requests" and lm["share_of_units_pct"] is None
+
+
+# ── not-metered must not reappear in a quiet window ─────────────────────
+def test_new_format_rows_mean_metered_even_when_no_getmetricstatistics_ran(usage):
+    rows = PROD + [row("aws", "standard", 40, 40, operation="ListMetrics")]       # a ui page was not opened this window
+    assert usage.build_report(rows, 1, now=1_700_000_100)["not_metered"] == []
+
+
+# ── actual AWS charge report (admin-only endpoint; pure builder here) ───────
+NOW = datetime(2026, 10, 22, 12, 0, tzinfo=timezone.utc).timestamp()
+
+
+def test_actual_report_sums_window_and_flags_partial_day(usage):
+    rows = [("111", "APS3-CW:GMD-Metrics", "2026-10-20", 1.5, 0), ("111", "APS3-CW:Requests", "2026-10-20", 0.25, 0),
+            ("111", "APS3-CW:GMD-Metrics", "2026-10-21", 1.0, 1), ("111", "APS3-CW:GMD-Metrics", "2026-09-01", 99.0, 0)]
+    r = usage.build_actual_report(rows, [(1, "Prod", "ok", 1, None, NOW - 60)], 7, 5.52, True, NOW)
+    assert r["state"] == "ok" and r["total_usd"] == 2.75                    # the September row is outside 7 days
+    assert r["through_date"] == "2026-10-21" and r["complete_through"] == "2026-10-20"
+    assert r["by_usage_type"][0]["usage_type"] == "APS3-CW:GMD-Metrics"
+    assert r["daily"][-1] == {"date": "2026-10-21", "usd": 1.0, "estimated": True}
+    assert r["estimate_usd"] == 5.52 and r["lookup_cost_usd"] == 0.01
+
+
+def test_actual_report_states(usage):
+    f = lambda log, en=True: usage.build_actual_report([], log, 7, None, en, NOW)["state"]
+    assert f([], en=False) == "disabled"
+    assert f([]) == "waiting"
+    assert f([(1, "A", "permission_missing", 0, "AccessDenied", NOW)]) == "permission_missing"
+    assert f([(1, "A", "not_enabled", 0, "x", NOW)]) == "not_enabled"
+    assert f([(1, "A", "error", 0, "x", NOW)]) == "error"
+    assert f([(1, "A", "permission_missing", 0, "x", NOW - 10), (2, "B", "ok", 1, None, NOW)]) == "ok"
+
+
+def test_actual_report_uses_only_the_latest_attempt_per_account(usage):
+    log = [(1, "A", "ok", 1, None, NOW), (1, "A", "permission_missing", 0, "old", NOW - 90000)]
+    r = usage.build_actual_report([], log, 7, None, True, NOW)
+    assert [a["status"] for a in r["accounts"]] == ["ok"]
