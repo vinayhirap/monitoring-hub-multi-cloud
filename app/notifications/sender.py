@@ -109,6 +109,8 @@ def build_message(event: str, a: dict) -> dict:
         lines.append(f"Value {_fmt(a['value'])} against threshold {_fmt(a['threshold'])}")
     if event == "escalated" and a.get("group_name"):
         lines.append(f"Escalated to group: {a['group_name']}")
+    if a.get("detail"):
+        lines.append(str(a["detail"]))
     url = _app_url()
     if url:
         lines.append(f"Open: {url}/alerts")

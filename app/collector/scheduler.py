@@ -667,6 +667,14 @@ def run_loop(leader_event=None):
                 except Exception as e:
                     logger.error(f"Maintenance-window silencing sync error: {e}")
 
+                _require_leader(leader_event)
+                # Host agent heartbeat watchdog (Phase D). No-op unless HOST_AGENT_ENABLED=true.
+                try:
+                    from app.collector.host_agent_watchdog import run_watchdog
+                    run_watchdog()
+                except Exception as e:
+                    logger.error(f"Host agent watchdog error: {e}")
+
             _require_leader(leader_event)
             # ── Standard tier (5 min) ─────────────────────────────
             if time.time() >= _standard_due_at(last_standard):
