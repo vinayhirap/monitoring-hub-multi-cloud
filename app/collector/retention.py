@@ -92,6 +92,39 @@ def prune_notification_log(sleep=time.sleep) -> int:
         (max(days, 7),), sleep)
 
 
+DEFAULT_HOST_AGENT_CREDENTIAL_RETENTION_DAYS = 90
+MIN_HOST_AGENT_CREDENTIAL_RETENTION_DAYS = 30
+
+
+def prune_host_agent_credentials(sleep=time.sleep) -> int:
+    """Host agent tables (migration 120) that only ever grow: revoked tokens and spent / revoked / expired enrollment keys.
+
+    Re-enrolling a host revokes its previous token and adds a new row (app/api/host_agents.py enroll), so a host that is
+    re-enrolled often leaves a trail of revoked tokens. Only rows that can no longer authenticate or enroll anyone are
+    deleted, and only after HOST_AGENT_CREDENTIAL_RETENTION_DAYS (default 90, floor 30; 0 disables):
+      - host_agent_tokens with revoked_at older than the window (an ACTIVE token is never touched);
+      - host_agent_enrollment_keys that are revoked, expired, or used up AND were created before the window
+        (a still-usable key is never touched).
+    host_agents rows are kept (they are the host inventory and the audit trail points at them); audit_logs is never pruned.
+    The ingested samples themselves are NOT here: they are metric_history rows, already pruned by
+    metrics_writer.prune_metric_history (METRIC_HISTORY_RETENTION_DAYS).
+    """
+    days = _env_days("HOST_AGENT_CREDENTIAL_RETENTION_DAYS", DEFAULT_HOST_AGENT_CREDENTIAL_RETENTION_DAYS)
+    if days <= 0:
+        return 0
+    days = max(days, MIN_HOST_AGENT_CREDENTIAL_RETENTION_DAYS)
+    total = _delete_in_batches(
+        f"DELETE FROM host_agent_tokens WHERE revoked_at IS NOT NULL "
+        f"AND revoked_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY) LIMIT {BATCH_SIZE}",
+        (days,), sleep)
+    total += _delete_in_batches(
+        f"DELETE FROM host_agent_enrollment_keys WHERE created_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY) "
+        f"AND (revoked = 1 OR used_count >= max_uses OR (expires_at IS NOT NULL AND expires_at < UTC_TIMESTAMP())) "
+        f"LIMIT {BATCH_SIZE}",
+        (days,), sleep)
+    return total
+
+
 ORPHAN_METRICS_HOURS_DEFAULT = 72      # must stay above the collector's own 48 h "resource is gone" rule (runner.STALE_RESOURCE_HOURS)
 ORPHAN_METRICS_HOURS_MIN = 48
 
@@ -129,7 +162,8 @@ def run_retention() -> dict:
     """Called from the daily (low-tier) scheduler block. Never raises."""
     out = {}
     for name, fn in (("alerts", prune_resolved_alerts), ("notification_log", prune_notification_log),
-                     ("orphaned_metric_rows", prune_orphaned_metric_rows)):
+                     ("orphaned_metric_rows", prune_orphaned_metric_rows),
+                     ("host_agent_credentials", prune_host_agent_credentials)):
         try:
             out[name] = fn()
         except Exception as exc:
