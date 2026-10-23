@@ -33,6 +33,7 @@ const NAV_ITEMS = [
   // Infrastructure (the per-account/region tree is injected live from the accounts index)
   { group: "Infrastructure", to: "/onboarding", label: "Account Onboarding", icon: OnboardIcon, roles: ["admin","editor"] },
   { group: "Infrastructure", to: "/environments", label: "Environments", icon: EnvironmentsIcon, roles: ["admin","editor","viewer"], perm: "environments.view", envBadge: true },
+  { group: "Infrastructure", to: "/host-agents", label: "Host Agents", icon: HostAgentsIcon, roles: ["admin","editor","viewer"], perm: "hostagents.view" },
   // Monitoring
   { group: "Monitoring", to: "/slos",                label: "SLOs",                icon: SloIcon,         roles: ["admin","editor","viewer"], perm: "slo.view" },
   { group: "Monitoring", to: "/synthetic-checks",    label: "Synthetic Checks",    icon: SyntheticIcon,   roles: ["admin","editor","viewer"], perm: "synthetic.view" },
@@ -326,6 +327,7 @@ function SettingsIcon()    { return <svg width="16" height="16" viewBox="0 0 24 
 // entry at all, so they were only reachable by typing the URL directly.
 function OpEventsIcon()    { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>; }
 function EnvironmentsIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="5" rx="1"/><rect x="3" y="11" width="18" height="5" rx="1"/><line x1="7" y1="19" x2="17" y2="19"/></svg>; }
+function HostAgentsIcon()  { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="6 10 9 10 11 7 13 13 15 10 18 10"/></svg>; }
 function EscalationIcon()  { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>; }
 function SyntheticIcon()   { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>; }
 function SloIcon()         { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="3" x2="12" y2="21"/><path d="M5 8 2 15a3 3 0 0 0 6 0Z"/><path d="M19 8l-3 7a3 3 0 0 0 6 0Z"/><path d="M7 8h10"/><path d="M12 3 7 8"/><path d="M12 3l5 5"/></svg>; }

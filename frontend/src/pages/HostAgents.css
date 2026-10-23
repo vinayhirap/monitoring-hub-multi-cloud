@@ -1,0 +1,53 @@
+/* pages/HostAgents.css -- tokens only (see styles/tokens.css, components/ui/ui.css). */
+.ha-page { padding-bottom: 24px; }
+.ha-mono { font-family: var(--font-data); }
+.ha-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.ha-hint { font-size: 11px; color: var(--ink-3); margin: 2px 0 0; }
+.ha-seen { display: flex; flex-direction: column; line-height: 1.25; }
+.ha-rowactions { display: inline-flex; gap: 6px; }
+.ha-acct { display: inline-flex; }
+
+.ha-notice, .ha-info-box, .ha-error-box { display: flex; align-items: center; gap: 12px; padding: 8px 12px; margin-bottom: var(--gap);
+  border-radius: var(--radius, 6px); font-size: var(--fs-dense); border: 1px solid var(--line-2); }
+.ha-notice { color: var(--ok-fg); background: var(--ok-bg); border-color: var(--ok-line); }
+.ha-info-box { color: var(--info-fg); background: var(--info-bg); border-color: var(--info-line); }
+.ha-error-box { color: var(--crit-fg); background: var(--crit-bg); border-color: var(--crit-line); }
+.ha-link { all: unset; cursor: pointer; text-decoration: underline; margin-left: auto; font-size: 12px; }
+.ha-link:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+.ha-dialog { width: min(480px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; }
+.ha-dialog-wide { width: min(760px, 100%); }
+.ha-form, .ha-dialog { display: flex; flex-direction: column; gap: 10px; }
+.ha-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.ha-field { display: flex; flex-direction: column; gap: 4px; }
+.ha-field label, .ha-label { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.ha-full { width: 100%; min-width: 0; }
+.ha-textarea { height: auto; padding: 8px 10px; resize: vertical; font-family: var(--font-data); }
+.ha-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); }
+.ha-actions { margin-top: 6px; }
+.ha-error { color: var(--crit-fg); font-size: 12px; margin: 0; }
+
+.ha-warn { padding: 10px 12px; border-radius: var(--radius, 6px); font-size: 12px; line-height: 1.5; color: var(--warn-fg); background: var(--warn-bg); border: 1px solid var(--warn-line); }
+.ha-placeholder { margin: 0; padding: 8px 10px; font-size: 12px; border-radius: var(--radius, 6px); color: var(--info-fg); background: var(--info-bg); border: 1px dashed var(--info-line); }
+.ha-code { margin: 0; padding: 10px 12px; font: 12px/1.5 var(--font-data); color: var(--ink-1); background: var(--surface-1); border: 1px solid var(--line-2);
+  border-radius: var(--radius, 6px); white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }
+.ha-code:focus-visible { outline: 2px solid var(--brand); }
+.ha-copy { display: inline-flex; align-items: center; gap: 10px; }
+.ha-copy-msg { font-size: 11px; color: var(--ink-3); }
+
+.ha-drawer { padding: 16px 20px 28px; display: flex; flex-direction: column; gap: 12px; }
+.ha-drawer-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.ha-drawer-head h2 { margin: 0 0 6px; overflow-wrap: anywhere; }
+.ha-drawer-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.ha-dl { margin: 0; display: grid; gap: 6px; }
+.ha-dl > div { display: grid; grid-template-columns: 120px 1fr; gap: 8px; font-size: var(--fs-dense); }
+.ha-dl dt { color: var(--ink-3); } .ha-dl dd { margin: 0; color: var(--ink-1); overflow-wrap: anywhere; }
+.ha-alerts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.ha-alerts li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: var(--fs-dense); }
+.ha-alert-name { color: var(--ink-1); font-weight: 600; }
+
+@media (max-width: 600px) {
+  .ha-row { grid-template-columns: 1fr; }
+  .ha-dl > div { grid-template-columns: 1fr; gap: 0; }
+  .ha-drawer { padding: 12px 14px 24px; }
+}
