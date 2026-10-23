@@ -9,15 +9,43 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"cloudops-agent/internal/payload"
 )
 
-const (
-	DefaultPath    = "/etc/cloudops-agent/agent.json"
-	DefaultDataDir = "/var/lib/cloudops-agent"
+// DefaultPath and DefaultDataDir are per-OS: /etc and /var/lib on Linux and macOS,
+// %ProgramData%\CloudOpsAgent on Windows (the installer ACLs that directory to SYSTEM + Administrators).
+var (
+	DefaultPath    = pathsFor(runtime.GOOS, os.Getenv("ProgramData"))[0]
+	DefaultDataDir = pathsFor(runtime.GOOS, os.Getenv("ProgramData"))[1]
+)
 
+// pathsFor returns {config file, data dir} for an OS. Pure, so every OS is unit-tested on any host.
+func pathsFor(goos, programData string) [2]string {
+	if goos == "windows" {
+		if programData == "" {
+			programData = `C:\ProgramData`
+		}
+		base := strings.TrimRight(programData, `\/`) + `\CloudOpsAgent`
+		return [2]string{base + `\agent.json`, base + `\data`}
+	}
+	return [2]string{"/etc/cloudops-agent/agent.json", "/var/lib/cloudops-agent"}
+}
+
+// StartHint is the one-line "how do I start it" shown after `enroll`.
+func StartHint(goos string) string {
+	switch goos {
+	case "windows":
+		return "Start the agent: Start-ScheduledTask -TaskName CloudOpsAgent"
+	case "darwin":
+		return "Start the agent: sudo launchctl kickstart -k system/com.cloudops.agent"
+	}
+	return "Start the agent: systemctl enable --now cloudops-agent"
+}
+
+const (
 	MinInterval = 15
 	MaxInterval = 300
 )

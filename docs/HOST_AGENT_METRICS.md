@@ -62,6 +62,9 @@ Migration 122 adds catalog rows (`service='host'`, `namespace='HostAgent'`, **en
 thresholds for `resource_type='host'` on existing accounts: `host_cpu_percent` 85/95, `host_swap_used_percent` 50/80,
 `host_disk_inodes_used_percent` 80/90 (all `>`). Alerting for these needs an operator to enable the threshold.
 
+Windows and macOS agents send a subset of this table (no load/swap/inodes/disk-IO on Windows, no inodes/disk-IO on macOS): see
+`docs/HOST_AGENT_PLATFORMS.md`. The Windows system drive label `C:` is a root path, so it maps to `disk_used_percent`.
+
 ## 4. `HOST_AGENT_PREFER_OVER_CWAGENT` (default false)
 
 Effective only with `HOST_AGENT_ENABLED=true`. Each accepted ingest that carries `mem_used_percent` / `disk_used_percent*` writes a

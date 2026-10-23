@@ -1,5 +1,5 @@
 // Command cloudops-agent is the CloudOps host agent: it collects metrics from
-// /proc and /sys and pushes them to the hub. It never listens on a port.
+// /proc and /sys (Linux), sysctl/vm_stat/netstat (macOS) or kernel32 (Windows) and pushes them to the hub. It never listens on a port.
 package main
 
 import (
@@ -19,10 +19,11 @@ import (
 	"cloudops-agent/internal/collect"
 	"cloudops-agent/internal/config"
 	"cloudops-agent/internal/enroll"
+	"cloudops-agent/internal/logfile"
 	"cloudops-agent/internal/runner"
 )
 
-// version is stamped at build time: -ldflags "-X main.version=0.1.0".
+// version is stamped at build time: -ldflags "-X main.version=0.2.0".
 var version = "0.1.0-dev"
 
 const usage = `cloudops-agent ` + "%s" + `
@@ -119,10 +120,21 @@ func cmdRun(args []string, stderr io.Writer) int {
 	queueMB := fs.Int("queue-mb", 20, "offline queue budget in MB (oldest dropped first)")
 	level := fs.String("log-level", "info", "debug|info|warn|error")
 	insecure := fs.Bool("insecure-dev", false, "allow an http:// hub URL (DEV only)")
+	logFile := fs.String("log-file", "", "append logs to this file (5 MiB cap, one .1 backup) instead of stderr; for Windows/macOS where there is no journald")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	log := newLogger(stderr, *level)
+	var logOut io.Writer = stderr
+	if *logFile != "" {
+		lw, lerr := logfile.Open(*logFile, 0)
+		if lerr != nil {
+			fmt.Fprintf(stderr, "warning: cannot open --log-file %s: %v (logging to stderr)\n", *logFile, lerr)
+		} else {
+			defer lw.Close()
+			logOut = lw
+		}
+	}
+	log := newLogger(logOut, *level)
 	id, err := config.Load(*cfgPath)
 	if err != nil {
 		log.Error("cannot load config", "err", err)
@@ -205,8 +217,10 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 	for _, e := range res.Errs {
 		fmt.Fprintln(stderr, "collector problem:", e)
 	}
-	if len(cfg.WatchServices) > 0 && !collect.SystemctlAvailable() {
-		fmt.Fprintln(stderr, "warning: watch_services is set but systemctl was not found; services report as unknown")
+	if len(cfg.WatchServices) > 0 {
+		if tool, ok := collect.ServiceManagerAvailable(runtime.GOOS); !ok {
+			fmt.Fprintf(stderr, "warning: watch_services is set but %s was not found; services report as unknown\n", tool)
+		}
 	}
 	return 0
 }

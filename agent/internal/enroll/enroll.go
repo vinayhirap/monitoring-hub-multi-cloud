@@ -118,7 +118,7 @@ func Run(ctx context.Context, o Options) error {
 	chownBestEffort(o.ConfigPath, o.Owner, o.Warn)
 
 	fmt.Fprintf(o.Out, "enrolled: host_agent_id=%d hostname=%s instance_id=%s\n", resp.HostAgentID, host, orDash(iid))
-	fmt.Fprintf(o.Out, "wrote %s (0600). Start the agent: systemctl enable --now cloudops-agent\n", o.ConfigPath)
+	fmt.Fprintf(o.Out, "wrote %s. %s\n", o.ConfigPath, config.StartHint(runtime.GOOS))
 	return nil
 }
 

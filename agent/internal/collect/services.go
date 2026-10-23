@@ -95,3 +95,61 @@ func SystemctlAvailable() bool {
 	_, err := exec.LookPath("systemctl")
 	return err == nil
 }
+
+// watched is the service reporter for platforms that are not systemd (Windows, macOS). It de-duplicates and
+// validates names exactly like the Linux path, asks `query` once for the valid ones, and reports "unknown" for any
+// name the query did not answer. With fold=true the map returned by query is keyed by the lower-cased name.
+func (c *Collector) watched(names []string, query func(valid []string) map[string]string, fold bool) []payload.Service {
+	res := make([]payload.Service, 0, len(names))
+	if len(names) == 0 {
+		return res
+	}
+	seen := map[string]bool{}
+	var valid, invalid []string
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		if validUnit(n) {
+			valid = append(valid, n)
+		} else {
+			invalid = append(invalid, n)
+		}
+	}
+	var states map[string]string
+	if len(valid) > 0 && c.opt.Run != nil {
+		states = query(valid)
+	}
+	for _, n := range valid {
+		key := n
+		if fold {
+			key = strings.ToLower(n)
+		}
+		st, ok := states[key]
+		if !ok {
+			st = "unknown"
+		}
+		res = append(res, payload.Service{Name: n, State: st})
+	}
+	for _, n := range invalid {
+		res = append(res, payload.Service{Name: n, State: "unknown"})
+	}
+	return res
+}
+
+// ServiceManagerAvailable reports whether the OS service tool the agent shells out to for watch_services is on PATH:
+// systemctl (Linux), launchctl (macOS) or sc.exe (Windows). `check` uses it to warn.
+func ServiceManagerAvailable(goos string) (tool string, ok bool) {
+	switch goos {
+	case "windows":
+		tool = "sc.exe"
+	case "darwin":
+		tool = "launchctl"
+	default:
+		tool = "systemctl"
+	}
+	_, err := exec.LookPath(tool)
+	return tool, err == nil
+}
