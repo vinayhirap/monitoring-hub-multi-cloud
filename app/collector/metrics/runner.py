@@ -622,7 +622,23 @@ def _ec2_instances_with_cwagent_mem_dims_uncached(cw, resources):
     return result
 
 
+def _host_agent_skip_mem(resources):
+    """HOST_AGENT_PREFER_OVER_CWAGENT (default off): drop instances a live host agent already feeds mem_used_percent for.
+    Flag off returns the same list untouched (no cache read), so polling is unchanged. Any error keeps the paid fetch."""
+    try:
+        from app.hostagents import prefer
+        kept, skipped = prefer.drop_resources_with_fed_metric(resources, "mem_used_percent")
+        prefer.note_skipped("mem", skipped, skipped)
+        return kept
+    except Exception as e:
+        logger.warning(f"host agent mem preference check failed, fetching from CWAgent: {e}")
+        return resources
+
+
 def _collect_ec2_cwagent_mem(cw, resources, extra_min=0):
+    resources = _host_agent_skip_mem(resources)
+    if not resources:
+        return
     cwagent_map = _ec2_instances_with_cwagent_mem_dims(cw, resources)
     if not cwagent_map:
         return
@@ -648,6 +664,15 @@ def _collect_ec2_cwagent_mem(cw, resources, extra_min=0):
     logger.info(f"    EC2 CWAgent mem: {n} series / {len(cwagent_map)} of {len(resources)} instances")
 
 
+def _host_agent_covered_disk(r):
+    """disk_used_percent[__slug] names a live host agent feeds for this instance (empty with the flag off / on any error)."""
+    try:
+        from app.hostagents import prefer
+        return prefer.covered_disk_names(r["id"])
+    except Exception:
+        return frozenset()
+
+
 def _collect_ec2_cwagent_disk(cw, resources, account_id, extra_min=0):
     """
     Per-mount disk collection -- supersedes the old root-only
@@ -663,13 +688,18 @@ def _collect_ec2_cwagent_disk(cw, resources, account_id, extra_min=0):
     queries = []
     id_map = {}
     instances_reporting = 0
+    skipped_disk = 0
 
     for r in resources:
         mounts = _cached_disk_dims(cw, r)
         if not mounts:
             continue
         instances_reporting += 1
+        covered = _host_agent_covered_disk(r)
         for dims, path, metric_name, cw_metric_name, invert in mounts:
+            if metric_name in covered:
+                skipped_disk += 1          # a live host agent already supplies this mount: no paid GetMetricData query
+                continue
             ensure_disk_mount_metric_registered(account_id, "ec2", metric_name, path)
             qid = f"cwdisk{len(queries)}"
             if invert:
@@ -718,6 +748,12 @@ def _collect_ec2_cwagent_disk(cw, resources, account_id, extra_min=0):
             # same reasoning as the mem_used_percent id_map entry above.
             id_map[qid] = (r["id"], metric_name, "Average")
 
+    if skipped_disk:
+        try:
+            from app.hostagents import prefer
+            prefer.note_skipped("disk", skipped_disk)
+        except Exception:
+            pass
     n = _execute_gmd(cw, queries, id_map, minutes=polling_model.CWAGENT_DISK_LOOKBACK + extra_min)
     logger.info(f"    EC2 CWAgent disk: {n} datapoints / {instances_reporting} of {len(resources)} instances (all mounts)")
 

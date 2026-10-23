@@ -41,6 +41,7 @@ from app.api.security       import router as security_router
 from app.api.maintenance    import router as maintenance_router
 from app.api.help           import router as help_router, usage_router
 from app.api.host_agents    import router as host_agents_router
+from app.hostagents.ingest  import router as host_agent_ingest_router
 from app.api.status_page    import admin_router as status_page_admin_router, public_router as status_page_public_router
 from app.auth.deps          import get_current_user, COOKIE_NAME, validate_session_claims
 from app.auth import csrf as _csrf
@@ -418,6 +419,7 @@ app.include_router(slo_router,            dependencies=_auth_dep)
 app.include_router(security_router,       dependencies=_auth_dep)
 app.include_router(maintenance_router,    dependencies=_auth_dep)
 app.include_router(help_router,           dependencies=_auth_dep)   # permission help.view
+app.include_router(host_agent_ingest_router)   # POST /api/host-agents/ingest: Bearer-authenticated inside the route (no _auth_dep), 404 unless HOST_AGENT_ENABLED
 app.include_router(host_agents_router)   # HOST_AGENT_ENABLED gate (404 when off); enroll/ingest authenticate themselves, the rest use hostagents.view/manage
 app.include_router(usage_router(),         dependencies=[Depends(require_permission("usage.view"))])   # Phase F endpoint, gated here
 app.include_router(status_page_admin_router, dependencies=_auth_dep)

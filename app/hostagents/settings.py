@@ -44,3 +44,13 @@ def ingest_rate_per_min() -> int:
 
 def enroll_rate_per_hour() -> int:
     return _int_env("HOST_AGENT_ENROLL_RATE_PER_HOUR", 20)
+
+
+def prefer_over_cwagent() -> bool:
+    """HOST_AGENT_PREFER_OVER_CWAGENT, default false. Only effective while the master flag is also on."""
+    return enabled() and os.getenv("HOST_AGENT_PREFER_OVER_CWAGENT", "false").strip().lower() in _TRUE
+
+
+def ingest_concurrency() -> int:
+    """Max ingest requests holding a DB connection at once (keep well under DB_POOL_SIZE; the pool raises, it does not wait)."""
+    return min(_int_env("HOST_AGENT_INGEST_CONCURRENCY", 4), 16)

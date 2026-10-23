@@ -136,11 +136,6 @@ def test_flag_defaults_to_false(monkeypatch, env):
     assert env.settings.enabled() is False
     assert env.client.get(BASE).status_code == 404
 
-
-def test_ingest_is_a_501_stub_when_enabled(env):
-    assert env.client.post(f"{BASE}/ingest", json={}).status_code == 501
-
-
 # ── enrollment keys: lifecycle ───────────────────────────────────────────────
 
 def test_key_lifecycle_create_list_revoke_then_enroll_fails(env, caplog):

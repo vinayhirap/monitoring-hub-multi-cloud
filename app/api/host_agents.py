@@ -7,7 +7,7 @@ disabled feature reveals nothing). The router is always included in app/main.py 
 matrix.
 
   POST   /api/host-agents/enroll                    public (enrollment key), rate-limited per IP
-  POST   /api/host-agents/ingest                    STUB (501) -- phase C replaces it
+  POST   /api/host-agents/ingest                    public (agent bearer token); implemented in app/hostagents/ingest.py
   GET    /api/host-agents                           hostagents.view, scoped by get_accessible_account_ids
   POST   /api/host-agents/enrollment-keys           hostagents.manage
   GET    /api/host-agents/enrollment-keys           hostagents.manage (never returns a key)
@@ -421,11 +421,3 @@ def patch_host_agent_config(host_id: int, body: HostConfigPatch, request: Reques
                 f"{json.dumps(changes)} (config_version {new_version})",
                 role=_actor(current_user)["role"], request=request)
     return {"id": host_id, "config_version": new_version, "config": _effective_config(stored)}
-
-
-# ── STUB: phase C (ingest) replaces this block ───────────────────────────────
-# Kept only so POST /api/host-agents/ingest exists in the RBAC matrix. It authenticates nothing and does nothing.
-
-@router.post("/ingest")
-def ingest_stub():
-    raise HTTPException(status_code=501, detail="Host agent ingest is not implemented yet")
