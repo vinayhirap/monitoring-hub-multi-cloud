@@ -274,6 +274,15 @@ def test_series_discovery_falls_back_to_recent_history_like_the_metrics_table(en
     assert any(sql == env.mod.SQL_METRICS_HISTORY_LATEST for sql, _ in db.log)
 
 
+def test_uptime_is_stored_but_not_charted(env, monkeypatch):
+    db = _serve(env, monkeypatch, host=_host(), resource={"id": 7, "resource_type": "host"},
+                last_rows=[_last("host_uptime_seconds", 56000), _last("host_cpu_percent")])
+    b = _get(env).json()
+    assert [s["name"] for s in b["series"]] == ["host_cpu_percent"] and "host_uptime_seconds" not in b["meta"]
+    agg = [p for s, p in db.log if s.startswith("SELECT metric_name, FLOOR")][0]
+    assert "host_uptime_seconds" not in agg                                                  # and is not even queried
+
+
 def test_host_with_no_resource_yet_returns_empty_not_an_error(env, monkeypatch):
     _serve(env, monkeypatch, host=_host(resource_id=None))
     b = _get(env).json()

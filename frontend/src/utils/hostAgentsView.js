@@ -239,6 +239,17 @@ export function hostMetricRows(payload) {
   }));
 }
 
+/** Uptime of the host for the details list: "39d 8h 47m", suffixed when the host is not online (then it is the value at the
+ *  last report, not a live one). null when the payload carries no uptime reading. Only reads what the server stored. */
+export function hostUptimeText(payload, host) {
+  const list = Array.isArray(payload?.metrics) ? payload.metrics : [];
+  const m = list.find(x => x && x.metric === "uptime_seconds" && Number.isFinite(x.value));
+  if (!m) return null;
+  const text = formatHostMetricValue(m);
+  const st = stateOf(host || {});
+  return st === "online" ? text : `${text} at last report`;
+}
+
 /** Short caption under the table, or null. Only states facts the response carries. */
 export function hostMetricsNote(payload, host) {
   if (!payload) return null;

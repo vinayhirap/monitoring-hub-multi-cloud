@@ -439,13 +439,14 @@ def host_agent_history(host_id: int, hours: int = Query(6, ge=1, le=8760),
                 res = cur.fetchone()
                 if res:
                     # Which series exist: the same discovery as /metrics (last-value table, else the newest history rows), so
-                    # the charts and the Current metrics table always list the same series.
+                    # the charts and the /metrics endpoint always list the same series.
                     cur.execute(SQL_METRICS_LAST, (res["id"],))
                     found = _agent_rows(cur.fetchall())
                     if not found:
                         cur.execute(SQL_METRICS_HISTORY_LATEST, (res["id"], res["id"]))
                         found = _agent_rows(cur.fetchall())
-                    items = sorted(found.values(),
+                    items = sorted((m for m in found.values()
+                                    if m["info"]["contract"] not in chart_history.CHART_SKIP_CONTRACTS),
                                    key=lambda m: (m["info"]["order"], m["info"]["label"] or "", m["name"]))
                     items = items[:chart_history.MAX_CHART_SERIES]
                     if items:

@@ -199,7 +199,7 @@ def test_source_has_no_cloud_call_no_migration_and_leaves_the_ai_agent_alone():
 
 def test_help_and_docs_describe_the_current_metrics_panel():
     help_src = (ROOT / "app/help_content/host_agents.py").read_text()
-    assert "Current metrics" in help_src and "nothing is estimated" in help_src
+    assert "Metric history" in help_src and "estimated" in help_src
     assert "/api/host-agents/{id}/metrics" in (ROOT / "docs/HOST_AGENT.md").read_text()
     jsx = (ROOT / "frontend/src/pages/HostAgents.jsx").read_text()
     assert "getHostAgentMetrics" in jsx and "No API serves metrics" not in jsx

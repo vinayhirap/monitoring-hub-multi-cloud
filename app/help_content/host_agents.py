@@ -109,17 +109,15 @@ def host_agents():
             "Search matches the host name, instance id and operating system. The account menu limits the list to one account.",
             "You only see servers in accounts you have access to.",
             "Click a server to open its panel: account, instance id, operating system, agent version, when it last "
-            "reported, a Current metrics table and any firing alerts that name this server.",
-            "Current metrics lists the latest reading the agent delivered for each metric, with how long ago it arrived. "
-            "It is read from what the hub has already stored, not measured live, and nothing is estimated: a metric the "
-            "server has not reported is simply not listed. For a Stale or Offline server these are the last readings "
-            "received. The table refreshes by itself every 30 seconds while the panel is open.",
-            "Metric history shows the same readings as charts, grouped into CPU and load, Memory, Disk, Network and System. "
-            "Use 1H, 3H, 6H, 1D, 1W or 1M to choose the period; history is kept for 30 days. The charts are drawn from "
-            "stored readings only, so a gap means the agent delivered nothing for that time, and an offline server's charts "
-            "simply end at its last report. Threshold lines appear only where a threshold is enabled for that metric, and a "
-            "chart that is in alert is outlined with its severity. The charts reload by themselves every minute while the "
-            "panel is open.",
+            "reported, its uptime, a Metric history section, its watched services and any firing alerts that name this server.",
+            "Metric history draws every metric the agent delivered as a chart, grouped into CPU and load, Memory, Disk, "
+            "Network and System. Each chart shows the latest value, the minimum, average and maximum for the period and how "
+            "fresh the data is. Use 1H, 3H, 6H, 1D, 1W or 1M to choose the period; history is kept for 30 days. The charts "
+            "are drawn from stored readings only, nothing is measured live or estimated, so a gap means the agent delivered "
+            "nothing for that time, and a Stale or Offline server's charts simply end at its last report (its uptime is "
+            "labelled as the value at the last report). Threshold lines appear only where a threshold is enabled for that "
+            "metric, and a chart that is in alert is outlined with its severity. The charts reload by themselves every "
+            "minute while the panel is open.",
         ]),
 
         h("Changing or removing a server (administrators)"),

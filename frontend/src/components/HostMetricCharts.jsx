@@ -26,13 +26,14 @@ export default function HostMetricCharts({ host }) {
   const [statOverride, setStatOverride] = useState("auto");
   const [data, setData] = useState(null);                  // null = first load in flight; else the API payload
   const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [doneKey, setDoneKey] = useState(null);         // request key of the last finished load (success or failure)
   const [lastUpdated, setLastUpdated] = useState(null);
   const [reloadN, setReloadN] = useState(0);
+  const reqKey = `${hostId}|${timeRange}|${reloadN}`;
+  const loading = doneKey !== reqKey;                    // derived, so no state is set synchronously inside the effect
 
   useEffect(() => {
     let live = true;
-    setLoading(true);
     getHostAgentHistory(hostId, timeRange)
       .then(d => {
         if (!live) return;
@@ -45,9 +46,9 @@ export default function HostMetricCharts({ host }) {
         setError(e?.status === 404 ? "This host or the host agent feature is no longer available." : errText(e));
         setData(prev => prev ?? { series: [], meta: {} });      // keep the last good charts on a failed refresh
       })
-      .finally(() => { if (live) setLoading(false); });
+      .finally(() => { if (live) setDoneKey(reqKey); });
     return () => { live = false; };
-  }, [hostId, timeRange, reloadN]);
+  }, [hostId, timeRange, reloadN, reqKey]);
   useAutoRefresh(() => setReloadN(n => n + 1), CHART_REFRESH_MS);
   const refresh = useCallback(() => setReloadN(n => n + 1), []);
 

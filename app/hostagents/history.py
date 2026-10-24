@@ -23,6 +23,10 @@ CHART_UNITS = {"%": "Percent", "bytes": "Bytes", "bytes/s": "Bytes/Second", "sec
 # the IN (...) list and the response bounded whatever the table holds.
 MAX_CHART_SERIES = 96
 
+# Series that are stored but not charted. Uptime only ever climbs (and resets on a reboot), so a line chart says nothing the
+# host details do not, and its seconds axis is unreadable; the current value is shown in the host details instead.
+CHART_SKIP_CONTRACTS = frozenset({"uptime_seconds"})
+
 # Average over a bucket, computed by the database. TIMESTAMPDIFF against the epoch, not UNIX_TIMESTAMP(): the latter converts
 # through the session time zone, and metric_timestamp is naive UTC throughout this app.
 SQL_HISTORY_BUCKETS = (

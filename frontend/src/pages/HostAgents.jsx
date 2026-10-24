@@ -21,7 +21,7 @@ import {
 import {
   STATE_LABEL, STATE_TONE, KEY_STATUS_TONE, INTERVAL_MIN, INTERVAL_MAX, stateOf, stateCounts, accountOptions,
   filterHosts, relativeTime, utcStamp, buildConfigPatch, buildKeyRequest, buildInstallCommand,
-  firingAlertsForHost, mergeAlertLists, hostMetricRows, hostMetricsNote,
+  firingAlertsForHost, mergeAlertLists, hostUptimeText,
   serviceRows, serviceSummaryText, serviceWorstTone, servicesNote, configFormDefaults, currentConfigOf,
 } from "../utils/hostAgentsView";
 import "./HostAgents.css";
@@ -331,28 +331,22 @@ function KeysDialog({ onClose, onNotice }) {
 function HostDrawer({ host, onClose, canManage, onEdit, onRevoke }) {
   const [alerts, setAlerts] = useState(null);
   const [alertsError, setAlertsError] = useState(null);
-  const [metrics, setMetrics] = useState(null);             // null = first load in flight; else the API payload
-  const [metricsError, setMetricsError] = useState(null);
+  const [metrics, setMetrics] = useState(null);             // latest stored readings; used only for the Uptime line (the charts show the rest)
   const state = stateOf(host);
   const hostId = host.id;
 
-  // Current metrics: stored readings only (GET /api/host-agents/{id}/metrics is a DB read). Reloaded every REFRESH_MS
-  // while this drawer is open and the tab is visible; a failed refresh keeps the last good table and says so.
+  // Uptime comes from the latest stored reading (GET /api/host-agents/{id}/metrics, a DB read). A failed read just leaves the
+  // line as "—"; the charts and services have their own loads and errors.
   const [reloadN, setReloadN] = useState(0);
   useEffect(() => {
     let live = true;
     getHostAgentMetrics(hostId)
-      .then(data => { if (live) { setMetrics(data && typeof data === "object" ? data : { metrics: [] }); setMetricsError(null); } })
-      .catch(e => {
-        if (!live) return;
-        setMetricsError(e?.status === 404 ? "This host or the host agent feature is no longer available." : errText(e));
-        setMetrics(prev => prev ?? { metrics: [] });
-      });
+      .then(data => { if (live) setMetrics(data && typeof data === "object" ? data : { metrics: [] }); })
+      .catch(() => { if (live) setMetrics(prev => prev ?? { metrics: [] }); });
     return () => { live = false; };
   }, [hostId, reloadN]);
   useAutoRefresh(() => setReloadN(n => n + 1), REFRESH_MS);
-  const metricRows = useMemo(() => hostMetricRows(metrics), [metrics]);
-  const metricsNote = hostMetricsNote(metrics, host);
+  const uptime = hostUptimeText(metrics, host);
 
   // Watched services: stored states only (GET /api/host-agents/{id}/services), reloaded with the metrics.
   const [svc, setSvc] = useState(null);                    // null = first load in flight
@@ -390,6 +384,7 @@ function HostDrawer({ host, onClose, canManage, onEdit, onRevoke }) {
     ["OS / arch", [host.os, host.arch].filter(Boolean).join(" / ") || "—"],
     ["Agent version", host.agent_version || "—"],
     ["Last seen", `${relativeTime(host.last_seen_at)} · ${utcStamp(host.last_seen_at)}`],
+    ["Uptime", uptime || "—"],
   ];
 
   return (
@@ -414,32 +409,6 @@ function HostDrawer({ host, onClose, canManage, onEdit, onRevoke }) {
         <Suspense fallback={<Panel title="Metric history"><div aria-busy="true"><Skeleton h={120} /></div></Panel>}>
           <HostMetricCharts host={host} />
         </Suspense>
-        <Panel title="Current metrics" subtitle="Latest reading the agent delivered for each metric (not live, nothing estimated)">
-          {metrics == null && <div aria-busy="true"><Skeleton h={14} /></div>}
-          {metricsError && <p className="ha-error" role="alert">Could not load metrics: {metricsError}</p>}
-          {metrics != null && metricRows.length === 0 && !metricsError && (
-            <EmptyState title="No readings yet"
-              body="This host has not delivered any metric readings, so nothing is shown." />
-          )}
-          {metricRows.length > 0 && (
-            <div className="ha-metrics-wrap">
-              <table className="ha-metrics">
-                <caption className="ha-sr">Current metrics for {host.hostname}</caption>
-                <thead><tr><th scope="col">Metric</th><th scope="col" className="ha-num">Value</th><th scope="col">Updated</th></tr></thead>
-                <tbody>
-                  {metricRows.map(m => (
-                    <tr key={m.key}>
-                      <th scope="row">{m.title}</th>
-                      <td className="ha-num ha-mono">{m.value}</td>
-                      <td title={utcStamp(m.timestamp)}>{relativeTime(m.timestamp)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {metricsNote && <p className="ha-hint">{metricsNote}</p>}
-        </Panel>
         <Panel title="Services"
                subtitle="State of each watched service from the agent's last report (not live). Change the list with Configure."
                actions={svcTone ? <Badge tone={svcTone}>{svcSummary}</Badge> : undefined}>

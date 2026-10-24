@@ -4,7 +4,7 @@ import {
   stateOf, stateCounts, accountOptions, filterHosts, relativeTime, utcStamp, parseServiceList, parseInterval,
   buildConfigPatch, buildKeyRequest, buildInstallCommand, DOWNLOAD_PATH, firingAlertsForHost, mergeAlertLists,
   formatHostMetricValue, hostMetricTitle, hostMetricRows, hostMetricsNote,
-  CHART_RANGES, DEFAULT_CHART_HOURS, CHART_REFRESH_MS, CHART_REFRESH_TIP, CHART_STAT_OPTIONS, chartGroups, chartColor, chartsNote,
+  CHART_RANGES, DEFAULT_CHART_HOURS, CHART_REFRESH_MS, CHART_REFRESH_TIP, CHART_STAT_OPTIONS, hostUptimeText, chartGroups, chartColor, chartsNote,
 } from "../hostAgentsView.js";
 
 const rows = [
@@ -275,4 +275,16 @@ test("chartsNote states facts only", () => {
 
 test("the statistic list offers no Sum for gauge metrics", () => {
   assert.deepEqual(CHART_STAT_OPTIONS, ["auto", "Average", "Minimum", "Maximum", "SampleCount"]);
+});
+
+test("hostUptimeText reads only the stored uptime reading and labels it when the host is not online", () => {
+  const payload = { metrics: [
+    { name: "host_cpu_percent", metric: "cpu_percent", unit: "%", value: 20 },
+    { name: "host_uptime_seconds", metric: "uptime_seconds", unit: "seconds", value: 3 * 86400 + 4 * 3600 + 5 * 60 },
+  ] };
+  assert.equal(hostUptimeText(payload, { state: "online" }), "3d 4h 5m");
+  assert.equal(hostUptimeText(payload, { state: "offline" }), "3d 4h 5m at last report");
+  assert.equal(hostUptimeText({ metrics: [{ name: "host_cpu_percent", metric: "cpu_percent", unit: "%", value: 1 }] }, { state: "online" }), null);
+  assert.equal(hostUptimeText({ metrics: [{ metric: "uptime_seconds", unit: "seconds", value: null }] }, { state: "online" }), null);
+  assert.equal(hostUptimeText(null, { state: "online" }), null);
 });
