@@ -22,3 +22,9 @@ export const getHostAgentMetrics = (id) => apiFetch(`/api/host-agents/${encodeUR
 //     pending: string[], summary: {total, running, stopped, failed, unknown, pending}}
 // The host's current config (what Configure edits) and the latest stored state of each watched service. DB read only.
 export const getHostAgentServices = (id) => apiFetch(`/api/host-agents/${encodeURIComponent(id)}/services`);
+// -> {host_agent_id, hostname, status, resource_type, shared_series, requested_hours, effective_hours, bucket_secs, retention_days,
+//     interval_seconds, series: [{name, contract, label_key, label, title, unit, data: [{t, v, a, mn, mx, s, n}]}],
+//     meta: {<stored metric name>: the chart-card metadata (title, unit, stats, cadence, threshold lines, open alert)}}
+// Bucketed history for the charts (same card as the EC2 page). DB read only; hours is capped at the 30-day retention.
+export const getHostAgentHistory = (id, hours) =>
+  apiFetch(`/api/host-agents/${encodeURIComponent(id)}/history?hours=${encodeURIComponent(hours)}`);

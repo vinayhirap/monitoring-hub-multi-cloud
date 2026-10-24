@@ -243,6 +243,9 @@ class Env:
         self.metric_map = load_module("app/hostagents/metric_map.py")
         install_stub("app.hostagents", metric_map=self.metric_map)
         sys.modules["app.hostagents.metric_map"] = self.metric_map
+        self.history = load_module("app/hostagents/history.py")
+        install_stub("app.hostagents", history=self.history)
+        sys.modules["app.hostagents.history"] = self.history
         self.auth = load_module("app/hostagents/auth.py")
         install_stub("app.hostagents", auth=self.auth)
         sys.modules["app.hostagents.auth"] = self.auth

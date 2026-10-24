@@ -10,6 +10,8 @@ matrix.
   POST   /api/host-agents/ingest                    public (agent bearer token); implemented in app/hostagents/ingest.py
   GET    /api/host-agents                           hostagents.view, scoped by get_accessible_account_ids
   GET    /api/host-agents/{id}/metrics              hostagents.view, scoped the same way; latest stored reading per metric
+  GET    /api/host-agents/{id}/history              hostagents.view, scoped the same way; bucketed history + chart metadata
+                                                    (feeds the same chart card as the EC2 page)
   GET    /api/host-agents/{id}/services             hostagents.view, scoped the same way; watched services with their latest
                                                     state, plus the host's current config (what Configure edits)
   POST   /api/host-agents/enrollment-keys           hostagents.manage
@@ -24,10 +26,10 @@ or audit rows. Every create / revoke / config change / enrollment writes an audi
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.account_names import account_label
@@ -37,6 +39,7 @@ from app.auth.permissions import require_permission
 from app.auth.rate_limit import check_rate_limit, _client_ip
 from app.db import get_connection
 from app.hostagents import auth as agent_auth
+from app.hostagents import history as chart_history
 from app.hostagents import metric_map, settings
 
 logger = logging.getLogger(__name__)
@@ -346,6 +349,135 @@ def host_agent_metrics(host_id: int, current_user: dict = Depends(require_permis
             "timestamp": _iso(m["ts"]),
             "age_seconds": max(0, int((now - m["ts"]).total_seconds())),
         } for m in items],
+    }
+
+
+# ── history of one host (charts) ─────────────────────────────────────────────
+
+SQL_HOST_FOR_HISTORY = (
+    "SELECT id, aws_account_id, hostname, status, resource_id, last_seen_at, config_json FROM host_agents WHERE id = %s")
+SQL_HISTORY_THRESHOLDS = (
+    "SELECT LOWER(mc.metric_name) AS db_name, mc.unit, t.warning_value, t.critical_value, t.comparison, "
+    "t.use_dynamic, t.dynamic_k FROM thresholds t JOIN metric_catalog mc ON mc.id = t.metric_id "
+    "WHERE t.aws_account_id = %s AND t.resource_type = %s AND t.enabled = 1 "
+    "AND LOWER(mc.metric_name) IN ({names}) ORDER BY t.id")
+
+
+def _epoch(dt) -> Optional[int]:
+    return None if dt is None else int(dt.replace(tzinfo=timezone.utc).timestamp())
+
+
+def _history_thresholds(cur, account_id, resource_type, stored_rid, names) -> dict:
+    """CURRENT warning / critical line per stored metric name, resolved exactly as the EC2 charts do (static, dynamic baseline
+    or anomaly) by reusing metric_meta._effective_lines. Only enabled rows count. A host-only metric on an EC2-attached host has
+    no threshold of resource type 'ec2', so it simply gets no line. Overlay only: any failure means no line, never a failed page."""
+    out = {}
+    try:
+        from app.metric_meta import _effective_lines
+        cur.execute(SQL_HISTORY_THRESHOLDS.replace("{names}", ", ".join(["%s"] * len(names))),
+                    (account_id, resource_type, *[n.lower() for n in names]))
+        for row in cur.fetchall():
+            name = row["db_name"]
+            if name in out or row["warning_value"] is None:
+                continue
+            w, c, mode = _effective_lines(cur, account_id, stored_rid, row, name)
+            out[name] = chart_history.threshold_entry(w, c, row["comparison"], mode,
+                                                      row["warning_value"], row["critical_value"])
+    except Exception as e:
+        logger.debug("host history thresholds unavailable [%s]: %s", stored_rid, e)
+    return out
+
+
+def _history_alerts(cur, account_id, stored_rid) -> dict:
+    """Open alert per lower-case stored metric name for this host's resource (firing outranks acknowledged, then severity)."""
+    rank = {"CRITICAL": 3, "WARNING": 2, "INFO": 1}
+    out = {}
+    try:
+        from app import alert_rules
+        for a in alert_rules.fetch_open_alert_rows(cur, [account_id]):
+            if a["resource_id"] != stored_rid:
+                continue
+            key = (a["metric_name"] or "").lower()
+            sev = (a["severity"] or "").upper()
+            score = (1 if a["state"] == "firing" else 0, rank.get(sev, 0))
+            if key not in out or score > out[key]["_score"]:
+                out[key] = {"severity": sev, "state": a["state"], "_score": score}
+    except Exception as e:
+        logger.debug("host history alerts unavailable [%s]: %s", stored_rid, e)
+    return {k: {"severity": v["severity"], "state": v["state"]} for k, v in out.items()}
+
+
+@router.get("/{host_id}/history")
+def host_agent_history(host_id: int, hours: int = Query(6, ge=1, le=8760),
+                       current_user: dict = Depends(require_permission("hostagents.view"))):
+    """History of every agent metric of one host, bucketed for the chart card, plus the chart metadata (titles, units,
+    cadence, CURRENT threshold lines, open alerts). DB read only: no cloud call, nothing estimated; a bucket exists only where
+    the agent delivered a reading. The range is capped at metric_history retention exactly like every other chart page
+    (`requested_hours` vs `effective_hours`). On an EC2-attached host mem_used_percent / disk_used_percent* are the stored
+    names the CloudWatch agent collector also writes (`shared_series`), so those series may mix both sources."""
+    from app.metric_display import METRIC_HISTORY_RETENTION_DAYS, bucket_seconds, effective_hours, stats_available
+    from app.metric_meta import stale_after_seconds
+
+    accessible = get_accessible_account_ids(current_user)
+    eff = effective_hours(hours)
+    bucket = bucket_seconds(eff)
+    cutoff = _utcnow() - timedelta(hours=eff)
+    stored_rid = resource_type = None
+    items, points, thresholds, alerts = [], {}, {}, {}
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(SQL_HOST_FOR_HISTORY, (host_id,))
+            host = cur.fetchone()
+            if not host or not _in_scope(accessible, host["aws_account_id"]):
+                raise HTTPException(status_code=404, detail="Host agent not found")
+            stored_rid = host["resource_id"]
+            if stored_rid:
+                resource_type = "host" if stored_rid.startswith(HOST_RESOURCE_PREFIX) else "ec2"
+                cur.execute(SQL_METRICS_RESOURCE, (host["aws_account_id"], resource_type, stored_rid))
+                res = cur.fetchone()
+                if res:
+                    # Which series exist: the same discovery as /metrics (last-value table, else the newest history rows), so
+                    # the charts and the Current metrics table always list the same series.
+                    cur.execute(SQL_METRICS_LAST, (res["id"],))
+                    found = _agent_rows(cur.fetchall())
+                    if not found:
+                        cur.execute(SQL_METRICS_HISTORY_LATEST, (res["id"], res["id"]))
+                        found = _agent_rows(cur.fetchall())
+                    items = sorted(found.values(),
+                                   key=lambda m: (m["info"]["order"], m["info"]["label"] or "", m["name"]))
+                    items = items[:chart_history.MAX_CHART_SERIES]
+                    if items:
+                        names = [m["name"] for m in items]
+                        cur.execute(chart_history.history_sql(len(names)), (bucket, res["id"], cutoff, *names))
+                        points = chart_history.rows_to_points(cur.fetchall(), bucket)
+                        thresholds = _history_thresholds(cur, host["aws_account_id"], resource_type, stored_rid, names)
+                        alerts = _history_alerts(cur, host["aws_account_id"], stored_rid)
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+    interval = _effective_config(host["config_json"]).get("interval_seconds")
+    stale = stale_after_seconds(interval)
+    seen = _epoch(host["last_seen_at"])
+    stats = stats_available("Average")
+    series, meta = [], {}
+    for m in items:
+        name, info = m["name"], m["info"]
+        series.append({"name": name, "contract": info["contract"], "label_key": info["label_key"], "label": info["label"],
+                       "title": chart_history.chart_title(info), "unit": chart_history.chart_unit(info["unit"]),
+                       "data": points.get(name, [])})
+        meta[name] = chart_history.chart_meta(
+            info, name, interval_seconds=interval, stale_after=stale, last_seen_epoch=seen, stats=stats,
+            threshold=thresholds.get(name.lower()), alert=alerts.get(name.lower()))
+    return {
+        "host_agent_id": host["id"], "hostname": host["hostname"], "status": host["status"],
+        "resource_type": resource_type, "shared_series": resource_type == "ec2",
+        "requested_hours": int(hours), "effective_hours": eff, "bucket_secs": bucket,
+        "retention_days": METRIC_HISTORY_RETENTION_DAYS, "interval_seconds": interval,
+        "series": series, "meta": meta,
     }
 
 

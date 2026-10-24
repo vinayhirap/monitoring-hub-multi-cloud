@@ -6,9 +6,10 @@
 //
 // Secrets: an enrollment key lives only in this component's React state while the "Add host" dialog is open. It is
 // never put in a URL, localStorage, sessionStorage, a log line or an error message, and is gone when the dialog closes.
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { PageHeader, Badge, FilterBar, DataTable, EmptyState, ConfirmDialog, Panel, Skeleton } from "../components/ui";
 import ResourceDrawer from "../components/ResourceDrawer";
+import { lazyWithRetry } from "../utils/lazyWithRetry";
 import { useAuth } from "../auth/AuthContext";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
 import { copyText } from "../utils/copyText";
@@ -24,6 +25,9 @@ import {
   serviceRows, serviceSummaryText, serviceWorstTone, servicesNote, configFormDefaults, currentConfigOf,
 } from "../utils/hostAgentsView";
 import "./HostAgents.css";
+
+// The charts pull in recharts (the largest chunk), so they load only when a host drawer is opened.
+const HostMetricCharts = lazyWithRetry(() => import("../components/HostMetricCharts"));
 
 const REFRESH_MS = 30000;
 
@@ -407,6 +411,9 @@ function HostDrawer({ host, onClose, canManage, onEdit, onRevoke }) {
             <button type="button" className="ui-btn ui-btn-danger" onClick={() => onRevoke(host)}>Revoke host</button>
           </div>
         )}
+        <Suspense fallback={<Panel title="Metric history"><div aria-busy="true"><Skeleton h={120} /></div></Panel>}>
+          <HostMetricCharts host={host} />
+        </Suspense>
         <Panel title="Current metrics" subtitle="Latest reading the agent delivered for each metric (not live, nothing estimated)">
           {metrics == null && <div aria-busy="true"><Skeleton h={14} /></div>}
           {metricsError && <p className="ha-error" role="alert">Could not load metrics: {metricsError}</p>}

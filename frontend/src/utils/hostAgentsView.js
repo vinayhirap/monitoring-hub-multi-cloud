@@ -325,3 +325,69 @@ export function currentConfigOf(payload) {
   if (!configFormDefaults(payload)) return null;
   return { interval_seconds: payload.interval_seconds, watch_services: payload.watch_services.slice() };
 }
+
+// ── charts (GET /api/host-agents/{id}/history) ───────────────────────────────────────────────────────────────────────
+// The same look-back presets as the EC2 / RDS pages (history is kept 30 days, so 1M is the longest).
+export const CHART_RANGES = [
+  { label: "1H", hours: 1 }, { label: "3H", hours: 3 }, { label: "6H", hours: 6 },
+  { label: "1D", hours: 24 }, { label: "1W", hours: 168 }, { label: "1M", hours: 720 },
+];
+export const DEFAULT_CHART_HOURS = 6;
+// Host metrics are gauges stored as averages, so Sum is never valid (the server does not offer it either).
+export const CHART_STAT_OPTIONS = ["auto", "Average", "Minimum", "Maximum", "SampleCount"];
+// Charts re-read stored data once a minute (the default agent report interval); a faster refresh only re-reads the same rows.
+export const CHART_REFRESH_MS = 60000;
+export const CHART_REFRESH_TIP = "Reload the charts from CloudOps. This reads stored data only; nothing is requested from the host. "
+  + "New points arrive each time the agent reports (default every 60 s), and the charts reload automatically every minute while this tab is visible.";
+
+// Display groups, in the order they appear. Each contract metric belongs to exactly one group; a metric the UI does not know
+// yet (a newer agent) lands in "Other" instead of being dropped.
+const GROUPS = [
+  { key: "compute", title: "CPU and load", contracts: ["cpu_percent", "load1", "load5", "load15"] },
+  { key: "memory", title: "Memory", contracts: ["mem_used_percent", "mem_available_bytes", "swap_used_percent"] },
+  { key: "disk", title: "Disk", contracts: ["disk_used_percent", "disk_inodes_used_percent", "disk_read_bytes_per_s", "disk_write_bytes_per_s"] },
+  { key: "network", title: "Network", contracts: ["net_rx_bytes_per_s", "net_tx_bytes_per_s"] },
+  { key: "system", title: "System", contracts: ["proc_count", "uptime_seconds"] },
+];
+const COLOR = {
+  cpu_percent: "#2bb3ac", load1: "#38bdf8", load5: "#60a5fa", load15: "#818cf8",
+  mem_used_percent: "#7c6ee0", mem_available_bytes: "#a78bfa", swap_used_percent: "#f472b6",
+  disk_used_percent: "#fbbf24", disk_inodes_used_percent: "#f59e0b", disk_read_bytes_per_s: "#34d399", disk_write_bytes_per_s: "#22c55e",
+  net_rx_bytes_per_s: "#22c55e", net_tx_bytes_per_s: "#7c6ee0", proc_count: "#38bdf8", uptime_seconds: "#94a3b8",
+};
+export const chartColor = (contract) => COLOR[contract] || "#2bb3ac";
+
+/** Series -> [{key, title, items}] in display order; empty groups are omitted. `items` keep the server's order (contract,
+ *  then mount / interface), and the first series of a group may be drawn full width (`wide`). Pure. */
+export function chartGroups(series) {
+  const list = Array.isArray(series) ? series.filter(s => s && s.name) : [];
+  const used = new Set();
+  const out = [];
+  for (const g of GROUPS) {
+    const items = [];
+    for (const c of g.contracts) for (const s of list) if (s.contract === c) { items.push(s); used.add(s); }
+    if (items.length) out.push({ key: g.key, title: g.title, items });
+  }
+  const rest = list.filter(s => !used.has(s));
+  if (rest.length) out.push({ key: "other", title: "Other", items: rest });
+  return out;
+}
+
+/** One line of context under the charts, or "". Never claims a value; only says where the data comes from and what is missing. */
+export function chartsNote(payload, host) {
+  if (!payload || typeof payload !== "object") return "";
+  const notes = [];
+  const st = stateOf(host || {});
+  if (st === "offline" || st === "stale") {
+    notes.push(`This host is ${st === "offline" ? "offline" : "not reporting on time"}: the charts end at the last data it delivered and are not extended.`);
+  } else if (st === "revoked") {
+    notes.push("This host is revoked: the charts show the history it delivered before that.");
+  }
+  if (payload.shared_series) {
+    notes.push("This host is attached to an EC2 resource: memory and disk charts use the same stored names as the CloudWatch agent, so a series can combine both sources.");
+  }
+  if (Array.isArray(payload.series) && payload.series.length === 0) {
+    notes.push("No metric history has been stored for this host yet.");
+  }
+  return notes.join(" ");
+}

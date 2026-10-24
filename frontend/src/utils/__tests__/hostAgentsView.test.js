@@ -4,6 +4,7 @@ import {
   stateOf, stateCounts, accountOptions, filterHosts, relativeTime, utcStamp, parseServiceList, parseInterval,
   buildConfigPatch, buildKeyRequest, buildInstallCommand, DOWNLOAD_PATH, firingAlertsForHost, mergeAlertLists,
   formatHostMetricValue, hostMetricTitle, hostMetricRows, hostMetricsNote,
+  CHART_RANGES, DEFAULT_CHART_HOURS, CHART_REFRESH_MS, CHART_REFRESH_TIP, CHART_STAT_OPTIONS, chartGroups, chartColor, chartsNote,
 } from "../hostAgentsView.js";
 
 const rows = [
@@ -215,4 +216,63 @@ test("buildConfigPatch with a known current config sends only real changes", () 
   assert.match(buildConfigPatch(form({ servicesText: "" }), cur).error, /Stop watching all/);                // emptied by hand is not "unchanged"
   assert.ok(buildConfigPatch(form({ servicesText: "a/b" }), cur).error);
   assert.deepEqual(buildConfigPatch(form({ servicesText: "x", clearServices: true }), { interval_seconds: 30, watch_services: [] }).error, "Nothing changed.");
+});
+
+// ── charts ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+const S = (name, contract) => ({ name, contract, title: name, unit: "Percent", data: [] });
+
+test("chart ranges are the EC2 presets, capped at the 30-day retention", () => {
+  assert.deepEqual(CHART_RANGES.map(r => r.label), ["1H", "3H", "6H", "1D", "1W", "1M"]);
+  assert.equal(CHART_RANGES.at(-1).hours, 720);
+  assert.ok(CHART_RANGES.some(r => r.hours === DEFAULT_CHART_HOURS));
+  assert.equal(CHART_REFRESH_MS, 60000);
+});
+
+test("the refresh tooltip never claims AWS or a 5 minute cadence (that text belongs to CloudWatch pages)", () => {
+  assert.ok(!/AWS|5 min/i.test(CHART_REFRESH_TIP));
+  assert.match(CHART_REFRESH_TIP, /agent reports/);
+});
+
+test("chartGroups orders groups and keeps per-mount / per-interface series together", () => {
+  const series = [
+    S("host_net_tx_bytes_per_s__ens5", "net_tx_bytes_per_s"), S("host_proc_count", "proc_count"),
+    S("disk_used_percent__boot", "disk_used_percent"), S("host_load1", "load1"), S("host_cpu_percent", "cpu_percent"),
+    S("disk_used_percent", "disk_used_percent"), S("mem_used_percent", "mem_used_percent"),
+    S("host_net_rx_bytes_per_s__ens5", "net_rx_bytes_per_s"),
+  ];
+  const g = chartGroups(series);
+  assert.deepEqual(g.map(x => x.key), ["compute", "memory", "disk", "network", "system"]);
+  assert.deepEqual(g[0].items.map(s => s.name), ["host_cpu_percent", "host_load1"]);                      // contract order inside a group
+  assert.deepEqual(g[2].items.map(s => s.name), ["disk_used_percent__boot", "disk_used_percent"]);        // server order kept per contract
+  assert.deepEqual(g[3].items.map(s => s.name), ["host_net_rx_bytes_per_s__ens5", "host_net_tx_bytes_per_s__ens5"]);
+});
+
+test("chartGroups never drops an unknown metric and omits empty groups", () => {
+  const g = chartGroups([S("host_future_thing", "future_thing"), null, { contract: "cpu_percent" }, S("host_cpu_percent", "cpu_percent")]);
+  assert.deepEqual(g.map(x => x.key), ["compute", "other"]);
+  assert.equal(g[1].items[0].name, "host_future_thing");
+  assert.deepEqual(chartGroups(null), []);
+  assert.deepEqual(chartGroups([]), []);
+});
+
+test("every contract metric has a colour and an unknown one falls back", () => {
+  for (const c of ["cpu_percent", "load1", "mem_used_percent", "disk_used_percent", "net_rx_bytes_per_s", "uptime_seconds"]) {
+    assert.match(chartColor(c), /^#[0-9a-f]{6}$/i);
+  }
+  assert.match(chartColor("nope"), /^#[0-9a-f]{6}$/i);
+});
+
+test("chartsNote states facts only", () => {
+  const ok = { series: [S("a", "cpu_percent")], shared_series: false };
+  assert.equal(chartsNote(ok, { state: "online" }), "");
+  assert.equal(chartsNote(null, { state: "online" }), "");
+  assert.match(chartsNote(ok, { state: "offline" }), /offline.*last data it delivered.*not extended/);
+  assert.match(chartsNote(ok, { state: "stale" }), /not reporting on time/);
+  assert.match(chartsNote(ok, { state: "revoked" }), /revoked/);
+  assert.match(chartsNote({ ...ok, shared_series: true }, { state: "online" }), /CloudWatch agent/);
+  assert.match(chartsNote({ series: [] }, { state: "online" }), /No metric history has been stored/);
+});
+
+test("the statistic list offers no Sum for gauge metrics", () => {
+  assert.deepEqual(CHART_STAT_OPTIONS, ["auto", "Average", "Minimum", "Maximum", "SampleCount"]);
 });

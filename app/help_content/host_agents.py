@@ -114,6 +114,12 @@ def host_agents():
             "It is read from what the hub has already stored, not measured live, and nothing is estimated: a metric the "
             "server has not reported is simply not listed. For a Stale or Offline server these are the last readings "
             "received. The table refreshes by itself every 30 seconds while the panel is open.",
+            "Metric history shows the same readings as charts, grouped into CPU and load, Memory, Disk, Network and System. "
+            "Use 1H, 3H, 6H, 1D, 1W or 1M to choose the period; history is kept for 30 days. The charts are drawn from "
+            "stored readings only, so a gap means the agent delivered nothing for that time, and an offline server's charts "
+            "simply end at its last report. Threshold lines appear only where a threshold is enabled for that metric, and a "
+            "chart that is in alert is outlined with its severity. The charts reload by themselves every minute while the "
+            "panel is open.",
         ]),
 
         h("Changing or removing a server (administrators)"),

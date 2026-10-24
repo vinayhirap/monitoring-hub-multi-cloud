@@ -14,6 +14,7 @@ export const STAT_OVERRIDES = ["auto", "Average", "Minimum", "Maximum", "Sum", "
 export default function ChartToolbar({
   ranges, timeRange, onTimeRangeChange, onRefresh, lastUpdated, loading,
   statOverride, onStatOverrideChange, bucketSecs, retentionDays, requestedHours, effectiveHours, showTabs = true,
+  refreshTitle, statOptions = STAT_OVERRIDES,
 }) {
   const [, force] = useState(0);
   useEffect(() => { const t = setInterval(() => force(x => x + 1), 5000); return () => clearInterval(t); }, []);
@@ -34,11 +35,11 @@ export default function ChartToolbar({
         )}
         {onStatOverrideChange && (
           <select value={statOverride} onChange={e => onStatOverrideChange(e.target.value)} title="Statistic applied to every chart that supports it (each chart can still override)">
-            {STAT_OVERRIDES.map(s => <option key={s} value={s}>{s === "auto" ? "Statistic: metric default" : `Statistic: ${s}`}</option>)}
+            {statOptions.map(s => <option key={s} value={s}>{s === "auto" ? "Statistic: metric default" : `Statistic: ${s}`}</option>)}
           </select>
         )}
         <button className="mc-refresh-btn" onClick={onRefresh} disabled={loading}
-                title="Reload the charts from CloudOps. This does not poll AWS; new data arrives every 5 min from the collector. Charts also reload automatically every 5 min while this tab is visible.">{loading ? "⟳ …" : "⟳ Refresh"}</button>
+                title={refreshTitle || "Reload the charts from CloudOps. This does not poll AWS; new data arrives every 5 min from the collector. Charts also reload automatically every 5 min while this tab is visible."}>{loading ? "⟳ …" : "⟳ Refresh"}</button>
         <span className="mc-updated">
           {ago != null ? `Updated ${ago < 5 ? "just now" : `${ago}s ago`}` : ""}
         </span>

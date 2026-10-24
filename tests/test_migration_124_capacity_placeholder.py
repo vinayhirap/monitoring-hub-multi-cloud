@@ -1,11 +1,25 @@
 """Migration 124 repairs placeholder (1000000 / 5000000 / '>') thresholds on disk/memory used-% metrics only. Static checks
 that keep it consistent with the code it mirrors; the behaviour was verified on a real MariaDB (see the migration header)."""
+import importlib.util
 import re
 from pathlib import Path
 
-from app import threshold_coverage as tc, threshold_defaults as td
+ROOT = Path(__file__).resolve().parent.parent
 
-SQL = (Path(__file__).resolve().parent.parent / "db/migrations/124_capacity_threshold_placeholder_repair.sql").read_text()
+
+def _load_real(name):
+    """Load the real app module from disk. Other tests replace app.threshold_defaults / app.threshold_coverage in
+    sys.modules with stubs, so importing them by name here would make this test depend on test order."""
+    spec = importlib.util.spec_from_file_location("_real_" + name, ROOT / "app" / (name + ".py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+td = _load_real("threshold_defaults")
+tc = _load_real("threshold_coverage")
+
+SQL = (ROOT / "db/migrations/124_capacity_threshold_placeholder_repair.sql").read_text()
 BODY = "\n".join(l for l in SQL.splitlines() if not l.lstrip().startswith("--"))
 
 

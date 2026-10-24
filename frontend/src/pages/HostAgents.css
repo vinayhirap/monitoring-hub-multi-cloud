@@ -60,3 +60,10 @@
 .ha-metrics .ha-num { text-align: right; }
 .ha-metrics td { color: var(--ink-2); }
 .ha-metrics td.ha-num { color: var(--ink-1); }
+
+/* Metric history (components/HostMetricCharts.jsx): the chart cards come from the shared MetricChartCard styles. */
+.ha-chart-group { margin-top: 14px; }
+.ha-chart-group:first-of-type { margin-top: 8px; }
+.ha-chart-group-title { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 6px; font-weight: 600; }
+.ha-chart-group .charts-grid > div { min-width: 0; }           /* a chart may shrink with its grid cell instead of overflowing the drawer */
+@media (max-width: 700px) { .ha-chart-group .charts-grid { grid-template-columns: 1fr; } }
