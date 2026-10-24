@@ -145,3 +145,23 @@ def test_no_agent_code_touches_the_ai_agent_feature_in_the_new_files():
     for rel in ("install-macos.sh", "uninstall-macos.sh", "install.ps1", "uninstall.ps1"):
         text = _read(rel)
         assert "/api/agent/" not in text and "app.agent" not in text, rel
+
+
+# ── the agent and the hub must agree on which mounts are ignored ──────────────────────────────────────────────
+
+def _agent_ignore_prefixes():
+    m = re.search(r"var hubIgnoredMountPrefixes = \[\]string\{(.*?)\}", _read("internal/collect/disk.go"), re.S)
+    assert m, "hubIgnoredMountPrefixes not found in agent/internal/collect/disk.go"
+    return tuple(re.findall(r'"([^"]*)"', m.group(1)))
+
+
+def test_agent_ignore_list_is_identical_to_the_hubs(mm):
+    """If these drift, the agent sends mounts the hub rejects (a WARN per payload per host, forever) or drops ones the hub keeps."""
+    assert _agent_ignore_prefixes() == mm._IGNORED_PATH_PREFIXES
+
+
+@pytest.mark.parametrize("path", ["/", "/boot", "/boot/efi", "/run", "/run/user/1", "/running", "/dev/shm", "/proc", "/sys",
+                                  "/snap/x/1", "/var/snap/y", "/snapshots", "/mnt/data", "/home", "C:", "D:", "/Volumes/Backup"])
+def test_agent_skips_exactly_what_the_hub_would_reject(mm, path):
+    agent_skips = path != "/" and any(path.startswith(p) for p in _agent_ignore_prefixes())
+    assert agent_skips == (not mm.is_real_mount(path)), path

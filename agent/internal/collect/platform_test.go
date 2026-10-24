@@ -391,3 +391,45 @@ func TestParseScQuery(t *testing.T) {
 		t.Fatalf("%v", m)
 	}
 }
+
+// ── mounts the hub ignores must never be sent (a stock Ubuntu host has /boot/efi) ────────────────────────────
+
+func TestHubIgnoresMountMatchesTheHubRule(t *testing.T) {
+	ignored := []string{"/boot/efi", "/boot/efi/extra", "/run", "/run/user/1000", "/running", "/dev", "/dev/shm", "/proc", "/sys/fs/cgroup",
+		"/snap/core20/1", "/var/snap/lxd/common"}
+	kept := []string{"/", "/boot", "/home", "/mnt/data", "/var/lib/docker", "/snapshots", "/Volumes/Backup", "C:", "D:"}
+	for _, p := range ignored {
+		if !hubIgnoresMount(p) {
+			t.Errorf("%s must be ignored", p)
+		}
+	}
+	for _, p := range kept {
+		if hubIgnoresMount(p) {
+			t.Errorf("%s must be kept", p)
+		}
+	}
+}
+
+func TestLinuxDoesNotSendBootEfiButKeepsBoot(t *testing.T) {
+	h := newFakeHost(t)
+	baseline(h)
+	h.write("self/mounts", "/dev/root / ext4 rw 0 0\n"+
+		"/dev/nvme0n1p16 /boot ext4 rw 0 0\n"+
+		"/dev/nvme0n1p15 /boot/efi vfat rw 0 0\n"+
+		"/dev/loop1 /snap/core20/1 squashfs ro 0 0\n")
+	now := time.Unix(1760000000, 0)
+	c := New(Options{ProcRoot: h.proc, SysRoot: h.sys, Now: func() time.Time { return now }, Run: nil,
+		Statfs: func(string) (Statfs, error) {
+			return Statfs{Blocks: 1000, Bfree: 400, Bavail: 400, Files: 100, Ffree: 90}, nil
+		}})
+	r := c.Collect(context.Background(), Settings{}) // no fstype excludes at all: only the path rule can drop them
+	var mounts []string
+	for _, m := range r.Metrics {
+		if m.Name == "disk_used_percent" {
+			mounts = append(mounts, m.Labels["mount"])
+		}
+	}
+	if len(mounts) != 2 || !(mounts[0] == "/" && mounts[1] == "/boot" || mounts[0] == "/boot" && mounts[1] == "/") {
+		t.Fatalf("mounts sent: %v (want / and /boot only)", mounts)
+	}
+}

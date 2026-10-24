@@ -21,6 +21,25 @@ var pseudoFS = map[string]bool{
 	"selinuxfs": true, "fuse.gvfsd-fuse": true, "fuse.lxcfs": true,
 }
 
+// hubIgnoredMountPrefixes mirrors app/hostagents/metric_map.py _IGNORED_PATH_PREFIXES (itself a copy of
+// app/collector/disk_mounts.py). The hub drops samples for these paths and counts them as "rejected"; if the agent
+// sent them, every payload from a stock Ubuntu host (/boot/efi) would log a WARN once a minute forever. The match is
+// the hub's exact rule, including its quirk that "/run" also matches "/running": the two sides must agree on every
+// path, so tests/test_host_agent_platforms.py fails if this list and the hub's ever drift apart. "/" is never ignored.
+var hubIgnoredMountPrefixes = []string{"/snap/", "/var/snap/", "/run", "/dev", "/proc", "/sys", "/boot/efi"}
+
+func hubIgnoresMount(path string) bool {
+	if path == "/" {
+		return false
+	}
+	for _, p := range hubIgnoredMountPrefixes {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
+}
+
 var statTimeout = 3 * time.Second // var so tests can shorten it
 
 var errStatTimeout = errors.New("statfs timed out (hung mount?)")
@@ -74,7 +93,7 @@ func (c *Collector) disks(exclude []string, add addFn) error {
 			continue
 		}
 		src, mnt, fs := unescapeMount(f[0]), unescapeMount(f[1]), f[2]
-		if ex[fs] || pseudoFS[fs] || seenMnt[mnt] {
+		if ex[fs] || pseudoFS[fs] || seenMnt[mnt] || hubIgnoresMount(mnt) {
 			continue
 		}
 		// A service sandbox (PrivateTmp, ProtectSystem, StateDirectory) adds bind

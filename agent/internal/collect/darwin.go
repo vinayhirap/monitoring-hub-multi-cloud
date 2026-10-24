@@ -143,7 +143,7 @@ func (c *Collector) darwinDisks(exclude []string, add addFn) error {
 		if m.Path != "/" {
 			// /System/Volumes/* are the APFS system/data/VM/preboot volumes: they share the container with "/" and
 			// would only repeat its number.
-			if ex[m.Fstype] || darwinPseudoFS[m.Fstype] || strings.HasPrefix(m.Path, "/System/Volumes/") || strings.HasPrefix(m.Path, "/private/var/vm") {
+			if ex[m.Fstype] || darwinPseudoFS[m.Fstype] || strings.HasPrefix(m.Path, "/System/Volumes/") || strings.HasPrefix(m.Path, "/private/var/vm") || hubIgnoresMount(m.Path) {
 				continue
 			}
 		}

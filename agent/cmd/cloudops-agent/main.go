@@ -23,7 +23,7 @@ import (
 	"cloudops-agent/internal/runner"
 )
 
-// version is stamped at build time: -ldflags "-X main.version=0.2.0".
+// version is stamped at build time: -ldflags "-X main.version=0.2.1".
 var version = "0.1.0-dev"
 
 const usage = `cloudops-agent ` + "%s" + `
