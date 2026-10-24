@@ -36,6 +36,19 @@ def test_unit_has_required_limits_and_hardening():
     assert "ExecStart=/usr/local/bin/cloudops-agent run" in unit
 
 
+def test_start_limit_key_is_in_the_unit_section_and_insecure_dev_reaches_the_service():
+    """Regression: StartLimitIntervalSec in the Service section is ignored by systemd >= 230 (journal: 'Unknown key name')."""
+    import configparser
+    cp = configparser.ConfigParser(strict=False, interpolation=None, delimiters=("=",))
+    cp.optionxform = str
+    cp.read_string(_unit())
+    assert cp["Unit"].get("StartLimitIntervalSec") == "0"
+    assert "StartLimitIntervalSec" not in cp["Service"]
+    sh = _read("install.sh")
+    # --insecure-dev on the installer must also reach `run`, else a DEV install enrols and then refuses to start
+    assert "insecure-dev.conf" in sh and "run --insecure-dev" in sh
+
+
 def test_installer_verifies_checksum_before_installing():
     sh = _read("install.sh")
     assert "set -euo pipefail" in sh

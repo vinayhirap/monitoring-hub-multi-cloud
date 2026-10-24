@@ -1,6 +1,7 @@
 # tests/test_host_agent_ingest.py
 """Phase C: POST /api/host-agents/ingest, metric mapping, instance_id attach, seq idempotency, heartbeat cost, and the
 HOST_AGENT_PREFER_OVER_CWAGENT dedup hooks in the collector. No database: a recording fake connection."""
+import gzip
 import importlib
 import json
 import os
@@ -225,6 +226,72 @@ def test_oversize_streamed_body_without_content_length_is_413(monkeypatch):
     r = e.client.post("/api/host-agents/ingest", content=(b"y" * 1000 for _ in range(10)),
                       headers={"Authorization": f"Bearer {TOKEN}"})
     assert r.status_code == 413 and e.db.connections == 0
+
+
+def _gz(obj_or_bytes):
+    raw = obj_or_bytes if isinstance(obj_or_bytes, bytes) else json.dumps(obj_or_bytes).encode()
+    return gzip.compress(raw)
+
+
+GZ = {"Content-Encoding": "gzip", "Content-Type": "application/json"}
+
+
+def test_gzip_body_is_decoded_exactly_like_the_agent_sends_it():
+    """Regression: the Go agent gzips by default; phase C first shipped without decoding it and every real payload was 400."""
+    e = _env()
+    r = _post(e, None, raw=_gz(_payload(metrics=[_m("mem_used_percent", 41.5)], seq=12)), headers=GZ)
+    assert r.status_code == 200, r.text
+    assert r.json()["accepted"] == 1 and r.json()["rejected"] == 0
+    assert e.db.connections == 1 and len(e.db.many) >= 1
+
+
+def test_gzip_and_plain_bodies_give_identical_results():
+    a, b = _env(), _env()
+    p = _payload(metrics=[_m("cpu_percent", 12.5), _m("disk_used_percent", 71, {"mount": "/"})], seq=3)
+    ra = _post(a, None, raw=_gz(p), headers=GZ)
+    rb = _post(b, p)
+    assert ra.status_code == rb.status_code == 200 and ra.json() == rb.json()
+
+    def strip(rows):   # the stored timestamp is the server's "now", which differs by microseconds between two requests
+        return [(sql, [tuple(v for v in r if not hasattr(v, "year")) for r in rs]) for sql, rs in rows]
+    assert [x[0] for x in a.db.executed] == [x[0] for x in b.db.executed]
+    assert strip(a.db.many) == strip(b.db.many)
+
+
+def test_identity_content_encoding_is_plain_json():
+    e = _env()
+    r = _post(e, None, raw=json.dumps(_payload(seq=4)).encode(), headers={"Content-Encoding": "identity"})
+    assert r.status_code == 200
+
+
+def test_gzip_bomb_is_413_and_never_reaches_the_database(monkeypatch):
+    monkeypatch.setenv("HOST_AGENT_MAX_BODY_BYTES", "8192")
+    e = _env()
+    bomb = _gz(b" " * 6_000_000)               # ~6 KB on the wire (< cap), 6 MB inflated (>> cap)
+    assert len(bomb) < 8192
+    r = _post(e, None, raw=bomb, headers=GZ)
+    assert r.status_code == 413 and e.db.connections == 0
+
+
+def test_corrupt_and_truncated_gzip_are_400():
+    e = _env()
+    assert _post(e, None, raw=b"this is not gzip", headers=GZ).status_code == 400
+    good = _gz(_payload(metrics=[_m("mem_used_percent", 41.5)]))
+    assert _post(e, None, raw=good[: len(good) // 2], headers=GZ).status_code == 400
+    assert e.db.connections == 0
+
+
+def test_gzip_of_non_json_is_400_and_unknown_encoding_is_415():
+    e = _env()
+    assert _post(e, None, raw=_gz(b"{not json"), headers=GZ).status_code == 400
+    assert _post(e, None, raw=b"whatever", headers={"Content-Encoding": "br"}).status_code == 415
+    assert _post(e, None, raw=b"whatever", headers={"Content-Encoding": "deflate"}).status_code == 415
+
+
+def test_gzip_is_only_decoded_after_authentication():
+    e = _env(auth=lambda t: None)
+    r = _post(e, None, raw=_gz(_payload()), headers=GZ)
+    assert r.status_code == 401 and e.db.connections == 0
 
 
 def test_invalid_json_and_unknown_schema_are_400():

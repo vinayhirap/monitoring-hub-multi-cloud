@@ -132,6 +132,11 @@ def test_windows_installer_verifies_before_installing_and_locks_down_the_token_d
     assert not re.search(r"-Argument[^\n]*\$Key", ps)
 
 
+def test_insecure_dev_reaches_the_running_service_on_macos_and_windows():
+    assert "$INSECURE_XML" in _read("install-macos.sh") and "--insecure-dev</string>" in _read("install-macos.sh")
+    assert "$runArgs += ' --insecure-dev'" in _read("install.ps1")
+
+
 def test_every_installer_gates_http_downloads_behind_the_insecure_flag():
     assert "--insecure-dev" in _read("install-macos.sh") and "-InsecureDev" in _read("install.ps1")
 

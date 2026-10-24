@@ -25,6 +25,7 @@ import json
 import logging
 import re
 import threading
+import zlib
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -93,6 +94,28 @@ async def _read_capped(request: Request) -> bytes:
     return b"".join(chunks)
 
 
+def _decode_body(raw: bytes, encoding: str) -> bytes:
+    """Content-Encoding: gzip is what the agent sends by default (agent.json no_gzip turns it off); identity / absent is
+    plain JSON. Anything else is 415. The cap applies to the DECOMPRESSED size as well, so a few-KB bomb cannot expand
+    past HOST_AGENT_MAX_BODY_BYTES (413); a corrupt or truncated stream is 400."""
+    enc = (encoding or "").strip().lower()
+    if enc in ("", "identity"):
+        return raw
+    if enc != "gzip":
+        raise HTTPException(415, "unsupported Content-Encoding (use gzip or none)")
+    cap = settings.max_body_bytes()
+    d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    try:
+        out = d.decompress(raw, cap + 1)
+    except zlib.error:
+        raise HTTPException(400, "body is not valid gzip")
+    if len(out) > cap:
+        raise HTTPException(413, "payload too large")
+    if not d.eof:
+        raise HTTPException(400, "body is not valid gzip (truncated)")
+    return out
+
+
 def _bearer(request: Request) -> str:
     scheme, _, token = (request.headers.get("authorization") or "").partition(" ")
     token = token.strip()
@@ -126,6 +149,7 @@ async def ingest(request: Request):
         raise HTTPException(401, "invalid or missing agent token", headers={"WWW-Authenticate": "Bearer"})
     await run_in_threadpool(_rate_limit, agent["host_agent_id"])
 
+    raw = _decode_body(raw, request.headers.get("content-encoding", ""))
     try:
         body = json.loads(raw)
     except Exception:

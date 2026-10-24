@@ -100,6 +100,8 @@ Documentation=https://github.com/vinayhirap/monitoring-hub-multi-cloud
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/cloudops-agent/agent.json
+# Never give up restarting. systemd only honours this key in the Unit section.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -110,7 +112,6 @@ Restart=always
 RestartSec=10
 # Exit code 3 = the hub answered 401 (host revoked / bad token): stay down, do not hammer the hub.
 RestartPreventExitStatus=3
-StartLimitIntervalSec=0
 Environment=GOMAXPROCS=1 GOMEMLIMIT=40MiB
 MemoryMax=64M
 CPUQuota=10%
@@ -145,6 +146,16 @@ SyslogIdentifier=cloudops-agent
 WantedBy=multi-user.target
 UNITEOF
 chmod 0644 "$UNIT"
+# --insecure-dev (plain-http hub, DEV only) must reach the service too, not just the enroll step: a drop-in keeps the
+# shipped unit untouched and is removed by deleting the directory.
+DROPIN=/etc/systemd/system/cloudops-agent.service.d
+if [ -n "$INSECURE" ]; then
+  info "DEV: service will accept an http:// hub URL ($DROPIN/insecure-dev.conf)"
+  install -d -m 0755 "$DROPIN"
+  printf '[Service]\nExecStart=\nExecStart=/usr/local/bin/cloudops-agent run --insecure-dev\n' > "$DROPIN/insecure-dev.conf"
+else
+  rm -f "$DROPIN/insecure-dev.conf"
+fi
 systemctl daemon-reload
 
 if [ -n "$HUB_URL" ]; then

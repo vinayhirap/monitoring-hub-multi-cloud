@@ -107,6 +107,8 @@ mv -f "$BIN.new" "$BIN"
 install -d -m 0750 -o root -g "$SVC_USER" "$ETC_DIR"
 install -d -m 0700 -o "$SVC_USER" -g "$SVC_USER" "$DATA_DIR"
 
+INSECURE_XML=""
+[ -n "$INSECURE" ] && INSECURE_XML="<string>--insecure-dev</string>"
 info "writing $PLIST"
 cat > "$PLIST" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -120,6 +122,7 @@ cat > "$PLIST" <<PLISTEOF
     <string>run</string>
     <string>--log-file</string>
     <string>$DATA_DIR/agent.log</string>
+    $INSECURE_XML
   </array>
   <key>UserName</key><string>$SVC_USER</string>
   <key>GroupName</key><string>$SVC_USER</string>
