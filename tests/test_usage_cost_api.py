@@ -481,3 +481,31 @@ def test_explorer_never_adds_quantities_of_different_units(usage):
                                  _date(2026, 10, 24), names=EX_NAMES, onboarded=EX_ONB, now=EX_NOW)
     agents = {g["key"]: g for g in mixed["groups"]}["agents_alarms"]          # Metrics (stored) + Requests
     assert agents["quantity"] is None and agents["unit"] is None
+
+
+# ── CloudOps-only view: only what CloudOps itself causes, every region ────────
+def test_cloudops_only_keeps_getmetricdata_in_every_region_and_only_totals_the_rest(usage):
+    rows = EX_ROWS + [("111", "APS5-CW:GMD-Metrics", "2026-10-21", 0.05, 1, 5000, "Metrics"),       # CloudOps polled there: its cost
+                      ("111", "USE1-CW:GMD-Metrics", "2026-10-21", 0.02, 1, 2000, "Metrics")]
+    r = usage.build_explorer(rows, _date(2026, 10, 18), _date(2026, 10, 24), group_by="account", names=EX_NAMES,
+                             onboarded=EX_ONB, now=EX_NOW, cloudops_only=True)
+    assert r["totals"]["billed_usd"] == round(0.4 + 0.5 + 0.3 + 0.05 + 0.02, 4) == r["totals"]["cloudops_usd"]
+    assert r["totals"]["other_usd"] == 0.0 and r["out_of_scope"]["usd"] == 0.0           # nothing hidden by region
+    assert r["excluded"] == {"usd": round(3.0 + 5.0 + 0.8, 4), "applies": True}          # the rest is totalled, never shown as cost
+    assert {x["id"] for x in r["options"]["accounts"]} == {"111", "222"}
+    assert set(r["options"]["regions"]) == {"ap-south-1", "APS5", "us-east-1"}            # only regions CloudOps was billed in
+    assert r["totals"]["metrics_requested"] == 40000 + 50000 + 30000 + 5000 + 2000
+    assert r["totals"]["usd_per_1000_metrics"] == 0.01                                    # effective rate from AWS's own figures
+
+
+def test_cloudops_only_account_filter_applies_to_the_excluded_total_too(usage):
+    r = usage.build_explorer(EX_ROWS, _date(2026, 10, 18), _date(2026, 10, 24), accounts={"222"}, names=EX_NAMES,
+                             onboarded=EX_ONB, now=EX_NOW, cloudops_only=True)
+    assert r["totals"]["billed_usd"] == 0.3 and r["excluded"]["usd"] == 0.8
+
+
+def test_option_amounts_let_the_filter_menus_show_cost_next_to_each_choice(usage):
+    r = usage.build_explorer(EX_ROWS, _date(2026, 10, 18), _date(2026, 10, 24), names=EX_NAMES, onboarded=EX_ONB,
+                             now=EX_NOW, cloudops_only=True)
+    assert {a["id"]: a["usd"] for a in r["options"]["accounts"]} == {"111": 0.9, "222": 0.3}
+    assert r["options"]["region_usd"] == {"ap-south-1": 1.2}

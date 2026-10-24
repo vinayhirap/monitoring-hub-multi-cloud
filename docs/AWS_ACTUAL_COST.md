@@ -81,3 +81,11 @@ usage graph, breakdown table and CSV. Every amount is a Cost Explorer figure; no
 - **Cross-check.** For settled days the page compares the metrics AWS billed for GetMetricData with the metrics
   CloudOps's own meter counted. A large gap means the collector's metering needs attention.
 - Tax (for example GST) is a separate AWS line and is not in these figures.
+
+## CloudOps-only view
+
+The Cloud Cost page (admins) shows only what CloudOps itself causes: the GetMetricData charge, in every region it was
+billed (CloudOps polled there, so it is its cost). Other CloudWatch charges in the same accounts (custom metrics,
+alarms, logs, API requests from agents) are not shown as cost; they are only totalled in one footnote line so nobody
+mistakes the page for the AWS invoice. The API still accepts `cloudops_only=false` to see the full CloudWatch bill.
+Non-admin users keep the CloudOps metering view (a list-price estimate of its own reads).

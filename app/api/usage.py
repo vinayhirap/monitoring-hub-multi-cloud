@@ -467,7 +467,7 @@ def _csv_set(v):
 
 
 def build_explorer(rows, start, end, granularity="daily", group_by="category", accounts=(), regions=(), categories=(),
-                   scope="onboarded", names=None, onboarded=None, metered_metrics=None, now=None):
+                   scope="onboarded", names=None, onboarded=None, metered_metrics=None, now=None, cloudops_only=False):
     """The actual AWS CloudWatch bill, sliced like Cost Explorer. Pure: no database, no AWS.
     rows: (billed_account_id, usage_type, usage_date, amount_usd, estimated, usage_quantity, usage_unit) tuples.
     start/end: inclusive dates. onboarded: {billed_account_id: {region, ...}} (regions CloudOps monitors for that account).
@@ -481,6 +481,12 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
     today = datetime.fromtimestamp(now, tz=timezone.utc).date()
     last_settled = today.fromordinal(today.toordinal() - PROVISIONAL_DAYS)
     accounts, regions, categories = set(accounts or ()), set(regions or ()), set(categories or ())
+    if cloudops_only:
+        # CloudOps-caused cost only: GetMetricData, in EVERY region (CloudOps polled there, so it is its cost). Region
+        # scoping would hide real CloudOps charges, so it is off. The rest of the CloudWatch bill is only totalled.
+        categories, scope = {CAT_CLOUDOPS}, "all"
+    excluded = 0.0
+    opt_accts, opt_regions = {}, {}
 
     # periods
     span = [start.fromordinal(o) for o in range(start.toordinal(), end.toordinal() + 1)]
@@ -508,6 +514,7 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
     raw_total = 0.0
     gmd_qty = [0.0] * len(keys)
     gmd_unit = None
+    gmd_usd_with_qty = 0.0
     seen_regions, seen_accounts, dates_with_data, settled_total = set(), set(), set(), 0.0
     settled_dates = set()
     for acct, utype, d, amt, est, qty, unit in rows:
@@ -517,12 +524,16 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
         acct, amt = str(acct), float(amt or 0)
         region, cat = usage_region(utype), usage_category(utype)
         raw_total += amt
+        if categories and cat not in categories:
+            if not accounts or acct in accounts:
+                excluded += amt                       # in the accounts being looked at, but not what this view is about
+            continue
         seen_accounts.add(acct)
         seen_regions.add(region)
+        opt_accts[acct] = opt_accts.get(acct, 0.0) + amt
+        opt_regions[region] = opt_regions.get(region, 0.0) + amt
         dates_with_data.add(d)
         if accounts and acct not in accounts:
-            continue
-        if categories and cat not in categories:
             continue
         in_scope = scope != "onboarded" or acct not in onboarded or region in onboarded[acct]
         if not in_scope:
@@ -548,6 +559,7 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
         if cat == CAT_CLOUDOPS and qty is not None:
             gmd_qty[i] += float(qty)
             gmd_unit = gmd_unit or unit
+            gmd_usd_with_qty += amt
         if d <= last_settled:
             settled_total += amt
             settled_dates.add(d)
@@ -569,6 +581,7 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
                            "quantity": round(g["qty"], 2) if g["unit"] and len(g["units"]) == 1 else None,     # never add Metrics to Requests to GB
                            "unit": g["unit"] if len(g["units"]) == 1 else None,
                            "accounts": sorted(g["accounts"]), "regions": sorted(g["regions"]), "categories": sorted(g["categories"])})
+    metrics_requested = sum(gmd_qty)
     sums = {"groups": sum(g["total"] for g in groups.values()),
             "periods": sum(sum(g["values"]) for g in groups.values()),
             "categories": sum(by_cat.values())}
@@ -592,7 +605,10 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
                    "cloudops_usd": round(by_cat.get(CAT_CLOUDOPS, 0.0), 4),
                    "other_usd": round(billed - by_cat.get(CAT_CLOUDOPS, 0.0), 4),
                    "avg_per_settled_day_usd": round(settled_total / len(settled_dates), 4) if settled_dates else None,
-                   "settled_days": len(settled_dates)},
+                   "settled_days": len(settled_dates),
+                   "metrics_requested": round(metrics_requested) if metrics_requested else None,
+                   "usd_per_1000_metrics": round(1000.0 * gmd_usd_with_qty / metrics_requested, 5) if metrics_requested else None},
+        "excluded": {"usd": round(excluded, 4), "applies": bool(cloudops_only)},
         "by_category": [{"key": k, "label": CATEGORY_LABELS.get(k, k), "usd": round(v, 4),
                          "share_pct": round(100.0 * v / billed, 1) if billed else 0.0}
                         for k, v in sorted(by_cat.items(), key=lambda kv: -kv[1])],
@@ -602,8 +618,10 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
         "cloudops_check": check,
         "through_date": max(dates_with_data).isoformat() if dates_with_data else None,
         "complete_through": (min(max(dates_with_data), last_settled).isoformat() if dates_with_data else None),
-        "options": {"accounts": [{"id": a, "name": names.get(a), "regions": sorted(onboarded.get(a, ()))} for a in sorted(seen_accounts | set(onboarded))],
-                    "regions": all_regions, "categories": [{"key": k, "label": v} for k, v in CATEGORY_LABELS.items()]},
+        "options": {"accounts": [{"id": a, "name": names.get(a), "regions": sorted(onboarded.get(a, ())), "usd": round(opt_accts.get(a, 0.0), 4)}
+                                 for a in sorted(seen_accounts | (set() if cloudops_only else set(onboarded)))],
+                    "regions": all_regions if not cloudops_only else sorted(seen_regions),
+                    "region_usd": {k: round(v, 4) for k, v in opt_regions.items()}, "categories": [{"key": k, "label": v} for k, v in CATEGORY_LABELS.items()]},
         "reconciliation": {"ok": drift <= 0.005, "max_difference_usd": round(drift, 6),
                            "in_scope_usd": round(billed, 4), "out_of_scope_usd": round(out_total, 4),
                            "selected_usd": round(billed + out_total, 4), "all_rows_usd": round(raw_total, 4)},
@@ -650,7 +668,7 @@ def _parse_day(v, default):
 @router.get("/cost-explorer")
 def cost_explorer_report(start: str = Query(None), end: str = Query(None), granularity: str = Query("daily"),
                          group_by: str = Query("category"), accounts: str = Query(""), regions: str = Query(""),
-                         categories: str = Query(""), scope: str = Query("onboarded"),
+                         categories: str = Query(""), scope: str = Query("onboarded"), cloudops_only: bool = Query(True),
                          current_user: dict = Depends(require_permission("usage.manage"))):
     from app.aws import cost_explorer
     if granularity not in GRANULARITIES or group_by not in GROUP_BYS or scope not in SCOPES:
@@ -722,7 +740,7 @@ def cost_explorer_report(start: str = Query(None), end: str = Query(None), granu
         cur.close()
         conn.close()
     rep = build_explorer(rows, start_d, end_d, granularity, group_by, _csv_set(accounts), _csv_set(regions),
-                         _csv_set(categories), scope, names, onboarded, metered, now)
+                         _csv_set(categories), scope, names, onboarded, metered, now, cloudops_only=cloudops_only)
     accts, state, lookup_usd, lookup_n = _fetch_state(log, cost_explorer.enabled(), now)
     rep.update({"state": state, "enabled": cost_explorer.enabled(), "accounts": accts, "lookup_cost_usd": lookup_usd,
                 "lookup_requests": lookup_n, "scope_note": scope_note,
