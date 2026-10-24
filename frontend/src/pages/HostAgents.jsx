@@ -15,12 +15,13 @@ import { copyText } from "../utils/copyText";
 import { getLiveAccounts, getAlertsForResource } from "../api/api";
 import {
   listHostAgents, listEnrollmentKeys, createEnrollmentKey, revokeEnrollmentKey, revokeHostAgent, patchHostAgentConfig,
-  getHostAgentMetrics,
+  getHostAgentMetrics, getHostAgentServices,
 } from "../api/hostAgents";
 import {
   STATE_LABEL, STATE_TONE, KEY_STATUS_TONE, INTERVAL_MIN, INTERVAL_MAX, stateOf, stateCounts, accountOptions,
   filterHosts, relativeTime, utcStamp, buildConfigPatch, buildKeyRequest, buildInstallCommand,
   firingAlertsForHost, mergeAlertLists, hostMetricRows, hostMetricsNote,
+  serviceRows, serviceSummaryText, serviceWorstTone, servicesNote, configFormDefaults, currentConfigOf,
 } from "../utils/hostAgentsView";
 import "./HostAgents.css";
 
@@ -197,12 +198,29 @@ function EditConfigDialog({ host, onClose, onSaved }) {
   const [intervalText, setIntervalText] = useState("");
   const [servicesText, setServicesText] = useState("");
   const [clearServices, setClearServices] = useState(false);
+  const [current, setCurrent] = useState(null);          // { interval_seconds, watch_services } once loaded; null = unknown
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
+  // Pre-fill from the server so the form shows what is configured (and a save only sends what the person changed).
+  useEffect(() => {
+    let live = true;
+    getHostAgentServices(host.id)
+      .then(d => {
+        if (!live) return;
+        const def = configFormDefaults(d);
+        if (def) { setCurrent(currentConfigOf(d)); setIntervalText(def.intervalText); setServicesText(def.servicesText); }
+        setLoading(false);
+      })
+      .catch(e => { if (live) { setLoadError(errText(e)); setLoading(false); } });
+    return () => { live = false; };
+  }, [host.id]);
+
   const submit = async e => {
     e.preventDefault();
-    const { body, error: bad } = buildConfigPatch({ intervalText, servicesText, clearServices });
+    const { body, error: bad } = buildConfigPatch({ intervalText, servicesText, clearServices }, current);
     if (bad) { setError(bad); return; }
     setBusy(true); setError(null);
     try {
@@ -218,23 +236,32 @@ function EditConfigDialog({ host, onClose, onSaved }) {
   return (
     <Modal title={`Configure ${host.hostname}`} onClose={onClose}>
       <form onSubmit={submit} className="ha-form">
-        <p className="ha-hint">
-          The current values are not available from the server, so nothing is pre-filled. Only the fields you fill in are changed.
-        </p>
-        <Field label="Report interval (seconds)" hint={`Leave blank to keep the current interval. ${INTERVAL_MIN}–${INTERVAL_MAX}.`}>
-          {id => <input id={id} className="ui-input ha-full" inputMode="numeric" value={intervalText} onChange={e => setIntervalText(e.target.value)} placeholder="unchanged" autoComplete="off" />}
+        {loading && <div aria-busy="true"><Skeleton h={14} /></div>}
+        {!loading && current && (
+          <p className="ha-hint">Showing the current configuration. Only what you change is saved; the agent picks it up on its next report.</p>
+        )}
+        {!loading && !current && (
+          <p className="ha-hint">
+            {loadError ? `The current values could not be loaded (${loadError}), so nothing is pre-filled. ` : "The current values are not available, so nothing is pre-filled. "}
+            Only the fields you fill in are changed.
+          </p>
+        )}
+        <Field label="Report interval (seconds)" hint={`${current ? "" : "Leave blank to keep the current interval. "}${INTERVAL_MIN}–${INTERVAL_MAX}.`}>
+          {id => <input id={id} className="ui-input ha-full" inputMode="numeric" value={intervalText} onChange={e => setIntervalText(e.target.value)} placeholder="unchanged" autoComplete="off" disabled={loading} />}
         </Field>
-        <Field label="Watched services" hint="Systemd service names separated by commas, spaces or new lines. Replaces the whole list. Leave blank to keep the current list.">
-          {id => <textarea id={id} className="ui-input ha-full ha-textarea" rows={4} value={servicesText} onChange={e => setServicesText(e.target.value)} disabled={clearServices} placeholder="nginx, sshd" spellCheck={false} />}
+        <Field label="Watched services" hint={current
+          ? "Service names (systemd unit, launchd label or Windows service name) separated by commas, spaces or new lines. This is the whole list: remove a name to stop watching it. Each name's state appears in the host's Services panel after the agent's next report."
+          : "Service names separated by commas, spaces or new lines. Replaces the whole list. Leave blank to keep the current list."}>
+          {id => <textarea id={id} className="ui-input ha-full ha-textarea" rows={4} value={servicesText} onChange={e => setServicesText(e.target.value)} disabled={clearServices || loading} placeholder="nginx, sshd" spellCheck={false} />}
         </Field>
         <label className="ha-check">
-          <input type="checkbox" checked={clearServices} onChange={e => setClearServices(e.target.checked)} />
+          <input type="checkbox" checked={clearServices} onChange={e => setClearServices(e.target.checked)} disabled={loading} />
           Stop watching all services (empties the list)
         </label>
         {error && <p className="ha-error" role="alert">{error}</p>}
         <div className="ui-dialog-actions ha-actions">
           <button type="button" className="ui-btn" onClick={onClose}>Cancel</button>
-          <button type="submit" className="ui-btn ui-btn-primary" disabled={busy}>{busy ? "Saving…" : "Save"}</button>
+          <button type="submit" className="ui-btn ui-btn-primary" disabled={busy || loading}>{busy ? "Saving…" : "Save"}</button>
         </div>
       </form>
     </Modal>
@@ -323,6 +350,26 @@ function HostDrawer({ host, onClose, canManage, onEdit, onRevoke }) {
   const metricRows = useMemo(() => hostMetricRows(metrics), [metrics]);
   const metricsNote = hostMetricsNote(metrics, host);
 
+  // Watched services: stored states only (GET /api/host-agents/{id}/services), reloaded with the metrics.
+  const [svc, setSvc] = useState(null);                    // null = first load in flight
+  const [svcError, setSvcError] = useState(null);
+  useEffect(() => {
+    let live = true;
+    getHostAgentServices(hostId)
+      .then(d => { if (live) { setSvc(d && typeof d === "object" ? d : { services: [] }); setSvcError(null); } })
+      .catch(e => {
+        if (!live) return;
+        setSvcError(e?.status === 404 ? "This host or the host agent feature is no longer available." : errText(e));
+        setSvc(prev => prev ?? { services: [] });
+      });
+    return () => { live = false; };
+  }, [hostId, reloadN]);
+  const svcRows = useMemo(() => serviceRows(svc), [svc]);
+  const svcSummary = serviceSummaryText(svc);
+  const svcTone = serviceWorstTone(svc);
+  const svcNote = servicesNote(svc, host);
+  const watching = Array.isArray(svc?.watch_services) ? svc.watch_services.length : 0;
+
   useEffect(() => {
     let live = true;
     // Existing alerts API (DB read, no cloud calls). One search per identifier, then exact-match filtered client side.
@@ -385,6 +432,35 @@ function HostDrawer({ host, onClose, canManage, onEdit, onRevoke }) {
             </div>
           )}
           {metricsNote && <p className="ha-hint">{metricsNote}</p>}
+        </Panel>
+        <Panel title="Services"
+               subtitle="State of each watched service from the agent's last report (not live). Change the list with Configure."
+               actions={svcTone ? <Badge tone={svcTone}>{svcSummary}</Badge> : undefined}>
+          {svc == null && <div aria-busy="true"><Skeleton h={14} /></div>}
+          {svcError && <p className="ha-error" role="alert">Could not load services: {svcError}</p>}
+          {svc != null && !svcError && watching === 0 && (
+            <EmptyState title="No services are watched"
+              body={canManage ? "Use Configure to list the services this host should report (for example nginx or sshd)." : "An administrator can choose which services this host reports."} />
+          )}
+          {svcRows.length > 0 && (
+            <div className="ha-metrics-wrap">
+              <table className="ha-metrics">
+                <caption className="ha-sr">Watched services of {host.hostname}</caption>
+                <thead><tr><th scope="col">Service</th><th scope="col">State</th><th scope="col">In this state for</th><th scope="col">Reported</th></tr></thead>
+                <tbody>
+                  {svcRows.map(r => (
+                    <tr key={r.key}>
+                      <th scope="row" className="ha-mono">{r.name}</th>
+                      <td><Badge tone={r.tone}>{r.label}</Badge></td>
+                      <td title={utcStamp(r.since)}>{r.sinceText}</td>
+                      <td title={utcStamp(r.observedAt)}>{relativeTime(r.observedAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {svcNote && <p className="ha-hint">{svcNote}</p>}
         </Panel>
         <Panel title="Active alerts" subtitle="Firing alerts naming this host or its instance id">
           {alerts == null && <div aria-busy="true"><Skeleton h={14} /></div>}

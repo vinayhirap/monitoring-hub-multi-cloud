@@ -194,7 +194,7 @@ def test_source_has_no_cloud_call_no_migration_and_leaves_the_ai_agent_alone():
     assert not re.search(r"^(import|from) .*(boto3|botocore|requests|httpx|azure|google)", src, re.M)
     assert "app.agent" not in src and "/api/agent" not in src
     nums = sorted(p.name[:3] for p in (ROOT / "db/migrations").glob("1[0-9][0-9]_*.sql"))
-    assert "123" not in nums                                                    # patch 0008 adds no migration
+    assert "122" in nums and "123" in nums                                      # 123 belongs to patch 0009 (services), not to this route
 
 
 def test_help_and_docs_describe_the_current_metrics_panel():

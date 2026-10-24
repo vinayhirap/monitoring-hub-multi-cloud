@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -327,10 +328,76 @@ def test_heartbeat_sql_assigns_last_seq_before_last_seen_at():
     assert sql.index("last_seq =") < sql.index("last_seen_at = UTC_TIMESTAMP()")
 
 
-def test_services_only_payload_is_still_a_single_update():
+def test_payload_without_services_stays_a_single_update():
     e = _env()
-    r = _post(e, _payload(services=[{"name": "nginx", "state": "running"}]))
-    assert r.status_code == 200 and len(e.db.executed) == 1 and r.json()["accepted"] == 0
+    r = _post(e, _payload(services=[]))
+    assert r.status_code == 200 and len(e.db.executed) == 1 and e.db.many == []
+
+
+def test_services_only_payload_stores_states_and_prunes_the_rest():
+    e = _env()
+    r = _post(e, _payload(services=[{"name": "sshd", "state": "running"}, {"name": "nginx", "state": "failed"}]))
+    assert r.status_code == 200 and r.json()["accepted"] == 0
+    assert e.db.executed[0][0].startswith("UPDATE host_agents SET")
+    sql, rows = e.db.many[0]
+    assert sql == e.ingest.SQL_UPSERT_SERVICES
+    assert [(r[0], r[1], r[2]) for r in rows] == [(5, "nginx", "failed"), (5, "sshd", "running")]      # name order, agent id from the token
+    assert all(r[3] == r[4] for r in rows)
+    prune_sql, prune_params = e.db.executed[1]
+    assert prune_sql.startswith("DELETE FROM host_agent_services WHERE host_agent_id = %s AND service_name NOT IN (%s, %s)")
+    assert prune_params == (5, "nginx", "sshd")
+    assert e.db.commits == 1
+
+
+def test_services_with_samples_are_written_in_the_same_transaction():
+    e = _env()
+    r = _post(e, _payload(metrics=[_m("cpu_percent", 10)], services=[{"name": "nginx", "state": "running"}]))
+    assert r.status_code == 200 and r.json()["accepted"] == 1
+    assert e.db.connections == 1 and e.db.commits == 1
+    assert [s for s, _ in e.db.many][-1] == e.ingest.SQL_UPSERT_SERVICES
+
+
+def test_services_are_ignored_while_the_agent_runs_an_older_config():
+    # The admin removed a service (config_version 1 -> 2). The agent still reports the OLD list with version 1 and must not
+    # bring the removed service back.
+    e = _env(auth=lambda t: dict(AGENT, config_version=2))
+    e.db.config_row = {"config_json": None, "config_version": 2}
+    r = _post(e, _payload(config_version=1, services=[{"name": "removed-svc", "state": "running"}]))
+    assert r.status_code == 200
+    assert not any("host_agent_services" in sql for sql, _ in e.db.executed) and e.db.many == []
+    assert r.json()["config_version"] == 2                           # and it is told to resync
+
+
+def test_duplicate_seq_writes_no_services():
+    e = _env()
+    e.db.duplicate = True
+    r = _post(e, _payload(metrics=[_m("cpu_percent", 10)], services=[{"name": "nginx", "state": "running"}]))
+    assert r.status_code == 200
+    assert not any("host_agent_services" in sql for sql, _ in e.db.executed) and e.db.many == []
+
+
+def test_a_name_sent_twice_keeps_the_last_state_and_one_row():
+    e = _env()
+    _post(e, _payload(services=[{"name": "nginx", "state": "running"}, {"name": "nginx", "state": "failed"}]))
+    _sql, rows = e.db.many[0]
+    assert len(rows) == 1 and rows[0][2] == "failed"
+
+
+def test_service_observed_time_is_clamped_to_a_sane_window():
+    e = _env()
+    now = datetime(2026, 10, 24, 12, 0, 0)
+    f = e.ingest._service_observed_at
+    ok = int((now - timedelta(minutes=3)).timestamp())
+    assert f(ok, now) == datetime.utcfromtimestamp(ok)
+    for bad in (int((now + timedelta(hours=5)).timestamp()), int((now - timedelta(days=3)).timestamp()), "x", None, 10**20):
+        assert f(bad, now) == now                                      # a wrong agent clock cannot pin a state in the future
+
+
+def test_service_upsert_sql_is_newest_wins_and_assigns_columns_in_a_safe_order():
+    e = _env()
+    sql = e.ingest.SQL_UPSERT_SERVICES
+    assert sql.index("state_since =") < sql.index(" state = IF") < sql.index("observed_at = GREATEST")
+    assert "VALUES(observed_at) >= observed_at" in sql
 
 
 # ── config ───────────────────────────────────────────────────────────────

@@ -17,3 +17,8 @@ export const patchHostAgentConfig = (id, d) => apiFetch(`/api/host-agents/${enco
 // -> {host_agent_id, hostname, resource_type, shared_series, source, metrics: [{name, metric, title, label, label_key, unit, value, timestamp, age_seconds}]}
 // Latest stored reading per agent metric; a DB read on the server (no cloud call). 404 = unknown host, out of scope, or feature off.
 export const getHostAgentMetrics = (id) => apiFetch(`/api/host-agents/${encodeURIComponent(id)}/metrics`);
+// -> {host_agent_id, hostname, status, config_version, interval_seconds, watch_services: string[],
+//     services: [{name, state: running|stopped|failed|unknown, since, observed_at, since_seconds, age_seconds}],
+//     pending: string[], summary: {total, running, stopped, failed, unknown, pending}}
+// The host's current config (what Configure edits) and the latest stored state of each watched service. DB read only.
+export const getHostAgentServices = (id) => apiFetch(`/api/host-agents/${encodeURIComponent(id)}/services`);

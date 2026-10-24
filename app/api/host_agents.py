@@ -10,6 +10,8 @@ matrix.
   POST   /api/host-agents/ingest                    public (agent bearer token); implemented in app/hostagents/ingest.py
   GET    /api/host-agents                           hostagents.view, scoped by get_accessible_account_ids
   GET    /api/host-agents/{id}/metrics              hostagents.view, scoped the same way; latest stored reading per metric
+  GET    /api/host-agents/{id}/services             hostagents.view, scoped the same way; watched services with their latest
+                                                    state, plus the host's current config (what Configure edits)
   POST   /api/host-agents/enrollment-keys           hostagents.manage
   GET    /api/host-agents/enrollment-keys           hostagents.manage (never returns a key)
   DELETE /api/host-agents/enrollment-keys/{id}      hostagents.manage
@@ -347,6 +349,71 @@ def host_agent_metrics(host_id: int, current_user: dict = Depends(require_permis
     }
 
 
+# ── watched services + current config of one host ────────────────────────────
+
+SQL_HOST_FOR_SERVICES = (
+    "SELECT id, aws_account_id, hostname, status, config_version, config_json FROM host_agents WHERE id = %s")
+SQL_SERVICES = ("SELECT service_name, state, state_since, observed_at FROM host_agent_services "
+                "WHERE host_agent_id = %s ORDER BY service_name")
+
+
+def _service_view(rows, watch, now: datetime) -> dict:
+    """Pure. Rows are stored states; `watch` is the configured list. Only configured names are shown (a row for a name
+    that is no longer configured is a leftover and must not be presented as watched); a configured name with no row yet
+    is `pending`, never a guessed state."""
+    watched = list(watch or [])
+    wanted = set(watched)
+    by_name = {r["service_name"]: r for r in rows if r["service_name"] in wanted}
+    items = []
+    for name in watched:                                   # the admin's order, not alphabetical
+        r = by_name.get(name)
+        if r is None:
+            continue
+        since, seen = r["state_since"], r["observed_at"]
+        items.append({
+            "name": name, "state": r["state"],
+            "since": _iso(since), "observed_at": _iso(seen),
+            "since_seconds": max(0, int((now - since).total_seconds())) if since else None,
+            "age_seconds": max(0, int((now - seen).total_seconds())) if seen else None,
+        })
+    summary = {"total": len(watched), "running": 0, "stopped": 0, "failed": 0, "unknown": 0, "pending": 0}
+    for it in items:
+        summary[it["state"]] = summary.get(it["state"], 0) + 1
+    pending = [n for n in watched if n not in by_name]
+    summary["pending"] = len(pending)
+    return {"services": items, "pending": pending, "summary": summary}
+
+
+@router.get("/{host_id}/services")
+def host_agent_services(host_id: int, current_user: dict = Depends(require_permission("hostagents.view"))):
+    """The host's configured watch list and interval (the values the Configure dialog edits, so it can show them instead of
+    asking for blind input) and the latest stored state of each watched service. DB read only. `observed_at` is when the
+    agent last reported the state; it is not live, and for an offline host it is simply the last thing the agent said."""
+    accessible = get_accessible_account_ids(current_user)
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(SQL_HOST_FOR_SERVICES, (host_id,))
+            host = cur.fetchone()
+            if not host or not _in_scope(accessible, host["aws_account_id"]):
+                raise HTTPException(status_code=404, detail="Host agent not found")
+            cur.execute(SQL_SERVICES, (host_id,))
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+    cfg = _effective_config(host["config_json"])
+    out = _service_view(rows, cfg.get("watch_services"), _utcnow())
+    return {
+        "host_agent_id": host["id"], "hostname": host["hostname"], "status": host["status"],
+        "config_version": host["config_version"],
+        "interval_seconds": cfg.get("interval_seconds"), "watch_services": list(cfg.get("watch_services") or []),
+        **out,
+    }
+
+
 # ── enrollment keys ──────────────────────────────────────────────────────────
 
 @router.post("/enrollment-keys")
@@ -504,6 +571,14 @@ def patch_host_agent_config(host_id: int, body: HostConfigPatch, request: Reques
             stored.update(changes)
             cur.execute("UPDATE host_agents SET config_json = %s, config_version = config_version + 1 WHERE id = %s",
                         (json.dumps(stored), host_id))
+            if "watch_services" in changes:
+                # A service taken off the list must disappear now, not linger until the agent next reports.
+                kept = changes["watch_services"]
+                if kept:
+                    cur.execute("DELETE FROM host_agent_services WHERE host_agent_id = %s AND service_name NOT IN ("
+                                + ", ".join(["%s"] * len(kept)) + ")", (host_id, *kept))
+                else:
+                    cur.execute("DELETE FROM host_agent_services WHERE host_agent_id = %s", (host_id,))
             conn.commit()
             new_version = row["config_version"] + 1
         finally:

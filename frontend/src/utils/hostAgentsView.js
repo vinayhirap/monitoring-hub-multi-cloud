@@ -100,26 +100,34 @@ export function parseInterval(value) {
 }
 
 /**
- * PATCH body from the edit form. Only fields the person actually chose to change are sent (the list endpoint does
- * not return the current config, so nothing may be assumed or overwritten by default).
+ * PATCH body from the edit form. Only fields the person actually chose to change are sent.
+ * `current` ({ interval_seconds, watch_services }, from GET /api/host-agents/{id}/services) is optional: when given, the
+ * form is pre-filled with it, so a field is sent only when it DIFFERS from the current value (an untouched pre-filled
+ * form must not bump the config version or restart the agent's reporting for nothing). Without it, anything filled in is sent.
  * Returns { body } or { error }.
  */
-export function buildConfigPatch({ intervalText, servicesText, clearServices }) {
+export function buildConfigPatch({ intervalText, servicesText, clearServices }, current = null) {
   const body = {};
   if (String(intervalText ?? "").trim() !== "") {
     const n = parseInterval(intervalText);
     if (n == null) return { error: `Interval must be a whole number from ${INTERVAL_MIN} to ${INTERVAL_MAX} seconds.` };
-    body.interval_seconds = n;
+    if (!current || n !== current.interval_seconds) body.interval_seconds = n;
   }
+  const have = Array.isArray(current?.watch_services) ? current.watch_services : null;
+  const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
   if (clearServices) {
-    body.watch_services = [];
+    if (!have || have.length > 0) body.watch_services = [];
   } else if (String(servicesText ?? "").trim() !== "") {
     const { services, invalid, tooMany } = parseServiceList(servicesText);
     if (invalid.length) return { error: `Invalid service name: ${invalid[0].slice(0, 40)}` };
     if (tooMany) return { error: `At most ${MAX_WATCH_SERVICES} services can be watched.` };
-    body.watch_services = services;
+    if (!have || !same(services, have)) body.watch_services = services;
+  } else if (have && have.length > 0) {
+    // A pre-filled list that was emptied by hand: say so instead of silently keeping it ("blank = unchanged" is only
+    // true when the current list is not known).
+    return { error: "The service list is empty. Tick “Stop watching all services” to clear it, or restore the names." };
   }
-  if (!Object.keys(body).length) return { error: "Nothing to change: set an interval and/or a list of services." };
+  if (!Object.keys(body).length) return { error: current ? "Nothing changed." : "Nothing to change: set an interval and/or a list of services." };
   return { body };
 }
 
@@ -240,4 +248,80 @@ export function hostMetricsNote(payload, host) {
   if (payload.shared_series) parts.push("This host is attached to an EC2 resource: memory and disk readings use the same stored names as the CloudWatch agent, so the stored value can come from either source.");
   if (payload.source === "metric_history") parts.push("Showing the newest history point from the last 24 hours.");
   return parts.length ? parts.join(" ") : null;
+}
+
+// ── Watched services (GET /api/host-agents/{id}/services) ─────────────────────────────────────────────────────────
+// The server returns the stored state of every name in the host's watch list; nothing here is polled, guessed or averaged.
+
+export const SERVICE_STATE_LABEL = { running: "Running", stopped: "Stopped", failed: "Failed", unknown: "Unknown" };
+export const SERVICE_STATE_TONE = { running: "ok", stopped: "warn", failed: "crit", unknown: "mute" };
+
+/** 7260 -> "2h 1m", 90 -> "1m 30s", 5 -> "5s"; non-finite or negative -> "—". */
+export function durationText(seconds) {
+  return formatDuration(seconds);
+}
+
+/** Table rows in the order the administrator listed the services. A state the UI does not know is shown as unknown. */
+export function serviceRows(payload) {
+  const list = Array.isArray(payload?.services) ? payload.services : [];
+  return list.filter(x => x && typeof x.name === "string").map(x => {
+    const state = Object.prototype.hasOwnProperty.call(SERVICE_STATE_LABEL, x.state) ? x.state : "unknown";
+    return {
+      key: x.name, name: x.name, state, label: SERVICE_STATE_LABEL[state], tone: SERVICE_STATE_TONE[state],
+      since: x.since || null,
+      sinceText: Number.isFinite(x.since_seconds) ? durationText(x.since_seconds) : "—",
+      observedAt: x.observed_at || null,
+      ageSeconds: Number.isFinite(x.age_seconds) ? x.age_seconds : null,
+    };
+  });
+}
+
+/** Names that are configured but have not reported yet (never shown with a state). */
+export function pendingServices(payload) {
+  return Array.isArray(payload?.pending) ? payload.pending.filter(n => typeof n === "string") : [];
+}
+
+/** "3 running · 1 failed" — only the non-zero parts, worst first; null when nothing is watched. */
+export function serviceSummaryText(payload) {
+  const m = payload?.summary;
+  if (!m || !m.total) return null;
+  const parts = [];
+  for (const k of ["failed", "stopped", "unknown", "running", "pending"]) {
+    if (m[k] > 0) parts.push(`${m[k]} ${k === "pending" ? "waiting for first report" : k}`);
+  }
+  return parts.join(" · ");
+}
+
+/** The worst tone among the services (crit > warn > mute > ok), for the panel badge; null when none reported. */
+export function serviceWorstTone(payload) {
+  const rows = serviceRows(payload);
+  if (!rows.length) return null;
+  for (const t of ["crit", "warn", "mute"]) if (rows.some(r => r.tone === t)) return t;
+  return "ok";
+}
+
+/** Caption under the services table. States facts only. */
+export function servicesNote(payload, host) {
+  if (!payload) return null;
+  const parts = [];
+  const state = stateOf(host);
+  if (state !== "online" && serviceRows(payload).length) {
+    parts.push(`This host is ${STATE_LABEL[state].toLowerCase()}, so these are the states from its last report, not live values.`);
+  }
+  if (pendingServices(payload).length) {
+    parts.push(`Waiting for the first report of: ${pendingServices(payload).join(", ")}. The agent picks up a changed list on its next check-in.`);
+  }
+  return parts.length ? parts.join(" ") : null;
+}
+
+/** Values for the Configure form, from the services payload; null when the payload does not carry them. */
+export function configFormDefaults(payload) {
+  if (!payload || !Array.isArray(payload.watch_services) || !Number.isFinite(payload.interval_seconds)) return null;
+  return { intervalText: String(payload.interval_seconds), servicesText: payload.watch_services.join("\n") };
+}
+
+/** { interval_seconds, watch_services } of the services payload, for buildConfigPatch's `current`; null when unknown. */
+export function currentConfigOf(payload) {
+  if (!configFormDefaults(payload)) return null;
+  return { interval_seconds: payload.interval_seconds, watch_services: payload.watch_services.slice() };
 }

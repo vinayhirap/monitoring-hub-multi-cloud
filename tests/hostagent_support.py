@@ -25,15 +25,16 @@ class MiniDb:
         self.accounts = {1: "Acct One", 2: "Acct Two", 3: "Acct Three"}
         self.keys, self.hosts, self.tokens = {}, {}, {}
         self.resources, self.metrics, self.history = {}, [], []      # read-only fixtures for GET /{id}/metrics
+        self.services = {}                                           # (host_agent_id, service_name) -> row (migration 123)
         self._seq = {"k": 0, "h": 0, "t": 0}
         self.sql_log = []
         self.lock = threading.Lock()
 
     def _state(self):
-        return (self.keys, self.hosts, self.tokens, dict(self._seq))
+        return (self.keys, self.hosts, self.tokens, dict(self._seq), self.services)
 
     def _restore(self, snap):
-        self.keys, self.hosts, self.tokens, self._seq = snap
+        self.keys, self.hosts, self.tokens, self._seq, self.services = snap
 
     def next(self, kind):
         self._seq[kind] += 1
@@ -174,6 +175,18 @@ class MiniCursor:
                     if m["metric_name"] not in newest or m["metric_timestamp"] > newest[m["metric_name"]]["metric_timestamp"]:
                         newest[m["metric_name"]] = m
             self._rows = [{c: m[c] for c in ("metric_name", "metric_value", "metric_timestamp")} for m in newest.values()]
+        elif q.startswith("SELECT service_name, state, state_since, observed_at FROM host_agent_services WHERE host_agent_id"):
+            self._rows = [{"service_name": n, **{c: v[c] for c in ("state", "state_since", "observed_at")}}
+                          for (hid, n), v in sorted(db.services.items(), key=lambda kv: kv[0][1]) if hid == p[0]]
+        elif q.startswith("DELETE FROM host_agent_services WHERE host_agent_id = %s AND service_name NOT IN ("):
+            keep = set(p[1:])
+            for key in [k for k in db.services if k[0] == p[0] and k[1] not in keep]:
+                del db.services[key]
+                self.rowcount += 1
+        elif q == "DELETE FROM host_agent_services WHERE host_agent_id = %s":
+            for key in [k for k in db.services if k[0] == p[0]]:
+                del db.services[key]
+                self.rowcount += 1
         elif q.startswith("SELECT t.token_hash, t.revoked_at, h.id AS host_agent_id"):
             t = next((x for x in db.tokens.values() if x["token_hash"] == p[0]), None)
             if t:

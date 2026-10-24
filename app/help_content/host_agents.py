@@ -119,7 +119,12 @@ def host_agents():
         h("Changing or removing a server (administrators)"),
         ul([
             "Configure (in the server's panel) changes how often it reports (15 to 300 seconds) and which services to "
-            "watch. Shorter intervals give finer charts but store more data. It takes effect on the server's next report.",
+            "watch. It shows the current values; only what you change is saved. Shorter intervals give finer charts but "
+            "store more data. It takes effect on the server's next report.",
+            "Watched services appear in the server's Services panel with their state (Running, Stopped, Failed or Unknown), "
+            "how long they have been in it and when the agent last reported. These are the states from the last report, "
+            "not live values, and a name that has not reported yet is listed as waiting. Failed or stopped services do "
+            "not raise alerts.",
             "Revoke host cuts the server off at once: its next report is refused and it shows as Revoked. This does not "
             "uninstall anything on the server itself.",
             "Enrollment keys (button at the top) lists every key with its use count, expiry and status "
@@ -143,8 +148,10 @@ def host_agents():
             "be impaired. For servers the hub cannot match to a cloud instance, it says the two cannot be told apart.",
             "Maintenance windows silence these alerts like any other.",
         ]),
-        p("Busy processor, full disk and similar alerts use normal thresholds. For host agent readings the default "
-          "thresholds ship switched off, so an administrator has to turn them on for an account before they can alert.",
+        p("Memory and disk readings use the normal thresholds of the same names. The default thresholds for the other "
+          "host agent readings (processor, swap, inodes) ship switched off and apply only to servers the hub could not "
+          "match to a cloud instance, so an administrator has to turn them on for an account. A server attached to a "
+          "cloud instance can alert only on memory and disk, through that instance's own thresholds.",
           unverified=True),
         link("Alerts", "#alerts"),
         link("Thresholds", "#thresholds"),

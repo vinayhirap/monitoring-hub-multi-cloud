@@ -11,6 +11,12 @@ Request order (cheapest rejection first, nothing touches the database before aut
         samples                 -> claim seq (UPDATE) -> resolve resource -> executemany metrics -> executemany history
                                    -> COMMIT once; duplicates (seq <= last_seq within 10 min) answer identically, write nothing
 
+SERVICES (migration 123): the `services` array is the agent's report of every name in config watch_services. It is stored
+(host_agent_services, latest state per name) only when the payload's config_version equals the server's: an agent still
+running an older watch list would otherwise bring back a service the admin just removed. A non-empty array is the
+complete current set, so names not in it are deleted; an empty array (heartbeat, or the continuation payload of a split
+batch) never deletes anything.
+
 Identity comes from the token (authenticate_agent), never from the payload: the payload hostname is ignored and the
 payload instance_id only selects an attach candidate inside the agent's own account.
 
@@ -27,7 +33,7 @@ import re
 import threading
 import zlib
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
@@ -65,6 +71,18 @@ SQL_CLAIM_SEQ = (
     "(last_seq < %s OR last_seen_at IS NULL OR last_seen_at < UTC_TIMESTAMP() - INTERVAL " + str(DUP_WINDOW_SECONDS) + " SECOND)"
 )
 SQL_TOUCH = "UPDATE host_agents SET last_seen_at = UTC_TIMESTAMP(), agent_version = %s WHERE id = %s AND status = 'active'"
+# Assignments run left to right (MySQL and MariaDB), so state_since reads the OLD state and observed_at, then state reads the
+# OLD observed_at, and observed_at is assigned last. A reading older than the stored one changes nothing.
+SQL_UPSERT_SERVICES = (
+    "INSERT INTO host_agent_services (host_agent_id, service_name, state, state_since, observed_at) "
+    "VALUES (%s, %s, %s, %s, %s) "
+    "ON DUPLICATE KEY UPDATE "
+    "state_since = IF(VALUES(observed_at) >= observed_at AND state <> VALUES(state), VALUES(observed_at), state_since), "
+    "state = IF(VALUES(observed_at) >= observed_at, VALUES(state), state), "
+    "observed_at = GREATEST(observed_at, VALUES(observed_at))"
+)
+SERVICE_CLAMP_PAST_SECONDS = 24 * 3600
+SERVICE_CLAMP_FUTURE_SECONDS = 10 * 60
 SQL_UPSERT_METRICS = (
     "INSERT INTO metrics (resource_id, metric_name, metric_value, metric_timestamp) VALUES (%s, %s, %s, %s) "
     "ON DUPLICATE KEY UPDATE metric_value = VALUES(metric_value), metric_timestamp = VALUES(metric_timestamp)"
@@ -211,8 +229,9 @@ def _transact(conn, agent, clean):
         samples = clean["samples"]
         out = {"config_version": agent.get("config_version"), "resource_db_id": None, "events": [], "fed": []}
 
-        if not samples:                                   # HEARTBEAT: exactly one UPDATE
+        if not samples:                                   # HEARTBEAT: one UPDATE (plus the services write when it carries any)
             cur.execute(SQL_HEARTBEAT, (seq, seq, version, agent_id))
+            _write_services(cur, agent, clean)
         else:
             cur.execute(SQL_CLAIM_SEQ, (seq, version, agent_id, seq))
             if cur.rowcount == 0:                         # duplicate (or revoked meanwhile): alive, but write nothing
@@ -220,6 +239,7 @@ def _transact(conn, agent, clean):
             else:
                 rid, rtype, events = _resolve_resource(cur, agent, clean)
                 _write_samples(cur, rid, samples)
+                _write_services(cur, agent, clean)
                 out.update(resource_db_id=rid, resource_type=rtype, events=events,
                            fed=sorted({s[0] for s in samples}))
 
@@ -308,6 +328,41 @@ def _write_samples(cur, rid, samples):
                        key=lambda r: (r[0], r[1], r[3]))
     cur.executemany(SQL_UPSERT_METRICS, last_rows)
     cur.executemany(SQL_UPSERT_HISTORY, hist_rows)
+
+
+def _service_observed_at(sent_at, now=None):
+    """The agent's report time as a naive UTC datetime, clamped to [now - 24 h, now + 10 min]. sent_at is the agent's own
+    clock, so a wrong clock must not be able to pin a service state in the far future (it would then win every
+    newest-wins comparison) or the distant past; outside the window the hub's receive time is used."""
+    now = now or datetime.utcnow()
+    try:
+        ts = datetime.utcfromtimestamp(int(sent_at))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return now
+    if ts < now - timedelta(seconds=SERVICE_CLAMP_PAST_SECONDS) or ts > now + timedelta(seconds=SERVICE_CLAMP_FUTURE_SECONDS):
+        return now
+    return ts
+
+
+def _write_services(cur, agent, clean):
+    """Latest state per watched service. Skipped when the payload has no services, or when the agent is not yet running the
+    server's config (a stale watch list). The rows ARE the complete current set, so everything else is deleted."""
+    services = clean.get("services") or []
+    if not services:
+        return
+    if clean["config_version"] != agent.get("config_version"):
+        return
+    agent_id = agent["host_agent_id"]
+    observed = _service_observed_at(clean.get("sent_at"))
+    latest = {}                                           # a name sent twice: the last one wins
+    for name, state in services:
+        latest[name] = state
+    rows = sorted(((agent_id, name, state, observed, observed) for name, state in latest.items()),
+                  key=lambda r: r[1])                     # same lock order on every call (fewer deadlocks)
+    cur.executemany(SQL_UPSERT_SERVICES, rows)
+    names = [r[1] for r in rows]
+    cur.execute("DELETE FROM host_agent_services WHERE host_agent_id = %s AND service_name NOT IN ("
+                + ", ".join(["%s"] * len(names)) + ")", (agent_id, *names))
 
 
 # ── after commit (best effort, never fails the request) ──────────────────

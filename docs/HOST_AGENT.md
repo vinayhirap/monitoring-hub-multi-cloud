@@ -49,6 +49,8 @@ Per-host config (admin `PATCH /api/host-agents/{id}/config`, bumps `config_versi
 
 `interval_seconds` 15–300, `watch_services` ≤ 100 names (`^[A-Za-z0-9][A-Za-z0-9_.@:-]*$`). Lower intervals multiply DB growth linearly (see `docs/HOST_AGENT_COST.md`).
 
+Watched services (migration 123, patch 0009): the agent reports the state of every name in `watch_services` on the first payload of each pass. Ingest stores the latest state per name in `host_agent_services` (`running|stopped|failed|unknown`, `state_since` = last change, `observed_at` = last report, both from the agent's `sent_at` clamped to [now − 24 h, now + 10 min]; newest wins). A non-empty `services` array is the complete current set, so other names are deleted; an empty one deletes nothing. Services are ignored while the payload's `config_version` differs from the server's, so an agent on an old list cannot bring back a removed name. `PATCH config` deletes the states of removed names at once. `GET /api/host-agents/{id}/services` (`hostagents.view`) returns the config (`interval_seconds`, `watch_services`), the states, names still `pending` and a summary. No alert is raised for failed or stopped services.
+
 Permissions: `hostagents.view` (viewer, editor, admin; scoped by `get_accessible_account_ids`), `hostagents.manage` (admin). Every create / revoke / config change / enrollment writes an audit row.
 
 Agent-side flags and files are in `agent/README.md`. `--insecure-dev` allows `http://` (never use it outside DEV).

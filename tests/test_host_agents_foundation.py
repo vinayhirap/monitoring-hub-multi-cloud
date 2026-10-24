@@ -433,6 +433,7 @@ def test_rbac_matrix_lists_every_host_agent_route_with_the_right_guard():
         ("POST", f"{BASE}/enroll"): ("public", []), ("POST", f"{BASE}/ingest"): ("public", []),
         ("GET", BASE): ("permission", ["hostagents.view"]),
         ("GET", f"{BASE}/{{host_id}}/metrics"): ("permission", ["hostagents.view"]),
+        ("GET", f"{BASE}/{{host_id}}/services"): ("permission", ["hostagents.view"]),
         ("POST", f"{BASE}/enrollment-keys"): ("permission", ["hostagents.manage"]),
         ("GET", f"{BASE}/enrollment-keys"): ("permission", ["hostagents.manage"]),
         ("DELETE", f"{BASE}/enrollment-keys/{{key_id}}"): ("permission", ["hostagents.manage"]),

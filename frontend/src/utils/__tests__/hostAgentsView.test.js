@@ -144,3 +144,75 @@ test("hostMetricsNote only states what the response and host carry", () => {
   assert.match(hostMetricsNote({ metrics: [], shared_series: true, source: "metrics" }, rows[0]), /CloudWatch agent/);
   assert.match(hostMetricsNote({ metrics: [], source: "metric_history" }, rows[0]), /last 24 hours/);
 });
+
+// ── watched services (patch 0009) ─────────────────────────────────────────────────────────────────────────────────
+
+import {
+  SERVICE_STATE_LABEL, SERVICE_STATE_TONE, durationText, serviceRows, pendingServices, serviceSummaryText, serviceWorstTone,
+  servicesNote, configFormDefaults, currentConfigOf,
+} from "../hostAgentsView.js";
+
+const svcPayload = {
+  watch_services: ["nginx", "sshd", "cron", "mysql"], interval_seconds: 30, config_version: 3,
+  services: [
+    { name: "nginx", state: "running", since: "2026-10-24T08:00:00Z", observed_at: "2026-10-24T10:00:00Z", since_seconds: 7260, age_seconds: 20 },
+    { name: "sshd", state: "failed", since: "2026-10-24T09:58:30Z", observed_at: "2026-10-24T10:00:00Z", since_seconds: 90, age_seconds: 20 },
+    { name: "cron", state: "weird", since: null, observed_at: null, since_seconds: null, age_seconds: null },
+  ],
+  pending: ["mysql"], summary: { total: 4, running: 1, stopped: 0, failed: 1, unknown: 1, pending: 1 },
+};
+
+test("service states map to labels and tones, and an unknown value never shows as running", () => {
+  assert.deepEqual(Object.keys(SERVICE_STATE_LABEL), ["running", "stopped", "failed", "unknown"]);
+  assert.deepEqual(Object.keys(SERVICE_STATE_TONE), Object.keys(SERVICE_STATE_LABEL));
+  const rows = serviceRows(svcPayload);
+  assert.deepEqual(rows.map(r => [r.name, r.state, r.tone]), [["nginx", "running", "ok"], ["sshd", "failed", "crit"], ["cron", "unknown", "mute"]]);
+  assert.equal(rows[0].sinceText, "2h 1m");
+  assert.equal(rows[1].sinceText, "1m 30s");
+  assert.equal(rows[2].sinceText, "—");
+  assert.deepEqual(serviceRows(null), []);
+  assert.deepEqual(serviceRows({ services: "x" }), []);
+  assert.equal(durationText(-1), "—");
+});
+
+test("summary text lists the worst first and only non-zero parts", () => {
+  assert.equal(serviceSummaryText(svcPayload), "1 failed · 1 unknown · 1 running · 1 waiting for first report");
+  assert.equal(serviceSummaryText({ summary: { total: 0 } }), null);
+  assert.equal(serviceSummaryText(null), null);
+  assert.deepEqual(pendingServices(svcPayload), ["mysql"]);
+});
+
+test("worst tone", () => {
+  assert.equal(serviceWorstTone(svcPayload), "crit");
+  assert.equal(serviceWorstTone({ services: [{ name: "a", state: "running" }] }), "ok");
+  assert.equal(serviceWorstTone({ services: [{ name: "a", state: "running" }, { name: "b", state: "stopped" }] }), "warn");
+  assert.equal(serviceWorstTone({ services: [] }), null);
+});
+
+test("servicesNote says when the states are from a last report and what is still pending", () => {
+  assert.equal(servicesNote(null, { state: "online" }), null);
+  assert.equal(servicesNote({ services: [{ name: "a", state: "running" }], pending: [] }, { state: "online" }), null);
+  assert.match(servicesNote(svcPayload, { state: "offline" }), /last report, not live/);
+  assert.match(servicesNote(svcPayload, { state: "online" }), /Waiting for the first report of: mysql/);
+  assert.doesNotMatch(servicesNote({ services: [], pending: ["x"] }, { state: "offline" }), /last report/);   // nothing to call "last report"
+});
+
+test("Configure is pre-filled from the services payload only when it carries both values", () => {
+  assert.deepEqual(configFormDefaults(svcPayload), { intervalText: "30", servicesText: "nginx\nsshd\ncron\nmysql" });
+  assert.equal(configFormDefaults({ watch_services: [] }), null);
+  assert.equal(configFormDefaults(null), null);
+  assert.deepEqual(currentConfigOf(svcPayload), { interval_seconds: 30, watch_services: ["nginx", "sshd", "cron", "mysql"] });
+});
+
+test("buildConfigPatch with a known current config sends only real changes", () => {
+  const cur = currentConfigOf(svcPayload);
+  const form = d => ({ intervalText: "30", servicesText: "nginx\nsshd\ncron\nmysql", clearServices: false, ...d });
+  assert.ok(buildConfigPatch(form({}), cur).error);                                                        // untouched form: nothing to save
+  assert.deepEqual(buildConfigPatch(form({ intervalText: "60" }), cur), { body: { interval_seconds: 60 } });
+  assert.deepEqual(buildConfigPatch(form({ servicesText: "nginx\nsshd" }), cur), { body: { watch_services: ["nginx", "sshd"] } });
+  assert.deepEqual(buildConfigPatch(form({ servicesText: "mysql nginx sshd cron" }), cur), { body: { watch_services: ["mysql", "nginx", "sshd", "cron"] } });   // order is the admin's
+  assert.deepEqual(buildConfigPatch(form({ clearServices: true }), cur), { body: { watch_services: [] } });
+  assert.match(buildConfigPatch(form({ servicesText: "" }), cur).error, /Stop watching all/);                // emptied by hand is not "unchanged"
+  assert.ok(buildConfigPatch(form({ servicesText: "a/b" }), cur).error);
+  assert.deepEqual(buildConfigPatch(form({ servicesText: "x", clearServices: true }), { interval_seconds: 30, watch_services: [] }).error, "Nothing changed.");
+});
