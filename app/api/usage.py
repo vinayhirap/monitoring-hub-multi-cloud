@@ -113,13 +113,16 @@ def aggregate(rows, now=None):
         operation = str(operation) if operation else None
         is_request = _norm(operation) in REQUEST_OPERATIONS
         calls, units, price = int(_num(d.get("calls"))), int(_num(d.get("units"))), _num(d.get("list_price_usd"))
+        unpriced = d.get("list_price_usd") is None and units > 0      # no rate stored: unknown, NOT zero
         p = providers.setdefault(provider, {"calls": 0, "units": 0, "request_units": 0, "list_price_usd": 0.0, "tiers": {}})
         t = p["tiers"].setdefault((tier, source, operation), {"calls": 0, "units": 0, "list_price_usd": 0.0, "rows": 0,
-                                                              "is_request": is_request})
+                                                              "is_request": is_request, "unpriced_units": 0})
         p["calls"] += calls
         t["calls"] += calls
         t["units"] += units
         t["list_price_usd"] += price
+        if unpriced:
+            t["unpriced_units"] += units
         if is_request:
             p["request_units"] += units
         else:
@@ -212,6 +215,7 @@ def build_report(rows, days, month_rows=(), now=None):
             tiers.append({"tier": tier, "source": source, "operation": operation, "calls": t["calls"], "units": t["units"],
                           "unit": "requests" if t["is_request"] else UNITS.get(name, "units"),
                           "list_price_usd": round(t["list_price_usd"], 4), "rows": t["rows"],
+                          "priced": t["unpriced_units"] == 0,
                           "free": tier in FREE_TIERS, "free_reason": FREE_TIERS.get(tier),
                           "share_of_units_pct": (None if t["is_request"] else
                                                  round(100.0 * t["units"] / p["units"], 1) if p["units"] else 0.0)})
@@ -230,7 +234,9 @@ def build_report(rows, days, month_rows=(), now=None):
                    if not k["metered_today"] and not per_operation_metering and not any(k["key"] in s for s in seen)]
     fresh = freshness(meta, days, now)
     notes = [
-        "List-price estimate, not the invoice: free tiers are ignored and prices are whatever the collector stored.",
+        "List-price estimate, not the invoice, of CloudOps's own metered reads only (list price, free tiers ignored, prices as stored by the collector). "
+        "It is NOT a ceiling for the AWS bill: custom metrics stored, logs, alarms and API requests from any other caller "
+        "in the account are billed too and are not in this number. Rows with no stored rate are shown as unpriced, not as zero.",
         "Units differ by cloud (metrics requested, API calls, series returned), so they are never added across clouds.",
         "Counters are per process and summed here. Counts in memory when a process restarts before its hourly flush "
         "are lost, so a restart can only make a figure too low.",
@@ -303,27 +309,42 @@ def _as_date(v):
         return None
 
 
-def build_actual_report(actual_rows, log_rows, days, estimate_usd, enabled, now=None):
+PROVISIONAL_DAYS = 2        # Cost Explorer lags real usage by up to ~48 h: today and the day before may still grow
+
+
+def build_actual_report(actual_rows, log_rows, days, estimate_usd, enabled, now=None, account_names=None):
     """actual_rows: (billed_account_id, usage_type, usage_date, amount_usd, estimated) tuples.
     log_rows: (aws_account_id, account_name, status, ce_requests, error, fetched_at_epoch) newest first.
-    Pure: no database, no AWS. The window is the last `days` UTC dates including today."""
-    from app.aws.cost_explorer import classify_usage_type, CE_PRICE_PER_REQUEST
+    account_names: {billed_account_id: name} from aws_accounts (optional); an unknown id is shown as the bare id.
+    Pure: no database, no AWS. The window is the last `days` UTC dates including today.
+    Every breakdown (by usage type, account, region, day) is built from the SAME filtered rows, and `reconciliation`
+    proves it: the four totals must agree to the cent or the page says so."""
+    from app.aws.cost_explorer import classify_usage_type, usage_region, CE_PRICE_PER_REQUEST
     now = time.time() if now is None else now
+    names = {str(k): v for k, v in (account_names or {}).items()}
     today = datetime.fromtimestamp(now, tz=timezone.utc).date()
     first = today.fromordinal(today.toordinal() - days + 1)
-    by_type, by_account, daily = {}, {}, {}
+    last_settled = today.fromordinal(today.toordinal() - PROVISIONAL_DAYS)
+    by_type, by_account, by_region, daily = {}, {}, {}, {}
+    per_acct = {}
     complete_dates = set()
     for acct, utype, d, amt, est in actual_rows:
         d = _as_date(d)
         if d is None or d < first or d > today:
             continue
-        amt = float(amt or 0)
+        acct, amt = str(acct), float(amt or 0)
+        region = usage_region(utype)
         by_type[utype] = by_type.get(utype, 0.0) + amt
         by_account[acct] = by_account.get(acct, 0.0) + amt
+        by_region[region] = by_region.get(region, 0.0) + amt
         day = daily.setdefault(d, {"usd": 0.0, "estimated": False})
         day["usd"] += amt
         day["estimated"] = day["estimated"] or bool(est)
-        if not est:
+        pa = per_acct.setdefault(acct, {"types": {}, "regions": {}, "days": {}})
+        pa["types"][utype] = pa["types"].get(utype, 0.0) + amt
+        pa["regions"][region] = pa["regions"].get(region, 0.0) + amt
+        pa["days"][d] = pa["days"].get(d, 0.0) + amt
+        if d <= last_settled:
             complete_dates.add(d)
     total = sum(by_type.values())
     latest_seen = max(daily) if daily else None
@@ -353,20 +374,45 @@ def build_actual_report(actual_rows, log_rows, days, estimate_usd, enabled, now=
     else:
         state = "error"
     lag = (today - latest_seen).days if latest_seen else None
-    notes = ["Actual figures come from AWS Cost Explorer (service: CloudWatch, unblended cost). They are what AWS billed, "
-             "after free tiers, but Cost Explorer lags real usage by up to about 48 hours.",
-             "Compare the two only for complete days: the newest day is partial, so the actual figure is expected to be "
-             "lower than the estimate for it."]
+
+    accounts_cost = []
+    for acct, usd_total in sorted(by_account.items(), key=lambda kv: -kv[1]):
+        pa = per_acct[acct]
+        accounts_cost.append({
+            "billed_account_id": acct, "name": names.get(acct), "usd": round(usd_total, 4),
+            "share_pct": round(100.0 * usd_total / total, 1) if total else 0.0,
+            "by_usage_type": [{"usage_type": k, "label": classify_usage_type(k), "region": usage_region(k), "usd": round(v, 4)}
+                              for k, v in sorted(pa["types"].items(), key=lambda kv: -kv[1])],
+            "by_region": [{"region": k, "usd": round(v, 4)} for k, v in sorted(pa["regions"].items(), key=lambda kv: -kv[1])],
+            "daily": [{"date": d.isoformat(), "usd": round(v, 4), "provisional": d > last_settled}
+                      for d, v in sorted(pa["days"].items())]})
+    sums = {"usage_type": sum(by_type.values()), "account": sum(by_account.values()),
+            "region": sum(by_region.values()), "day": sum(v["usd"] for v in daily.values())}
+    drift = max(sums.values()) - min(sums.values()) if sums else 0.0
+    notes = ["Actual figures come from AWS Cost Explorer (service: CloudWatch, unblended cost, USD). They are what AWS "
+             "billed for the WHOLE account, from every caller: CloudOps's own reads are only part of it.",
+             "Cost Explorer lags real usage by up to about 48 hours, so today and yesterday are marked provisional and "
+             "can still grow. Every day shown is also not yet invoiced until the month closes.",
+             "Tax (for example GST) is a separate AWS line, not part of the CloudWatch service figure, so the invoice "
+             "total is higher than the sum shown here."]
     if latest_seen and lag and lag > 2:
         notes.append(f"The newest Cost Explorer data is {lag} days old. Check the account's refresh status below.")
+    if drift > 0.005:
+        notes.append(f"The breakdowns do not add up to the same total (differ by {drift:.4f} USD). Do not rely on them until this is investigated.")
     return {"days": days, "state": state, "enabled": bool(enabled),
             "total_usd": round(total, 4), "estimate_usd": None if estimate_usd is None else round(estimate_usd, 4),
             "through_date": latest_seen.isoformat() if latest_seen else None,
             "complete_through": through_complete.isoformat() if through_complete else None,
-            "by_usage_type": [{"usage_type": k, "label": classify_usage_type(k), "usd": round(v, 4)}
+            "window_start": first.isoformat(), "window_end": today.isoformat(),
+            "by_usage_type": [{"usage_type": k, "label": classify_usage_type(k), "region": usage_region(k), "usd": round(v, 4)}
                               for k, v in sorted(by_type.items(), key=lambda kv: -kv[1])],
-            "by_account": [{"billed_account_id": k, "usd": round(v, 4)} for k, v in sorted(by_account.items(), key=lambda kv: -kv[1])],
-            "daily": [{"date": d.isoformat(), "usd": round(v["usd"], 4), "estimated": v["estimated"]} for d, v in sorted(daily.items())],
+            "by_account": [{"billed_account_id": k, "name": names.get(k), "usd": round(v, 4)} for k, v in sorted(by_account.items(), key=lambda kv: -kv[1])],
+            "accounts_cost": accounts_cost,
+            "by_region": [{"region": k, "usd": round(v, 4)} for k, v in sorted(by_region.items(), key=lambda kv: -kv[1])],
+            "daily": [{"date": d.isoformat(), "usd": round(v["usd"], 4), "estimated": v["estimated"], "provisional": d > last_settled}
+                      for d, v in sorted(daily.items())],
+            "reconciliation": {"ok": drift <= 0.005, "max_difference_usd": round(drift, 6),
+                               "totals": {k: round(v, 4) for k, v in sums.items()}},
             "accounts": accounts,
             "lookup_cost_usd": round(ce_requests * CE_PRICE_PER_REQUEST, 2), "lookup_requests": ce_requests,
             "setup_doc": "docs/AWS_ACTUAL_COST.md", "notes": notes}
@@ -388,8 +434,10 @@ def actual_cost(days: int = Query(7), current_user: dict = Depends(require_permi
     cur = conn.cursor()
     try:
         cur.execute("SELECT billed_account_id, usage_type, usage_date, amount_usd, estimated FROM aws_cost_actuals "
-                    "WHERE usage_date >= UTC_DATE() - INTERVAL %s DAY", (int(days),))
+                    "WHERE usage_date >= UTC_DATE() - INTERVAL %s DAY", (int(days) - 1,))   # days incl. today, as the report counts
         actual = [tuple(r) for r in cur.fetchall()]
+        cur.execute("SELECT account_id, account_name FROM aws_accounts WHERE provider = 'aws'")
+        names = {str(r[0]): r[1] for r in cur.fetchall()}
         cur.execute("SELECT aws_account_id, account_name, status, ce_requests, error, UNIX_TIMESTAMP(fetched_at) "
                     "FROM aws_cost_fetch_log WHERE fetched_at >= UTC_TIMESTAMP() - INTERVAL 31 DAY ORDER BY id DESC LIMIT 2000")
         log = [tuple(r) for r in cur.fetchall()]
@@ -403,7 +451,8 @@ def actual_cost(days: int = Query(7), current_user: dict = Depends(require_permi
     finally:
         cur.close()
         conn.close()
-    return build_actual_report(actual, log, days, _estimate_aws_usd(est_rows, days, now), cost_explorer.enabled(), now)
+    return build_actual_report(actual, log, days, _estimate_aws_usd(est_rows, days, now), cost_explorer.enabled(), now,
+                               account_names=names)
 
 
 @router.post("/actual-cost/refresh")

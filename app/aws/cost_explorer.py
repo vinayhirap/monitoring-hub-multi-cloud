@@ -48,10 +48,34 @@ def enabled():
     return os.getenv("ACTUAL_COST_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+# Usage-type prefix -> region. AWS prefixes every regional usage type (APS3-CW:Requests); no prefix means us-east-1.
+# Only prefixes that are documented/verified are listed; an unknown prefix is shown as the raw prefix, never guessed.
+REGION_PREFIX = {
+    "USE1": "us-east-1", "USE2": "us-east-2", "USW1": "us-west-1", "USW2": "us-west-2",
+    "EUW1": "eu-west-1", "EUW2": "eu-west-2", "EUW3": "eu-west-3", "EUC1": "eu-central-1", "EUN1": "eu-north-1",
+    "APS1": "ap-southeast-1", "APS2": "ap-southeast-2", "APS3": "ap-south-1", "APN1": "ap-northeast-1",
+    "APN2": "ap-northeast-2", "APN3": "ap-northeast-3", "CAN1": "ca-central-1", "SAE1": "sa-east-1",
+}
+
+
+def usage_region(usage_type):
+    """'APS3-CW:Requests' -> 'ap-south-1'. No prefix (e.g. 'CW:Requests') -> 'us-east-1'. Unknown prefix -> the raw
+    prefix (so a new region is visible and never mislabelled)."""
+    u = str(usage_type or "")
+    head, sep, _ = u.partition("-")
+    if sep and head.isalnum() and head.upper() == head and len(head) in (4, 5) and head[-1].isdigit():
+        return REGION_PREFIX.get(head, head)
+    return "us-east-1"
+
+
 def classify_usage_type(usage_type):
     """Best-effort human label for a CloudWatch usage type. The raw usage type is always shown next to it, because
-    AWS can add types; anything not recognised is labelled 'Other CloudWatch charge', never dropped."""
+    AWS can add types; anything not recognised is labelled 'Other CloudWatch charge', never dropped.
+    Order matters: S3 egress is checked BEFORE 'Logs' because 'S3-Egress-Bytes-WAFLogs' contains 'Logs' but is a
+    data-transfer charge for log delivery, not log ingestion/storage."""
     u = str(usage_type or "")
+    if "S3-Egress" in u:
+        return "Log delivery to S3 (data transfer)"
     if "GMD-Metrics" in u:
         return "GetMetricData (metrics requested)"
     if u.endswith("CW:Requests") or u.endswith(":Requests"):
@@ -60,6 +84,8 @@ def classify_usage_type(usage_type):
         return "Custom metrics stored"
     if "AlarmMonitorUsage" in u or "Alarm" in u:
         return "Alarms"
+    if "VendedLog" in u:
+        return "Vended logs (delivered)"
     if "DataProcessing" in u or "DataIngestion" in u or "TimedStorage" in u or "Logs" in u:
         return "Logs"
     return "Other CloudWatch charge"

@@ -31,3 +31,7 @@
 }
 .ac-btn:disabled { opacity: .6; cursor: default; }
 .ac-btn:hover:not(:disabled) { border-color: var(--accent); }
+.ac-h { margin: var(--space-4) 0 var(--space-2); font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.ac-acct { margin: 0 0 var(--space-4); padding: var(--space-3); border: 1px solid var(--border-md); border-radius: var(--radius); display: grid; gap: 10px; }
+.ac-acct-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; font-size: 14px; }
+.ac-acct-total { font-family: var(--font-mono); font-size: 15px; }

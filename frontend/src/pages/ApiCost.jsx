@@ -1,5 +1,6 @@
-// Cloud API cost panel. Reads GET /api/usage/cloud-cost?days=1|7|30 (app/api/usage.py, op_events metric_api_usage).
-// Everything shown is a LIST-PRICE ESTIMATE (a ceiling: free tiers ignored), never the invoice. Plain SVG/CSS only.
+// Cloud cost page. Admins see, FIRST, what AWS actually billed (GET /api/usage/actual-cost, Cost Explorer), account by
+// account. Below it, CloudOps's own metered reads (GET /api/usage/cloud-cost, op_events metric_api_usage) are a LIST-PRICE
+// ESTIMATE of CloudOps's own calls only: not the invoice and not a ceiling for it. Plain SVG/CSS only.
 // A source that is not metered yet is named as such; it is never drawn as a zero.
 import { useEffect, useState } from "react";
 import { apiFetch } from "../api/api";
@@ -44,7 +45,7 @@ function TierBars({ tiers }) {
           <span className="ac-bar-num">
             {t.free ? <Badge tone="ok" title={t.free_reason}>free</Badge> : <>{n(t.units)} <span className="ac-dim">({t.share_of_units_pct}%)</span></>}
           </span>
-          <span className="ac-bar-sub">{n(t.calls)} calls{!t.free && ` · ${usd(t.list_price_usd)}`}</span>
+          <span className="ac-bar-sub">{n(t.calls)} calls{!t.free && (t.priced === false ? " · no price set" : ` · ${usd(t.list_price_usd)}`)}</span>
         </li>
       ))}
     </ul>
@@ -94,11 +95,11 @@ function ActualCost({ days }) {
     } finally { setBusy(false); }
   };
 
-  if (err) return <Panel title="Actual AWS charge"><p className="ac-dim">Could not be loaded.</p></Panel>;
-  if (!a) return <Panel title="Actual AWS charge"><Skeleton h={64} /></Panel>;
-  if (a.state === "migration_pending") return <Panel title="Actual AWS charge"><p className="ac-p">{a.notes?.[0]}</p></Panel>;
+  if (err) return <Panel title="Actual AWS bill: CloudWatch"><p className="ac-dim">Could not be loaded.</p></Panel>;
+  if (!a) return <Panel title="Actual AWS bill: CloudWatch"><Skeleton h={64} /></Panel>;
+  if (a.state === "migration_pending") return <Panel title="Actual AWS bill: CloudWatch"><p className="ac-p">{a.notes?.[0]}</p></Panel>;
   if (a.state === "disabled") return (
-    <Panel title="Actual AWS charge" subtitle="What AWS really billed for CloudWatch">
+    <Panel title="Actual AWS bill: CloudWatch" subtitle="What AWS really billed for CloudWatch">
       <p className="ac-p">Not turned on. It needs the read-only permission ce:GetCostAndUsage on each AWS role and ACTUAL_COST_ENABLED=1 on the server. Each refresh costs $0.01 per account, at most once a day.</p>
       <p className="ac-dim">Setup steps: {a.setup_doc}</p>
     </Panel>
@@ -106,14 +107,18 @@ function ActualCost({ days }) {
 
   const hasData = a.by_usage_type?.length > 0;
   const max = Math.max(0.0001, ...(a.daily || []).map(d => d.usd));
+  const accts = a.accounts_cost || [];
   return (
-    <Panel title="Actual AWS charge" subtitle="What AWS billed for the CloudWatch service (Cost Explorer), after free tiers"
+    <Panel title="Actual AWS bill: CloudWatch" subtitle="What AWS billed, read from Cost Explorer: the whole account, not only CloudOps's own calls"
            actions={<button className="ac-btn" disabled={busy} onClick={refresh}>{busy ? "Refreshing..." : "Refresh now"}</button>}>
       {msg && <p className="ac-dim" role="status">{msg}</p>}
+      {a.reconciliation && !a.reconciliation.ok && (
+        <div className="ac-warn" role="alert">The breakdowns below do not add up to the same total (difference {a.reconciliation.max_difference_usd} USD). Do not rely on them until this is checked.</div>
+      )}
       <KpiStrip>
         <KpiCard label="Actual billed" value={hasData ? usd(a.total_usd) : "no data yet"}
-                 sub={a.through_date ? `through ${a.through_date} (AWS lags up to ~48 h)` : "waiting for the first Cost Explorer read"} />
-        <KpiCard label="CloudOps estimate" value={a.estimate_usd == null ? "n/a" : usd(a.estimate_usd)} sub="list price, ceiling (AWS only)" />
+                 sub={a.window_start ? `${a.window_start} to ${a.through_date || a.window_end} (AWS lags up to ~48 h)` : "waiting for the first Cost Explorer read"} />
+        <KpiCard label="AWS accounts billed" value={n(accts.length)} sub="see each account below" />
         <KpiCard label="Cost of checking" value={usd(a.lookup_cost_usd)} sub={`${n(a.lookup_requests)} Cost Explorer requests at $0.01`} />
       </KpiStrip>
 
@@ -126,29 +131,61 @@ function ActualCost({ days }) {
 
       {hasData && (
         <>
-          <ul className="ac-bars">
-            {a.by_usage_type.map(u => (
-              <li key={u.usage_type} className="ac-bar-row">
-                <span className="ac-bar-name">{u.label}</span>
-                <svg className="ac-bar-svg" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label={`${usd(u.usd)}`}>
-                  <rect className="ac-bar-bg" x="0" y="0" width="100" height="8" rx="2" />
-                  <rect className="ac-bar-fill" x="0" y="0" width={Math.max(1, (100 * u.usd) / Math.max(0.0001, a.by_usage_type[0].usd))} height="8" rx="2" />
-                </svg>
-                <span className="ac-bar-num">{usd(u.usd)}</span>
-                <span className="ac-bar-sub">{u.usage_type}</span>
-              </li>
-            ))}
-          </ul>
-          <ul className="ac-bars" aria-label="Daily actual charge">
+          <h3 className="ac-h">Account-wise</h3>
+          {accts.map(ac => {
+            const top = Math.max(0.0001, ...ac.by_usage_type.map(u => u.usd));
+            const dmax = Math.max(0.0001, ...ac.daily.map(d => d.usd));
+            return (
+              <section key={ac.billed_account_id} className="ac-acct" aria-label={`AWS account ${ac.name || ac.billed_account_id}`}>
+                <header className="ac-acct-head">
+                  <div>
+                    <strong>{ac.name || "Unnamed account"}</strong>
+                    <span className="ac-dim"> · AWS account {ac.billed_account_id}{!ac.name && " (not one of the monitored accounts)"}</span>
+                  </div>
+                  <div className="ac-acct-total">{usd(ac.usd)} <span className="ac-dim">({ac.share_pct}% of total)</span></div>
+                </header>
+                <p className="ac-dim">By region: {ac.by_region.map(r => `${r.region} ${usd(r.usd)}`).join(" · ")}</p>
+                <ul className="ac-bars">
+                  {ac.by_usage_type.map(u => (
+                    <li key={u.usage_type} className="ac-bar-row">
+                      <span className="ac-bar-name">{u.label}</span>
+                      <svg className="ac-bar-svg" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label={usd(u.usd)}>
+                        <rect className="ac-bar-bg" x="0" y="0" width="100" height="8" rx="2" />
+                        <rect className="ac-bar-fill" x="0" y="0" width={Math.max(1, (100 * u.usd) / top)} height="8" rx="2" />
+                      </svg>
+                      <span className="ac-bar-num">{usd(u.usd)}</span>
+                      <span className="ac-bar-sub">{u.region} · {u.usage_type}</span>
+                    </li>
+                  ))}
+                </ul>
+                <ul className="ac-bars" aria-label={`Daily actual charge, ${ac.name || ac.billed_account_id}`}>
+                  {ac.daily.map(d => (
+                    <li key={d.date} className="ac-bar-row">
+                      <span className="ac-bar-name">{d.date}</span>
+                      <svg className="ac-bar-svg" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label={usd(d.usd)}>
+                        <rect className="ac-bar-bg" x="0" y="0" width="100" height="8" rx="2" />
+                        <rect className={d.provisional ? "ac-bar-free" : "ac-bar-fill"} x="0" y="0" width={Math.max(1, (100 * d.usd) / dmax)} height="8" rx="2" />
+                      </svg>
+                      <span className="ac-bar-num">{usd(d.usd)}</span>
+                      <span className="ac-bar-sub">{d.provisional ? "provisional, may still grow" : "settled"}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            );
+          })}
+
+          <h3 className="ac-h">All accounts, by day</h3>
+          <ul className="ac-bars" aria-label="Daily actual charge, all accounts">
             {a.daily.map(d => (
               <li key={d.date} className="ac-bar-row">
                 <span className="ac-bar-name">{d.date}</span>
-                <svg className="ac-bar-svg" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label={`${usd(d.usd)}`}>
+                <svg className="ac-bar-svg" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label={usd(d.usd)}>
                   <rect className="ac-bar-bg" x="0" y="0" width="100" height="8" rx="2" />
-                  <rect className={d.estimated ? "ac-bar-free" : "ac-bar-fill"} x="0" y="0" width={Math.max(1, (100 * d.usd) / max)} height="8" rx="2" />
+                  <rect className={d.provisional ? "ac-bar-free" : "ac-bar-fill"} x="0" y="0" width={Math.max(1, (100 * d.usd) / max)} height="8" rx="2" />
                 </svg>
                 <span className="ac-bar-num">{usd(d.usd)}</span>
-                <span className="ac-bar-sub">{d.estimated ? "partial day" : "complete"}</span>
+                <span className="ac-bar-sub">{d.provisional ? "provisional, may still grow" : "settled"}</span>
               </li>
             ))}
           </ul>
@@ -179,13 +216,15 @@ export default function ApiCost() {
   return (
     <div className="page ac-page">
       <PageHeader
-        title="Cloud API cost"
-        subtitle="How many paid metric reads CloudOps made, from the usage it measured itself"
+        title="Cloud cost"
+        subtitle="What AWS actually billed, account by account, and how many paid metric reads CloudOps itself made"
         actions={<SegmentedControl label="Range" options={RANGES} value={days} onChange={setDays} />}
       />
       <div className="ac-banner" role="note">
-        <strong>List-price estimate, not the invoice.</strong> Free tiers are ignored, so these figures are a ceiling. Check the cloud bill for what is charged.
+        <strong>Two different things.</strong> "Actual AWS bill" (admins, first panel) is what AWS charged. Everything under it is an estimate of CloudOps's own metered reads only (list price, free tiers ignored): not the invoice, and not a ceiling for it. Azure and GCP have no actual-bill source yet.
       </div>
+
+      {isAdmin && <ActualCost days={days} />}
 
       {error && <EmptyState title="Usage could not be loaded" body={error.status === 403 ? "You do not have access to this page." : "Try again in a moment."} />}
       {!error && !data && <div className="ac-loading"><Skeleton h={64} /><Skeleton h={120} /></div>}
@@ -195,7 +234,7 @@ export default function ApiCost() {
           {fr.status === "delayed" && <div className="ac-warn" role="alert">No usage flush for {ago(fr.minutes_since)}. Figures after that are missing, so the newest numbers are too low.</div>}
 
           <KpiStrip>
-            <KpiCard label="Estimated list price" value={usd(data.totals.list_price_usd)} sub={`last ${days === 1 ? "24 hours" : `${days} days`}, ceiling`} />
+            <KpiCard label="CloudOps reads, est. list price" value={usd(data.totals.list_price_usd)} sub={`last ${days === 1 ? "24 hours" : `${days} days`}, its own calls only`} />
             <KpiCard label="Metric read calls" value={n(data.totals.calls)} sub="all clouds, incl. free tag sync" />
             <KpiCard label="Last usage flush" value={ago(fr.minutes_since)} tone={fr.status === "ok" ? "ok" : "warn"}
                      sub={fr.status === "none" ? "no usage recorded in this range" : `${fr.hours_with_flush} of ${fr.hours_in_window} hours had a flush`} />
@@ -215,9 +254,7 @@ export default function ApiCost() {
             </Panel>
           ))}
 
-          {isAdmin && <ActualCost days={days} />}
-
-          {data.not_metered.length > 0 && (
+                    {data.not_metered.length > 0 && (
             <Panel title="Not metered yet" subtitle="These paid reads are not counted anywhere, so the totals above exclude them">
               <ul className="ac-list">{data.not_metered.map(s => <li key={s}>{s}</li>)}</ul>
             </Panel>

@@ -337,7 +337,7 @@ def test_actual_report_sums_window_and_flags_partial_day(usage):
     assert r["state"] == "ok" and r["total_usd"] == 2.75                    # the September row is outside 7 days
     assert r["through_date"] == "2026-10-21" and r["complete_through"] == "2026-10-20"
     assert r["by_usage_type"][0]["usage_type"] == "APS3-CW:GMD-Metrics"
-    assert r["daily"][-1] == {"date": "2026-10-21", "usd": 1.0, "estimated": True}
+    assert r["daily"][-1] == {"date": "2026-10-21", "usd": 1.0, "estimated": True, "provisional": True}
     assert r["estimate_usd"] == 5.52 and r["lookup_cost_usd"] == 0.01
 
 
@@ -355,3 +355,39 @@ def test_actual_report_uses_only_the_latest_attempt_per_account(usage):
     log = [(1, "A", "ok", 1, None, NOW), (1, "A", "permission_missing", 0, "old", NOW - 90000)]
     r = usage.build_actual_report([], log, 7, None, True, NOW)
     assert [a["status"] for a in r["accounts"]] == ["ok"]
+
+
+# ── account-wise actuals, provisional days, reconciliation, unpriced rows ────
+def test_actual_report_is_account_wise_with_names_regions_and_reconciles(usage):
+    rows = [("111", "APS3-CW:GMD-Metrics", "2026-10-18", 2.0, 1), ("111", "USE1-DataProcessing-Bytes", "2026-10-18", 1.0, 1),
+            ("222", "APS3-CW:MetricMonitorUsage", "2026-10-18", 4.0, 1), ("222", "APS3-CW:MetricMonitorUsage", "2026-10-21", 1.0, 1)]
+    r = usage.build_actual_report(rows, [(1, "Prod", "ok", 1, None, NOW)], 7, None, True, NOW, account_names={"222": "AuroGov"})
+    assert r["total_usd"] == 8.0
+    a = {x["billed_account_id"]: x for x in r["accounts_cost"]}
+    assert a["222"]["name"] == "AuroGov" and a["222"]["usd"] == 5.0 and a["222"]["share_pct"] == 62.5
+    assert a["111"]["name"] is None                                              # unknown id stays the bare id
+    assert {x["region"] for x in r["by_region"]} == {"ap-south-1", "us-east-1"}
+    assert r["reconciliation"]["ok"] and set(r["reconciliation"]["totals"].values()) == {8.0}
+    assert sum(x["usd"] for x in r["accounts_cost"]) == r["total_usd"]
+
+
+def test_only_the_last_two_days_are_provisional_not_every_ce_estimated_day(usage):
+    rows = [("111", "APS3-CW:Requests", d, 1.0, 1) for d in ("2026-10-18", "2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22")]
+    r = usage.build_actual_report(rows, [(1, "P", "ok", 1, None, NOW)], 7, None, True, NOW)
+    assert [d["provisional"] for d in r["daily"]] == [False, False, False, True, True]   # NOW = 2026-10-22: 10-21 and 10-22 are provisional
+    assert r["complete_through"] == "2026-10-20"
+
+
+def test_window_is_days_inclusive_of_today(usage):
+    rows = [("111", "APS3-CW:Requests", "2026-10-16", 1.0, 0), ("111", "APS3-CW:Requests", "2026-10-15", 9.0, 0)]
+    r = usage.build_actual_report(rows, [], 7, None, True, NOW)                          # 10-16 .. 10-22 is 7 dates
+    assert r["total_usd"] == 1.0 and r["window_start"] == "2026-10-16"
+
+
+def test_unpriced_rows_are_flagged_not_shown_as_free(usage):
+    unpriced = {"provider": "aws", "tier": "standard", "operation": "ListMetrics", "calls": 5, "units": 100,
+                "list_price_usd": None, "window_start": 1_699_996_400, "window_end": 1_700_000_000}
+    rep = usage.build_report([json.dumps(unpriced)], 7, now=1_700_000_100)
+    assert rep["providers"][0]["tiers"][0]["priced"] is False
+    priced = usage.build_report([row("aws", "standard", 5, 100)], 7, now=1_700_000_100)
+    assert priced["providers"][0]["tiers"][0]["priced"] is True
