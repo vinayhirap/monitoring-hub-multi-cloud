@@ -107,7 +107,7 @@ function niceMax(v) {
   const f = v / p;
   return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
 }
-const axisUsd = v => (v >= 100 ? `$${Math.round(v)}` : v >= 10 ? `$${v.toFixed(0)}` : v >= 0.1 ? `$${v.toFixed(2)}` : `$${v.toFixed(3)}`);
+const axisUsd = v => (v === 0 ? "$0" : v >= 100 ? `$${Math.round(v)}` : v >= 10 ? `$${v.toFixed(0)}` : v >= 0.1 ? `$${v.toFixed(2)}` : `$${v.toFixed(3)}`);
 
 // Stacked bars. series: [{key,label,color,values[]}], periods: [{key,provisional}]. Provisional periods are drawn lighter.
 function StackedBars({ periods, series, gran, fmt = axisUsd, active, onActive, label }) {
@@ -322,9 +322,9 @@ function CostExplorer() {
                    sub={`${d.totals.settled_days} settled days`} />
           <KpiCard label="Metrics requested" value={d.totals.metrics_requested == null ? "n/a" : n(d.totals.metrics_requested)}
                    sub={d.totals.usd_per_1000_metrics == null ? "fills in after the next refresh from AWS" : `AWS rate: ${usd(d.totals.usd_per_1000_metrics)} per 1,000 metrics`} />
-          <KpiCard label="Meter cross-check" tone={chk && Math.abs(chk.difference_pct) > 10 ? "warn" : undefined}
+          <KpiCard label="CloudOps counter vs AWS bill" tone={chk && Math.abs(chk.difference_pct) > 10 ? "warn" : undefined}
                    value={chk ? `${chk.difference_pct > 0 ? "+" : ""}${chk.difference_pct}%` : "n/a"}
-                   sub={chk ? `CloudOps counted ${n(chk.metered_metrics)}, AWS billed ${n(chk.billed_metrics)} (to ${chk.through})` : "needs settled days and refreshed usage"} />
+                   sub={chk ? `counted ${n(chk.metered_metrics)} · AWS billed ${n(chk.billed_metrics)} (to ${chk.through})` : "needs settled days and refreshed usage"} />
         </KpiStrip>
 
         {d.groups.length === 0 ? (
@@ -379,7 +379,7 @@ function CostExplorer() {
                       <td className="ac-sticky" title={g.key}>{g.label}{d.group_by === "usage_type" && <span className="ac-dim"> · {g.regions.join(", ")} · {g.key}</span>}</td>
                       <td className="ac-num">{usd(g.total)}</td>
                       <td className="ac-num">{g.share_pct}%</td>
-                      <td className="ac-num">{g.quantity != null ? compact(g.quantity) : "–"}</td>
+                      <td className="ac-num">{g.quantity != null ? n(Math.round(g.quantity)) : "–"}</td>
                       {g.values.map((v, i) => <td key={i} className="ac-num">{v ? usd(v) : "–"}</td>)}
                     </tr>
                   ))}
@@ -387,7 +387,7 @@ function CostExplorer() {
                 <tfoot>
                   <tr>
                     <td className="ac-sticky">Total</td><td className="ac-num">{usd(total)}</td><td className="ac-num">100%</td>
-                    <td className="ac-num">{d.totals.metrics_requested != null ? compact(d.totals.metrics_requested) : "–"}</td>
+                    <td className="ac-num">{d.totals.metrics_requested != null ? n(d.totals.metrics_requested) : "–"}</td>
                     {d.periods.map((_, i) => <td key={i} className="ac-num">{usd(d.groups.reduce((s, g) => s + g.values[i], 0))}</td>)}
                   </tr>
                 </tfoot>
@@ -402,6 +402,7 @@ function CostExplorer() {
         Last read from AWS: {newest ? new Date(newest).toLocaleString() : "not yet"} · cost of checking {usd(d.lookup_cost_usd)} ({n(d.lookup_requests)} Cost Explorer requests at $0.01, last 31 days).
         {d.excluded?.usd > 0 && <> Not shown: {usd(d.excluded.usd)} of other CloudWatch charges in {accts.length ? "the selected" : "these"} accounts that CloudOps does not create (custom metrics, alarms, logs, API requests from agents).</>}
         {" "}Today and yesterday are provisional. Tax (for example GST) is billed separately and is not included.
+        {chk && <> <strong>Counter check:</strong> CloudOps keeps its own count of the metrics it asks for and compares it with the metrics AWS billed on settled days. AWS is the truth. A negative gap means CloudOps's counter missed some reads (it is held in memory and was lost on a restart or crash); a positive gap would mean it double counted. Within 10% the bill and the counter agree.</>}
       </p>
     </Panel>
   );

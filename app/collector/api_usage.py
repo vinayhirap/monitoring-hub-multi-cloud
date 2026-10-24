@@ -73,6 +73,7 @@ GetMetricData-only baseline needs the operation filter in query 1.
 
 list_price_usd ignores free tiers (a ceiling, not the invoice).
 """
+import atexit
 import logging
 import threading
 import time
@@ -227,3 +228,16 @@ def flush_if_due():
     if time.time() - _last_flush >= FLUSH_INTERVAL_SECONDS:
         return flush()
     return 0
+
+
+def _flush_at_exit():
+    """Counters live in memory and are written hourly, so every restart used to lose up to an hour of counted reads
+    (the metering then reads lower than the AWS bill). A normal shutdown (systemctl restart sends SIGTERM, uvicorn exits
+    cleanly) now writes what is pending. A crash or kill -9 still loses it, which is why the page calls it a cross-check."""
+    try:
+        flush(force=True)
+    except Exception:
+        pass
+
+
+atexit.register(_flush_at_exit)
