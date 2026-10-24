@@ -1,10 +1,12 @@
 # Host agent (push-based host metrics)
 
+Status: phases A to F are merged on `main` (agent, server foundation, ingest, heartbeat watchdog, Host Agents page, rollout).
+End-user guide: Help Center, section "Host agents (install on a server)" (`app/help_content/host_agents.py`).
+
 Status legend used in this document:
 
 - **[IN REPO]** exists on `main` and is covered by tests.
-- **[CONTRACT]** specified in the phase contract but not yet in the repo when this document was written (phase C ingest, D UI/state, E agent). Verify against the merged code before relying on it.
-- **[DESIGN]** designed here, not implemented (see `docs/HOST_AGENT_DISTRIBUTION.md`).
+- **[DESIGN]** designed, not implemented: agent auto-update and the agent-side signature check (`docs/HOST_AGENT_DISTRIBUTION.md` section 5).
 
 This is **not** the AI agent (`app/agent/*`, `/api/agent/*`). Everything here is `host_agent` / `host-agents`.
 
@@ -25,7 +27,7 @@ This is **not** the AI agent (`app/agent/*`, `/api/agent/*`). Everything here is
 - Identity: enrollment key (`cak_…`, admin-created, scoped to one AWS account row, single-use by default) is exchanged once for an agent token (`cah_…`) bound to one host. Only SHA-256 hashes are stored. Both are shown once.
 - No CloudWatch / cloud API calls are made by this feature. The hub's existing agentless pollers are unchanged.
 - Flag: `HOST_AGENT_ENABLED` (default `false`). When false **every** `/api/host-agents/*` route answers 404, before authentication. **[IN REPO]**
-- Hub code: `app/hostagents/{settings,auth}.py`, `app/api/host_agents.py` (enroll, keys, list, revoke, config) **[IN REPO]**; ingest **[CONTRACT]** (the route is a 501 stub until phase C merges); state derivation as in the contract (online ≤ `HOST_AGENT_STALE_SECONDS`, stale ≤ 5×, offline beyond, revoked).
+- Hub code: `app/hostagents/{settings,auth}.py`, `app/api/host_agents.py` (enroll, keys, list, revoke, config) **[IN REPO]**; ingest `app/hostagents/ingest.py` **[IN REPO]**; heartbeat watchdog `app/collector/host_agent_watchdog.py` **[IN REPO]**; state derivation: online (online ≤ `HOST_AGENT_STALE_SECONDS`, stale ≤ 5×, offline beyond, revoked).
 
 ## 2. Hub configuration reference (`.env`, read at call time; restart the service after changing)
 
@@ -34,7 +36,7 @@ This is **not** the AI agent (`app/agent/*`, `/api/agent/*`). Everything here is
 | `HOST_AGENT_ENABLED` | `false` | Master switch. Off = routes 404, nothing authenticates. |
 | `HOST_AGENT_STALE_SECONDS` | `180` | `online` window; `stale` up to 5×; `offline` beyond. |
 | `HOST_AGENT_MAX_BODY_BYTES` | `262144` | Ingest body cap (413 above). **Keep nginx `client_max_body_size` for `/api/host-agents/ingest` equal to this** (`deploy/nginx.conf`: `256k`). |
-| `HOST_AGENT_INGEST_RATE_PER_MIN` | `30` | Per token **[CONTRACT]**. |
+| `HOST_AGENT_INGEST_RATE_PER_MIN` | `30` | Per token. |
 | `HOST_AGENT_ENROLL_RATE_PER_HOUR` | `20` | Per client IP (Redis; fails open if Redis is down — nginx `ha_enroll` is the second fence). |
 | `HOST_AGENT_CREDENTIAL_RETENTION_DAYS` | `90` (floor 30, `0` = off) | Daily pruning of revoked tokens and spent/revoked/expired enrollment keys (`app/collector/retention.py`). |
 
@@ -48,7 +50,7 @@ Per-host config (admin `PATCH /api/host-agents/{id}/config`, bumps `config_versi
 
 Permissions: `hostagents.view` (viewer, editor, admin; scoped by `get_accessible_account_ids`), `hostagents.manage` (admin). Every create / revoke / config change / enrollment writes an audit row.
 
-Agent-side flags and files are defined by phase E (`agent/`). The only flag fixed by the contract is `--insecure-dev` (allows `http://`; never use it outside DEV). **[CONTRACT]**
+Agent-side flags and files are in `agent/README.md`. `--insecure-dev` allows `http://` (never use it outside DEV).
 
 ## 3. Install / upgrade / uninstall
 
@@ -56,17 +58,16 @@ Replace `<HUB_HOST>` with the hub's DNS name (never commit real hosts or IPs).
 
 **Create an enrollment key** (admin): `POST /api/host-agents/enrollment-keys` body `{"aws_account_id": <id>, "label": "web fleet", "max_uses": 1, "expires_in_hours": 24}`. The key is in the response once. Prefer `max_uses` = number of hosts you are about to install and a short expiry.
 
-**Install** **[DESIGN]** (install.sh is delivered by phase E; served per `docs/HOST_AGENT_DISTRIBUTION.md`):
+**Install** (Linux, systemd) **[IN REPO]**. The Add host dialog shows this command with the new key filled in. By hand:
 
 ```
-curl -fsSLO https://<HUB_HOST>/dl/host-agent/<version>/install.sh
-curl -fsSLO https://<HUB_HOST>/dl/host-agent/<version>/SHA256SUMS
-curl -fsSLO https://<HUB_HOST>/dl/host-agent/<version>/SHA256SUMS.sig
-# verify (see distribution doc), then:
-sudo sh install.sh --hub https://<HUB_HOST> --enrollment-key cak_…
+BASE=https://<HUB_HOST>/dl/host-agent
+V=$(curl -fsSL "$BASE/manifest.json" | sed -n 's/.*"latest": *"\([^"]*\)".*/\1/p')
+curl -fsSLO "$BASE/$V/install.sh"          # read it, and compare its SHA-256 with the release ticket
+sudo CLOUDOPS_AGENT_ENROLL_KEY=cak_... bash install.sh --base-url "$BASE/$V" --url https://<HUB_HOST>
 ```
 
-Do not paste enrollment keys into shared shell history or CI logs; pass via environment or a root-only file if install.sh supports it.
+`--base-url` must be the version folder that holds `cloudops-agent-linux-<arch>` and `SHA256SUMS` (what `scripts/host_agent_release.sh stage` writes; **`stage` copies `install.sh` only if it is in the binaries directory, so put `agent/install.sh` there**). The binary is always checked against `SHA256SUMS` before anything is installed. The key travels in the environment variable `CLOUDOPS_AGENT_ENROLL_KEY` (the installer has no `CLOUDOPS_HUB_URL` / `CLOUDOPS_ENROLLMENT_KEY` variables). macOS and Windows: `install-macos.sh --base-url ... --url ... --key ...`, `install.ps1 -BaseUrl ... -Url ... -Key ...` (`docs/HOST_AGENT_PLATFORMS.md`). Do not paste enrollment keys into shared shell history or CI logs.
 
 **Upgrade** **[DESIGN]**: stage a new immutable version (`scripts/host_agent_release.sh stage`), canary, widen. Auto-update design is in the distribution doc; until it is implemented upgrade = re-run the installer of the new version (token and config are kept).
 
@@ -74,8 +75,9 @@ Do not paste enrollment keys into shared shell history or CI logs; pass via envi
 
 ```
 POST /api/host-agents/{id}/revoke           # revokes the host and all its tokens; audited
-sudo systemctl disable --now cloudops-agent # service name per agent/ README (ASSUMED: cloudops-agent)
-sudo rm -f /usr/local/bin/cloudops-agent    # paths per agent/ README (ASSUMED)
+sudo systemctl disable --now cloudops-agent # service name and paths confirmed against agent/install.sh
+sudo rm -f /etc/systemd/system/cloudops-agent.service /usr/local/bin/cloudops-agent && sudo systemctl daemon-reload
+# or: sudo bash agent/uninstall.sh [--purge]   (--purge also deletes /etc/cloudops-agent, /var/lib/cloudops-agent and the service user)
 ```
 
 **Uninstall of a revoked host** (host still running the agent): a revoked host gets 401 on every ingest and stays `revoked` in the list. Stop and remove the agent as above; the host row stays as inventory. Re-enrolling the same hostname in the same account with a valid key makes it `active` again with a fresh token (this is how a revoked host is deliberately brought back; it also means **revoking a host does not stop someone who holds a valid enrollment key — revoke or let expire the keys as well**).
@@ -92,7 +94,7 @@ Hub-side commands run in `/opt/monitoring-hub/app`. Logs: `journalctl -u monitor
 | `401` on ingest | token revoked, host revoked, or host re-enrolled elsewhere (old token rotated) | List shows `state=revoked`, or re-enroll the host with a new key. |
 | `413` | payload > `HOST_AGENT_MAX_BODY_BYTES` / nginx 256k | Lower `max_batch_metrics` / watch fewer services, or raise **both** limits together. |
 | `429` | nginx `ha_ingest` / `ha_enroll` (per IP) or the app's per-token / per-IP limit | Many hosts behind one NAT IP can hit the per-IP zone: raise `rate` in `deploy/nginx.conf`. `Retry-After` is set by the app limiter. |
-| Samples rejected (`rejected` > 0), host shows online | clock skew: sample `ts` > 10 min in the future or > 24 h in the past is dropped **[CONTRACT]** | On the host: `timedatectl` / `chronyc tracking`; fix NTP. The agent clock (`sent_at`) is compared with hub time. |
+| Samples rejected (`rejected` > 0), host shows online | clock skew: sample `ts` > 10 min in the future or > 24 h in the past is dropped | On the host: `timedatectl` / `chronyc tracking`; fix NTP. The agent clock (`sent_at`) is compared with hub time. |
 | Host flaps `online`↔`stale` | interval > stale window, or intermittent 429/5xx | Keep `interval_seconds` ≤ `HOST_AGENT_STALE_SECONDS`/2. |
 | High agent CPU | very short interval, many watched services, huge mount list | `PATCH config` to a larger `interval_seconds`, shrink `watch_services`, extend `disk_exclude_fstypes`; `top -p $(pgrep cloudops-agent)`. |
 | Hub CPU / DB growth after widening | too many hosts × short interval | `docs/HOST_AGENT_COST.md`; run `scripts/host_agent_loadtest.py` on DEV. |
@@ -102,7 +104,7 @@ Hub-side commands run in `/opt/monitoring-hub/app`. Logs: `journalctl -u monitor
 Principles: flag off until a gate passes; DEV first; one change at a time; every step reversible in minutes. Deploy blocks follow the repo's standard formats.
 
 ### 0. Pre-checks (both environments)
-1. Phases B, C, D, E merged; `python3 -m pytest -q` green.
+1. Phases A to F merged (they are); `python3 -m pytest -q` green.
 2. Migration 120 applied (`migrate.py status`). Redis running (rate limiter fails open without it).
 3. nginx: apply `deploy/nginx.conf` changes to the **live** file (it is generated once by `deploy.sh`/`setup.sh`, then edited by `enable_tls.sh` / `apply_security_headers.sh`, so a git pull does not change it). Section 6 has the exact commands.
 4. TLS works on the hub (`https://<HUB_HOST>/` loads); agents refuse plain HTTP.
@@ -137,7 +139,7 @@ sed -i 's/^HOST_AGENT_ENABLED=.*/HOST_AGENT_ENABLED=false/' .env
 sudo systemctl restart monitoring-hub
 systemctl status monitoring-hub | grep -i active
 ```
-Then stop agents on the affected hosts so they do not keep retrying (`sudo systemctl stop cloudops-agent` — service name per agent/ README). Revoke any still-valid enrollment keys (`DELETE /api/host-agents/enrollment-keys/{id}`; with the flag off the API is 404, so do this **before** flipping the flag if keys are outstanding, or re-enable briefly). Ingested history is not deleted by a rollback; it ages out with `metric_history` retention (30 days). Hub code rollback is a normal `git revert` + deploy; migration 120 tables are additive and can stay.
+Then stop agents on the affected hosts so they do not keep retrying (`sudo systemctl stop cloudops-agent`). Revoke any still-valid enrollment keys (`DELETE /api/host-agents/enrollment-keys/{id}`; with the flag off the API is 404, so do this **before** flipping the flag if keys are outstanding, or re-enable briefly). Ingested history is not deleted by a rollback; it ages out with `metric_history` retention (30 days). Hub code rollback is a normal `git revert` + deploy; migration 120 tables are additive and can stay.
 
 ### Deploy blocks
 DEV:
@@ -160,7 +162,7 @@ The repo file is a template. On a running box the live file is `/etc/nginx/sites
 4. Reload (no dropped connections): `sudo systemctl reload nginx`
 5. Verify (replace host):
 ```
-curl -sk -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' --data '{}' https://<HUB_HOST>/api/host-agents/ingest        # 404 when disabled, 401/501 when enabled
+curl -sk -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' --data '{}' https://<HUB_HOST>/api/host-agents/ingest        # 404 when disabled, 401 when enabled
 head -c 300000 /dev/zero | curl -sk -o /dev/null -w '%{http_code}\n' -X POST --data-binary @- https://<HUB_HOST>/api/host-agents/ingest     # 413
 curl -skI https://<HUB_HOST>/api/host-agents/enroll | grep -i -E 'x-frame|x-content|referrer'    # headers still present (single copy)
 ```
@@ -170,4 +172,4 @@ Notes: `deploy/deploy.sh` regenerates the site file from the template, so after 
 
 ## 7. Load test
 
-`scripts/host_agent_loadtest.py` (standard library only; DEV only: refuses without `--confirm-dev`). Reports p50/p95/p99 latency, error rate, 429s, accepted/rejected samples and rows/min. See the script header for flags, and `docs/HOST_AGENT_COST.md` for how to read the result. It needs phase C's ingest; until then the hub answers 501.
+`scripts/host_agent_loadtest.py` (standard library only; DEV only: refuses without `--confirm-dev`). Reports p50/p95/p99 latency, error rate, 429s, accepted/rejected samples and rows/min. See the script header for flags, and `docs/HOST_AGENT_COST.md` for how to read the result. It needs the ingest route (merged).

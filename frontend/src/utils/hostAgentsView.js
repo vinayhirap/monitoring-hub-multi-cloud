@@ -14,8 +14,8 @@ export const INTERVAL_MAX = 300;
 export const MAX_WATCH_SERVICES = 100;
 const SERVICE_RE = /^[A-Za-z0-9][A-Za-z0-9_.@:-]*$/;   // server: _SERVICE_RE
 
-/** Placeholder shown while no installer URL is configured anywhere the UI can read (see gaps). Never a real URL. */
-export const INSTALLER_PLACEHOLDER = "<INSTALLER_URL_NOT_CONFIGURED>";
+/** Where the hub serves agent releases (deploy/nginx.conf `location ^~ /dl/host-agent/`). */
+export const DOWNLOAD_PATH = "/dl/host-agent";
 
 export function stateOf(row) {
   const s = String(row?.state || "").toLowerCase();
@@ -140,18 +140,24 @@ export function buildKeyRequest({ accountId, label, maxUses, expiresHours }) {
 }
 
 /**
- * Install one-liner. The installer's real CLI is NOT defined in the contract: the shape below (environment variables
- * CLOUDOPS_HUB_URL / CLOUDOPS_ENROLLMENT_KEY piped to sh) is an assumption to align with the installer (listed as a
- * gap). With no installerUrl the placeholder is rendered and `ready` is false so the UI can mark it clearly.
+ * Linux install command, matching agent/install.sh exactly:
+ *   - the enrollment key goes in CLOUDOPS_AGENT_ENROLL_KEY (kept out of `ps`), the hub in --url;
+ *   - install.sh needs --base-url pointing at the version folder that holds the binary and SHA256SUMS;
+ *   - the version folder is read from the hub's manifest.json ("latest"), so the command never goes stale;
+ *   - the script is downloaded first and run second (not piped to a shell), so it can be read before it runs.
+ * A plain-http hub (DEV only) adds --insecure-dev, which the installer and agent otherwise refuse.
  */
-export function buildInstallCommand({ hubUrl, key, installerUrl }) {
-  const ready = !!installerUrl;
-  const url = ready ? installerUrl : INSTALLER_PLACEHOLDER;
+export function buildInstallCommand({ hubUrl, key }) {
   const q = s => `'${String(s).replace(/'/g, `'\\''`)}'`;
-  return {
-    ready,
-    command: `curl -fsSL ${q(url)} | sudo CLOUDOPS_HUB_URL=${q(hubUrl)} CLOUDOPS_ENROLLMENT_KEY=${q(key)} sh`,
-  };
+  const hub = String(hubUrl || "").replace(/\/+$/, "");
+  const insecure = /^http:\/\//i.test(hub) ? " --insecure-dev" : "";
+  const lines = [
+    `BASE=${q(hub + DOWNLOAD_PATH)}`,
+    `V=$(curl -fsSL "$BASE/manifest.json" | sed -n 's/.*"latest": *"\\([^"]*\\)".*/\\1/p') && \\`,
+    `curl -fsSLO "$BASE/$V/install.sh" && \\`,
+    `sudo CLOUDOPS_AGENT_ENROLL_KEY=${q(key)} bash install.sh --base-url "$BASE/$V" --url ${q(hub)}${insecure}`,
+  ];
+  return { ready: true, command: lines.join("\n") };
 }
 
 /** Firing alerts that name this host (hostname or instance id), most severe first. Exact match only, never by account. */

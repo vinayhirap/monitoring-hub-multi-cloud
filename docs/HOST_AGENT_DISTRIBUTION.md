@@ -1,6 +1,6 @@
 # Host agent distribution, signing and auto-update
 
-What exists in this repo: nginx download location (`deploy/nginx.conf`, `/dl/host-agent/`), the staging/signing/verification script (`scripts/host_agent_release.sh`) and its tests. What is **design only**: `install.sh` (phase E), the agent's update loop, and the agent-side signature check. Items are tagged **[IN REPO]** or **[DESIGN]**.
+What exists in this repo: nginx download location (`deploy/nginx.conf`, `/dl/host-agent/`), the staging/signing/verification script (`scripts/host_agent_release.sh`) and its tests. What is **design only**: the agent's update loop and the agent-side signature check. `install.sh`, `install-macos.sh` and `install.ps1` live in `agent/` and verify the binary against `SHA256SUMS`; `stage` only publishes `install.sh` if it is copied into the binaries directory. Items are tagged **[IN REPO]** or **[DESIGN]**.
 
 ## 1. Layout served by nginx **[IN REPO]**
 
@@ -38,7 +38,7 @@ rsync -a ./host-agent-dist/ hcsadmin@<DEV_HOST>:/opt/monitoring-hub/host-agent-d
 - The public key is committed (`agent/keys/release.pub.pem`) and **compiled into the agent**; install.sh ships the same key fingerprint. A copy of the key served by the hub proves nothing, so the agent never trusts a key it downloads.
 - Rotation: the agent accepts a list of public keys. Publish a release signed by the old key that embeds the new key, then switch signing. Compromise: build an agent version with the old key removed, set `min_version` to it, sign with the new key, and tell hosts to reinstall (an attacker holding the old key can still serve old, validly signed versions, which `min_version` plus the version check below refuse).
 
-## 4. First install trust **[DESIGN]**
+## 4. First install trust
 
 install.sh is fetched over TLS and then verifies the binary against `SHA256SUMS`, and `SHA256SUMS` against its signature with `openssl pkeyutl -verify -rawin` when OpenSSL 3 is present. Honest limits:
 

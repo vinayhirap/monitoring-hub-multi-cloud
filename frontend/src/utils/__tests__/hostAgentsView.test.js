@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   stateOf, stateCounts, accountOptions, filterHosts, relativeTime, utcStamp, parseServiceList, parseInterval,
-  buildConfigPatch, buildKeyRequest, buildInstallCommand, INSTALLER_PLACEHOLDER, firingAlertsForHost, mergeAlertLists,
+  buildConfigPatch, buildKeyRequest, buildInstallCommand, DOWNLOAD_PATH, firingAlertsForHost, mergeAlertLists,
 } from "../hostAgentsView.js";
 
 const rows = [
@@ -76,14 +76,20 @@ test("buildKeyRequest validates like the server", () => {
   assert.ok(buildKeyRequest({ accountId: "1", label: "x".repeat(101), maxUses: 1, expiresHours: 1 }).error);
 });
 
-test("buildInstallCommand: placeholder is never a real URL, values are shell-quoted", () => {
-  const p = buildInstallCommand({ hubUrl: "https://hub.example", key: "cak_abc", installerUrl: null });
-  assert.equal(p.ready, false);
-  assert.ok(p.command.includes(INSTALLER_PLACEHOLDER));
-  const r = buildInstallCommand({ hubUrl: "https://hub.example", key: "cak_a'b", installerUrl: "https://i.example/install.sh" });
+test("buildInstallCommand: matches agent/install.sh (env var name, --base-url, --url, no pipe to sh)", () => {
+  const r = buildInstallCommand({ hubUrl: "https://hub.example/", key: "cak_a'b" });
   assert.equal(r.ready, true);
-  assert.ok(r.command.includes(`'cak_a'\\''b'`));
-  assert.ok(r.command.startsWith("curl -fsSL 'https://i.example/install.sh' | sudo "));
+  assert.ok(r.command.includes(`BASE='https://hub.example${DOWNLOAD_PATH}'`));
+  assert.ok(r.command.includes("/manifest.json"));
+  assert.ok(r.command.includes(`CLOUDOPS_AGENT_ENROLL_KEY='cak_a'\\''b'`), "key is shell-quoted and uses the installer's variable");
+  assert.ok(r.command.includes('bash install.sh --base-url "$BASE/$V" --url \'https://hub.example\''));
+  assert.ok(!r.command.includes("| sudo") && !/\|\s*(sudo\s+)?(ba)?sh\b/.test(r.command), "installer is downloaded, never piped to a shell");
+  assert.ok(!r.command.includes("CLOUDOPS_HUB_URL") && !r.command.includes("CLOUDOPS_ENROLLMENT_KEY"));
+  assert.ok(!r.command.includes("--insecure-dev"));
+});
+
+test("buildInstallCommand: plain-http hub (DEV) adds --insecure-dev", () => {
+  assert.ok(buildInstallCommand({ hubUrl: "http://10.0.0.1:8000", key: "cak_x" }).command.endsWith("--insecure-dev"));
 });
 
 test("firingAlertsForHost matches exact resource only and only firing", () => {

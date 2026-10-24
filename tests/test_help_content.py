@@ -255,3 +255,35 @@ def test_previously_unverified_topics_are_now_documented_from_code():
 def test_content_is_json_serialisable():
     import json
     json.dumps({"sections": SECTIONS})
+
+
+def test_host_agents_guide_is_tied_to_the_code():
+    """The end-user host agent guide states numbers and names that the code enforces; keep them in lockstep."""
+    from app.hostagents import settings as ha
+    text = _section_text("host-agents")
+    sec = next(x for x in SECTIONS if x["id"] == "host-agents")
+    assert sec["requires"] == "hostagents.view"
+    # stale window and the offline multiple
+    watchdog = _source("app/collector/host_agent_watchdog.py")
+    factor = int(re.search(r"OFFLINE_FACTOR\s*=\s*(\d+)", watchdog).group(1))
+    from app.help_content import host_agents as page
+    assert page.OFFLINE_FACTOR == factor
+    assert fmt_interval(ha.stale_seconds()) in text and fmt_interval(ha.stale_seconds() * factor) in text
+    # interval limits the config form enforces
+    assert f"{ha.INTERVAL_MIN_SECONDS} to {ha.INTERVAL_MAX_SECONDS} seconds" in text
+    # names the installer really uses (the uninstall steps and troubleshooting depend on them)
+    installer = _source("agent/install.sh")
+    for needle in ("SVC_USER=cloudops-agent", "BIN=$BIN_DIR/cloudops-agent", "ETC_DIR=/etc/cloudops-agent",
+                   "DATA_DIR=/var/lib/cloudops-agent", "UNIT=/etc/systemd/system/cloudops-agent.service"):
+        assert needle in installer, needle
+    for shown in ("systemctl disable --now cloudops-agent", "/usr/local/bin/cloudops-agent",
+                  "/etc/cloudops-agent", "/var/lib/cloudops-agent"):
+        assert shown in " ".join(b.get("text", "") for b in sec["blocks"] if b["type"] == "code")
+    # the shipped installers accept the flags the guide shows
+    assert "--base-url" in _source("agent/install-macos.sh") and "$BaseUrl" in _source("agent/install.ps1")
+    # the dialog command and the hub's download path agree with nginx
+    assert "/dl/host-agent/" in _source("deploy/nginx.conf")
+    assert 'DOWNLOAD_PATH = "/dl/host-agent"' in _source("frontend/src/utils/hostAgentsView.js")
+    # every reading named in the guide exists in the ingest metric map
+    from app.hostagents.metric_map import METRICS
+    assert len(METRICS) == 15

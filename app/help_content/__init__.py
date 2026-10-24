@@ -16,7 +16,7 @@ Anything not confirmed in code is a block with "unverified": true (see unverifie
 """
 from functools import lru_cache
 
-from . import concepts, features
+from . import concepts, features, host_agents
 from .services import service_sections, directory_section
 
 AUDIENCE_RANK = {"viewer": 1, "editor": 2, "admin": 3}
@@ -39,6 +39,7 @@ COVERAGE = {
     "Synthetic checks": "synthetic-checks",
     "WAF / Shield / GuardDuty": "waf-shield-guardduty",
     "Security findings": "security-findings",
+    "Host agents (install on a server)": "host-agents",
     "Topology": "topology",
     "Reports": "reports",
     "Compliance (audit trail)": "compliance-audit",
@@ -63,7 +64,7 @@ def all_sections():
         concepts.priority(), concepts.metrics_polling(), concepts.thresholds(), concepts.alerts(),
         features.incidents(), features.escalation(), features.notifications(), features.status_page(),
         features.slos(), features.synthetic(), features.maintenance(), features.waf(), features.security(),
-        features.topology(), features.search(), features.reports(), features.audit(), features.settings(),
+        features.topology(), host_agents.host_agents(), features.search(), features.reports(), features.audit(), features.settings(),
         features.access(), features.rbac_admin(), concepts.polling_admin(), concepts.api_cost(), concepts.api_actual_cost(),
     ]
     tail = [features.glossary(), features.faq()]

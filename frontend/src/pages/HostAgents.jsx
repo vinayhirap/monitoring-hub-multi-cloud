@@ -25,10 +25,6 @@ import "./HostAgents.css";
 
 const REFRESH_MS = 30000;
 
-// No existing settings / env endpoint exposes an installer URL (see the patch's gap list), so nothing is read here.
-// When one exists, set this from it; until then the install command shows a clearly marked placeholder.
-const INSTALLER_URL = null;
-
 const errText = e => {
   const base = e?.detail || e?.message || "Something went wrong";
   return e?.requestId ? `${base} (ref ${e.requestId})` : base;
@@ -132,7 +128,7 @@ function AddHostDialog({ onClose, onCreated, defaultAccountId }) {
   };
 
   if (created) {
-    const cmd = buildInstallCommand({ hubUrl: window.location.origin, key: created.key, installerUrl: INSTALLER_URL });
+    const cmd = buildInstallCommand({ hubUrl: window.location.origin, key: created.key });
     return (
       <Modal title="Enrollment key created" onClose={onClose} locked wide>
         <div className="ha-warn" role="alert">
@@ -146,12 +142,10 @@ function AddHostDialog({ onClose, onCreated, defaultAccountId }) {
         <CopyButton text={created.key} label="Copy key" />
         <div className="ha-field">
           <span className="ha-label">Install command (run on the server)</span>
-          {!cmd.ready && (
-            <p className="ha-placeholder" role="note">
-              Placeholder: this hub has no installer URL configured, so <code>&lt;INSTALLER_URL_NOT_CONFIGURED&gt;</code> below is
-              not a real address. Replace it with your installer location before running.
-            </p>
-          )}
+          <p className="ha-hint">
+            Linux with systemd, run by a user who can use <code>sudo</code>. The installer and agent are downloaded from this hub
+            and checked against their SHA-256 sums before anything is installed. macOS and Windows: see Help, “Host agents”.
+          </p>
           <pre className="ha-code" tabIndex={0} aria-label="Install command">{cmd.command}</pre>
           <p className="ha-hint">The command contains the key: do not paste it into tickets or chat.</p>
         </div>
