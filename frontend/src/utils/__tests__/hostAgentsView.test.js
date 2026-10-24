@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   stateOf, stateCounts, accountOptions, filterHosts, relativeTime, utcStamp, parseServiceList, parseInterval,
   buildConfigPatch, buildKeyRequest, buildInstallCommand, DOWNLOAD_PATH, firingAlertsForHost, mergeAlertLists,
+  formatHostMetricValue, hostMetricTitle, hostMetricRows, hostMetricsNote,
 } from "../hostAgentsView.js";
 
 const rows = [
@@ -102,4 +103,44 @@ test("firingAlertsForHost matches exact resource only and only firing", () => {
   assert.deepEqual(firingAlertsForHost(alerts, rows[0]).map(a => a.id), [2, 1]);
   assert.deepEqual(firingAlertsForHost(alerts, {}).map(a => a.id), []);
   assert.deepEqual(mergeAlertLists([[{ id: 1 }, { id: 2 }], [{ id: 2 }, { id: 3 }]]).map(a => a.id), [1, 2, 3]);
+});
+
+test("formatHostMetricValue formats by the unit the server sent and never invents a number", () => {
+  assert.equal(formatHostMetricValue({ unit: "%", value: 41.46 }), "41.5%");
+  assert.equal(formatHostMetricValue({ unit: "%", value: 0 }), "0%");
+  assert.equal(formatHostMetricValue({ unit: "bytes", value: 512 }), "512 B");
+  assert.equal(formatHostMetricValue({ unit: "bytes", value: 1536 }), "1.5 KiB");
+  assert.equal(formatHostMetricValue({ unit: "bytes", value: 3 * 1024 ** 3 }), "3 GiB");
+  assert.equal(formatHostMetricValue({ unit: "bytes/s", value: 2048 }), "2 KiB/s");
+  assert.equal(formatHostMetricValue({ unit: "seconds", value: 59 }), "59s");
+  assert.equal(formatHostMetricValue({ unit: "seconds", value: 3661 }), "1h 1m");
+  assert.equal(formatHostMetricValue({ unit: "seconds", value: 90061 }), "1d 1h 1m");
+  assert.equal(formatHostMetricValue({ unit: "", value: 0.256 }), "0.26");
+  assert.equal(formatHostMetricValue({ unit: "", value: 312 }), "312");
+  for (const bad of [null, undefined, {}, { unit: "%", value: null }, { unit: "%", value: "12" }, { unit: "%", value: NaN }, { unit: "seconds", value: -5 }]) {
+    assert.equal(formatHostMetricValue(bad), "—");
+  }
+});
+
+test("hostMetricTitle and hostMetricRows", () => {
+  assert.equal(hostMetricTitle({ title: "Disk used", label: "/" }), "Disk used · /");
+  assert.equal(hostMetricTitle({ title: "Memory used", label: null }), "Memory used");
+  assert.equal(hostMetricTitle({ name: "x" }), "x");
+  assert.deepEqual(hostMetricRows(null), []);
+  assert.deepEqual(hostMetricRows({ metrics: "nope" }), []);
+  const rows2 = hostMetricRows({ metrics: [
+    { name: "host_cpu_percent", title: "CPU utilization (guest OS)", label: null, unit: "%", value: 12.25, timestamp: "2026-10-24T10:00:00Z", age_seconds: 5 },
+    null,
+    { title: "no name" },
+  ] });
+  assert.equal(rows2.length, 1);
+  assert.deepEqual(rows2[0], { key: "host_cpu_percent", title: "CPU utilization (guest OS)", value: "12.3%", timestamp: "2026-10-24T10:00:00Z", ageSeconds: 5 });
+});
+
+test("hostMetricsNote only states what the response and host carry", () => {
+  assert.equal(hostMetricsNote(null, rows[0]), null);
+  assert.equal(hostMetricsNote({ metrics: [], shared_series: false, source: "metrics" }, rows[0]), null);
+  assert.match(hostMetricsNote({ metrics: [], source: "metrics" }, rows[1]), /stale, so these are the last readings/);
+  assert.match(hostMetricsNote({ metrics: [], shared_series: true, source: "metrics" }, rows[0]), /CloudWatch agent/);
+  assert.match(hostMetricsNote({ metrics: [], source: "metric_history" }, rows[0]), /last 24 hours/);
 });

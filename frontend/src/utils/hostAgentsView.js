@@ -172,3 +172,72 @@ export function mergeAlertLists(lists) {
   for (const rows of lists) for (const a of rows || []) if (!m.has(a.id)) m.set(a.id, a);
   return [...m.values()];
 }
+
+// ── Current metrics (GET /api/host-agents/{id}/metrics) ───────────────────────────────────────────────────────────
+// Display formatting only: the server returns the stored reading and its unit; nothing is converted, averaged or estimated.
+
+const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+
+function trimmed(n, maxFraction) {
+  return Number(n).toLocaleString("en-US", { maximumFractionDigits: maxFraction });
+}
+
+function formatBytes(n) {
+  let v = Number(n);
+  let i = 0;
+  while (Math.abs(v) >= 1024 && i < BYTE_UNITS.length - 1) { v /= 1024; i += 1; }
+  return `${trimmed(v, i === 0 ? 0 : 1)} ${BYTE_UNITS[i]}`;
+}
+
+function formatDuration(seconds) {
+  let s = Math.floor(Number(seconds));
+  if (!Number.isFinite(s) || s < 0) return "—";
+  const d = Math.floor(s / 86400); s -= d * 86400;
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return m > 0 ? `${m}m ${s - m * 60}s` : `${s}s`;
+}
+
+/** One stored reading -> the text shown in the table. A non-finite value shows an em dash, never a made-up number. */
+export function formatHostMetricValue(m) {
+  const v = m?.value;
+  if (typeof v !== "number" || !Number.isFinite(v)) return "—";
+  switch (m.unit) {
+    case "%": return `${trimmed(v, 1)}%`;
+    case "bytes": return formatBytes(v);
+    case "bytes/s": return `${formatBytes(v)}/s`;
+    case "seconds": return formatDuration(v);
+    default: return trimmed(v, 2);
+  }
+}
+
+/** "Disk used" + label -> "Disk used · /" ; metrics without a label keep their plain title. */
+export function hostMetricTitle(m) {
+  const base = m?.title || m?.name || "Metric";
+  return m?.label ? `${base} · ${m.label}` : base;
+}
+
+/** Rows for the table, in the order the server sent them, with display strings. Anything that is not an array -> []. */
+export function hostMetricRows(payload) {
+  const list = Array.isArray(payload?.metrics) ? payload.metrics : [];
+  return list.filter(m => m && typeof m.name === "string").map(m => ({
+    key: m.name,
+    title: hostMetricTitle(m),
+    value: formatHostMetricValue(m),
+    timestamp: m.timestamp || null,
+    ageSeconds: Number.isFinite(m.age_seconds) ? m.age_seconds : null,
+  }));
+}
+
+/** Short caption under the table, or null. Only states facts the response carries. */
+export function hostMetricsNote(payload, host) {
+  if (!payload) return null;
+  const parts = [];
+  const state = stateOf(host);
+  if (state !== "online") parts.push(`This host is ${STATE_LABEL[state].toLowerCase()}, so these are the last readings received, not live values.`);
+  if (payload.shared_series) parts.push("This host is attached to an EC2 resource: memory and disk readings use the same stored names as the CloudWatch agent, so the stored value can come from either source.");
+  if (payload.source === "metric_history") parts.push("Showing the newest history point from the last 24 hours.");
+  return parts.length ? parts.join(" ") : null;
+}

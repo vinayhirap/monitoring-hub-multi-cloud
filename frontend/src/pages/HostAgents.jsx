@@ -15,11 +15,12 @@ import { copyText } from "../utils/copyText";
 import { getLiveAccounts, getAlertsForResource } from "../api/api";
 import {
   listHostAgents, listEnrollmentKeys, createEnrollmentKey, revokeEnrollmentKey, revokeHostAgent, patchHostAgentConfig,
+  getHostAgentMetrics,
 } from "../api/hostAgents";
 import {
   STATE_LABEL, STATE_TONE, KEY_STATUS_TONE, INTERVAL_MIN, INTERVAL_MAX, stateOf, stateCounts, accountOptions,
   filterHosts, relativeTime, utcStamp, buildConfigPatch, buildKeyRequest, buildInstallCommand,
-  firingAlertsForHost, mergeAlertLists,
+  firingAlertsForHost, mergeAlertLists, hostMetricRows, hostMetricsNote,
 } from "../utils/hostAgentsView";
 import "./HostAgents.css";
 
@@ -299,7 +300,28 @@ function KeysDialog({ onClose, onNotice }) {
 function HostDrawer({ host, onClose, canManage, onEdit, onRevoke }) {
   const [alerts, setAlerts] = useState(null);
   const [alertsError, setAlertsError] = useState(null);
+  const [metrics, setMetrics] = useState(null);             // null = first load in flight; else the API payload
+  const [metricsError, setMetricsError] = useState(null);
   const state = stateOf(host);
+  const hostId = host.id;
+
+  // Current metrics: stored readings only (GET /api/host-agents/{id}/metrics is a DB read). Reloaded every REFRESH_MS
+  // while this drawer is open and the tab is visible; a failed refresh keeps the last good table and says so.
+  const [reloadN, setReloadN] = useState(0);
+  useEffect(() => {
+    let live = true;
+    getHostAgentMetrics(hostId)
+      .then(data => { if (live) { setMetrics(data && typeof data === "object" ? data : { metrics: [] }); setMetricsError(null); } })
+      .catch(e => {
+        if (!live) return;
+        setMetricsError(e?.status === 404 ? "This host or the host agent feature is no longer available." : errText(e));
+        setMetrics(prev => prev ?? { metrics: [] });
+      });
+    return () => { live = false; };
+  }, [hostId, reloadN]);
+  useAutoRefresh(() => setReloadN(n => n + 1), REFRESH_MS);
+  const metricRows = useMemo(() => hostMetricRows(metrics), [metrics]);
+  const metricsNote = hostMetricsNote(metrics, host);
 
   useEffect(() => {
     let live = true;
@@ -338,9 +360,31 @@ function HostDrawer({ host, onClose, canManage, onEdit, onRevoke }) {
             <button type="button" className="ui-btn ui-btn-danger" onClick={() => onRevoke(host)}>Revoke host</button>
           </div>
         )}
-        <Panel title="Current metrics">
-          <EmptyState title="Not available yet"
-            body="No API serves metrics for this host yet, so none are shown. Nothing here is estimated." />
+        <Panel title="Current metrics" subtitle="Latest reading the agent delivered for each metric (not live, nothing estimated)">
+          {metrics == null && <div aria-busy="true"><Skeleton h={14} /></div>}
+          {metricsError && <p className="ha-error" role="alert">Could not load metrics: {metricsError}</p>}
+          {metrics != null && metricRows.length === 0 && !metricsError && (
+            <EmptyState title="No readings yet"
+              body="This host has not delivered any metric readings, so nothing is shown." />
+          )}
+          {metricRows.length > 0 && (
+            <div className="ha-metrics-wrap">
+              <table className="ha-metrics">
+                <caption className="ha-sr">Current metrics for {host.hostname}</caption>
+                <thead><tr><th scope="col">Metric</th><th scope="col" className="ha-num">Value</th><th scope="col">Updated</th></tr></thead>
+                <tbody>
+                  {metricRows.map(m => (
+                    <tr key={m.key}>
+                      <th scope="row">{m.title}</th>
+                      <td className="ha-num ha-mono">{m.value}</td>
+                      <td title={utcStamp(m.timestamp)}>{relativeTime(m.timestamp)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {metricsNote && <p className="ha-hint">{metricsNote}</p>}
         </Panel>
         <Panel title="Active alerts" subtitle="Firing alerts naming this host or its instance id">
           {alerts == null && <div aria-busy="true"><Skeleton h={14} /></div>}
@@ -501,7 +545,7 @@ export default function HostAgents() {
       )}
 
       {selected && (
-        <HostDrawer host={selected} onClose={() => setSelectedId(null)} canManage={canManage}
+        <HostDrawer key={selected.id} host={selected} onClose={() => setSelectedId(null)} canManage={canManage}
           onEdit={h => setEditHost(h)} onRevoke={h => setRevokeHost(h)} />
       )}
       {addOpen && canManage && <AddHostDialog defaultAccountId={accountId !== "all" ? accountId : null} onClose={() => setAddOpen(false)} onCreated={load} />}

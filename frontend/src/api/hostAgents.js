@@ -14,3 +14,6 @@ export const revokeEnrollmentKey = (id) => apiFetch(`/api/host-agents/enrollment
 export const revokeHostAgent     = (id) => apiFetch(`/api/host-agents/${encodeURIComponent(id)}/revoke`, j("POST"));
 // body {watch_services?: string[], interval_seconds?: 15..300}
 export const patchHostAgentConfig = (id, d) => apiFetch(`/api/host-agents/${encodeURIComponent(id)}/config`, j("PATCH", d));
+// -> {host_agent_id, hostname, resource_type, shared_series, source, metrics: [{name, metric, title, label, label_key, unit, value, timestamp, age_seconds}]}
+// Latest stored reading per agent metric; a DB read on the server (no cloud call). 404 = unknown host, out of scope, or feature off.
+export const getHostAgentMetrics = (id) => apiFetch(`/api/host-agents/${encodeURIComponent(id)}/metrics`);

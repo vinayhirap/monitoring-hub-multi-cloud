@@ -109,7 +109,11 @@ def host_agents():
             "Search matches the host name, instance id and operating system. The account menu limits the list to one account.",
             "You only see servers in accounts you have access to.",
             "Click a server to open its panel: account, instance id, operating system, agent version, when it last "
-            "reported and any firing alerts that name this server.",
+            "reported, a Current metrics table and any firing alerts that name this server.",
+            "Current metrics lists the latest reading the agent delivered for each metric, with how long ago it arrived. "
+            "It is read from what the hub has already stored, not measured live, and nothing is estimated: a metric the "
+            "server has not reported is simply not listed. For a Stale or Offline server these are the last readings "
+            "received. The table refreshes by itself every 30 seconds while the panel is open.",
         ]),
 
         h("Changing or removing a server (administrators)"),

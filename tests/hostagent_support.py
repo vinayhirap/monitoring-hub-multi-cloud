@@ -24,6 +24,7 @@ class MiniDb:
     def __init__(self):
         self.accounts = {1: "Acct One", 2: "Acct Two", 3: "Acct Three"}
         self.keys, self.hosts, self.tokens = {}, {}, {}
+        self.resources, self.metrics, self.history = {}, [], []      # read-only fixtures for GET /{id}/metrics
         self._seq = {"k": 0, "h": 0, "t": 0}
         self.sql_log = []
         self.lock = threading.Lock()
@@ -156,6 +157,23 @@ class MiniCursor:
             h = db.hosts[p[1]]
             h["config_json"], h["config_version"] = p[0], h["config_version"] + 1
             self.rowcount = 1
+        elif q.startswith("SELECT id, aws_account_id, hostname, status, resource_id, last_seen_at FROM host_agents WHERE id"):
+            h = db.hosts.get(p[0])
+            self._rows = [{c: h[c] for c in ("id", "aws_account_id", "hostname", "status", "resource_id", "last_seen_at")}] if h else []
+        elif q.startswith("SELECT id, resource_type FROM resources WHERE aws_account_id = %s AND resource_type = %s AND resource_id = %s"):
+            self._rows = [{"id": r["id"], "resource_type": r["resource_type"]} for r in db.resources.values()
+                          if (r["aws_account_id"], r["resource_type"], r["resource_id"]) == p][:1]
+        elif q == "SELECT metric_name, metric_value, metric_timestamp FROM metrics WHERE resource_id = %s":
+            self._rows = [{c: m[c] for c in ("metric_name", "metric_value", "metric_timestamp")}
+                          for m in db.metrics if m["resource_id"] == p[0]]
+        elif q.startswith("SELECT h.metric_name, h.metric_value, h.metric_timestamp FROM metric_history h"):
+            assert p[0] == p[1] and "INTERVAL 24 HOUR" in q
+            newest = {}
+            for m in db.history:
+                if m["resource_id"] == p[0] and m["metric_timestamp"] >= now - timedelta(hours=24):
+                    if m["metric_name"] not in newest or m["metric_timestamp"] > newest[m["metric_name"]]["metric_timestamp"]:
+                        newest[m["metric_name"]] = m
+            self._rows = [{c: m[c] for c in ("metric_name", "metric_value", "metric_timestamp")} for m in newest.values()]
         elif q.startswith("SELECT t.token_hash, t.revoked_at, h.id AS host_agent_id"):
             t = next((x for x in db.tokens.values() if x["token_hash"] == p[0]), None)
             if t:
@@ -209,6 +227,9 @@ class Env:
         self.settings = load_module("app/hostagents/settings.py")
         install_stub("app.hostagents", settings=self.settings)
         sys.modules["app.hostagents.settings"] = self.settings
+        self.metric_map = load_module("app/hostagents/metric_map.py")
+        install_stub("app.hostagents", metric_map=self.metric_map)
+        sys.modules["app.hostagents.metric_map"] = self.metric_map
         self.auth = load_module("app/hostagents/auth.py")
         install_stub("app.hostagents", auth=self.auth)
         sys.modules["app.hostagents.auth"] = self.auth

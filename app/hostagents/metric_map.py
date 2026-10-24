@@ -54,6 +54,52 @@ METRICS = {
 CWAGENT_MEM_NAMES = ("mem_used_percent",)
 
 
+# contract name -> (unit shown to the user, display label). Units are the ones the agent contract defines; nothing is converted.
+DISPLAY = {
+    "cpu_percent":              ("%",       "CPU utilization (guest OS)"),
+    "load1":                    ("",        "Load average, 1 min"),
+    "load5":                    ("",        "Load average, 5 min"),
+    "load15":                   ("",        "Load average, 15 min"),
+    "mem_used_percent":         ("%",       "Memory used"),
+    "mem_available_bytes":      ("bytes",   "Memory available"),
+    "swap_used_percent":        ("%",       "Swap used"),
+    "disk_used_percent":        ("%",       "Disk used"),
+    "disk_inodes_used_percent": ("%",       "Inodes used"),
+    "disk_read_bytes_per_s":    ("bytes/s", "Disk read"),
+    "disk_write_bytes_per_s":   ("bytes/s", "Disk write"),
+    "net_rx_bytes_per_s":       ("bytes/s", "Network receive"),
+    "net_tx_bytes_per_s":       ("bytes/s", "Network transmit"),
+    "proc_count":               ("",        "Processes"),
+    "uptime_seconds":           ("seconds", "Uptime"),
+}
+_CONTRACT_ORDER = {name: i for i, name in enumerate(METRICS)}
+# Longest base first so a base that is a prefix of another can never claim the other's rows.
+_BASES_LONGEST_FIRST = sorted(((spec[0], name) for name, spec in METRICS.items()), key=lambda t: -len(t[0]))
+
+
+def describe_stored_name(stored: str):
+    """Inverse of stored_name(): a stored metric_name -> {contract, label_key, label, unit, title, order}, or None when the
+    name is not one a host agent can feed (so CloudWatch-sourced rows on an attached EC2 resource are never shown as agent
+    readings). `label` is the mount slug / interface name as stored (the original mount path is not recoverable from a
+    slug); it is "/" for the unsuffixed root mount. Pure."""
+    if not isinstance(stored, str):
+        return None
+    for base, contract in _BASES_LONGEST_FIRST:
+        _b, label_key, _kind = METRICS[contract]
+        if stored == base:
+            if label_key == "iface":
+                return None                  # an interface series is always suffixed; the bare name is not an agent series
+            label = "/" if label_key == "mount" else None
+        elif label_key is not None and stored.startswith(base + "__") and len(stored) > len(base) + 2:
+            label = stored[len(base) + 2:]
+        else:
+            continue
+        unit, title = DISPLAY[contract]
+        return {"contract": contract, "label_key": label_key, "label": label, "unit": unit, "title": title,
+                "order": _CONTRACT_ORDER[contract]}
+    return None
+
+
 class PayloadError(Exception):
     """The payload as a whole is unusable. `status` is the HTTP status to answer with."""
 

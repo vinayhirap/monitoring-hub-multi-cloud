@@ -9,6 +9,7 @@ matrix.
   POST   /api/host-agents/enroll                    public (enrollment key), rate-limited per IP
   POST   /api/host-agents/ingest                    public (agent bearer token); implemented in app/hostagents/ingest.py
   GET    /api/host-agents                           hostagents.view, scoped by get_accessible_account_ids
+  GET    /api/host-agents/{id}/metrics              hostagents.view, scoped the same way; latest stored reading per metric
   POST   /api/host-agents/enrollment-keys           hostagents.manage
   GET    /api/host-agents/enrollment-keys           hostagents.manage (never returns a key)
   DELETE /api/host-agents/enrollment-keys/{id}      hostagents.manage
@@ -34,7 +35,7 @@ from app.auth.permissions import require_permission
 from app.auth.rate_limit import check_rate_limit, _client_ip
 from app.db import get_connection
 from app.hostagents import auth as agent_auth
-from app.hostagents import settings
+from app.hostagents import metric_map, settings
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +252,99 @@ def list_host_agents(current_user: dict = Depends(require_permission("hostagents
         "agent_version": r["agent_version"], "status": r["status"], "last_seen_at": _iso(r["last_seen_at"]),
         "state": _derive_state(r["status"], r["last_seen_at"], now, stale),
     } for r in rows]
+
+
+# ── current metrics of one host ──────────────────────────────────────────────
+
+HOST_RESOURCE_PREFIX = "host:"          # same value as ingest.HOST_RESOURCE_PREFIX (resources.resource_id of a 'host' row)
+HISTORY_FALLBACK_HOURS = 24
+
+SQL_HOST_FOR_METRICS = (
+    "SELECT id, aws_account_id, hostname, status, resource_id, last_seen_at FROM host_agents WHERE id = %s")
+SQL_METRICS_RESOURCE = (
+    "SELECT id, resource_type FROM resources WHERE aws_account_id = %s AND resource_type = %s AND resource_id = %s")
+SQL_METRICS_LAST = "SELECT metric_name, metric_value, metric_timestamp FROM metrics WHERE resource_id = %s"
+SQL_METRICS_HISTORY_LATEST = (
+    "SELECT h.metric_name, h.metric_value, h.metric_timestamp FROM metric_history h "
+    "JOIN (SELECT metric_name, MAX(metric_timestamp) AS ts FROM metric_history "
+    "WHERE resource_id = %s AND metric_timestamp >= UTC_TIMESTAMP() - INTERVAL " + str(HISTORY_FALLBACK_HOURS) + " HOUR "
+    "GROUP BY metric_name) m ON m.metric_name = h.metric_name AND m.ts = h.metric_timestamp "
+    "WHERE h.resource_id = %s")
+
+
+def _agent_rows(rows):
+    """Keep only rows whose name a host agent can feed, with the display fields; newest row wins per name."""
+    out = {}
+    for r in rows:
+        name, value, ts = r["metric_name"], r["metric_value"], r["metric_timestamp"]
+        info = metric_map.describe_stored_name(name)
+        if info is None or value is None or ts is None:
+            continue
+        cur = out.get(name)
+        if cur is None or ts >= cur["ts"]:
+            out[name] = {"info": info, "name": name, "value": float(value), "ts": ts}
+    return out
+
+
+@router.get("/{host_id}/metrics")
+def host_agent_metrics(host_id: int, current_user: dict = Depends(require_permission("hostagents.view"))):
+    """Latest stored reading per agent metric for one host. DB read only: no cloud call, nothing computed or estimated.
+
+    The rows come from `metrics` (the last-value row the ingest upserts). Only when that table holds none of this host's
+    agent series does the newest row of the last 24 h of `metric_history` stand in. Names an agent cannot feed (e.g. the
+    CloudWatch series of an attached EC2 resource) are never returned. `shared_series` is true when the host is attached to
+    an EC2 resource: mem_used_percent / disk_used_percent* are the same stored names the CloudWatch agent collector writes,
+    so for those the stored value may come from either source (the table cannot tell them apart)."""
+    accessible = get_accessible_account_ids(current_user)
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(SQL_HOST_FOR_METRICS, (host_id,))
+            host = cur.fetchone()
+            if not host or not _in_scope(accessible, host["aws_account_id"]):
+                raise HTTPException(status_code=404, detail="Host agent not found")
+            stored_rid = host["resource_id"]
+            resource_type = None
+            found = {}
+            source = None
+            if stored_rid:
+                resource_type = "host" if stored_rid.startswith(HOST_RESOURCE_PREFIX) else "ec2"
+                cur.execute(SQL_METRICS_RESOURCE, (host["aws_account_id"], resource_type, stored_rid))
+                res = cur.fetchone()
+                if res:
+                    cur.execute(SQL_METRICS_LAST, (res["id"],))
+                    found = _agent_rows(cur.fetchall())
+                    source = "metrics"
+                    if not found:
+                        cur.execute(SQL_METRICS_HISTORY_LATEST, (res["id"], res["id"]))
+                        found = _agent_rows(cur.fetchall())
+                        source = "metric_history" if found else None
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+    now = _utcnow()
+    items = sorted(found.values(), key=lambda m: (m["info"]["order"], m["info"]["label"] or "", m["name"]))
+    return {
+        "host_agent_id": host["id"],
+        "hostname": host["hostname"],
+        "resource_type": resource_type,
+        "shared_series": resource_type == "ec2",
+        "source": source,
+        "metrics": [{
+            "name": m["name"],
+            "metric": m["info"]["contract"],
+            "title": m["info"]["title"],
+            "label": m["info"]["label"],
+            "label_key": m["info"]["label_key"],
+            "unit": m["info"]["unit"],
+            "value": m["value"],
+            "timestamp": _iso(m["ts"]),
+            "age_seconds": max(0, int((now - m["ts"]).total_seconds())),
+        } for m in items],
+    }
 
 
 # ── enrollment keys ──────────────────────────────────────────────────────────
