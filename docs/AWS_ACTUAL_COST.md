@@ -59,3 +59,25 @@ Do **PROD only**: DEV does not poll metrics, so it has nothing to compare agains
   best-effort; an unrecognised type is labelled "Other CloudWatch charge", never dropped.
 - The actual figure includes everything CloudWatch bills (alarms, custom metrics, logs, API requests), not only
   CloudOps's reads. The usage-type table shows how much of it is GetMetricData.
+
+## Cost Explorer view (migration 125)
+
+Administration > Cloud Cost is a Cost Explorer style view of the actual bill: date range, daily or monthly, group by
+(CloudOps vs everything else, account, region, usage type), account/region/cost-type filters, stacked cost graph,
+usage graph, breakdown table and CSV. Every amount is a Cost Explorer figure; nothing is estimated or forecast.
+
+- **Apply migration 125 first** (`migrate.py apply --all-pending`). It adds `usage_quantity` and `usage_unit` to
+  `aws_cost_actuals` and `window_days` to `aws_cost_fetch_log`. Until it is applied the page still works on cost only.
+- **Cost of checking.** An account's first read pulls 90 days (a one-off of a few $0.01 requests); every later read
+  pulls 14 days, so steady state is about one request, $0.01, per account per day.
+- **Who causes what.** CloudOps only reads CloudWatch (it never calls PutMetricData, PutMetricAlarm or any log or
+  flow-log setting), so only `GMD-Metrics` (GetMetricData) is attributed to CloudOps polling. Custom metrics stored,
+  alarms and `CW:Requests` (which includes PutMetricData from agents) are shown as "Agents, alarms and API requests";
+  log ingestion/storage/S3 delivery as "Logs and log delivery". They are billed to the same account but are not
+  created by CloudOps, and the page keeps them visible, only not as the headline.
+- **Regions.** By default only the regions each account is onboarded in (its default region plus any region with
+  discovered resources) are shown. Charges in other regions are not dropped: they are totalled in a line under the
+  table so the page still reconciles to the AWS bill, and "Include other regions" shows them.
+- **Cross-check.** For settled days the page compares the metrics AWS billed for GetMetricData with the metrics
+  CloudOps's own meter counted. A large gap means the collector's metering needs attention.
+- Tax (for example GST) is a separate AWS line and is not in these figures.

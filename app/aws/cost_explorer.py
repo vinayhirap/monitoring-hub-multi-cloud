@@ -28,10 +28,13 @@ logger = logging.getLogger(__name__)
 
 CE_REGION = "us-east-1"
 CE_SERVICE = "AmazonCloudWatch"
-LOOKBACK_DAYS = 31
+LOOKBACK_DAYS = 31                 # default window of fetch_cloudwatch_cost(); refresh_account passes the two below
+BACKFILL_DAYS = 90                 # first read of an account: enough history for the explorer
+REFRESH_DAYS = 14                  # every later read: only the days AWS can still restate (about 48 h) plus margin
 REFRESH_HOURS = 24
 MANUAL_COOLDOWN_MINUTES = 60
 MAX_PAGES = 5
+MAX_PAGES_BACKFILL = 12            # one-off, so a 90 day first read is not cut off
 CE_PRICE_PER_REQUEST = 0.01
 
 STATUS_OK = "ok"
@@ -66,6 +69,34 @@ def usage_region(usage_type):
     if sep and head.isalnum() and head.upper() == head and len(head) in (4, 5) and head[-1].isdigit():
         return REGION_PREFIX.get(head, head)
     return "us-east-1"
+
+
+# Who causes a charge. CloudOps only ever READS CloudWatch (verified: no PutMetricData, PutMetricAlarm or log/flow-log
+# configuration anywhere in this repo), so only GetMetricData can be attributed to its polling. Everything else on the
+# CloudWatch bill is created by agents, alarms, log sources or other tools already in the monitored accounts.
+CAT_CLOUDOPS = "cloudops_reads"
+CAT_AGENTS = "agents_alarms"
+CAT_LOGS = "logs"
+CAT_OTHER = "other"
+CATEGORY_LABELS = {
+    CAT_CLOUDOPS: "CloudOps polling (GetMetricData)",
+    CAT_AGENTS: "Agents, alarms and API requests",
+    CAT_LOGS: "Logs and log delivery",
+    CAT_OTHER: "Other CloudWatch charges",
+}
+
+
+def usage_category(usage_type):
+    """usage type -> one of the CAT_* keys. Order matters: S3 egress and vended logs contain 'Logs'/'Bytes' words but are
+    log delivery, and CW:Requests also carries PutMetricData from agents, so it is NOT attributed to CloudOps."""
+    u = str(usage_type or "")
+    if "GMD-Metrics" in u:
+        return CAT_CLOUDOPS
+    if "S3-Egress" in u or "VendedLog" in u or "DataProcessing" in u or "DataIngestion" in u or "TimedStorage" in u or "Logs" in u:
+        return CAT_LOGS
+    if "MetricMonitorUsage" in u or "AlarmMonitorUsage" in u or "Alarm" in u or u.endswith(":Requests"):
+        return CAT_AGENTS
+    return CAT_OTHER
 
 
 def classify_usage_type(usage_type):
@@ -132,27 +163,36 @@ def parse_cost_response(pages):
                     continue
                 if amt != amt:
                     continue
+                uq = (g.get("Metrics") or {}).get("UsageQuantity") or {}
+                try:
+                    qty = float(uq.get("Amount"))
+                    if qty != qty:
+                        qty = None
+                except (TypeError, ValueError):
+                    qty = None
                 out.append({"usage_type": str(keys[0]), "billed_account_id": str(keys[1]),
-                            "usage_date": d, "amount_usd": amt, "estimated": est})
+                            "usage_date": d, "amount_usd": amt, "estimated": est,
+                            "quantity": qty, "unit": (str(uq.get("Unit"))[:40] if uq.get("Unit") else None)})
     return out
 
 
-def fetch_cloudwatch_cost(session, today=None):
-    """One account's CloudWatch charges for the last LOOKBACK_DAYS days, daily, by usage type and billed account.
-    Returns (rows, ce_requests). Raises botocore errors to the caller. At most MAX_PAGES requests."""
+def fetch_cloudwatch_cost_ex(session, today=None, days=LOOKBACK_DAYS, max_pages=MAX_PAGES):
+    """One account's CloudWatch charges for the last `days` days, daily, by usage type and billed account, with both
+    cost and usage quantity (same request, no extra charge). Returns (rows, ce_requests, truncated). `truncated` is
+    True when AWS still had more pages after max_pages requests: the caller must say so, never present it as complete."""
     from app.aws.boto_config import STANDARD_RETRY
     today = today or datetime.now(timezone.utc).date()
     ce = session.client("ce", region_name=CE_REGION, config=STANDARD_RETRY)
     kwargs = {
-        "TimePeriod": {"Start": (today - timedelta(days=LOOKBACK_DAYS)).isoformat(),
+        "TimePeriod": {"Start": (today - timedelta(days=days)).isoformat(),
                        "End": (today + timedelta(days=1)).isoformat()},   # End is exclusive
         "Granularity": "DAILY",
-        "Metrics": ["UnblendedCost"],
+        "Metrics": ["UnblendedCost", "UsageQuantity"],
         "Filter": {"Dimensions": {"Key": "SERVICE", "Values": [CE_SERVICE]}},
         "GroupBy": [{"Type": "DIMENSION", "Key": "USAGE_TYPE"}, {"Type": "DIMENSION", "Key": "LINKED_ACCOUNT"}],
     }
-    pages, requests = [], 0
-    while requests < MAX_PAGES:
+    pages, requests, truncated = [], 0, False
+    while requests < max_pages:
         resp = ce.get_cost_and_usage(**kwargs)
         requests += 1
         pages.append(resp)
@@ -160,7 +200,15 @@ def fetch_cloudwatch_cost(session, today=None):
         if not token:
             break
         kwargs["NextPageToken"] = token
-    return parse_cost_response(pages), requests
+    else:
+        truncated = True
+    return parse_cost_response(pages), requests, truncated
+
+
+def fetch_cloudwatch_cost(session, today=None):
+    """Backwards-compatible wrapper: (rows, ce_requests)."""
+    rows, requests, _ = fetch_cloudwatch_cost_ex(session, today)
+    return rows, requests
 
 
 # ── persistence ────────────────────────────────────────────────────────────
@@ -191,21 +239,60 @@ def _last_attempt(account_pk):
         conn.close()
 
 
-def _save(account, status, requests, rows, error):
+def _backfilled(account_pk):
+    """True once a read of at least BACKFILL_DAYS succeeded for this account (so later reads only need REFRESH_DAYS).
+    Any failure (no database, column not there yet because migration 125 is pending) means: read the long window."""
+    conn = cur = None
+    try:
+        from app.db import get_connection
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT MAX(window_days) FROM aws_cost_fetch_log WHERE aws_account_id = %s AND status = 'ok'",
+                    (account_pk,))
+        r = cur.fetchone()
+        return bool(r and r[0] is not None and int(r[0]) >= BACKFILL_DAYS)
+    except Exception:
+        return False
+    finally:
+        for h in (cur, conn):
+            try:
+                if h is not None:
+                    h.close()
+            except Exception:
+                pass
+
+
+def _save(account, status, requests, rows, error, window_days=None):
     from app.db import get_connection
     conn = get_connection()
     cur = conn.cursor()
     try:
-        for r in rows:
-            cur.execute(
-                "INSERT INTO aws_cost_actuals (billed_account_id, usage_type, usage_date, amount_usd, estimated, fetched_via) "
-                "VALUES (%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE amount_usd=VALUES(amount_usd), "
-                "estimated=VALUES(estimated), fetched_via=VALUES(fetched_via), fetched_at=CURRENT_TIMESTAMP",
-                (r["billed_account_id"], r["usage_type"][:120], r["usage_date"], round(r["amount_usd"], 6),
-                 1 if r["estimated"] else 0, account["id"]))
-        cur.execute("INSERT INTO aws_cost_fetch_log (aws_account_id, account_name, status, ce_requests, rows_written, error) "
-                    "VALUES (%s,%s,%s,%s,%s,%s)",
-                    (account["id"], account.get("account_name"), status, requests, len(rows), (error or None) and error[:500]))
+        try:
+            for r in rows:
+                cur.execute(
+                    "INSERT INTO aws_cost_actuals (billed_account_id, usage_type, usage_date, amount_usd, estimated, fetched_via, "
+                    "usage_quantity, usage_unit) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE amount_usd=VALUES(amount_usd), "
+                    "estimated=VALUES(estimated), fetched_via=VALUES(fetched_via), usage_quantity=VALUES(usage_quantity), "
+                    "usage_unit=VALUES(usage_unit), fetched_at=CURRENT_TIMESTAMP",
+                    (r["billed_account_id"], r["usage_type"][:120], r["usage_date"], round(r["amount_usd"], 6),
+                     1 if r["estimated"] else 0, account["id"], r.get("quantity"), r.get("unit")))
+            cur.execute("INSERT INTO aws_cost_fetch_log (aws_account_id, account_name, status, ce_requests, rows_written, error, window_days) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                        (account["id"], account.get("account_name"), status, requests, len(rows), (error or None) and error[:500], window_days))
+        except Exception as e:
+            if "1054" not in str(e) and "Unknown column" not in str(e):
+                raise
+            conn.rollback()                # migration 125 not applied yet: store what the old schema can hold
+            for r in rows:
+                cur.execute(
+                    "INSERT INTO aws_cost_actuals (billed_account_id, usage_type, usage_date, amount_usd, estimated, fetched_via) "
+                    "VALUES (%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE amount_usd=VALUES(amount_usd), "
+                    "estimated=VALUES(estimated), fetched_via=VALUES(fetched_via), fetched_at=CURRENT_TIMESTAMP",
+                    (r["billed_account_id"], r["usage_type"][:120], r["usage_date"], round(r["amount_usd"], 6),
+                     1 if r["estimated"] else 0, account["id"]))
+            cur.execute("INSERT INTO aws_cost_fetch_log (aws_account_id, account_name, status, ce_requests, rows_written, error) "
+                        "VALUES (%s,%s,%s,%s,%s,%s)",
+                        (account["id"], account.get("account_name"), status, requests, len(rows), (error or None) and error[:500]))
         conn.commit()
     finally:
         cur.close()
@@ -213,16 +300,23 @@ def _save(account, status, requests, rows, error):
 
 
 def refresh_account(account):
-    """Fetch and store one account. Never raises; returns {account, status, ce_requests, rows, error}."""
-    status, requests, rows, error = STATUS_OK, 0, [], None
+    """Fetch and store one account. Never raises; returns {account, status, ce_requests, rows, error}.
+    First read: BACKFILL_DAYS of history. Every later read: REFRESH_DAYS (AWS only restates the last ~48 h), which keeps
+    the per-day Cost Explorer charge at one request per account instead of re-reading months of settled data."""
+    status, requests, rows, error, window = STATUS_OK, 0, [], None, REFRESH_DAYS
     try:
         from app.aws.sts import get_boto3_session
-        rows, requests = fetch_cloudwatch_cost(get_boto3_session(account))
+        window = REFRESH_DAYS if _backfilled(account["id"]) else BACKFILL_DAYS
+        rows, requests, truncated = fetch_cloudwatch_cost_ex(
+            get_boto3_session(account), days=window,
+            max_pages=MAX_PAGES if window == REFRESH_DAYS else MAX_PAGES_BACKFILL)
+        if truncated:
+            status, error = STATUS_ERROR, f"Cost Explorer returned more pages than the {requests}-request limit: data is incomplete"
     except Exception as e:
         status, error = classify_error(e)
         logger.warning(f"[actual-cost] {account.get('account_name')}: {status}: {error}")
     try:
-        _save(account, status, requests, rows, error)
+        _save(account, status, requests, rows, error, window_days=window if status == STATUS_OK else None)
     except Exception:
         logger.exception("[actual-cost] could not store result")
     return {"account": account.get("account_name"), "status": status, "ce_requests": requests,

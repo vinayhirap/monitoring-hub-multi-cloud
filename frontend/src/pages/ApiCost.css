@@ -35,3 +35,48 @@
 .ac-acct { margin: 0 0 var(--space-4); padding: var(--space-3); border: 1px solid var(--border-md); border-radius: var(--radius); display: grid; gap: 10px; }
 .ac-acct-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; font-size: 14px; }
 .ac-acct-total { font-family: var(--font-mono); font-size: 15px; }
+
+/* ── Cost Explorer view ── */
+.ac-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.ac-params { display: flex; flex-wrap: wrap; gap: 14px 18px; align-items: flex-end; padding: 12px 0 8px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+.ac-field { display: grid; gap: 4px; font-size: 12px; color: var(--text-muted); }
+.ac-field > span { text-transform: uppercase; letter-spacing: .06em; font-size: 10.5px; }
+.ac-field select, .ac-field input[type="date"] {
+  padding: 6px 8px; border-radius: var(--radius); border: 1px solid var(--border-md); background: var(--bg-elevated);
+  color: var(--text-primary); font-size: 13px; min-height: 32px;
+}
+.ac-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+.ac-dd { position: relative; }
+.ac-dd > summary {
+  list-style: none; cursor: pointer; padding: 6px 10px; border-radius: var(--radius); border: 1px solid var(--border-md);
+  background: var(--bg-elevated); color: var(--text-primary); font-size: 13px; min-height: 32px; display: flex; align-items: center;
+}
+.ac-dd > summary::-webkit-details-marker { display: none; }
+.ac-dd[open] > summary { border-color: var(--accent); }
+.ac-dd-menu {
+  position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; min-width: 260px; max-height: 280px; overflow: auto;
+  padding: 8px; display: grid; gap: 6px; border-radius: var(--radius); border: 1px solid var(--border-md);
+  background: var(--bg-elevated); box-shadow: 0 8px 24px rgba(0,0,0,.35);
+}
+.ac-dd-opt { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--text-primary); cursor: pointer; }
+.ac-link { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font-size: 12px; text-decoration: underline; }
+.ac-h { margin: var(--space-4) 0 var(--space-2); font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.ac-chart { width: 100%; height: auto; display: block; }
+.ac-grid { stroke: var(--border); stroke-width: 1; }
+.ac-axis { fill: var(--text-muted); font-size: 11px; font-family: var(--font-mono); }
+.ac-bar-on rect:not([fill="transparent"]) { filter: brightness(1.25); }
+.ac-legend { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--text-muted); }
+.ac-legend li, .ac-readout span { display: inline-flex; align-items: center; gap: 6px; }
+.ac-legend i, .ac-readout i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.ac-legend i.ac-prov { background: var(--accent); opacity: .45; }
+.ac-readout { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; min-height: 28px; margin-top: 6px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 12.5px; }
+.ac-tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.ac-table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: 12.5px; }
+.ac-table th, .ac-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; text-align: left; }
+.ac-table thead th { color: var(--text-muted); font-weight: 600; background: var(--bg-elevated); }
+.ac-table tfoot td { font-weight: 600; border-top: 1px solid var(--border-md); }
+.ac-num { text-align: right !important; font-family: var(--font-mono); }
+.ac-sticky { position: sticky; left: 0; background: var(--bg-elevated); z-index: 1; max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+.ac-fold { margin-top: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; }
+.ac-fold > summary { cursor: pointer; font-size: 13.5px; font-weight: 600; }
+.ac-metering-head { display: flex; justify-content: flex-end; margin: 10px 0; }

@@ -391,3 +391,93 @@ def test_unpriced_rows_are_flagged_not_shown_as_free(usage):
     assert rep["providers"][0]["tiers"][0]["priced"] is False
     priced = usage.build_report([row("aws", "standard", 5, 100)], 7, now=1_700_000_100)
     assert priced["providers"][0]["tiers"][0]["priced"] is True
+
+
+# ── cost explorer (filters, grouping, onboarded-region scope, cross-check) ───
+from datetime import date as _date
+
+EX_NOW = datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc).timestamp()
+EX_ROWS = [
+    # (billed account, usage type, date, usd, estimated, quantity, unit)
+    ("111", "APS3-CW:GMD-Metrics", "2026-10-20", 0.40, 1, 40000, "Metrics"),
+    ("111", "APS3-CW:GMD-Metrics", "2026-10-21", 0.50, 1, 50000, "Metrics"),
+    ("111", "APS3-CW:MetricMonitorUsage", "2026-10-21", 3.00, 1, 10, "Metrics"),
+    ("111", "USE1-DataProcessing-Bytes", "2026-10-21", 5.00, 1, 100, "GB"),                 # us-east-1: not onboarded
+    ("222", "APS3-S3-Egress-Bytes-WAFLogs", "2026-10-22", 0.80, 1, 8, "GB"),
+    ("222", "APS3-CW:GMD-Metrics", "2026-10-23", 0.30, 1, 30000, "Metrics"),
+]
+EX_NAMES = {"111": "AuroGov", "222": "U4RAD"}
+EX_ONB = {"111": {"ap-south-1"}, "222": {"ap-south-1"}}
+
+
+def ex(usage, **kw):
+    args = dict(start=_date(2026, 10, 18), end=_date(2026, 10, 24), names=EX_NAMES, onboarded=EX_ONB, now=EX_NOW)
+    args.update(kw)
+    return usage.build_explorer(EX_ROWS, **args)
+
+
+def test_explorer_scopes_to_onboarded_regions_but_still_reconciles_to_the_bill(usage):
+    r = ex(usage)
+    assert r["totals"]["billed_usd"] == 5.0                              # 0.4+0.5+3.0+0.8+0.3, the us-east-1 5.00 is out of scope
+    assert r["out_of_scope"] == {"usd": 5.0, "hidden": True, "by_region": [{"region": "us-east-1", "usd": 5.0}]}
+    assert r["reconciliation"]["ok"] and r["reconciliation"]["selected_usd"] == 10.0 == r["reconciliation"]["all_rows_usd"]
+    assert ex(usage, scope="all")["totals"]["billed_usd"] == 10.0
+
+
+def test_explorer_separates_cloudops_polling_from_everything_else(usage):
+    r = ex(usage)
+    assert r["totals"]["cloudops_usd"] == 1.2 and r["totals"]["other_usd"] == 3.8
+    cats = {c["key"]: c["usd"] for c in r["by_category"]}
+    assert cats == {"agents_alarms": 3.0, "cloudops_reads": 1.2, "logs": 0.8}
+    assert r["groups"][0]["key"] == "agents_alarms"                       # biggest first, nothing hidden by the grouping
+
+
+def test_explorer_group_by_account_region_usage_type_and_filters(usage):
+    by_acct = {g["key"]: g["total"] for g in ex(usage, group_by="account")["groups"]}
+    assert by_acct == {"111": 3.9, "222": 1.1}
+    assert [g["key"] for g in ex(usage, group_by="region")["groups"]] == ["ap-south-1"]
+    only = ex(usage, group_by="usage_type", accounts={"222"})
+    assert only["totals"]["billed_usd"] == 1.1 and {g["key"] for g in only["groups"]} == {"APS3-S3-Egress-Bytes-WAFLogs", "APS3-CW:GMD-Metrics"}
+    assert ex(usage, categories={"cloudops_reads"})["totals"]["billed_usd"] == 1.2
+
+
+def test_explorer_periods_provisional_flags_and_monthly_rollup(usage):
+    r = ex(usage)
+    assert [p["provisional"] for p in r["periods"]] == [False, False, False, False, False, True, True]   # now = 10-24 -> 10-23, 10-24
+    assert r["totals"]["settled_days"] == 3 and r["totals"]["avg_per_settled_day_usd"] == round((0.4 + 0.5 + 3.0 + 0.8) / 3, 4)   # 10-20, 21, 22
+    m = ex(usage, granularity="monthly", start=_date(2026, 9, 25))
+    assert [p["key"] for p in m["periods"]] == ["2026-09", "2026-10"] and m["groups"][0]["values"][0] == 0.0
+    assert round(sum(m["groups"][0]["values"]), 4) == m["groups"][0]["total"]
+
+
+def test_explorer_cross_checks_cloudops_meter_against_billed_metrics_on_settled_days(usage):
+    r = ex(usage, metered_metrics=90000)
+    # settled days only (<= 10-22): 40000 + 50000 billed; the 10-23 row (provisional) is not compared
+    assert r["cloudops_check"] == {"billed_metrics": 90000, "metered_metrics": 90000, "difference_pct": 0.0, "through": "2026-10-22"}
+    assert ex(usage)["cloudops_check"] is None
+    assert ex(usage, metered_metrics=99000)["cloudops_check"]["difference_pct"] == 10.0
+
+
+def test_explorer_usage_quantity_and_gmd_series(usage):
+    r = ex(usage, group_by="usage_type")
+    g = {x["key"]: x for x in r["groups"]}["APS3-CW:GMD-Metrics"]
+    assert g["quantity"] == 120000.0 and g["unit"] == "Metrics"
+    assert r["gmd_usage"]["unit"] == "Metrics" and sum(r["gmd_usage"]["values"]) == 120000.0
+
+
+def test_explorer_unknown_account_is_kept_and_options_list_everything(usage):
+    rows = EX_ROWS + [("999", "APS3-CW:Requests", "2026-10-20", 1.0, 1, 1000, "Requests")]
+    r = usage.build_explorer(rows, _date(2026, 10, 18), _date(2026, 10, 24), names=EX_NAMES, onboarded=EX_ONB, now=EX_NOW)
+    assert r["totals"]["billed_usd"] == 6.0                               # an account CloudOps does not know is not silently dropped
+    assert {a["id"] for a in r["options"]["accounts"]} == {"111", "222", "999"}
+    assert "us-east-1" in r["options"]["regions"] and len(r["options"]["categories"]) == 4
+
+
+def test_explorer_never_adds_quantities_of_different_units(usage):
+    r = ex(usage, group_by="category")
+    by = {g["key"]: g for g in r["groups"]}
+    assert by["cloudops_reads"]["quantity"] == 120000.0 and by["cloudops_reads"]["unit"] == "Metrics"
+    mixed = usage.build_explorer(EX_ROWS + [("111", "APS3-CW:Requests", "2026-10-20", 1.0, 1, 5, "Requests")], _date(2026, 10, 18),
+                                 _date(2026, 10, 24), names=EX_NAMES, onboarded=EX_ONB, now=EX_NOW)
+    agents = {g["key"]: g for g in mixed["groups"]}["agents_alarms"]          # Metrics (stored) + Requests
+    assert agents["quantity"] is None and agents["unit"] is None

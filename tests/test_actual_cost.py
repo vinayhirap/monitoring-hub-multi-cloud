@@ -42,12 +42,13 @@ def test_the_query_is_cloudwatch_only_daily_unblended_in_us_east_1():
     rows, reqs = ce.fetch_cloudwatch_cost(sess, today=date(2026, 10, 22))
     kw = fake.calls[0]
     assert sess.requested == [("ce", "us-east-1")] and reqs == 1
-    assert kw["Granularity"] == "DAILY" and kw["Metrics"] == ["UnblendedCost"]
+    assert kw["Granularity"] == "DAILY" and kw["Metrics"] == ["UnblendedCost", "UsageQuantity"]
     assert kw["Filter"] == {"Dimensions": {"Key": "SERVICE", "Values": ["AmazonCloudWatch"]}}
     assert [g["Key"] for g in kw["GroupBy"]] == ["USAGE_TYPE", "LINKED_ACCOUNT"]
     assert kw["TimePeriod"] == {"Start": "2026-09-21", "End": "2026-10-23"}      # End is exclusive, includes today
     assert rows == [{"usage_type": "APS3-CW:GMD-Metrics", "billed_account_id": "111",
-                     "usage_date": date(2026, 10, 20), "amount_usd": 1.25, "estimated": False}]
+                     "usage_date": date(2026, 10, 20), "amount_usd": 1.25, "estimated": False,
+                     "quantity": None, "unit": None}]
 
 
 def test_only_the_read_only_cost_call_is_ever_made():
@@ -132,7 +133,7 @@ def test_refresh_skips_accounts_fetched_recently_and_force_uses_the_short_cooldo
 
 def test_refresh_account_never_raises_and_records_a_permission_failure(monkeypatch):
     saved = {}
-    monkeypatch.setattr(ce, "_save", lambda acct, status, reqs, rows, err: saved.update(status=status, reqs=reqs, rows=rows))
+    monkeypatch.setattr(ce, "_save", lambda acct, status, reqs, rows, err, window_days=None: saved.update(status=status, reqs=reqs, rows=rows))
     import app.aws.sts as sts
     monkeypatch.setattr(sts, "get_boto3_session", lambda a: FakeSession(FakeCE(error=_Err("AccessDeniedException"))))
     out = ce.refresh_account({"id": 1, "account_name": "A"})
@@ -170,3 +171,36 @@ def test_help_names_the_permission_the_cost_and_the_status_values():
     assert sec["requires"] == "usage.manage"
     for needle in ("ce:GetCostAndUsage", "ACTUAL_COST_ENABLED", "once a day", "permission missing", "docs/AWS_ACTUAL_COST.md"):
         assert needle in text
+
+
+# ── explorer additions: categories, usage quantity, truncation, incremental window ──
+def test_categories_attribute_only_getmetricdata_to_cloudops():
+    c = ce.usage_category
+    assert c("APS3-CW:GMD-Metrics") == c("CW:GMD-Metrics") == ce.CAT_CLOUDOPS
+    for u in ("APS3-CW:MetricMonitorUsage", "APS3-CW:AlarmMonitorUsage", "APS3-CW:Requests", "CW:Requests"):
+        assert c(u) == ce.CAT_AGENTS                       # PutMetricData / stored metrics / alarms: not CloudOps polling
+    for u in ("APS3-S3-Egress-Bytes-WAFLogs", "APS3-S3-Egress-Bytes", "USE1-DataProcessing-Bytes",
+              "APS5-VendedLog-Bytes", "APS3-TimedStorage-ByteHrs"):
+        assert c(u) == ce.CAT_LOGS
+    assert c("APS3-Something-New") == ce.CAT_OTHER         # never dropped
+
+
+def test_usage_quantity_and_unit_are_parsed_and_missing_quantity_is_none():
+    p = page([("APS3-CW:GMD-Metrics", "111", "0.42")])
+    p["ResultsByTime"][0]["Groups"][0]["Metrics"]["UsageQuantity"] = {"Amount": "42241", "Unit": "Metrics"}
+    r = ce.parse_cost_response([p])[0]
+    assert r["quantity"] == 42241.0 and r["unit"] == "Metrics" and r["amount_usd"] == 0.42
+
+
+def test_truncated_read_is_reported_not_presented_as_complete():
+    fake = FakeCE([page([("A", "1", "1")], token="t1"), page([("A", "1", "1")], token="t2")])
+    rows, reqs, truncated = ce.fetch_cloudwatch_cost_ex(FakeSession(fake), today=date(2026, 10, 22), max_pages=2)
+    assert reqs == 2 and truncated is True
+    fake = FakeCE([page([("A", "1", "1")], token="t1"), page([("A", "1", "1")])])
+    assert ce.fetch_cloudwatch_cost_ex(FakeSession(fake), today=date(2026, 10, 22), max_pages=2)[2] is False
+
+
+def test_window_days_controls_the_requested_period():
+    fake = FakeCE([page([])])
+    ce.fetch_cloudwatch_cost_ex(FakeSession(fake), today=date(2026, 10, 22), days=14)
+    assert fake.calls[0]["TimePeriod"] == {"Start": "2026-10-08", "End": "2026-10-23"}
