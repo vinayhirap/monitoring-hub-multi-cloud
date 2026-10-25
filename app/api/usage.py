@@ -487,9 +487,9 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
     last_settled = today.fromordinal(today.toordinal() - PROVISIONAL_DAYS)
     accounts, regions, categories = set(accounts or ()), set(regions or ()), set(categories or ())
     if cloudops_only:
-        # CloudOps-caused cost only: GetMetricData, in EVERY region (CloudOps polled there, so it is its cost). Region
-        # scoping would hide real CloudOps charges, so it is off. The rest of the CloudWatch bill is only totalled.
-        categories, scope = {CAT_CLOUDOPS}, "all"
+        # CloudOps-caused cost only: GetMetricData. Region scoping stays as asked (an account is onboarded in one region,
+        # its default_region); what is billed elsewhere is not shown, only totalled in `out_of_scope` for the footnote.
+        categories = {CAT_CLOUDOPS}
     excluded = 0.0
     opt_accts, opt_regions = {}, {}
 
@@ -533,17 +533,18 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
             if not accounts or acct in accounts:
                 excluded += amt                       # in the accounts being looked at, but not what this view is about
             continue
+        in_scope = scope != "onboarded" or acct not in onboarded or region in onboarded[acct]
+        if not in_scope:                                  # a region this account is not onboarded in: not shown, only totalled
+            if not accounts or acct in accounts:
+                out_total += amt
+                out_regions[region] = out_regions.get(region, 0.0) + amt
+            continue
         seen_accounts.add(acct)
         seen_regions.add(region)
         opt_accts[acct] = opt_accts.get(acct, 0.0) + amt
         opt_regions[region] = opt_regions.get(region, 0.0) + amt
         dates_with_data.add(d)
         if accounts and acct not in accounts:
-            continue
-        in_scope = scope != "onboarded" or acct not in onboarded or region in onboarded[acct]
-        if not in_scope:
-            out_total += amt
-            out_regions[region] = out_regions.get(region, 0.0) + amt
             continue
         if regions and region not in regions:
             continue
@@ -712,15 +713,10 @@ def cost_explorer_report(start: str = Query(None), end: str = Query(None), granu
             cur.execute("SELECT account_id, account_name FROM aws_accounts WHERE provider = 'aws'")
             names = {str(r[0]): r[1] for r in cur.fetchall()}
             try:
-                cur.execute("SELECT a.account_id, a.default_region, r.region FROM aws_accounts a "
-                            "LEFT JOIN (SELECT DISTINCT aws_account_id, region FROM resources WHERE region IS NOT NULL AND region <> '') r "
-                            "ON r.aws_account_id = a.id WHERE a.provider = 'aws'")
-                for acct, default_region, region in cur.fetchall():
-                    bucket = onboarded.setdefault(str(acct), set())
-                    if default_region:
-                        bucket.add(default_region)
-                    if region:
-                        bucket.add(region)
+                cur.execute("SELECT account_id, default_region FROM aws_accounts WHERE provider = 'aws' AND status = 'active'")
+                for acct, default_region in cur.fetchall():
+                    if default_region:                    # discovery and polling use only this region, so this is where CloudOps is onboarded
+                        onboarded.setdefault(str(acct), set()).add(default_region)
             except Exception:
                 logger.exception("cost-explorer: could not read onboarded regions")
                 onboarded, scope_note = {}, "Onboarded regions could not be read, so every region is shown."

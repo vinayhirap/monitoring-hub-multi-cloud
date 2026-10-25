@@ -411,6 +411,7 @@ function CostExplorer() {
       {bad.map(x => <p key={x.account} className="ac-p">{x.account}: {STATUS_TEXT[x.status] || x.status}{x.error ? ` (${x.error})` : ""}</p>)}
       {d.state !== "no_accounts" && <p className="ac-dim ac-foot">
         Last read from {pname}: {newest ? new Date(newest).toLocaleString() : "not yet"} · cost of checking {usd(d.lookup_cost_usd)} ({isAws ? `${n(d.lookup_requests)} Cost Explorer requests at $0.01` : `${n(d.lookup_requests)} requests${pname === "GCP" ? ", BigQuery bytes at list price (first TiB a month is free)" : ", no charge"}`}, last 31 days).
+        {d.out_of_scope?.usd > 0 && <> Not shown: {usd(d.out_of_scope.usd)} billed in {d.out_of_scope.by_region.map(r => r.region).join(", ")}, where no {pname} account is onboarded.</>}
         {d.excluded?.usd > 0 && <> Not shown: {usd(d.excluded.usd)} of other {isAws ? "CloudWatch" : `${pname} monitoring`} charges in {accts.length ? "the selected" : "these"} accounts that CloudOps does not create ({isAws ? "custom metrics, alarms, logs, API requests from agents" : "ingestion, logs, alerts and similar"}).</>}
         {" "}Today and yesterday are provisional. Tax (for example GST) is billed separately and is not included.
       </p>}

@@ -462,7 +462,7 @@ def test_explorer_unknown_account_is_kept_and_options_list_everything(usage):
     r = usage.build_explorer(rows, _date(2026, 10, 18), _date(2026, 10, 24), names=EX_NAMES, onboarded=EX_ONB, now=EX_NOW)
     assert r["totals"]["billed_usd"] == 6.0                               # an account CloudOps does not know is not silently dropped
     assert {a["id"] for a in r["options"]["accounts"]} == {"111", "222", "999"}
-    assert "us-east-1" in r["options"]["regions"] and len(r["options"]["categories"]) == 4
+    assert r["options"]["regions"] == ["ap-south-1"] and len(r["options"]["categories"]) == 4      # us-east-1 is not onboarded: no option for it
 
 
 def test_explorer_never_adds_quantities_of_different_units(usage):
@@ -476,18 +476,34 @@ def test_explorer_never_adds_quantities_of_different_units(usage):
 
 
 # ── CloudOps-only view: only what CloudOps itself causes, every region ────────
-def test_cloudops_only_keeps_getmetricdata_in_every_region_and_only_totals_the_rest(usage):
-    rows = EX_ROWS + [("111", "APS5-CW:GMD-Metrics", "2026-10-21", 0.05, 1, 5000, "Metrics"),       # CloudOps polled there: its cost
+def test_cloudops_only_hides_regions_the_account_is_not_onboarded_in_and_only_totals_them(usage):
+    rows = EX_ROWS + [("111", "APS5-CW:GMD-Metrics", "2026-10-21", 0.05, 1, 5000, "Metrics"),
                       ("111", "USE1-CW:GMD-Metrics", "2026-10-21", 0.02, 1, 2000, "Metrics")]
     r = usage.build_explorer(rows, _date(2026, 10, 18), _date(2026, 10, 24), group_by="account", names=EX_NAMES,
                              onboarded=EX_ONB, now=EX_NOW, cloudops_only=True)
-    assert r["totals"]["billed_usd"] == round(0.4 + 0.5 + 0.3 + 0.05 + 0.02, 4) == r["totals"]["cloudops_usd"]
-    assert r["totals"]["other_usd"] == 0.0 and r["out_of_scope"]["usd"] == 0.0           # nothing hidden by region
-    assert r["excluded"] == {"usd": round(3.0 + 5.0 + 0.8, 4), "applies": True}          # the rest is totalled, never shown as cost
+    assert r["totals"]["billed_usd"] == round(0.4 + 0.5 + 0.3, 4) == r["totals"]["cloudops_usd"]      # ap-south-1 only
+    assert r["out_of_scope"]["usd"] == 0.07 and {x["region"] for x in r["out_of_scope"]["by_region"]} == {"APS5", "us-east-1"}
+    assert r["excluded"] == {"usd": round(3.0 + 5.0 + 0.8, 4), "applies": True}
     assert {x["id"] for x in r["options"]["accounts"]} == {"111", "222"}
-    assert set(r["options"]["regions"]) == {"ap-south-1", "APS5", "us-east-1"}            # only regions CloudOps was billed in
-    assert r["totals"]["metrics_requested"] == 40000 + 50000 + 30000 + 5000 + 2000
-    assert r["totals"]["usd_per_1000_metrics"] == 0.01                                    # effective rate from AWS's own figures
+    assert r["options"]["regions"] == ["ap-south-1"]                                                    # no option for a region not onboarded
+    assert r["totals"]["metrics_requested"] == 40000 + 50000 + 30000
+    assert r["totals"]["usd_per_1000_metrics"] == 0.01
+    assert [g["key"] for g in usage.build_explorer(rows, _date(2026, 10, 18), _date(2026, 10, 24), group_by="region", onboarded=EX_ONB,
+                                                   now=EX_NOW, cloudops_only=True)["groups"]] == ["ap-south-1"]
+
+
+def test_cloudops_only_shows_a_region_once_an_account_is_onboarded_in_it(usage):
+    rows = [("111", "APS3-CW:GMD-Metrics", "2026-10-21", 0.4, 1, 40000, "Metrics"),
+            ("111", "USE1-CW:GMD-Metrics", "2026-10-21", 0.02, 1, 2000, "Metrics")]
+    r = usage.build_explorer(rows, _date(2026, 10, 18), _date(2026, 10, 24), group_by="region", names=EX_NAMES,
+                             onboarded={"111": {"ap-south-1", "us-east-1"}}, now=EX_NOW, cloudops_only=True)
+    assert {g["key"] for g in r["groups"]} == {"ap-south-1", "us-east-1"} and r["out_of_scope"]["usd"] == 0.0
+
+
+def test_an_account_with_no_known_region_shows_every_region_rather_than_nothing(usage):
+    rows = [("111", "APS3-CW:GMD-Metrics", "2026-10-21", 0.4, 1, 40000, "Metrics")]
+    r = usage.build_explorer(rows, _date(2026, 10, 18), _date(2026, 10, 24), onboarded={}, now=EX_NOW, cloudops_only=True)
+    assert r["totals"]["billed_usd"] == 0.4
 
 
 def test_cloudops_only_account_filter_applies_to_the_excluded_total_too(usage):
