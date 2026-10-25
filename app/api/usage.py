@@ -777,3 +777,201 @@ def actual_cost_refresh(current_user: dict = Depends(require_permission("usage.m
     results = cost_explorer.refresh_due(force=True) + cloud_cost.refresh_due(force=True)
     return {"results": results,
             "message": None if results else "Nothing refreshed: every account was refreshed within the last hour, or a refresh is already running."}
+
+
+# ── cost by polling tier (why CloudOps costs what it does, and where to cut) ─────────────────────────────────────────
+# Source: the same metered op_events rows as /cloud-cost, so this is a LIST-PRICE ESTIMATE of CloudOps's own reads, not
+# the invoice. The savings figure is arithmetic, not a forecast: the number of paid calls a tier makes is inversely
+# proportional to its polling interval, so polling half as often removes half of that tier's calls.
+USER_TRIGGERED_TIERS = ("ui", "discovery")
+
+
+def _tier_label(tier):
+    return {"critical": "Critical (2 min)", "standard": "Standard (5 min)", "low": "Low (15 min)",
+            "extended": "Extended (hourly)", "slow_extended": "Daily", "tag_sync": "Tag sync",
+            "ui": "Pages opened by users", "discovery": "Metric discovery"}.get(tier, tier)
+
+
+def build_tier_cost(rows, days, env_polling=None, now=None):
+    """Estimated CloudOps cost per (cloud, polling tier). Pure: no database. `env_polling` is env_polling_state()'s dict."""
+    now = time.time() if now is None else now
+    providers, meta = aggregate(rows)
+    lines = {}
+    for name, p in providers.items():
+        for (tier, source, operation), t in p["tiers"].items():
+            ln = lines.setdefault((name, tier), {"provider": name, "tier": tier, "usd": 0.0, "units": 0, "calls": 0,
+                                                 "request_units": 0, "unpriced_units": 0, "operations": set()})
+            ln["calls"] += t["calls"]
+            ln["unpriced_units"] += t["unpriced_units"]
+            if operation:
+                ln["operations"].add(operation)
+            if t["is_request"]:
+                ln["request_units"] += t["units"]                 # ListMetrics: requests, never added to metrics requested
+            else:
+                ln["units"] += t["units"]
+                ln["usd"] += t["list_price_usd"]
+    total = sum(ln["usd"] for ln in lines.values())
+    out = []
+    for ln in sorted(lines.values(), key=lambda x: (-x["usd"], x["provider"], x["tier"])):
+        free = ln["tier"] in FREE_TIERS
+        polling = ln["tier"] not in USER_TRIGGERED_TIERS and not free
+        usd = round(ln["usd"], 4)
+        out.append({"provider": ln["provider"], "tier": ln["tier"], "label": _tier_label(ln["tier"]),
+                    "usd": usd, "share_pct": round(100.0 * ln["usd"] / total, 1) if total else 0.0,
+                    "units": ln["units"], "unit": UNITS.get(ln["provider"], "units"), "calls": ln["calls"],
+                    "request_units": ln["request_units"], "unpriced_units": ln["unpriced_units"],
+                    "free": free, "user_triggered": ln["tier"] in USER_TRIGGERED_TIERS,
+                    "halve_saving_usd": round(usd / 2.0, 4) if polling and usd > 0 else None})
+    levers = []
+    polling_lines = [x for x in out if x["halve_saving_usd"]]
+    if polling_lines:
+        top = polling_lines[0]
+        levers.append({"kind": "largest_tier",
+                       "text": (f"{top['label']} on {PROVIDER_NAMES.get(top['provider'], top['provider'])} is the largest line, "
+                                f"{top['share_pct']}% of the estimate. Polling it half as often would remove about "
+                                f"{top['halve_saving_usd']:.4f} USD over the same period (arithmetic, assuming cost follows call count).")})
+    user_usd = sum(x["usd"] for x in out if x["user_triggered"])
+    if user_usd > 0 and total:
+        levers.append({"kind": "user_triggered",
+                       "text": (f"{round(100.0 * user_usd / total, 1)}% of the estimate comes from reads that people trigger "
+                                f"(pages opened, metric discovery), not from scheduled polling.")})
+    if env_polling is not None and not env_polling.get("enabled") and polling_lines:
+        levers.append({"kind": "env_polling_off",
+                       "text": "Environment polling is OFF, so NON-PROD resources are polled as often as PROD. Turning it on "
+                               "lowers only NON-PROD polling; PROD and unplaced resources are unchanged."})
+    notes = ["List-price estimate of CloudOps's own metered reads, not the invoice. Free tiers are ignored, so Azure and GCP "
+             "figures are a ceiling. Rows with no stored rate are counted as unpriced, not as zero.",
+             "A tier's savings line is arithmetic (calls scale with 1 / polling interval), not a forecast of the bill."]
+    fresh = freshness(meta, days, now)
+    if fresh["status"] == "delayed":
+        notes.append("No usage flush for over two intervals: the newest figures are missing.")
+    return {"days": days, "generated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+            "label": "List-price estimate, not the invoice", "total_usd": round(total, 4), "tiers": out,
+            "levers": levers, "freshness": fresh, "notes": notes}
+
+
+@router.get("/polling-tiers")
+def polling_tiers(days: int = Query(7), current_user: dict = Depends(get_current_user)):
+    if days not in ALLOWED_DAYS:
+        raise HTTPException(status_code=400, detail=f"days must be one of {list(ALLOWED_DAYS)}")
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        rows, truncated = _fetch(days, cur)
+    except Exception:
+        logger.exception("polling-tiers query failed")
+        raise HTTPException(status_code=500, detail="Could not read usage data")
+    finally:
+        cur.close()
+        conn.close()
+    try:
+        env_state = env_polling_state()
+    except Exception:
+        logger.exception("polling-tiers: environment polling state unavailable")
+        env_state = None
+    report = build_tier_cost(rows, days, env_state)
+    if truncated:
+        report["notes"].append(f"More than {MAX_ROWS:,} usage rows in range: only the newest are included, totals are too low.")
+    return report
+
+
+# ── this month and last month (actual billed cost, no forecast) ──────────────────────────────────────────────────────
+def _month_start(d):
+    return d.replace(day=1)
+
+
+def _daily_totals(rep):
+    """{date: usd} summed over every group of a cost-explorer report built with daily granularity."""
+    keys = [p["key"] for p in rep.get("periods", [])]
+    sums = [0.0] * len(keys)
+    for g in rep.get("groups", []):
+        for i, v in enumerate(g.get("values", [])):
+            if i < len(sums):
+                sums[i] += float(v or 0)
+    out = {}
+    for k, v in zip(keys, sums):
+        d = _as_date(k)
+        if d is not None:
+            out[d] = v
+    return out
+
+
+def build_monthly_totals(reports, today, names=None):
+    """This month to date vs last month, per cloud and in total. Pure.
+    reports: {provider: cost-explorer report (daily, CloudOps only, onboarded scope)} - the very figures the Cost page shows.
+    Nothing is forecast: last month is complete, this month is whatever the cloud has billed so far, and
+    `same_period_last_month` repeats last month over the same number of days so the two can be compared like for like."""
+    names = names or PROVIDER_NAMES
+    this_start = _month_start(today)
+    last_end = this_start.fromordinal(this_start.toordinal() - 1)
+    last_start = _month_start(last_end)
+    provs, total_this = [], 0.0
+    total_last = total_same = 0.0
+    n_ok = 0
+    for p, rep in reports.items():
+        state = rep.get("state")
+        if state in ("disabled", "migration_pending", "no_accounts", "error") or "periods" not in rep:
+            provs.append({"provider": p, "name": names.get(p, p), "available": False, "state": state})
+            continue
+        daily = _daily_totals(rep)
+        this_usd = sum(v for d, v in daily.items() if d >= this_start)
+        last_usd = sum(v for d, v in daily.items() if last_start <= d <= last_end)
+        with_data = sorted(d for d, v in daily.items() if v > 0)
+        first = with_data[0] if with_data else None
+        through = _as_date(rep.get("through_date"))
+        n = through.day if through and through >= this_start else 0
+        n = min(n, last_end.day)
+        same = sum(v for d, v in daily.items() if last_start <= d <= last_end and d.day <= n)
+        provs.append({"provider": p, "name": names.get(p, p), "available": True, "state": state,
+                      "this_month_usd": round(this_usd, 4), "last_month_usd": round(last_usd, 4),
+                      "same_period_last_month_usd": round(same, 4) if n else None,
+                      "through_date": rep.get("through_date"),
+                      "last_month_partial": bool(first and first > last_start),
+                      "data_starts": first.isoformat() if first else None})
+        total_this += this_usd
+        total_last += last_usd
+        total_same += same
+        n_ok += 1
+    any_partial = any(x.get("last_month_partial") for x in provs)
+    return {"as_of": today.isoformat(), "currency": "USD",
+            "this_month": {"label": this_start.strftime("%Y-%m"), "start": this_start.isoformat(), "usd": round(total_this, 4),
+                           "provisional_days": PROVISIONAL_DAYS},
+            "last_month": {"label": last_start.strftime("%Y-%m"), "start": last_start.isoformat(), "end": last_end.isoformat(),
+                           "usd": round(total_last, 4), "partial_coverage": any_partial},
+            "same_period_last_month_usd": round(total_same, 4) if n_ok else None,
+            "providers": provs,
+            "notes": ["Actual billed cost of CloudOps's own paid metric calls, the same figures as the cost chart above. No forecast: "
+                      "this month is only what has been billed so far.",
+                      f"The last {PROVISIONAL_DAYS} days are provisional and can still grow, so this month's total can rise after you read it.",
+                      "Tax is billed separately and is not included.",
+                      "Months are UTC calendar months, as the cloud billing data is reported."]
+                     + (["Billing history for at least one cloud starts after the first day of last month, so last month is understated for it."]
+                        if any_partial else [])}
+
+
+@router.get("/monthly-totals")
+def monthly_totals(current_user: dict = Depends(require_permission("usage.manage"))):
+    now = time.time()
+    today = datetime.fromtimestamp(now, tz=timezone.utc).date()
+    last_end = _month_start(today).fromordinal(_month_start(today).toordinal() - 1)
+    start = _month_start(last_end)
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        provs = _active_providers(cur)
+    except Exception:
+        logger.exception("monthly-totals: could not list clouds")
+        raise HTTPException(status_code=500, detail="Could not read actual cost data")
+    finally:
+        cur.close()
+        conn.close()
+    reports = {}
+    for p in provs:
+        try:                                             # exactly what the Cost page shows for this cloud, so the numbers match it
+            reports[p] = cost_explorer_report(start=start.isoformat(), end=today.isoformat(), granularity="daily",
+                                              group_by="category", accounts="", regions="", categories="", scope="onboarded",
+                                              cloudops_only=True, provider=p, current_user=current_user)
+        except HTTPException:
+            logger.exception("monthly-totals: %s report failed", p)
+            reports[p] = {"state": "error"}
+    return build_monthly_totals(reports, today)

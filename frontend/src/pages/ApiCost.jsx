@@ -500,6 +500,101 @@ function Metering() {
   );
 }
 
+// ───────────────────────── This month and last month (billed, no forecast) ─────────────────────────
+function MonthlyTotals() {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    let live = true;
+    apiFetch("/api/usage/monthly-totals").then(r => { if (live) setD(r); }).catch(e => { if (live) setErr(e); });
+    return () => { live = false; };
+  }, []);
+  if (err) return <Panel title="This month and last month"><p className="ac-dim">Could not be loaded. Try again in a moment.</p></Panel>;
+  if (!d) return <Panel title="This month and last month"><Skeleton h={64} /></Panel>;
+  const avail = d.providers.filter(p => p.available);
+  if (avail.length === 0) return null;                    // nothing billed or switched on yet: the page below already explains why
+  const same = d.same_period_last_month_usd;
+  return (
+    <Panel title="This month and last month" subtitle="What the cloud has billed for CloudOps's own metric calls, by UTC calendar month. No forecast.">
+      <KpiStrip>
+        <KpiCard label={`This month so far (${d.this_month.label})`} value={usd(d.this_month.usd)}
+                 sub={`last ${d.this_month.provisional_days} days are provisional and can still grow`} />
+        <KpiCard label={`Last month (${d.last_month.label})`} value={usd(d.last_month.usd)}
+                 sub={d.last_month.partial_coverage ? "understated: billing history starts mid-month for one cloud" : "complete"}
+                 tone={d.last_month.partial_coverage ? "warn" : undefined} />
+        <KpiCard label="Last month, same days" value={same == null ? "n/a" : usd(same)}
+                 sub={same == null ? "no billed days yet this month" : "for comparing like with like"} />
+      </KpiStrip>
+      {avail.length > 1 && (
+        <div className="ac-tablewrap">
+          <table className="ac-table">
+            <thead><tr><th className="ac-sticky">Cloud</th><th>This month so far</th><th>Last month</th><th>Last month, same days</th></tr></thead>
+            <tbody>
+              {avail.map(p => (
+                <tr key={p.provider}>
+                  <td className="ac-sticky">{p.name}</td>
+                  <td className="ac-num">{usd(p.this_month_usd)}</td>
+                  <td className="ac-num">{usd(p.last_month_usd)}{p.last_month_partial ? "*" : ""}</td>
+                  <td className="ac-num">{p.same_period_last_month_usd == null ? "–" : usd(p.same_period_last_month_usd)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <ul className="ac-list">{d.notes.map((t, i) => <li key={i}>{t}</li>)}</ul>
+    </Panel>
+  );
+}
+
+// ───────────────────────── Cost by polling tier (estimate) ─────────────────────────
+function TierCost() {
+  const [days, setDays] = useState(7);
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    let live = true;
+    setD(null); setErr(null);
+    apiFetch(`/api/usage/polling-tiers?days=${days}`).then(r => { if (live) setD(r); }).catch(e => { if (live) setErr(e); });
+    return () => { live = false; };
+  }, [days]);
+  const max = d ? Math.max(0.0001, ...d.tiers.map(t => t.usd)) : 1;
+  return (
+    <Panel title="Cost by polling tier" subtitle="Why CloudOps costs what it does: list-price estimate of its own metered reads, not the invoice"
+           actions={<SegmentedControl label="Range" options={RANGES} value={days} onChange={setDays} />}>
+      {err && <p className="ac-dim">Could not be loaded. Try again in a moment.</p>}
+      {!err && !d && <Skeleton h={120} />}
+      {d && d.freshness.status === "delayed" && <div className="ac-warn" role="alert">No usage flush for {ago(d.freshness.minutes_since)}: the newest figures are missing.</div>}
+      {d && d.tiers.length === 0 && <EmptyState title="No metered reads in this range" body="Usage is written once an hour by the collector that makes the calls. A server that makes no paid calls (for example DEV) shows nothing here." />}
+      {d && d.tiers.length > 0 && (
+        <>
+          <ul className="ac-bars">
+            {d.tiers.map(t => (
+              <li key={`${t.provider}-${t.tier}`} className="ac-bar-row">
+                <span className="ac-bar-name">{t.label} · {CLOUD[t.provider] || t.provider}</span>
+                <svg className="ac-bar-svg" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label={`${usd(t.usd)}, ${t.share_pct}% of the estimate`}>
+                  <rect className="ac-bar-bg" x="0" y="0" width="100" height="8" rx="2" />
+                  {t.usd > 0 && <rect className="ac-bar-fill" x="0" y="0" width={Math.max(1, (100 * t.usd) / max)} height="8" rx="2" />}
+                </svg>
+                <span className="ac-bar-num">{t.free ? "free" : <>{usd(t.usd)} <span className="ac-dim">({t.share_pct}%)</span></>}</span>
+                <span className="ac-bar-sub">{n(t.units)} {UNIT_LABEL[t.unit] || t.unit}{t.unpriced_units > 0 ? " · some reads have no price set" : ""}{t.halve_saving_usd ? ` · half as often: about −${usd(t.halve_saving_usd)}` : ""}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="ac-p"><strong>Total: {usd(d.total_usd)}</strong> in the last {days === 1 ? "24 hours" : `${days} days`}.</p>
+          {d.levers.length > 0 && (
+            <>
+              <h3 className="ac-h">Where to cut</h3>
+              <ul className="ac-list">{d.levers.map(l => <li key={l.kind}>{l.text}</li>)}</ul>
+            </>
+          )}
+          <ul className="ac-list ac-dim">{d.notes.map((t, i) => <li key={i}>{t}</li>)}</ul>
+        </>
+      )}
+    </Panel>
+  );
+}
+
 
 export default function ApiCost() {
   const { hasPermission } = useAuth();
@@ -510,7 +605,7 @@ export default function ApiCost() {
         title="Cloud cost"
         subtitle={isAdmin ? "What CloudOps's own metric polling actually costs in the cloud, as billed" : "How many paid metric reads CloudOps made, from the usage it measured itself"}
       />
-      {isAdmin ? <CostExplorer /> : <Metering />}
+      {isAdmin ? <><MonthlyTotals /><CostExplorer /><TierCost /></> : <Metering />}
     </div>
   );
 }
