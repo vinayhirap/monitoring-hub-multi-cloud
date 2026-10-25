@@ -402,3 +402,93 @@ export function chartsNote(payload, host) {
   }
   return notes.join(" ");
 }
+
+
+// ── "Add service" picker (GET /api/host-agents/{id}/service-inventory) ───────────────────────────────────────────────
+/** First agent version that sends a service inventory. */
+export const INVENTORY_MIN_AGENT = "0.2.2";
+
+/** "0.2.10" >= "0.2.2" style comparison; an unparsable version is treated as too old. */
+export function agentSupportsInventory(version, min = INVENTORY_MIN_AGENT) {
+  const parse = v => { const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(v || "")); return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null; };
+  const a = parse(version), b = parse(min);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+  return true;
+}
+
+/**
+ * Picker rows. `query` matches name or description (case-insensitive). Unless `showAll`, OS-internal services (the server's
+ * `major: false`) are left out, EXCEPT ones already watched or selected, which must never disappear from view. Returns
+ * { rows, hiddenInternal } where hiddenInternal counts internal services that match the query but are not shown, so the UI
+ * can say "12 more OS-internal services match" instead of looking like nothing was found.
+ */
+export function inventoryRows(payload, { query = "", showAll = false, selected = [] } = {}) {
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  const q = String(query || "").trim().toLowerCase();
+  const picked = new Set(selected);
+  const rows = [];
+  let hiddenInternal = 0;
+  for (const x of items) {
+    if (!x || typeof x.name !== "string") continue;
+    if (q && !x.name.toLowerCase().includes(q) && !String(x.description || "").toLowerCase().includes(q)) continue;
+    const major = x.major !== false;
+    if (!major && !showAll && !x.watched && !picked.has(x.name)) { hiddenInternal++; continue; }
+    const state = Object.prototype.hasOwnProperty.call(SERVICE_STATE_LABEL, x.state) ? x.state : "unknown";
+    rows.push({ name: x.name, state, label: SERVICE_STATE_LABEL[state], tone: SERVICE_STATE_TONE[state],
+      description: x.description || "", startup: x.startup || "", major, watched: !!x.watched });
+  }
+  rows.sort((a, b) => (a.watched === b.watched ? 0 : a.watched ? 1 : -1) || (a.major === b.major ? 0 : a.major ? -1 : 1) || a.name.localeCompare(b.name));
+  return { rows, hiddenInternal };
+}
+
+/** Why the picker has nothing to offer (null when it has data). Never blames the host for a missing scan. */
+export function inventoryEmptyText(payload, host) {
+  if (Array.isArray(payload?.items) && payload.items.length > 0) return null;
+  const version = payload?.agent_version || host?.agent_version;
+  if (version && !agentSupportsInventory(version)) {
+    return `This host runs agent ${version}, which cannot list its services. Update the agent to ${INVENTORY_MIN_AGENT} or later, or type a service name below.`;
+  }
+  return "No service scan has arrived from this host yet. The agent sends one when it starts and then about every 30 minutes. You can type a service name below in the meantime.";
+}
+
+/** "Scanned 4m ago" / "" when unknown. */
+export function inventoryScanText(payload) {
+  const s = payload?.scan_age_seconds;
+  if (!Number.isFinite(s) || s < 0) return "";
+  if (s < 60) return "Scanned just now";
+  if (s < 3600) return `Scanned ${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `Scanned ${Math.floor(s / 3600)}h ago`;
+  return `Scanned ${Math.floor(s / 86400)}d ago`;
+}
+
+/**
+ * Current watch list + names to add -> { services, added, already, tooMany }. Order is kept (the current list first, then new
+ * names in the order given); a name already watched is not duplicated and is reported in `already`.
+ */
+export function mergeWatchList(current, additions) {
+  const have = Array.isArray(current) ? current : [];
+  const watched = new Set(have), seen = new Set(have);
+  const services = have.slice(), added = [], already = [];
+  for (const n of additions || []) {
+    if (watched.has(n)) { if (!already.includes(n)) already.push(n); continue; }
+    if (seen.has(n)) continue;                      // typed or ticked twice in this batch: one entry, not "already watched"
+    seen.add(n); services.push(n); added.push(n);
+  }
+  return { services, added, already, tooMany: services.length > MAX_WATCH_SERVICES };
+}
+
+/**
+ * One manually typed name -> { name } | { error } | { name, notFound: true }. Same syntax rule as the server. `notFound` is set
+ * only when a scan exists and does not list the name (case-insensitive, since Windows service names are), so a missing scan
+ * never produces a false "not found" warning.
+ */
+export function checkManualService(text, payload) {
+  const { services, invalid } = parseServiceList(text);
+  if (invalid.length) return { error: `Invalid service name: ${invalid[0].slice(0, 40)}` };
+  if (services.length !== 1) return { error: services.length ? "Add one name at a time." : "Type a service name." };
+  const name = services[0];
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  if (items.length && !items.some(x => String(x.name).toLowerCase() === name.toLowerCase())) return { name, notFound: true };
+  return { name };
+}

@@ -5,6 +5,7 @@ import {
   buildConfigPatch, buildKeyRequest, buildInstallCommand, DOWNLOAD_PATH, firingAlertsForHost, mergeAlertLists,
   formatHostMetricValue, hostMetricTitle, hostMetricRows, hostMetricsNote,
   CHART_RANGES, DEFAULT_CHART_HOURS, CHART_REFRESH_MS, CHART_REFRESH_TIP, CHART_STAT_OPTIONS, hostUptimeText, chartGroups, chartColor, chartsNote,
+  agentSupportsInventory, inventoryRows, inventoryEmptyText, inventoryScanText, mergeWatchList, checkManualService, INVENTORY_MIN_AGENT,
 } from "../hostAgentsView.js";
 
 const rows = [
@@ -287,4 +288,86 @@ test("hostUptimeText reads only the stored uptime reading and labels it when the
   assert.equal(hostUptimeText({ metrics: [{ name: "host_cpu_percent", metric: "cpu_percent", unit: "%", value: 1 }] }, { state: "online" }), null);
   assert.equal(hostUptimeText({ metrics: [{ metric: "uptime_seconds", unit: "seconds", value: null }] }, { state: "online" }), null);
   assert.equal(hostUptimeText(null, { state: "online" }), null);
+});
+
+// ── Add service picker ──────────────────────────────────────────────────────────────────────────────────────────────
+const inv = {
+  agent_version: "0.2.2", scan_age_seconds: 240,
+  items: [
+    { name: "nginx", state: "running", startup: "enabled", description: "Web server", major: true, watched: true },
+    { name: "mysql", state: "stopped", startup: "disabled", description: "Database", major: true, watched: false },
+    { name: "cron", state: "running", startup: "enabled", description: "Scheduler", major: true, watched: false },
+    { name: "systemd-journald", state: "running", startup: "static", description: "Journal", major: false, watched: false },
+    { name: "dbus", state: "weird", startup: "static", description: "", major: false, watched: false },
+  ],
+};
+
+test("agentSupportsInventory compares versions numerically", () => {
+  assert.equal(INVENTORY_MIN_AGENT, "0.2.2");
+  assert.equal(agentSupportsInventory("0.2.2"), true);
+  assert.equal(agentSupportsInventory("0.2.10"), true);
+  assert.equal(agentSupportsInventory("0.3.0"), true);
+  assert.equal(agentSupportsInventory("v1.0.0"), true);
+  assert.equal(agentSupportsInventory("0.2.1"), false);
+  assert.equal(agentSupportsInventory("0.1.9"), false);
+  assert.equal(agentSupportsInventory(null), false);
+  assert.equal(agentSupportsInventory("dev"), false);
+});
+
+test("inventoryRows hides OS-internal services by default, counts them, and keeps watched/selected ones visible", () => {
+  let r = inventoryRows(inv);
+  assert.deepEqual(r.rows.map(x => x.name), ["cron", "mysql", "nginx"]);      // unwatched first, alphabetical, watched last
+  assert.equal(r.hiddenInternal, 2);
+  r = inventoryRows(inv, { showAll: true });
+  assert.deepEqual(r.rows.map(x => x.name), ["cron", "mysql", "dbus", "systemd-journald", "nginx"]);   // major, then internal, then watched
+  assert.equal(r.hiddenInternal, 0);
+  r = inventoryRows(inv, { selected: ["systemd-journald"] });
+  assert.ok(r.rows.some(x => x.name === "systemd-journald"), "a selected internal service must stay visible");
+  assert.equal(r.hiddenInternal, 1);
+});
+
+test("inventoryRows searches name and description and tolerates unknown states and bad payloads", () => {
+  assert.deepEqual(inventoryRows(inv, { query: "DATA" }).rows.map(x => x.name), ["mysql"]);   // description match, case-insensitive
+  assert.deepEqual(inventoryRows(inv, { query: "journ" }).rows, []);
+  assert.equal(inventoryRows(inv, { query: "journ" }).hiddenInternal, 1);                     // "tick show all" hint source
+  assert.equal(inventoryRows(inv, { showAll: true }).rows.find(x => x.name === "dbus").state, "unknown");
+  assert.deepEqual(inventoryRows(null), { rows: [], hiddenInternal: 0 });
+  assert.deepEqual(inventoryRows({ items: [null, { state: "running" }] }), { rows: [], hiddenInternal: 0 });
+});
+
+test("inventoryEmptyText distinguishes an old agent from a scan that has not arrived", () => {
+  assert.equal(inventoryEmptyText(inv, {}), null);
+  assert.match(inventoryEmptyText({ items: [], agent_version: "0.2.1" }, {}), /0\.2\.1.*Update the agent to 0\.2\.2/);
+  assert.match(inventoryEmptyText({ items: [] }, { agent_version: "0.1.0" }), /Update the agent/);
+  assert.match(inventoryEmptyText({ items: [], agent_version: "0.2.2" }, {}), /No service scan has arrived/);
+  assert.match(inventoryEmptyText(null, {}), /No service scan has arrived/);
+});
+
+test("inventoryScanText", () => {
+  assert.equal(inventoryScanText(inv), "Scanned 4m ago");
+  assert.equal(inventoryScanText({ scan_age_seconds: 20 }), "Scanned just now");
+  assert.equal(inventoryScanText({ scan_age_seconds: 7300 }), "Scanned 2h ago");
+  assert.equal(inventoryScanText({ scan_age_seconds: 200000 }), "Scanned 2d ago");
+  assert.equal(inventoryScanText({ scan_age_seconds: null }), "");
+  assert.equal(inventoryScanText(null), "");
+});
+
+test("mergeWatchList appends new names, never duplicates, keeps order and flags the 100 limit", () => {
+  assert.deepEqual(mergeWatchList(["nginx"], ["mysql", "nginx", "cron", "mysql"]),
+    { services: ["nginx", "mysql", "cron"], added: ["mysql", "cron"], already: ["nginx"], tooMany: false });
+  assert.deepEqual(mergeWatchList(null, ["a"]).services, ["a"]);
+  const full = Array.from({ length: 100 }, (_, i) => `s${i}`);
+  assert.equal(mergeWatchList(full, ["extra"]).tooMany, true);
+  assert.equal(mergeWatchList(full, ["s1"]).tooMany, false);
+});
+
+test("checkManualService validates like the server and warns only when a scan exists and lacks the name", () => {
+  assert.deepEqual(checkManualService("nginx", inv), { name: "nginx" });
+  assert.deepEqual(checkManualService("NGINX", inv), { name: "NGINX" });              // Windows names are case-insensitive
+  assert.deepEqual(checkManualService("nginxS", inv), { name: "nginxS", notFound: true });
+  assert.deepEqual(checkManualService("nginxS", { items: [] }), { name: "nginxS" });  // no scan: no false warning
+  assert.match(checkManualService("bad name;", inv).error, /Invalid|one name/);
+  assert.match(checkManualService("-rf", inv).error, /Invalid service name/);
+  assert.match(checkManualService("a b", inv).error, /one name/);
+  assert.match(checkManualService("  ", inv).error, /Type a service name/);
 });

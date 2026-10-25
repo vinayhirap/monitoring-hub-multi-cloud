@@ -28,3 +28,8 @@ export const getHostAgentServices = (id) => apiFetch(`/api/host-agents/${encodeU
 // Bucketed history for the charts (same card as the EC2 page). DB read only; hours is capped at the 30-day retention.
 export const getHostAgentHistory = (id, hours) =>
   apiFetch(`/api/host-agents/${encodeURIComponent(id)}/history?hours=${encodeURIComponent(hours)}`);
+// -> {host_agent_id, hostname, status, os, agent_version, watch_services: string[], total, scanned_at, scan_age_seconds,
+//     items: [{name, state, startup, description, major, watched}], missing_watched: string[]}
+// Every service that EXISTS on the host at the agent's last scan (first report after start, then ~every 30 min). DB read only.
+// Empty `items` = no scan has arrived yet (agent older than 0.2.2, or just enrolled), not "the host has no services".
+export const getHostAgentServiceInventory = (id) => apiFetch(`/api/host-agents/${encodeURIComponent(id)}/service-inventory`);

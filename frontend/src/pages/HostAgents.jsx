@@ -16,13 +16,14 @@ import { copyText } from "../utils/copyText";
 import { getLiveAccounts, getAlertsForResource } from "../api/api";
 import {
   listHostAgents, listEnrollmentKeys, createEnrollmentKey, revokeEnrollmentKey, revokeHostAgent, patchHostAgentConfig,
-  getHostAgentMetrics, getHostAgentServices,
+  getHostAgentMetrics, getHostAgentServices, getHostAgentServiceInventory,
 } from "../api/hostAgents";
 import {
   STATE_LABEL, STATE_TONE, KEY_STATUS_TONE, INTERVAL_MIN, INTERVAL_MAX, stateOf, stateCounts, accountOptions,
   filterHosts, relativeTime, utcStamp, buildConfigPatch, buildKeyRequest, buildInstallCommand,
   firingAlertsForHost, mergeAlertLists, hostUptimeText,
   serviceRows, serviceSummaryText, serviceWorstTone, servicesNote, configFormDefaults, currentConfigOf,
+  inventoryRows, inventoryEmptyText, inventoryScanText, mergeWatchList, checkManualService,
 } from "../utils/hostAgentsView";
 import "./HostAgents.css";
 
@@ -238,7 +239,7 @@ function EditConfigDialog({ host, onClose, onSaved }) {
   };
 
   return (
-    <Modal title={`Configure ${host.hostname}`} onClose={onClose}>
+    <Modal title={`Edit watched services · ${host.hostname}`} onClose={onClose}>
       <form onSubmit={submit} className="ha-form">
         {loading && <div aria-busy="true"><Skeleton h={14} /></div>}
         {!loading && current && (
@@ -266,6 +267,159 @@ function EditConfigDialog({ host, onClose, onSaved }) {
         <div className="ui-dialog-actions ha-actions">
           <button type="button" className="ui-btn" onClick={onClose}>Cancel</button>
           <button type="submit" className="ui-btn ui-btn-primary" disabled={busy || loading}>{busy ? "Saving…" : "Save"}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+// ── Add service (picker over the services that exist on the host) ───────────────────────────────────────────────────
+function AddServiceDialog({ host, onClose, onSaved }) {
+  const [inv, setInv] = useState(null);                  // null = loading; { items: [] } also after a failed load
+  const [loadError, setLoadError] = useState(null);
+  const [query, setQuery] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const [picked, setPicked] = useState([]);              // names in the order chosen (from the list or typed)
+  const [notFound, setNotFound] = useState([]);          // typed names the last scan did not list
+  const [manualText, setManualText] = useState("");
+  const [manualMsg, setManualMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let live = true;
+    getHostAgentServiceInventory(host.id)
+      .then(d => { if (live) setInv(d && typeof d === "object" ? d : { items: [] }); })
+      .catch(e => { if (live) { setLoadError(e?.status === 404 ? "This host or the host agent feature is no longer available." : errText(e)); setInv({ items: [] }); } });
+    return () => { live = false; };
+  }, [host.id]);
+
+  const { rows, hiddenInternal } = useMemo(() => inventoryRows(inv, { query, showAll, selected: picked }), [inv, query, showAll, picked]);
+  const selectable = rows.filter(r => !r.watched);
+  const allTicked = selectable.length > 0 && selectable.every(r => picked.includes(r.name));
+  const emptyText = inv ? inventoryEmptyText(inv, host) : null;
+  const scanText = inventoryScanText(inv);
+  const current = Array.isArray(inv?.watch_services) ? inv.watch_services : null;
+
+  const toggle = name => setPicked(p => (p.includes(name) ? p.filter(x => x !== name) : [...p, name]));
+  const toggleAll = () => setPicked(p => (allTicked ? p.filter(n => !selectable.some(r => r.name === n)) : [...p, ...selectable.map(r => r.name).filter(n => !p.includes(n))]));
+  const unpick = name => { setPicked(p => p.filter(x => x !== name)); setNotFound(p => p.filter(x => x !== name)); };
+
+  const addManual = () => {
+    const r = checkManualService(manualText, inv);
+    if (r.error) { setManualMsg(r.error); return; }
+    if ((current || []).includes(r.name)) { setManualMsg(`${r.name} is already watched.`); return; }
+    if (picked.includes(r.name)) { setManualMsg(`${r.name} is already selected.`); return; }
+    setPicked(p => [...p, r.name]);
+    if (r.notFound) setNotFound(p => [...p, r.name]);
+    setManualText("");
+    setManualMsg(r.notFound ? `${r.name} was not in the last scan of this host. It will be watched anyway and show Unknown until the agent can find it.` : null);
+  };
+
+  const submit = async e => {
+    e.preventDefault();
+    if (!current) { setError("The current watch list could not be loaded, so nothing can be added safely. Close this dialog and try again."); return; }
+    const merged = mergeWatchList(current, picked);
+    if (!merged.added.length) { setError("Choose at least one service to add."); return; }
+    if (merged.tooMany) { setError("At most 100 services can be watched per host."); return; }
+    setBusy(true); setError(null);
+    try {
+      await patchHostAgentConfig(host.id, { watch_services: merged.services });
+      const n = merged.added.length;
+      onSaved(`Added ${n} service${n === 1 ? "" : "s"} to ${host.hostname}: ${merged.added.slice(0, 5).join(", ")}${n > 5 ? ` and ${n - 5} more` : ""}. The agent reports their state on its next report.`);
+    } catch (err) {
+      setError(err?.status === 409 ? "This host is revoked and can no longer be configured." : errText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const count = picked.length;
+  return (
+    <Modal title={`Add service · ${host.hostname}`} onClose={onClose} wide>
+      <form onSubmit={submit} className="ha-form">
+        <p className="ha-hint">
+          Pick the services this host should report on. They are added to the {current ? current.length : ""} already watched; nothing is removed.
+        </p>
+        {inv == null && <div aria-busy="true"><Skeleton h={120} /></div>}
+        {loadError && <p className="ha-error" role="alert">Could not load the host's services: {loadError}</p>}
+        {inv != null && (
+          <>
+            <div className="ha-pick-tools">
+              <input className="ui-input ha-pick-search" type="search" value={query} onChange={e => setQuery(e.target.value)}
+                placeholder="Search services on this host…" aria-label="Search services on this host" autoComplete="off" spellCheck={false} />
+              <label className="ha-check">
+                <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} />
+                Show OS-internal services
+              </label>
+              {scanText && <span className="ha-hint ha-pick-scan">{scanText}</span>}
+            </div>
+            {emptyText ? (
+              <p className="ha-placeholder">{emptyText}</p>
+            ) : (
+              <div className="ha-pick" role="group" aria-label={`Services on ${host.hostname}`}>
+                <div className="ha-pick-head">
+                  <label className="ha-check">
+                    <input type="checkbox" checked={allTicked} onChange={toggleAll} disabled={selectable.length === 0} />
+                    {selectable.length ? `Select all ${selectable.length} shown` : "Nothing to select"}
+                  </label>
+                  <span className="ha-hint">{inv.total} on this host</span>
+                </div>
+                <div className="ha-pick-list">
+                  {rows.length === 0 && <p className="ha-hint ha-pick-none">No service matches{query ? ` “${query}”` : ""}.</p>}
+                  {rows.map(r => (
+                    <label key={r.name} className={`ha-pick-row${r.watched ? " is-watched" : ""}`}>
+                      <input type="checkbox" checked={r.watched || picked.includes(r.name)} disabled={r.watched} onChange={() => toggle(r.name)} />
+                      <span className="ha-pick-main">
+                        <span className="ha-mono ha-pick-name">{r.name}</span>
+                        {r.description && <span className="ha-hint ha-pick-desc">{r.description}</span>}
+                      </span>
+                      {r.watched ? <Badge tone="info">Watching</Badge> : r.startup ? <span className="ha-hint ha-pick-startup">{r.startup}</span> : null}
+                      <Badge tone={r.tone}>{r.label}</Badge>
+                    </label>
+                  ))}
+                </div>
+                {hiddenInternal > 0 && !showAll && (
+                  <p className="ha-hint">
+                    {hiddenInternal} OS-internal service{hiddenInternal === 1 ? "" : "s"} {query ? "match" : "hidden"}.{" "}
+                    <button type="button" className="ha-link ha-link-inline" onClick={() => setShowAll(true)}>Show them</button>
+                  </p>
+                )}
+              </div>
+            )}
+            <div className="ha-field">
+              <label htmlFor="ha-manual-svc">Not in the list? Type the name</label>
+              <div className="ha-manual">
+                <input id="ha-manual-svc" className="ui-input ha-full ha-mono" value={manualText} placeholder="e.g. nginx, or a service you just installed"
+                  onChange={e => { setManualText(e.target.value); setManualMsg(null); }} autoComplete="off" spellCheck={false}
+                  onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addManual(); } }} />
+                <button type="button" className="ui-btn" onClick={addManual} disabled={!manualText.trim()}>Add name</button>
+              </div>
+              <p className="ha-hint">systemd unit, launchd label or Windows service name. The scan refreshes about every 30 minutes, so a service installed a moment ago may not be listed yet.</p>
+              {manualMsg && <p className={notFound.length ? "ha-warn-text" : "ha-error"} role="status">{manualMsg}</p>}
+            </div>
+            {count > 0 && (
+              <div className="ha-field">
+                <span className="ha-label">Selected ({count})</span>
+                <ul className="ha-chips">
+                  {picked.map(n => (
+                    <li key={n} className={`ha-chip${notFound.includes(n) ? " is-warn" : ""}`}>
+                      <span className="ha-mono">{n}</span>
+                      {notFound.includes(n) && <span className="ha-hint">not found</span>}
+                      <button type="button" className="ha-chip-x" onClick={() => unpick(n)} aria-label={`Remove ${n}`}>×</button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </>
+        )}
+        {error && <p className="ha-error" role="alert">{error}</p>}
+        <div className="ui-dialog-actions ha-actions">
+          <button type="button" className="ui-btn" onClick={onClose}>Cancel</button>
+          <button type="submit" className="ui-btn ui-btn-primary" disabled={busy || inv == null || !current || count === 0}>
+            {busy ? "Adding…" : count ? `Add ${count} service${count === 1 ? "" : "s"}` : "Add services"}
+          </button>
         </div>
       </form>
     </Modal>
@@ -328,7 +482,7 @@ function KeysDialog({ onClose, onNotice }) {
 }
 
 // ── Host detail drawer ──────────────────────────────────────────────────────────────────────────────────────────────
-function HostDrawer({ host, onClose, canManage, onEdit, onRevoke }) {
+function HostDrawer({ host, onClose, canManage, onEdit, onAddService, onRevoke, reloadSignal = 0 }) {
   const [alerts, setAlerts] = useState(null);
   const [alertsError, setAlertsError] = useState(null);
   const [metrics, setMetrics] = useState(null);             // latest stored readings; used only for the Uptime line (the charts show the rest)
@@ -361,7 +515,7 @@ function HostDrawer({ host, onClose, canManage, onEdit, onRevoke }) {
         setSvc(prev => prev ?? { services: [] });
       });
     return () => { live = false; };
-  }, [hostId, reloadN]);
+  }, [hostId, reloadN, reloadSignal]);
   const svcRows = useMemo(() => serviceRows(svc), [svc]);
   const svcSummary = serviceSummaryText(svc);
   const svcTone = serviceWorstTone(svc);
@@ -402,7 +556,7 @@ function HostDrawer({ host, onClose, canManage, onEdit, onRevoke }) {
         </dl>
         {canManage && state !== "revoked" && (
           <div className="ha-drawer-actions">
-            <button type="button" className="ui-btn" onClick={() => onEdit(host)}>Configure</button>
+            <button type="button" className="ui-btn ui-btn-primary" onClick={() => onAddService(host)}>Add service</button>
             <button type="button" className="ui-btn ui-btn-danger" onClick={() => onRevoke(host)}>Revoke host</button>
           </div>
         )}
@@ -410,13 +564,17 @@ function HostDrawer({ host, onClose, canManage, onEdit, onRevoke }) {
           <HostMetricCharts host={host} />
         </Suspense>
         <Panel title="Services"
-               subtitle="State of each watched service from the agent's last report (not live). Change the list with Configure."
-               actions={svcTone ? <Badge tone={svcTone}>{svcSummary}</Badge> : undefined}>
+               subtitle="State of each watched service from the agent's last report (not live)."
+               actions={<>
+                 {svcTone && <Badge tone={svcTone}>{svcSummary}</Badge>}
+                 {canManage && state !== "revoked" && <button type="button" className="ui-btn" onClick={() => onAddService(host)}>Add service</button>}
+                 {canManage && state !== "revoked" && watching > 0 && <button type="button" className="ui-btn" onClick={() => onEdit(host)}>Edit list</button>}
+               </>}>
           {svc == null && <div aria-busy="true"><Skeleton h={14} /></div>}
           {svcError && <p className="ha-error" role="alert">Could not load services: {svcError}</p>}
           {svc != null && !svcError && watching === 0 && (
             <EmptyState title="No services are watched"
-              body={canManage ? "Use Configure to list the services this host should report (for example nginx or sshd)." : "An administrator can choose which services this host reports."} />
+              body={canManage ? "Use Add service to choose which services on this host should be reported (for example nginx or sshd)." : "An administrator can choose which services this host reports."} />
           )}
           {svcRows.length > 0 && (
             <div className="ha-metrics-wrap">
@@ -474,6 +632,8 @@ export default function HostAgents() {
   const [addOpen, setAddOpen] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
   const [editHost, setEditHost] = useState(null);
+  const [addServiceHost, setAddServiceHost] = useState(null);
+  const [svcSignal, setSvcSignal] = useState(0);   // bumped after a save so an open drawer re-reads its services at once
   const [revokeHost, setRevokeHost] = useState(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
@@ -542,7 +702,7 @@ export default function HostAgents() {
     ) },
     ...(canManage ? [{ key: "actions", header: <span className="ha-sr">Actions</span>, render: r => (
       <span className="ha-rowactions" onClick={stop} onKeyDown={stop}>
-        <button type="button" className="ui-btn" disabled={stateOf(r) === "revoked"} onClick={() => setEditHost(r)} aria-label={`Configure ${r.hostname}`}>Configure</button>
+        <button type="button" className="ui-btn" disabled={stateOf(r) === "revoked"} onClick={() => setAddServiceHost(r)} aria-label={`Add service to ${r.hostname}`}>Add service</button>
         <button type="button" className="ui-btn" disabled={stateOf(r) === "revoked"} onClick={() => setRevokeHost(r)} aria-label={`Revoke ${r.hostname}`}>Revoke</button>
       </span>
     ) }] : []),
@@ -598,11 +758,12 @@ export default function HostAgents() {
 
       {selected && (
         <HostDrawer key={selected.id} host={selected} onClose={() => setSelectedId(null)} canManage={canManage}
-          onEdit={h => setEditHost(h)} onRevoke={h => setRevokeHost(h)} />
+          onEdit={h => setEditHost(h)} onAddService={h => setAddServiceHost(h)} onRevoke={h => setRevokeHost(h)} reloadSignal={svcSignal} />
       )}
       {addOpen && canManage && <AddHostDialog defaultAccountId={accountId !== "all" ? accountId : null} onClose={() => setAddOpen(false)} onCreated={load} />}
       {keysOpen && canManage && <KeysDialog onClose={() => setKeysOpen(false)} onNotice={setNotice} />}
-      {editHost && canManage && <EditConfigDialog host={editHost} onClose={() => setEditHost(null)} onSaved={msg => { setEditHost(null); setNotice(msg); load(); }} />}
+      {editHost && canManage && <EditConfigDialog host={editHost} onClose={() => setEditHost(null)} onSaved={msg => { setEditHost(null); setNotice(msg); setSvcSignal(n => n + 1); load(); }} />}
+      {addServiceHost && canManage && <AddServiceDialog host={addServiceHost} onClose={() => setAddServiceHost(null)} onSaved={msg => { setAddServiceHost(null); setNotice(msg); setSvcSignal(n => n + 1); load(); }} />}
       <ConfirmDialog open={!!revokeHost && canManage} danger busy={busy} title="Revoke this host?" confirmLabel="Revoke host"
         body={revokeHost && <>Revoking <strong>{revokeHost.hostname}</strong> invalidates all of its tokens: the agent stops being accepted and must be enrolled again with a new key. This cannot be undone.</>}
         onConfirm={doRevoke} onCancel={() => setRevokeHost(null)} />
