@@ -467,7 +467,7 @@ def _csv_set(v):
 
 
 def build_explorer(rows, start, end, granularity="daily", group_by="category", accounts=(), regions=(), categories=(),
-                   scope="onboarded", names=None, onboarded=None, metered_metrics=None, now=None, cloudops_only=False):
+                   scope="onboarded", names=None, onboarded=None, now=None, cloudops_only=False, adapter=None):
     """The actual AWS CloudWatch bill, sliced like Cost Explorer. Pure: no database, no AWS.
     rows: (billed_account_id, usage_type, usage_date, amount_usd, estimated, usage_quantity, usage_unit) tuples.
     start/end: inclusive dates. onboarded: {billed_account_id: {region, ...}} (regions CloudOps monitors for that account).
@@ -475,6 +475,11 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
     `out_of_scope` so the page still reconciles to the AWS bill. Every figure is a Cost Explorer amount, nothing is
     estimated or forecast. Groups, periods and totals are all built from the same filtered rows (see `reconciliation`)."""
     from app.aws.cost_explorer import usage_region, usage_category, classify_usage_type, CATEGORY_LABELS, CAT_CLOUDOPS
+    ad = adapter or {}
+    usage_region = ad.get("region_of", usage_region)             # Azure/GCP rows carry 'region|sku'; AWS reads a usage-type prefix
+    usage_category = ad.get("category_of", usage_category)
+    classify_usage_type = ad.get("label_of", classify_usage_type)
+    CATEGORY_LABELS = ad.get("category_labels", CATEGORY_LABELS)
     now = time.time() if now is None else now
     names = {str(k): v for k, v in (names or {}).items()}
     onboarded = {str(k): set(v) for k, v in (onboarded or {}).items()}
@@ -586,17 +591,6 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
             "periods": sum(sum(g["values"]) for g in groups.values()),
             "categories": sum(by_cat.values())}
     drift = max(list(sums.values()) + [billed]) - min(list(sums.values()) + [billed])
-    # CloudOps's own meter against what AWS billed for GetMetricData, over the same SETTLED dates, all accounts, no filters.
-    billed_metrics = 0.0
-    for acct, utype, d, amt, est, qty, unit in rows:
-        d = _as_date(d)
-        if d is not None and start <= d <= min(end, last_settled) and usage_category(utype) == CAT_CLOUDOPS and qty is not None:
-            billed_metrics += float(qty)
-    check = None
-    if metered_metrics is not None and billed_metrics > 0:
-        check = {"billed_metrics": int(billed_metrics), "metered_metrics": int(metered_metrics),
-                 "difference_pct": round(100.0 * (metered_metrics - billed_metrics) / billed_metrics, 1),
-                 "through": min(end, last_settled).isoformat()}
     all_regions = sorted(seen_regions | {r for v in onboarded.values() for r in v})
     return {
         "range": {"start": start.isoformat(), "end": end.isoformat()}, "granularity": granularity, "group_by": group_by,
@@ -607,7 +601,9 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
                    "avg_per_settled_day_usd": round(settled_total / len(settled_dates), 4) if settled_dates else None,
                    "settled_days": len(settled_dates),
                    "metrics_requested": round(metrics_requested) if metrics_requested else None,
-                   "usd_per_1000_metrics": round(1000.0 * gmd_usd_with_qty / metrics_requested, 5) if metrics_requested else None},
+                   "usd_per_1000_metrics": round(1000.0 * gmd_usd_with_qty / metrics_requested, 5) if metrics_requested else None,
+                   "usd_per_unit": round(gmd_usd_with_qty / metrics_requested, 8) if metrics_requested else None,
+                   "unit": gmd_unit},
         "excluded": {"usd": round(excluded, 4), "applies": bool(cloudops_only)},
         "by_category": [{"key": k, "label": CATEGORY_LABELS.get(k, k), "usd": round(v, 4),
                          "share_pct": round(100.0 * v / billed, 1) if billed else 0.0}
@@ -615,7 +611,6 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
         "gmd_usage": {"unit": gmd_unit, "values": [round(v, 2) for v in gmd_qty]},
         "out_of_scope": {"usd": round(out_total, 4), "hidden": scope == "onboarded",
                          "by_region": [{"region": k, "usd": round(v, 4)} for k, v in sorted(out_regions.items(), key=lambda kv: -kv[1])]},
-        "cloudops_check": check,
         "through_date": max(dates_with_data).isoformat() if dates_with_data else None,
         "complete_through": (min(max(dates_with_data), last_settled).isoformat() if dates_with_data else None),
         "options": {"accounts": [{"id": a, "name": names.get(a), "regions": sorted(onboarded.get(a, ())), "usd": round(opt_accts.get(a, 0.0), 4)}
@@ -665,14 +660,26 @@ def _parse_day(v, default):
         raise HTTPException(status_code=400, detail=f"invalid date: {v!r} (use YYYY-MM-DD)")
 
 
+PROVIDER_NAMES = {"aws": "AWS", "azure": "Azure", "gcp": "GCP"}
+
+
+def _active_providers(cur):
+    """Providers that have at least one active account, AWS first. AWS is always offered (the page is built around it)."""
+    cur.execute("SELECT DISTINCT provider FROM aws_accounts WHERE status = 'active'")
+    have = {r[0] for r in cur.fetchall()}
+    return [p for p in ("aws", "azure", "gcp") if p == "aws" or p in have]
+
+
 @router.get("/cost-explorer")
 def cost_explorer_report(start: str = Query(None), end: str = Query(None), granularity: str = Query("daily"),
                          group_by: str = Query("category"), accounts: str = Query(""), regions: str = Query(""),
                          categories: str = Query(""), scope: str = Query("onboarded"), cloudops_only: bool = Query(True),
+                         provider: str = Query("aws"),
                          current_user: dict = Depends(require_permission("usage.manage"))):
     from app.aws import cost_explorer
-    if granularity not in GRANULARITIES or group_by not in GROUP_BYS or scope not in SCOPES:
-        raise HTTPException(status_code=400, detail="granularity, group_by or scope is not one of the allowed values")
+    from app import cloud_cost
+    if granularity not in GRANULARITIES or group_by not in GROUP_BYS or scope not in SCOPES or provider not in PROVIDER_NAMES:
+        raise HTTPException(status_code=400, detail="granularity, group_by, scope or provider is not one of the allowed values")
     now = time.time()
     today = datetime.fromtimestamp(now, tz=timezone.utc).date()
     end_d = _parse_day(end, today)
@@ -681,72 +688,84 @@ def cost_explorer_report(start: str = Query(None), end: str = Query(None), granu
         end_d = today
     if start_d > end_d or (end_d - start_d).days + 1 > EXPLORER_MAX_DAYS:
         raise HTTPException(status_code=400, detail=f"range must be 1 to {EXPLORER_MAX_DAYS} days and start before end")
+    is_aws = provider == "aws"
     conn = get_connection()
     cur = conn.cursor()
+    adapter, onboarded, scope_note = None, {}, None
     try:
-        try:
-            cur.execute("SELECT billed_account_id, usage_type, usage_date, amount_usd, estimated, usage_quantity, usage_unit "
-                        "FROM aws_cost_actuals WHERE usage_date BETWEEN %s AND %s", (start_d, end_d))
-            rows = [tuple(r) for r in cur.fetchall()]
-        except Exception as e:
-            if "1054" in str(e) or "Unknown column" in str(e):          # migration 125 pending: cost only, no usage quantity
-                cur.execute("SELECT billed_account_id, usage_type, usage_date, amount_usd, estimated FROM aws_cost_actuals "
-                            "WHERE usage_date BETWEEN %s AND %s", (start_d, end_d))
-                rows = [tuple(r) + (None, None) for r in cur.fetchall()]
-            else:
-                raise
-        cur.execute("SELECT aws_account_id, account_name, status, ce_requests, error, UNIX_TIMESTAMP(fetched_at) "
-                    "FROM aws_cost_fetch_log WHERE fetched_at >= UTC_TIMESTAMP() - INTERVAL 31 DAY ORDER BY id DESC LIMIT 2000")
-        log = [tuple(r) for r in cur.fetchall()]
-        cur.execute("SELECT account_id, account_name FROM aws_accounts WHERE provider = 'aws'")
-        names = {str(r[0]): r[1] for r in cur.fetchall()}
-        onboarded, scope_note = {}, None
-        try:
-            cur.execute("SELECT a.account_id, a.default_region, r.region FROM aws_accounts a "
-                        "LEFT JOIN (SELECT DISTINCT aws_account_id, region FROM resources WHERE region IS NOT NULL AND region <> '') r "
-                        "ON r.aws_account_id = a.id WHERE a.provider = 'aws'")
-            for acct, default_region, region in cur.fetchall():
-                bucket = onboarded.setdefault(str(acct), set())
-                if default_region:
-                    bucket.add(default_region)
-                if region:
-                    bucket.add(region)
-        except Exception:
-            logger.exception("cost-explorer: could not read onboarded regions")
-            onboarded, scope_note = {}, "Onboarded regions could not be read, so every region is shown."
-        metered = None
-        try:
-            days_back = (today - start_d).days + 1
-            if days_back <= 90:
-                est_rows, truncated = _fetch(days_back, cur)
-                if not truncated:
-                    lo = datetime(start_d.year, start_d.month, start_d.day, tzinfo=timezone.utc).timestamp()
-                    last_settled = today.fromordinal(today.toordinal() - PROVISIONAL_DAYS)
-                    hi_day = min(end_d, last_settled)
-                    hi = datetime(hi_day.year, hi_day.month, hi_day.day, tzinfo=timezone.utc).timestamp() + 86400
-                    kept = [r for r in est_rows if (d := parse_detail(r)) and isinstance(d.get("window_end"), (int, float))
-                            and lo <= d["window_end"] < hi]
-                    prov, _ = aggregate(kept)
-                    metered = prov.get("aws", {}).get("units")
-        except Exception:
-            logger.exception("cost-explorer: could not read CloudOps metering")
+        providers = _active_providers(cur)
+        if is_aws:
+            try:
+                cur.execute("SELECT billed_account_id, usage_type, usage_date, amount_usd, estimated, usage_quantity, usage_unit "
+                            "FROM aws_cost_actuals WHERE usage_date BETWEEN %s AND %s", (start_d, end_d))
+                rows = [tuple(r) for r in cur.fetchall()]
+            except Exception as e:
+                if "1054" in str(e) or "Unknown column" in str(e):          # migration 125 pending: cost only, no usage quantity
+                    cur.execute("SELECT billed_account_id, usage_type, usage_date, amount_usd, estimated FROM aws_cost_actuals "
+                                "WHERE usage_date BETWEEN %s AND %s", (start_d, end_d))
+                    rows = [tuple(r) + (None, None) for r in cur.fetchall()]
+                else:
+                    raise
+            cur.execute("SELECT aws_account_id, account_name, status, ce_requests, error, UNIX_TIMESTAMP(fetched_at) "
+                        "FROM aws_cost_fetch_log WHERE fetched_at >= UTC_TIMESTAMP() - INTERVAL 31 DAY ORDER BY id DESC LIMIT 2000")
+            log = [tuple(r) for r in cur.fetchall()]
+            cur.execute("SELECT account_id, account_name FROM aws_accounts WHERE provider = 'aws'")
+            names = {str(r[0]): r[1] for r in cur.fetchall()}
+            try:
+                cur.execute("SELECT a.account_id, a.default_region, r.region FROM aws_accounts a "
+                            "LEFT JOIN (SELECT DISTINCT aws_account_id, region FROM resources WHERE region IS NOT NULL AND region <> '') r "
+                            "ON r.aws_account_id = a.id WHERE a.provider = 'aws'")
+                for acct, default_region, region in cur.fetchall():
+                    bucket = onboarded.setdefault(str(acct), set())
+                    if default_region:
+                        bucket.add(default_region)
+                    if region:
+                        bucket.add(region)
+            except Exception:
+                logger.exception("cost-explorer: could not read onboarded regions")
+                onboarded, scope_note = {}, "Onboarded regions could not be read, so every region is shown."
+            lookup_per_request = cost_explorer.CE_PRICE_PER_REQUEST
+        else:
+            cur.execute("SELECT billed_account, region, sku, usage_date, amount_usd, quantity, unit FROM cloud_cost_actuals "
+                        "WHERE provider = %s AND usage_date BETWEEN %s AND %s", (provider, start_d, end_d))
+            rows = [(r[0], cloud_cost.encode_usage_type(r[1], r[2]), r[3], r[4], 0, r[5], r[6]) for r in cur.fetchall()]
+            cur.execute("SELECT aws_account_id, account_name, status, requests, error, UNIX_TIMESTAMP(fetched_at) "
+                        "FROM cloud_cost_fetch_log WHERE provider = %s AND fetched_at >= UTC_TIMESTAMP() - INTERVAL 31 DAY "
+                        "ORDER BY id DESC LIMIT 2000", (provider,))
+            log = [tuple(r) for r in cur.fetchall()]
+            cur.execute("SELECT COALESCE(subscription_id, project_id, account_id), account_name FROM aws_accounts WHERE provider = %s", (provider,))
+            names = {str(r[0]): r[1] for r in cur.fetchall()}
+            adapter = cloud_cost.explorer_adapter(provider)
+            lookup_per_request = 0.0
+            cur.execute("SELECT COALESCE(SUM(check_cost_usd), 0) FROM cloud_cost_fetch_log WHERE provider = %s "
+                        "AND fetched_at >= UTC_TIMESTAMP() - INTERVAL 31 DAY", (provider,))
+            check_cost_total = float(cur.fetchone()[0] or 0)
+            cur.execute("SELECT COUNT(*) FROM aws_accounts WHERE provider = %s AND status = 'active'", (provider,))
+            n_accounts = int(cur.fetchone()[0] or 0)
     except Exception as e:
         if "doesn't exist" in str(e) or "1146" in str(e):
-            return {"state": "migration_pending", "enabled": cost_explorer.enabled(),
-                    "notes": ["Run migration 111_aws_actual_cost.sql (migrate.py apply --all-pending)."]}
+            return {"state": "migration_pending", "enabled": cost_explorer.enabled(), "providers": ["aws"],
+                    "notes": ["Run the pending migrations (migrate.py apply --all-pending): 111/125 for AWS, 126 for Azure and GCP."]}
         logger.exception("cost-explorer query failed")
         raise HTTPException(status_code=500, detail="Could not read actual cost data")
     finally:
         cur.close()
         conn.close()
     rep = build_explorer(rows, start_d, end_d, granularity, group_by, _csv_set(accounts), _csv_set(regions),
-                         _csv_set(categories), scope, names, onboarded, metered, now, cloudops_only=cloudops_only)
+                         _csv_set(categories), scope, names, onboarded, now, cloudops_only=cloudops_only, adapter=adapter)
     accts, state, lookup_usd, lookup_n = _fetch_state(log, cost_explorer.enabled(), now)
-    rep.update({"state": state, "enabled": cost_explorer.enabled(), "accounts": accts, "lookup_cost_usd": lookup_usd,
-                "lookup_requests": lookup_n, "scope_note": scope_note,
-                "notes": ["Every amount is what AWS billed (Cost Explorer, service CloudWatch, unblended cost, USD). Nothing here is estimated or forecast.",
-                          "Cost Explorer lags real usage by up to about 48 hours: today and yesterday are provisional and can still grow, and nothing is invoiced until the month closes.",
-                          "Tax (for example GST) is a separate AWS line, not part of the CloudWatch figure, so the invoice total is higher than the sum shown here."]})
+    if not is_aws:
+        lookup_usd = round(check_cost_total, 4)
+        if n_accounts == 0:
+            state = "no_accounts"
+    notes = ["Every amount is what the cloud billed for CloudOps's own paid metric calls. Nothing here is estimated or forecast.",
+             "Billing data lags real usage by up to about 48 hours: today and yesterday are provisional and can still grow.",
+             "Tax is billed separately and is not included."]
+    if provider == "gcp":
+        notes.append("GCP cost comes from the BigQuery billing export (GCP_BILLING_EXPORT_TABLE). It only covers days after the export was switched on.")
+    rep.update({"state": state, "enabled": cost_explorer.enabled(), "provider": provider, "providers": providers,
+                "provider_name": PROVIDER_NAMES[provider], "accounts": accts, "lookup_cost_usd": lookup_usd,
+                "lookup_requests": lookup_n, "scope_note": scope_note, "notes": notes})
     if not rep["reconciliation"]["ok"]:
         rep["notes"].append(f"The breakdowns do not add up to the same total (differ by {rep['reconciliation']['max_difference_usd']} USD). Do not rely on them until this is checked.")
     return rep
@@ -758,6 +777,7 @@ def actual_cost_refresh(current_user: dict = Depends(require_permission("usage.m
     from app.aws import cost_explorer
     if not cost_explorer.enabled():
         raise HTTPException(status_code=409, detail="Actual cost is off. Set ACTUAL_COST_ENABLED=1 and restart.")
-    results = cost_explorer.refresh_due(force=True)
+    from app import cloud_cost
+    results = cost_explorer.refresh_due(force=True) + cloud_cost.refresh_due(force=True)
     return {"results": results,
             "message": None if results else "Nothing refreshed: every account was refreshed within the last hour, or a refresh is already running."}

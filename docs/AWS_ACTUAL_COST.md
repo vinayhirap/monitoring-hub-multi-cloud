@@ -78,8 +78,6 @@ usage graph, breakdown table and CSV. Every amount is a Cost Explorer figure; no
 - **Regions.** By default only the regions each account is onboarded in (its default region plus any region with
   discovered resources) are shown. Charges in other regions are not dropped: they are totalled in a line under the
   table so the page still reconciles to the AWS bill, and "Include other regions" shows them.
-- **Cross-check.** For settled days the page compares the metrics AWS billed for GetMetricData with the metrics
-  CloudOps's own meter counted. A large gap means the collector's metering needs attention.
 - Tax (for example GST) is a separate AWS line and is not in these figures.
 
 ## CloudOps-only view

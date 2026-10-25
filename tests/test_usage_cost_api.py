@@ -450,14 +450,6 @@ def test_explorer_periods_provisional_flags_and_monthly_rollup(usage):
     assert round(sum(m["groups"][0]["values"]), 4) == m["groups"][0]["total"]
 
 
-def test_explorer_cross_checks_cloudops_meter_against_billed_metrics_on_settled_days(usage):
-    r = ex(usage, metered_metrics=90000)
-    # settled days only (<= 10-22): 40000 + 50000 billed; the 10-23 row (provisional) is not compared
-    assert r["cloudops_check"] == {"billed_metrics": 90000, "metered_metrics": 90000, "difference_pct": 0.0, "through": "2026-10-22"}
-    assert ex(usage)["cloudops_check"] is None
-    assert ex(usage, metered_metrics=99000)["cloudops_check"]["difference_pct"] == 10.0
-
-
 def test_explorer_usage_quantity_and_gmd_series(usage):
     r = ex(usage, group_by="usage_type")
     g = {x["key"]: x for x in r["groups"]}["APS3-CW:GMD-Metrics"]
@@ -509,3 +501,21 @@ def test_option_amounts_let_the_filter_menus_show_cost_next_to_each_choice(usage
                              now=EX_NOW, cloudops_only=True)
     assert {a["id"]: a["usd"] for a in r["options"]["accounts"]} == {"111": 0.9, "222": 0.3}
     assert r["options"]["region_usd"] == {"ap-south-1": 1.2}
+
+
+# ── Azure / GCP rows through the same builder ─────────────────────────────────
+def test_explorer_reads_azure_and_gcp_rows_through_an_adapter(usage):
+    import importlib.util as _u
+    spec = _u.spec_from_file_location("_cc_for_explorer", __import__("pathlib").Path(__file__).resolve().parents[1] / "app/cloud_cost.py")
+    cc = _u.module_from_spec(spec)
+    spec.loader.exec_module(cc)
+    rows = [("sub-1", cc.encode_usage_type("IN South", "Metric Queries"), "2026-10-20", 0.12, 0, 12000, "1K"),
+            ("sub-1", cc.encode_usage_type("IN South", "Metric Queries"), "2026-10-21", 0.15, 0, 15000, "1K"),
+            ("sub-1", cc.encode_usage_type("IN South", "Data Ingestion"), "2026-10-21", 9.0, 0, 3, "GB")]
+    r = usage.build_explorer(rows, _date(2026, 10, 18), _date(2026, 10, 24), group_by="usage_type", names={"sub-1": "Azure Prod"},
+                             now=EX_NOW, cloudops_only=True, adapter=cc.explorer_adapter("azure"))
+    assert r["totals"]["billed_usd"] == 0.27 and r["excluded"]["usd"] == 9.0         # ingestion is not CloudOps's: footnote only
+    assert [g["label"] for g in r["groups"]] == ["Metric Queries"] and r["groups"][0]["regions"] == ["IN South"]
+    assert r["totals"]["metrics_requested"] == 27000 and r["totals"]["unit"] == "1K"
+    assert r["totals"]["usd_per_unit"] == round(0.27 / 27000, 8)
+    assert r["options"]["regions"] == ["IN South"] and r["reconciliation"]["ok"]

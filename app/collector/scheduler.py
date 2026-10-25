@@ -757,6 +757,8 @@ def run_loop(leader_event=None):
         try:
             from app.aws import cost_explorer
             cost_explorer.maybe_refresh_async()      # no-op unless ACTUAL_COST_ENABLED=1; at most once a day per account
+            from app import cloud_cost
+            cloud_cost.maybe_refresh_async()         # same for Azure/GCP; does nothing until such an account exists
         except Exception as e:
             logger.error(f"actual-cost refresh error: {e}")
 

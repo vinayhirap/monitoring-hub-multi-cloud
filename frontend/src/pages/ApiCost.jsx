@@ -16,13 +16,15 @@ const TIER_LABEL = { critical: "Critical (2 min)", standard: "Standard (5 min)",
 
 const STATUS_TEXT = {
   ok: "up to date",
-  permission_missing: "permission missing: add ce:GetCostAndUsage to the role",
+  permission_missing: "permission missing (AWS: ce:GetCostAndUsage on the role; Azure: Cost Management Reader; GCP: BigQuery access to the billing export)",
   not_enabled: "Cost Explorer is not enabled in this account yet",
+  not_configured: "not set up yet",
   error: "could not read",
 };
 
 const n = v => Number(v || 0).toLocaleString();
 const usd = v => `$${Number(v || 0).toFixed(Number(v) >= 1 ? 2 : 4)}`;
+const usdFine = v => `$${Number(v || 0).toFixed(Number(v) >= 0.01 ? 4 : 7)}`;     // per-unit rates are tiny: never show them as $0.0000
 
 function ago(minutes) {
   if (minutes == null) return "never";
@@ -78,7 +80,7 @@ const PRESETS = [
   { key: "7d", label: "7 days" }, { key: "30d", label: "30 days" }, { key: "90d", label: "90 days" },
   { key: "mtd", label: "This month" }, { key: "lastm", label: "Last month" }, { key: "custom", label: "Custom" },
 ];
-const GROUPS = [{ key: "account", label: "AWS account", noun: "account" }, { key: "region", label: "Region", noun: "region" }, { key: "usage_type", label: "Usage type", noun: "usage type" }];
+const GROUPS = [{ key: "account", label: "Account", noun: "account" }, { key: "region", label: "Region", noun: "region" }, { key: "usage_type", label: "Usage type", noun: "usage type" }];
 const PALETTE = ["#2dd4bf", "#60a5fa", "#a78bfa", "#f59e0b", "#f472b6", "#34d399"];
 const ELSE_COLOR = "#64748b";
 
@@ -102,12 +104,12 @@ const compact = v => new Intl.NumberFormat("en", { notation: "compact", maximumF
 const periodLabel = (k, gran) => (gran === "monthly" ? k : k.slice(5));
 
 function niceMax(v) {
+  // four equal steps of 1, 2, 2.5, 5 x 10^k, so every gridline is a round number
   if (!(v > 0)) return 1;
-  const p = 10 ** Math.floor(Math.log10(v));
-  const f = v / p;
-  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
+  const raw = v / 4, p = 10 ** Math.floor(Math.log10(raw)), f = raw / p;
+  return 4 * (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
 }
-const axisUsd = v => (v === 0 ? "$0" : v >= 100 ? `$${Math.round(v)}` : v >= 10 ? `$${v.toFixed(0)}` : v >= 0.1 ? `$${v.toFixed(2)}` : `$${v.toFixed(3)}`);
+const axisUsd = v => (v === 0 ? "$0" : v >= 1 ? `$${+v.toFixed(2)}` : `$${+v.toFixed(5)}`);
 
 // Stacked bars. series: [{key,label,color,values[]}], periods: [{key,provisional}]. Provisional periods are drawn lighter.
 function StackedBars({ periods, series, gran, fmt = axisUsd, active, onActive, label }) {
@@ -215,6 +217,7 @@ function CostExplorer() {
   const [groupBy, setGroupBy] = useState("account");
   const [accts, setAccts] = useState([]);
   const [regs, setRegs] = useState([]);
+  const [provider, setProvider] = useState("aws");
   const [open, setOpen] = useState(null);
   const [hidden, setHidden] = useState([]);
   const [d, setD] = useState(null);
@@ -227,11 +230,11 @@ function CostExplorer() {
 
   const range = useMemo(() => rangeFor(preset, custom), [preset, custom]);
   const query = useMemo(() => {
-    const q = new URLSearchParams({ start: range.start, end: range.end, granularity: gran, group_by: groupBy, cloudops_only: "true" });
+    const q = new URLSearchParams({ start: range.start, end: range.end, granularity: gran, group_by: groupBy, cloudops_only: "true", provider });
     if (accts.length) q.set("accounts", accts.join(","));
     if (regs.length) q.set("regions", regs.join(","));
     return q.toString();
-  }, [range, gran, groupBy, accts, regs]);
+  }, [range, gran, groupBy, accts, regs, provider]);
 
   useEffect(() => {
     let live = true;
@@ -242,6 +245,8 @@ function CostExplorer() {
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, [query, tick]);
+
+  const pickProvider = v => { setProvider(v); setAccts([]); setRegs([]); setOpen(null); };
 
   const refresh = async () => {
     setBusy(true); setMsg(null);
@@ -266,8 +271,8 @@ function CostExplorer() {
   if (!d) return <Panel title="CloudOps polling cost"><Skeleton h={120} /></Panel>;
   if (d.state === "migration_pending") return <Panel title="CloudOps polling cost"><p className="ac-p">{d.notes?.[0]}</p></Panel>;
   if (d.state === "disabled") return (
-    <Panel title="CloudOps polling cost" subtitle="What AWS really billed for CloudOps's reads">
-      <p className="ac-p">Not turned on. It needs the read-only permission ce:GetCostAndUsage on each AWS role and ACTUAL_COST_ENABLED=1 on the server. After the first 90-day read, each refresh costs about $0.01 per account, at most once a day.</p>
+    <Panel title="CloudOps polling cost" subtitle="What the cloud really billed for CloudOps's reads">
+      <p className="ac-p">Not turned on. Set ACTUAL_COST_ENABLED=1 on the server. AWS also needs the read-only permission ce:GetCostAndUsage on each role (about $0.01 per account per day). Azure needs the role Cost Management Reader on the subscription. GCP needs the billing export to BigQuery (GCP_BILLING_EXPORT_TABLE).</p>
     </Panel>
   );
 
@@ -280,20 +285,25 @@ function CostExplorer() {
   const hov = active != null ? d.periods[active] : null;
   const total = d.totals.billed_usd;
   const hasUsage = d.gmd_usage.values.some(v => v > 0);
-  const chk = d.cloudops_check;
+  const pname = d.provider_name || "AWS";
+  const isAws = (d.provider || provider) === "aws";
   const sel = (id, v) => (id === "a" ? setAccts(v) : setRegs(v));
   const ok = x => x.status === "ok";
   const newest = d.accounts.map(x => x.fetched_at).filter(Boolean).sort().pop();
   const bad = d.accounts.filter(x => !ok(x));
 
   return (
-    <Panel title="CloudOps polling cost, billed by AWS"
-           subtitle="What CloudOps's own GetMetricData reads cost, straight from Cost Explorer. Nothing here is estimated or forecast."
+    <Panel title={`CloudOps polling cost, billed by ${pname}`}
+           subtitle={isAws ? "What CloudOps's own GetMetricData reads cost, straight from Cost Explorer. Nothing here is estimated or forecast." : `What CloudOps's own paid metric API calls cost on ${pname}, as billed. Nothing here is estimated or forecast.`}
            actions={<div className="ac-actions"><button className="ac-btn" onClick={() => downloadCsv(d)}>Download CSV</button>
-             <button className="ac-btn" disabled={busy} onClick={refresh}>{busy ? "Reading from AWS..." : "Refresh from AWS"}</button></div>}>
+             <button className="ac-btn" disabled={busy} onClick={refresh}>{busy ? "Reading billing data..." : "Refresh now"}</button></div>}>
       {msg && <p className="ac-dim" role="status">{msg}</p>}
 
       <div className="ac-bar" role="group" aria-label="Report parameters">
+        {(d.providers || []).length > 1 && (
+          <SegmentedControl label="Cloud" options={d.providers.map(k => ({ key: k, label: k === "aws" ? "AWS" : k === "azure" ? "Azure" : "GCP" }))} value={provider} onChange={pickProvider} />
+        )}
+        {d.state !== "no_accounts" && <>
         <SegmentedControl label="Date range" options={PRESETS} value={preset} onChange={setPreset} />
         {preset === "custom" && (
           <span className="ac-dates">
@@ -306,6 +316,7 @@ function CostExplorer() {
         <SegmentedControl label="Group by" options={GROUPS} value={groupBy} onChange={setGroupBy} />
         <FilterPopover id="a" label="Account" options={acctOpts} value={accts} onChange={v => sel("a", v)} open={open} setOpen={setOpen} />
         <FilterPopover id="r" label="Region" options={regOpts} value={regs} onChange={v => sel("r", v)} open={open} setOpen={setOpen} />
+        </>}
         {loading && <span className="ac-dim" role="status">Updating...</span>}
       </div>
       {chips.length > 0 && (
@@ -316,19 +327,19 @@ function CostExplorer() {
       )}
 
       <div className={loading ? "ac-dimmed" : undefined}>
-        <KpiStrip>
+        {d.state !== "no_accounts" && <KpiStrip>
           <KpiCard label="CloudOps polling, billed" tone="ok" value={usd(total)} sub={`${d.range.start} to ${d.through_date || d.range.end} · AWS lags ~48 h`} />
           <KpiCard label="Average per settled day" value={d.totals.avg_per_settled_day_usd == null ? "n/a" : usd(d.totals.avg_per_settled_day_usd)}
                    sub={`${d.totals.settled_days} settled days`} />
-          <KpiCard label="Metrics requested" value={d.totals.metrics_requested == null ? "n/a" : n(d.totals.metrics_requested)}
-                   sub={d.totals.usd_per_1000_metrics == null ? "fills in after the next refresh from AWS" : `AWS rate: ${usd(d.totals.usd_per_1000_metrics)} per 1,000 metrics`} />
-          <KpiCard label="CloudOps counter vs AWS bill" tone={chk && Math.abs(chk.difference_pct) > 10 ? "warn" : undefined}
-                   value={chk ? `${chk.difference_pct > 0 ? "+" : ""}${chk.difference_pct}%` : "n/a"}
-                   sub={chk ? `counted ${n(chk.metered_metrics)} · AWS billed ${n(chk.billed_metrics)} (to ${chk.through})` : "needs settled days and refreshed usage"} />
-        </KpiStrip>
+          <KpiCard label={isAws ? "Metrics requested" : "Billed usage (paid calls)"} value={d.totals.metrics_requested == null ? "n/a" : n(d.totals.metrics_requested)}
+                   sub={d.totals.usd_per_unit == null ? "fills in after the next refresh"
+                     : isAws ? `AWS rate: ${usd(d.totals.usd_per_1000_metrics)} per 1,000 metrics` : `${usdFine(d.totals.usd_per_unit)} per ${d.totals.unit || "unit"} billed`} />
+        </KpiStrip>}
 
-        {d.groups.length === 0 ? (
-          <EmptyState title="No CloudOps polling charges in this selection" body="Change the date range or filters. Days AWS has not reported yet have no data." />
+        {d.state === "no_accounts" ? (
+          <EmptyState title={`No ${pname} accounts are onboarded yet`} body={`When a ${pname} account is added, its CloudOps polling cost appears here after the next refresh. Nothing to configure on this page.`} />
+        ) : d.groups.length === 0 ? (
+          <EmptyState title="No CloudOps polling charges in this selection" body="Change the date range or filters. Days the cloud has not reported yet have no data, and free-tier usage is billed at zero." />
         ) : (
           <>
             <h3 className="ac-h">Cost by {GROUPS.find(g => g.key === d.group_by)?.noun}</h3>
@@ -357,8 +368,8 @@ function CostExplorer() {
 
             {hasUsage && (
               <>
-                <h3 className="ac-h">Metrics CloudOps requested (quantity AWS billed)</h3>
-                <StackedBars periods={d.periods} series={[{ key: "gmd", label: "Metrics requested", color: PALETTE[0], values: d.gmd_usage.values }]}
+                <h3 className="ac-h">{isAws ? "Metrics CloudOps requested (quantity AWS billed)" : `Paid calls billed by ${pname}`}</h3>
+                <StackedBars periods={d.periods} series={[{ key: "gmd", label: isAws ? "Metrics requested" : "Billed usage", color: PALETTE[0], values: d.gmd_usage.values }]}
                              gran={d.granularity} fmt={compact} active={active} onActive={setActive} label="Metrics requested per period" />
               </>
             )}
@@ -369,7 +380,7 @@ function CostExplorer() {
                 <thead>
                   <tr>
                     <th className="ac-sticky">{GROUPS.find(g => g.key === d.group_by)?.label}</th>
-                    <th>Total</th><th>Share</th><th>Metrics</th>
+                    <th>Total</th><th>Share</th><th>{isAws ? "Metrics" : "Usage"}</th>
                     {d.periods.map(p => <th key={p.key}>{periodLabel(p.key, d.granularity)}{p.provisional ? "*" : ""}</th>)}
                   </tr>
                 </thead>
@@ -398,12 +409,11 @@ function CostExplorer() {
       </div>
 
       {bad.map(x => <p key={x.account} className="ac-p">{x.account}: {STATUS_TEXT[x.status] || x.status}{x.error ? ` (${x.error})` : ""}</p>)}
-      <p className="ac-dim ac-foot">
-        Last read from AWS: {newest ? new Date(newest).toLocaleString() : "not yet"} · cost of checking {usd(d.lookup_cost_usd)} ({n(d.lookup_requests)} Cost Explorer requests at $0.01, last 31 days).
-        {d.excluded?.usd > 0 && <> Not shown: {usd(d.excluded.usd)} of other CloudWatch charges in {accts.length ? "the selected" : "these"} accounts that CloudOps does not create (custom metrics, alarms, logs, API requests from agents).</>}
+      {d.state !== "no_accounts" && <p className="ac-dim ac-foot">
+        Last read from {pname}: {newest ? new Date(newest).toLocaleString() : "not yet"} · cost of checking {usd(d.lookup_cost_usd)} ({isAws ? `${n(d.lookup_requests)} Cost Explorer requests at $0.01` : `${n(d.lookup_requests)} requests${pname === "GCP" ? ", BigQuery bytes at list price (first TiB a month is free)" : ", no charge"}`}, last 31 days).
+        {d.excluded?.usd > 0 && <> Not shown: {usd(d.excluded.usd)} of other {isAws ? "CloudWatch" : `${pname} monitoring`} charges in {accts.length ? "the selected" : "these"} accounts that CloudOps does not create ({isAws ? "custom metrics, alarms, logs, API requests from agents" : "ingestion, logs, alerts and similar"}).</>}
         {" "}Today and yesterday are provisional. Tax (for example GST) is billed separately and is not included.
-        {chk && <> <strong>Counter check:</strong> CloudOps keeps its own count of the metrics it asks for and compares it with the metrics AWS billed on settled days. AWS is the truth. A negative gap means CloudOps's counter missed some reads (it is held in memory and was lost on a restart or crash); a positive gap would mean it double counted. Within 10% the bill and the counter agree.</>}
-      </p>
+      </p>}
     </Panel>
   );
 }
@@ -497,7 +507,7 @@ export default function ApiCost() {
     <div className="page ac-page">
       <PageHeader
         title="Cloud cost"
-        subtitle={isAdmin ? "What CloudOps's own metric polling actually costs on AWS, as billed" : "How many paid metric reads CloudOps made, from the usage it measured itself"}
+        subtitle={isAdmin ? "What CloudOps's own metric polling actually costs in the cloud, as billed" : "How many paid metric reads CloudOps made, from the usage it measured itself"}
       />
       {isAdmin ? <CostExplorer /> : <Metering />}
     </div>
