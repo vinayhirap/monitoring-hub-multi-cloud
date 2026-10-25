@@ -18,11 +18,11 @@ step, with at least a full business day between PROD steps.
 > to INFO on every resource the defaults (or a name token such as `dev`/`test`/`uat`) call NON-PROD. If a default
 > mislabels a real production resource, its warnings become INFO. Review the report and the defaults first.
 
-> **BEFORE ANY STEP BELOW: migration 123 (two-environment model).** Apply `db/migrations/123_two_environment_model.sql`
+> **BEFORE ANY STEP BELOW: migration 130 (two-environment model).** Apply `db/migrations/130_two_environment_model.sql`
 > on DEV first, then PROD. It converts stored values to `prod` / `nonprod` (dev, test, SIT, UAT, QA, staging, preprod,
 > sandbox become `nonprod`; unknown, ignore and unrecognised values become `prod`, and resources that were unknown or
 > ignore keep `env_source='unknown'` so they stay in "Needs classification"). It copies every row it changes into
-> `env_migration_123_backup`, is idempotent, and is undone by `db/migrations/123_two_environment_model_rollback.sql`.
+> `env_migration_130_backup`, is idempotent, and is undone by `db/migrations/130_two_environment_model_rollback.sql`.
 > **Behaviour change for former UAT / SIT resources:** they used to be a middle tier (alerts P2/P3, polling x3).
 > They are now NON-PROD: warning-level breaches raise INFO, priority is P3/P4, and (with env polling on) they follow
 > the NON-PROD polling policy. If any of them is really production-like, tag it `Environment=prod` before turning flags on.

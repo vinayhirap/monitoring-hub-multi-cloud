@@ -4,11 +4,11 @@ Phase C. `ENV_POLLING_ENABLED` stays ON. This runbook turns it on, shows what to
 rollback. Nothing here changes collector behaviour; the code was already in the tree (Phase 4c).
 
 > **Two-environment model.** The app now has exactly two environments, PROD and NON-PROD (migration
-> `123_two_environment_model.sql`). The former UAT multiplier is gone: `POLL_UAT_MULTIPLIER` is REMOVED and
+> `130_two_environment_model.sql`). The former UAT multiplier is gone: `POLL_UAT_MULTIPLIER` is REMOVED and
 > **former UAT / SIT / QA resources now follow the NON-PROD policy**. This is a behaviour change for them: their
 > critical-class metrics were unchanged and their other metrics ran at 3x the base interval; they now poll
 > critical-class metrics at least every 10 minutes and everything else at least hourly (or not at all with
-> `POLL_NONPROD_NONCRITICAL_MODE=off`), and they stop evaluating non-critical alerts. Apply migration 123 before
+> `POLL_NONPROD_NONCRITICAL_MODE=off`), and they stop evaluating non-critical alerts. Apply migration 130 before
 > turning this flag on, and tell the owners of former UAT/SIT resources. Measured figures in sections 2, 6 and 7 were
 > taken on 2026-10-17 to 2026-10-22 under the old prod/uat/dev/unknown model and are kept as the baseline; re-run
 > `scripts/polling_plan_report.py` after migrating for the NON-PROD numbers.
@@ -63,7 +63,7 @@ the 36 uat+dev resources are NON-PROD and the 209 unknown are PROD (never slowed
 | measured before (critical 10,800; standard 50,688; low 19,095; extended 744; slow_extended 366) | 81,693 | 7,365 |
 | model, flag off | 77,110 | 6,037 |
 | model, flag on (old model: dev hourly, uat x3) | 65,158 (-15.5%: dev -85.8%, uat -44.4%, prod-like 0%) | 7,476 (+24%) |
-| model, flag on (two-environment model) | not yet regenerated: run `scripts/polling_plan_report.py` after migration 123. Former uat now saves more than the -44.4% above because it follows the hourly NON-PROD cadence. | |
+| model, flag on (two-environment model) | not yet regenerated: run `scripts/polling_plan_report.py` after migration 130. Former uat now saves more than the -44.4% above because it follows the hourly NON-PROD cadence. | |
 
 CloudWatch bills per metric requested, not per request, so billed metrics fall while the request count rises.
 Saving is about 358,560 metrics a month, about $3.6 at $0.01 per 1,000 (US East list; **confirm the ap-south-1 rate
@@ -89,7 +89,7 @@ point of Phase C is to verify it, not to spend on it.
 
 Run each, save the output. All read-only.
 
-1. Deployed commit and migrations (083, 086 and 123 must be applied; 123 is the two-environment conversion):
+1. Deployed commit and migrations (083, 086 and 130 must be applied; 130 is the two-environment conversion):
 ```
 cd /opt/monitoring-hub/app && git log --oneline -1 && /opt/monitoring-hub/venv/bin/python3 migrate.py status | grep -i pending
 ```

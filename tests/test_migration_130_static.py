@@ -1,4 +1,4 @@
-"""Migration 123 (two-environment data conversion): static guards. The data behaviour was exercised on a real MySQL 8
+"""migration 130 (two-environment data conversion): static guards. The data behaviour was exercised on a real MySQL 8
 (idempotent re-run, rollback restores every changed row); these keep the SQL and env_tiers in step."""
 import re
 from pathlib import Path
@@ -6,7 +6,7 @@ from tests.conftest import load_module
 
 et = load_module("app/env_tiers.py")
 MIG = Path(__file__).resolve().parent.parent / "db" / "migrations"
-SQL = (MIG / "123_two_environment_model.sql").read_text()
+SQL = (MIG / "130_two_environment_model.sql").read_text()
 
 
 def _nonprod_pattern():
@@ -16,11 +16,11 @@ def _nonprod_pattern():
 
 
 def test_rollback_companion_exists_and_is_excluded_from_apply_all():
-    assert (MIG / "123_two_environment_model_rollback.sql").exists()
+    assert (MIG / "130_two_environment_model_rollback.sql").exists()
 
 
 def test_backup_table_is_created_before_any_update():
-    assert SQL.index("env_migration_123_backup") < SQL.index("UPDATE resources")
+    assert SQL.index("env_migration_130_backup") < SQL.index("UPDATE resources")
 
 
 def test_sql_pattern_agrees_with_env_tiers_on_every_nonprod_word():

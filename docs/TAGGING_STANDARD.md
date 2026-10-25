@@ -83,11 +83,11 @@ else that used to be a tier (dev, test, SIT, UAT, QA, staging, preprod, sandbox)
   old pre-migration value) is treated as **PROD**. An unclassified resource is therefore never alerted, ranked or
   polled more weakly than production. It also stays in the "Needs classification" queue (`env_source = 'unknown'`)
   until a person confirms it. The API rejects a value it cannot place instead of guessing.
-- **Migration 123** (`db/migrations/123_two_environment_model.sql`) converts stored data: `dev`, `test`, `sit`, `uat`,
+- **migration 130** (`db/migrations/130_two_environment_model.sql`) converts stored data: `dev`, `test`, `sit`, `uat`,
   `qa`, `staging`, `preprod`, `sandbox` and their variants become `nonprod`; `prod`/`production`, `unknown`, `ignore` and
   unrecognised values become `prod`. Resources that were unknown or ignore keep `env_source = 'unknown'`. Every
-  changed row is copied to `env_migration_123_backup`; the migration is idempotent and
-  `db/migrations/123_two_environment_model_rollback.sql` restores the old values.
+  changed row is copied to `env_migration_130_backup`; the migration is idempotent and
+  `db/migrations/130_two_environment_model_rollback.sql` restores the old values.
 - **Behaviour change for former UAT / SIT resources.** They were a middle tier (priority P2/P3, polling x3). They now
   follow the NON-PROD policy: INFO at warning level, priority P3/P4, NON-PROD polling. If one is production-like, tag it
   `Environment=prod`.

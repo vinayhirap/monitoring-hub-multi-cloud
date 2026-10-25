@@ -3,7 +3,7 @@
 Status: built, tested, deployed to DEV and PROD with the flag OFF. Section 5 is a modelled illustration;
 section 6 holds the real PROD numbers (taken 2026-10-17) and the decision.
 
-> **Two-environment model.** The app now has only PROD and NON-PROD (migration `123_two_environment_model.sql`).
+> **Two-environment model.** The app now has only PROD and NON-PROD (migration `130_two_environment_model.sql`).
 > Sections 1 to 4 describe the current policy. Sections 5 and 6 were produced under the old prod/uat/dev model
 > (uat slowed x3, dev hourly) and are kept as dated, historical numbers: with `POLL_UAT_MULTIPLIER` removed, former UAT
 > resources follow the hourly NON-PROD cadence, so the saving is larger than shown. Re-run

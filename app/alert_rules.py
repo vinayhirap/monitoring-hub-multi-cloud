@@ -185,7 +185,7 @@ def _env_poll_extra_sql(r, acc, metric):
         extra = int(math.ceil(max(0, (dci if crit else di) - seconds) / 60.0))
         if not extra:
             return "0"
-        # 'uat' / 'dev' are values stored before the two-environment model; they mean NON-PROD until migration 123
+        # 'uat' / 'dev' are values stored before the two-environment model; they mean NON-PROD until migration 130
         # and the next environment sync have rewritten them
         return f"CASE WHEN {r}.env_resolved IN ('nonprod', 'uat', 'dev') THEN {extra} ELSE 0 END"
 

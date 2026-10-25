@@ -1,4 +1,4 @@
--- db/migrations/123_two_environment_model.sql
+-- db/migrations/130_two_environment_model.sql
 --
 -- Two environments only: PROD and NON-PROD.
 --
@@ -12,11 +12,11 @@
 --                 unknown, ignore, NULL-ish, free text nobody recognises    -> prod   (fail-safe: never weaker than prod)
 -- Resources that were 'unknown' or 'ignore' keep env_source = 'unknown' so they stay in the Needs-classification queue.
 --
--- Reversible: the first run copies every row it changes into env_migration_123_backup (never overwritten on a
--- re-run); db/migrations/123_two_environment_model_rollback.sql puts the old values back.
+-- Reversible: the first run copies every row it changes into env_migration_130_backup (never overwritten on a
+-- re-run); db/migrations/130_two_environment_model_rollback.sql puts the old values back.
 -- Idempotent: safe to run twice (a second run changes nothing).
 
-CREATE TABLE IF NOT EXISTS env_migration_123_backup (
+CREATE TABLE IF NOT EXISTS env_migration_130_backup (
   tbl        VARCHAR(40)  NOT NULL,
   row_id     VARCHAR(64)  NOT NULL,
   col        VARCHAR(40)  NOT NULL,
@@ -30,25 +30,25 @@ CREATE TABLE IF NOT EXISTS env_migration_123_backup (
 SET @NP := '^(non[ _-]?prod(uction)?|nonprd|dev(elopment)?|test(ing)?|sit|uat|qas?|stag(e|ing)|stg|pre[ _-]?prod(uction)?|sandbox)[ _-]*[0-9]*$';
 
 -- ---- backups (INSERT IGNORE: first run wins) ------------------------------------------------------------------
-INSERT IGNORE INTO env_migration_123_backup (tbl, row_id, col, old_value, extra)
+INSERT IGNORE INTO env_migration_130_backup (tbl, row_id, col, old_value, extra)
   SELECT 'resources', id, 'env_override', env_override, env_source FROM resources
    WHERE env_override IS NOT NULL AND env_override NOT IN ('prod','nonprod');
-INSERT IGNORE INTO env_migration_123_backup (tbl, row_id, col, old_value, extra)
+INSERT IGNORE INTO env_migration_130_backup (tbl, row_id, col, old_value, extra)
   SELECT 'resources', id, 'env_resolved', env_resolved, env_source FROM resources
    WHERE env_resolved IS NOT NULL AND env_resolved NOT IN ('prod','nonprod');
-INSERT IGNORE INTO env_migration_123_backup (tbl, row_id, col, old_value)
+INSERT IGNORE INTO env_migration_130_backup (tbl, row_id, col, old_value)
   SELECT 'aws_accounts', id, 'default_env', default_env FROM aws_accounts
    WHERE default_env IS NOT NULL AND default_env NOT IN ('prod','nonprod');
-INSERT IGNORE INTO env_migration_123_backup (tbl, row_id, col, old_value)
+INSERT IGNORE INTO env_migration_130_backup (tbl, row_id, col, old_value)
   SELECT 'aws_accounts', id, 'environment', environment FROM aws_accounts
    WHERE environment IS NULL OR environment NOT IN ('PROD','NON-PROD');
-INSERT IGNORE INTO env_migration_123_backup (tbl, row_id, col, old_value)
+INSERT IGNORE INTO env_migration_130_backup (tbl, row_id, col, old_value)
   SELECT 'alerts', id, 'environment', environment FROM alerts
    WHERE environment IS NULL OR environment NOT IN ('prod','nonprod');
-INSERT IGNORE INTO env_migration_123_backup (tbl, row_id, col, old_value)
+INSERT IGNORE INTO env_migration_130_backup (tbl, row_id, col, old_value)
   SELECT 'alert_pending', id, 'environment', environment FROM alert_pending
    WHERE environment IS NULL OR environment NOT IN ('prod','nonprod');
-INSERT IGNORE INTO env_migration_123_backup (tbl, row_id, col, old_value)
+INSERT IGNORE INTO env_migration_130_backup (tbl, row_id, col, old_value)
   SELECT 'synthetic_checks', id, 'environment', environment FROM synthetic_checks
    WHERE environment IS NULL OR environment NOT IN ('prod','nonprod');
 
