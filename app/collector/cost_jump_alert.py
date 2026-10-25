@@ -10,8 +10,13 @@ WHAT IS COMPARED
   would look like a drop, then a jump, as they fill in). The alert is therefore about 2-3 days behind the spend; it
   catches a step change in polling cost, it is not a real-time meter.
 
-  Threshold:  day_cost > average * (1 + COST_JUMP_THRESHOLD_PCT / 100)                (default 30)
-  Noise floor: AND day_cost - average >= COST_JUMP_MIN_INCREASE_USD                   (default 0.10)
+  Threshold:  day_cost > average * (1 + threshold_pct / 100)                          (default 30)
+  Noise floor: AND day_cost - average >= min_increase_usd                              (default 0.10)
+  SETTINGS: on/off, threshold_pct and min_increase_usd are set on the Cloud cost page (usage.manage), for all accounts
+  and per account (app/cost_jump_settings.py, table cost_jump_settings). Order: the account's own value, the
+  all-accounts value, the server environment (COST_JUMP_ALERT_ENABLED, COST_JUMP_THRESHOLD_PCT,
+  COST_JUMP_MIN_INCREASE_USD), the built-in default (off, 30, 0.10). Switching an account off resolves its open alert
+  with reason 'alert_disabled'.
   Baseline:   needs at least MIN_BASELINE_DAYS of the 7 days present; fewer -> "no data", nothing is raised or cleared.
 
 LIFECYCLE (same rules as host_agent_watchdog.py, through the existing alert pipeline)
@@ -24,13 +29,14 @@ LIFECYCLE (same rules as host_agent_watchdog.py, through the existing alert pipe
     scheduler's critical tick rather than once a day on a clock, because an open alert needs its last_seen_at refreshed
     inside the alert-staleness window; re-checking does not re-notify, a notification goes out only when an alert opens.
 
-OFF BY DEFAULT: run_cost_jump_check() returns before touching the database unless COST_JUMP_ALERT_ENABLED=true.
+OFF BY DEFAULT: until someone turns it on (page or environment) no cost data is read and nothing is raised. The settings
+table is read every check (one tiny query).
 """
 import logging
-import os
 import time
 from datetime import date, timedelta
 
+from app import cost_jump_settings
 from app.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -42,34 +48,13 @@ MIN_BASELINE_DAYS = 5
 PROVISIONAL_DAYS = 2                    # keep equal to app/api/usage.py PROVISIONAL_DAYS
 LOOKBACK_DAYS = WINDOW_DAYS + PROVISIONAL_DAYS + 2
 CHECK_EVERY_SECONDS = 600               # well inside the 20-minute alert staleness window
-DEFAULT_THRESHOLD_PCT = 30.0
+DEFAULT_THRESHOLD_PCT = 30.0                 # = cost_jump_settings.BUILTIN, used only by evaluate()'s signature
 DEFAULT_MIN_INCREASE_USD = 0.10
 DETAIL_MAX_LEN = 500
 PROVIDERS = ("aws", "azure", "gcp")
 PROVIDER_NAMES = {"aws": "AWS", "azure": "Azure", "gcp": "GCP"}
 
-_TRUE = ("true", "1", "yes", "on")
 _last_run = 0.0
-
-
-def enabled() -> bool:
-    return os.getenv("COST_JUMP_ALERT_ENABLED", "false").strip().lower() in _TRUE
-
-
-def _float_env(name, default, low):
-    try:
-        v = float(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
-    return v if v >= low else default
-
-
-def threshold_pct() -> float:
-    return _float_env("COST_JUMP_THRESHOLD_PCT", DEFAULT_THRESHOLD_PCT, 1.0)
-
-
-def min_increase_usd() -> float:
-    return _float_env("COST_JUMP_MIN_INCREASE_USD", DEFAULT_MIN_INCREASE_USD, 0.0)
 
 
 # ── the rule (pure) ──────────────────────────────────────────────────────────────────
@@ -196,22 +181,32 @@ def _notify(alert_id, rid, account_id, account_name, usd, limit, detail):
 # ── entry point ──────────────────────────────────────────────────────────────────────
 
 def run_cost_jump_check(force=False, today=None) -> dict:
-    """One pass over every active account of every cloud. Returns counters. Throttled; no-op unless enabled."""
+    """One pass over every active account of every cloud. Returns counters. Throttled to CHECK_EVERY_SECONDS."""
     global _last_run
-    if not enabled():
-        return {"skipped": "disabled"}
     now = time.time()
     if not force and now - _last_run < CHECK_EVERY_SECONDS:
         return {"skipped": "throttled"}
     _last_run = now
     today = today or _utc_today()
-    pct, floor = threshold_pct(), min_increase_usd()
     start, end = today - timedelta(days=LOOKBACK_DAYS), today
-    stats = {"accounts": 0, "opened": 0, "updated": 0, "resolved": 0, "no_data": 0}
+    stats = {"accounts": 0, "opened": 0, "updated": 0, "resolved": 0, "no_data": 0, "switched_off": 0}
     opened = []
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        settings = cost_jump_settings.load(cursor)
+        # An account switched off (or everything switched off) must not keep an open alert behind.
+        cursor.execute("SELECT id, aws_account_id FROM alerts WHERE metric_name = %s AND status IN ('active', 'acknowledged')",
+                       (METRIC,))
+        for a in cursor.fetchall():
+            if not cost_jump_settings.effective(settings, a["aws_account_id"])["enabled"]:
+                if _resolve(cursor, a["id"], "alert_disabled"):
+                    stats["switched_off"] += 1
+        anywhere = cost_jump_settings.effective(settings)["enabled"] or any(
+            cost_jump_settings.effective(settings, pk)["enabled"] for pk in settings["accounts"])
+        if not anywhere:
+            conn.commit()
+            return {**stats, "skipped": "disabled"}
         silenced_map = {}
         try:
             from app.collector.maintenance import active_silenced_map
@@ -226,7 +221,11 @@ def run_cost_jump_check(force=False, today=None) -> dict:
                     continue                              # that cloud's cost tables are not migrated yet
                 raise
             for pk, acct in accounts.items():
+                eff = cost_jump_settings.effective(settings, pk)
+                if not eff["enabled"]:
+                    continue
                 stats["accounts"] += 1
+                pct, floor = eff["threshold_pct"], eff["min_increase_usd"]
                 r = evaluate(acct["daily"], today, pct, floor)
                 rid = _rid(pk)
                 existing = _open_alert(cursor, pk, rid)
@@ -265,7 +264,7 @@ def run_cost_jump_check(force=False, today=None) -> dict:
         conn.close()
     for alert_id, rid, pk, name, usd, limit, detail in opened:
         _notify(alert_id, rid, pk, name or "", usd, limit, detail)
-    if stats["opened"] or stats["resolved"]:
+    if stats["opened"] or stats["resolved"] or stats["switched_off"]:
         logger.info(f"[cost-jump] {stats}")
     return stats
 

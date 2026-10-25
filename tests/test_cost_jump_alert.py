@@ -14,9 +14,8 @@ SETTLED = TODAY - timedelta(days=2)                      # Oct 23: the day that 
 def cj(monkeypatch):
     install_stub("app.db", get_connection=lambda: None)
     mod = load_module("app/collector/cost_jump_alert.py")
-    monkeypatch.setenv("COST_JUMP_ALERT_ENABLED", "true")
-    monkeypatch.delenv("COST_JUMP_THRESHOLD_PCT", raising=False)
-    monkeypatch.delenv("COST_JUMP_MIN_INCREASE_USD", raising=False)
+    for v in ("COST_JUMP_ALERT_ENABLED", "COST_JUMP_THRESHOLD_PCT", "COST_JUMP_MIN_INCREASE_USD"):
+        monkeypatch.delenv(v, raising=False)
     return mod
 
 
@@ -68,26 +67,30 @@ def test_detail_is_plain_and_complete(cj):
     assert "Acme Prod" in t and "$20.00" in t and "100% above" in t and "$10.00" in t and "$13.00" in t and "2026-10-23" in t
 
 
-def test_env_overrides_and_bad_values_fall_back(cj, monkeypatch):
-    monkeypatch.setenv("COST_JUMP_THRESHOLD_PCT", "50")
-    assert cj.threshold_pct() == 50.0
-    monkeypatch.setenv("COST_JUMP_THRESHOLD_PCT", "banana")
-    assert cj.threshold_pct() == 30.0
-    monkeypatch.setenv("COST_JUMP_THRESHOLD_PCT", "-5")
-    assert cj.threshold_pct() == 30.0
-
-
 # ── lifecycle ───────────────────────────────────────────────────────────────────
+GLOBAL_ON = [{"scope_key": 0, "enabled": 1, "threshold_pct": None, "min_increase_usd": None, "updated_by": "t", "updated_at": None}]
+
+
+def srow(key, enabled=None, pct=None, floor=None):
+    return {"scope_key": key, "enabled": enabled, "threshold_pct": pct, "min_increase_usd": floor, "updated_by": "t", "updated_at": None}
+
+
 class FakeCur:
-    def __init__(self, accounts, open_alert):
-        self.accounts, self.open_alert, self.log = accounts, open_alert, []
+    def __init__(self, accounts, open_alert, settings, open_alerts=()):
+        self.accounts, self.open_alert, self.settings, self.open_alerts, self.log = accounts, open_alert, settings, list(open_alerts), []
         self._rows, self.lastrowid, self.rowcount = [], 77, 1
 
     def execute(self, sql, params=()):
         self.log.append((" ".join(sql.split()), params))
         self._rows = []
-        if "FROM aws_cost_actuals" in sql:
+        if "FROM cost_jump_settings" in sql:
+            if self.settings is None:
+                raise Exception("1146 (42S02): Table 'x.cost_jump_settings' doesn't exist")
+            self._rows = self.settings
+        elif "FROM aws_cost_actuals" in sql:
             self._rows = self.accounts
+        elif "SELECT id, aws_account_id FROM alerts" in sql:
+            self._rows = self.open_alerts
         elif "FROM alerts" in sql and "SELECT id, status" in sql:
             self._rows = [self.open_alert] if self.open_alert else []
 
@@ -126,8 +129,8 @@ def cost_rows(daily, pk=5, name="Acme"):
              "usage_date": d, "amount_usd": v} for d, v in daily.items()]
 
 
-def run(cj, monkeypatch, daily, open_alert=None, region_rows=()):
-    cur = FakeCur(cost_rows(daily) + list(region_rows), open_alert)
+def run(cj, monkeypatch, daily, open_alert=None, region_rows=(), settings=GLOBAL_ON, open_alerts=()):
+    cur = FakeCur(cost_rows(daily) + list(region_rows), open_alert, settings, open_alerts)
     conn = FakeConn(cur)
     monkeypatch.setattr(cj, "get_connection", lambda: conn)
     sent = []
@@ -136,10 +139,9 @@ def run(cj, monkeypatch, daily, open_alert=None, region_rows=()):
     return stats, cur, conn, sent
 
 
-def test_disabled_never_touches_the_database(cj, monkeypatch):
-    monkeypatch.setenv("COST_JUMP_ALERT_ENABLED", "false")
-    monkeypatch.setattr(cj, "get_connection", lambda: pytest.fail("database touched while disabled"))
-    assert cj.run_cost_jump_check(force=True) == {"skipped": "disabled"}
+def test_nothing_on_anywhere_reads_no_cost_data_and_raises_nothing(cj, monkeypatch):
+    stats, cur, conn, sent = run(cj, monkeypatch, series(50.0), settings=[])
+    assert stats["skipped"] == "disabled" and cur.sqls("FROM aws_cost_actuals") == [] and cur.sqls("INSERT INTO alerts") == []
 
 
 def test_a_jump_opens_one_warning_and_notifies_once(cj, monkeypatch):
@@ -174,7 +176,7 @@ def test_cost_outside_the_onboarded_region_is_ignored(cj, monkeypatch):
     other_region = [{"pk": 5, "account_name": "Acme", "default_region": "ap-south-1", "usage_type": "USE1-CW:GMD-Metrics",
                      "usage_date": SETTLED, "amount_usd": 500.0}]
     stats, *_ = run(cj, monkeypatch, series(10.0), region_rows=other_region)
-    assert stats["opened"] == 0                                           # a $500 charge in us-east-1 is not CloudOps polling here
+    assert stats["opened"] == 0                                           # a 500 USD charge in us-east-1 is not CloudOps polling here
 
 
 def test_non_cloudops_charges_are_ignored(cj, monkeypatch):
@@ -192,3 +194,44 @@ def test_the_check_is_throttled_between_runs(cj, monkeypatch):
 def test_cloud_cost_jump_is_a_system_metric_so_it_is_never_auto_resolved_for_a_missing_threshold():
     from app.alert_rules import SYSTEM_METRICS
     assert "cloud_cost_jump" in SYSTEM_METRICS
+
+
+# ── settings: all accounts and per account ─────────────────────────────────────
+def test_an_account_switched_off_is_skipped_even_when_all_accounts_are_on(cj, monkeypatch):
+    stats, cur, *_ = run(cj, monkeypatch, series(50.0), settings=GLOBAL_ON + [srow(5, enabled=0)])
+    assert stats["opened"] == 0 and stats["accounts"] == 0
+
+
+def test_one_account_can_be_on_while_all_accounts_are_off(cj, monkeypatch):
+    stats, *_ = run(cj, monkeypatch, series(50.0), settings=[srow(0, enabled=0), srow(5, enabled=1)])
+    assert stats["opened"] == 1
+
+
+def test_switching_an_account_off_resolves_its_open_alert(cj, monkeypatch):
+    stats, cur, conn, sent = run(cj, monkeypatch, series(50.0), settings=GLOBAL_ON + [srow(5, enabled=0)],
+                                 open_alerts=[{"id": 9, "aws_account_id": 5}])
+    assert stats["switched_off"] == 1 and cur.sqls("resolution_reason")[0][0] == "alert_disabled"
+
+
+def test_switching_everything_off_still_clears_open_alerts(cj, monkeypatch):
+    stats, cur, conn, sent = run(cj, monkeypatch, series(50.0), settings=[srow(0, enabled=0)],
+                                 open_alerts=[{"id": 9, "aws_account_id": 5}])
+    assert stats["switched_off"] == 1 and stats["skipped"] == "disabled" and conn.committed
+
+
+def test_an_accounts_own_percentage_beats_the_all_accounts_one(cj, monkeypatch):
+    on = [srow(0, enabled=1, pct=30.0)]
+    assert run(cj, monkeypatch, series(14.0), settings=on)[0]["opened"] == 1                 # +40% > 30
+    assert run(cj, monkeypatch, series(14.0), settings=on + [srow(5, pct=50.0)])[0]["opened"] == 0   # +40% < 50 for this account
+    assert run(cj, monkeypatch, series(14.0), settings=[srow(0, enabled=1, pct=50.0), srow(5, pct=30.0)])[0]["opened"] == 1
+
+
+def test_an_accounts_own_minimum_rise_beats_the_all_accounts_one(cj, monkeypatch):
+    on = [srow(0, enabled=1, floor=0.10)]
+    assert run(cj, monkeypatch, series(14.0), settings=on + [srow(5, floor=5.0)])[0]["opened"] == 0       # rise of 4 is under 5
+
+
+def test_before_migration_132_the_environment_still_decides(cj, monkeypatch):
+    assert run(cj, monkeypatch, series(50.0), settings=None)[0]["skipped"] == "disabled"
+    monkeypatch.setenv("COST_JUMP_ALERT_ENABLED", "true")
+    assert run(cj, monkeypatch, series(50.0), settings=None)[0]["opened"] == 1

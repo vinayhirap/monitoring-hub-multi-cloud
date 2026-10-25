@@ -596,6 +596,113 @@ function TierCost() {
 }
 
 
+// ───────────────────────── Cost-jump alert settings (usage.manage) ─────────────────────────
+const SRC_TEXT = { account: "this account", "all accounts": "all-accounts setting", environment: "server environment", default: "built-in default" };
+const onoff = v => (v === true ? "on" : v === false ? "off" : "inherit");
+const fromOnoff = v => (v === "on" ? true : v === "off" ? false : null);
+const numOrNull = v => (String(v).trim() === "" ? null : Number(v));
+
+function CostAlertSettings() {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState(null);
+  const [draft, setDraft] = useState({});
+  const [gDraft, setGDraft] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [msg, setMsg] = useState(null);
+
+  const adopt = r => {
+    setD(r);
+    setGDraft({ enabled: onoff(r.all_accounts.set.enabled), threshold_pct: r.all_accounts.set.threshold_pct ?? "", min_increase_usd: r.all_accounts.set.min_increase_usd ?? "" });
+    setDraft(Object.fromEntries(r.accounts.map(a => [a.id, { enabled: onoff(a.set.enabled), threshold_pct: a.set.threshold_pct ?? "", min_increase_usd: a.set.min_increase_usd ?? "" }])));
+  };
+  useEffect(() => {
+    let live = true;
+    apiFetch("/api/usage/cost-alert-settings").then(r => { if (live) adopt(r); }).catch(e => { if (live) setErr(e); });
+    return () => { live = false; };
+  }, []);
+
+  const put = async (key, path, body, ok) => {
+    setBusy(key); setMsg(null);
+    try {
+      const r = await apiFetch(path, { method: "PUT", body: JSON.stringify(body) });
+      adopt(r); setMsg({ ok: true, text: ok });
+    } catch (e) { setMsg({ ok: false, text: e?.detail || e?.message || "Could not save." }); } finally { setBusy(null); }
+  };
+  const body = x => ({ enabled: fromOnoff(x.enabled), threshold_pct: numOrNull(x.threshold_pct), min_increase_usd: numOrNull(x.min_increase_usd) });
+
+  if (err) return <Panel title="Cost-jump alert"><p className="ac-dim">Could not be loaded{err.status === 403 ? ": you do not have access." : ". Try again in a moment."}</p></Panel>;
+  if (!d || !gDraft) return <Panel title="Cost-jump alert"><Skeleton h={90} /></Panel>;
+  const g = d.all_accounts;
+  const lim = d.limits;
+  const dirty = (a) => { const x = draft[a.id]; return x && (x.enabled !== onoff(a.set.enabled) || String(x.threshold_pct) !== String(a.set.threshold_pct ?? "") || String(x.min_increase_usd) !== String(a.set.min_increase_usd ?? "")); };
+  const setRow = (id, k, v) => setDraft(p => ({ ...p, [id]: { ...p[id], [k]: v } }));
+
+  return (
+    <Panel title="Cost-jump alert" subtitle="Raise a warning when an account's billed CloudOps cost is more than a set percentage above its 7-day average">
+      {d.table_missing && <div className="ac-warn" role="alert">Settings cannot be saved yet: run the pending migrations (migrate.py apply --all-pending), number 132.</div>}
+      {msg && <p className={msg.ok ? "ac-dim" : "ac-p"} role="status">{msg.text}</p>}
+
+      <h3 className="ac-h">All accounts</h3>
+      <div className="ac-bar" role="group" aria-label="All accounts settings">
+        <label className="ac-field"><span>Alert</span>
+          <select value={gDraft.enabled} onChange={e => setGDraft({ ...gDraft, enabled: e.target.value })}>
+            <option value="inherit">Use server default ({d.defaults.environment.enabled.value ? "on" : "off"})</option><option value="on">On</option><option value="off">Off</option>
+          </select></label>
+        <label className="ac-field"><span>Percent above average</span>
+          <input type="number" min={lim.threshold_pct[0]} max={lim.threshold_pct[1]} step="1" placeholder={String(d.defaults.environment.threshold_pct.value)}
+                 value={gDraft.threshold_pct} onChange={e => setGDraft({ ...gDraft, threshold_pct: e.target.value })} /></label>
+        <label className="ac-field"><span>Minimum rise per day (USD)</span>
+          <input type="number" min={lim.min_increase_usd[0]} step="0.01" placeholder={String(d.defaults.environment.min_increase_usd.value)}
+                 value={gDraft.min_increase_usd} onChange={e => setGDraft({ ...gDraft, min_increase_usd: e.target.value })} /></label>
+        <button className="ac-btn" disabled={busy === "g" || d.table_missing} onClick={() => put("g", "/api/usage/cost-alert-settings/all-accounts", body(gDraft), "Saved for all accounts.")}>{busy === "g" ? "Saving..." : "Save for all accounts"}</button>
+      </div>
+      <p className="ac-dim">
+        In effect: {g.effective.enabled ? "ON" : "OFF"}, {g.effective.threshold_pct}% above average, at least {usd(g.effective.min_increase_usd)} a day
+        ({SRC_TEXT[g.source.enabled]}{g.source.threshold_pct !== g.source.enabled || g.source.min_increase_usd !== g.source.enabled ? ", mixed sources" : ""}).
+        Applies to every account that has no setting of its own below.{g.updated_by ? ` Last changed by ${g.updated_by}.` : ""}
+      </p>
+
+      <h3 className="ac-h">Per account</h3>
+      <p className="ac-dim">Leave a field empty to use the all-accounts value. "Inherit" in the first column means the same.</p>
+      {d.accounts.length === 0 ? <EmptyState title="No accounts" body="Add an account to set its alert." /> : (
+        <div className="ac-tablewrap">
+          <table className="ac-table">
+            <thead><tr><th className="ac-sticky">Account</th><th>Cloud</th><th>Alert</th><th>% above average</th><th>Min rise / day (USD)</th><th>In effect</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              {d.accounts.map(a => {
+                const x = draft[a.id] || {};
+                return (
+                  <tr key={a.id}>
+                    <td className="ac-sticky" title={`account ${a.id}`}>{a.name}</td>
+                    <td>{CLOUD[a.provider] || a.provider}</td>
+                    <td><select aria-label={`Alert for ${a.name}`} value={x.enabled} onChange={e => setRow(a.id, "enabled", e.target.value)}>
+                      <option value="inherit">Inherit</option><option value="on">On</option><option value="off">Off</option></select></td>
+                    <td><input aria-label={`Percent for ${a.name}`} type="number" min={lim.threshold_pct[0]} max={lim.threshold_pct[1]} step="1" style={{ width: 80 }}
+                               placeholder={String(g.effective.threshold_pct)} value={x.threshold_pct} onChange={e => setRow(a.id, "threshold_pct", e.target.value)} /></td>
+                    <td><input aria-label={`Minimum rise for ${a.name}`} type="number" min={lim.min_increase_usd[0]} step="0.01" style={{ width: 90 }}
+                               placeholder={String(g.effective.min_increase_usd)} value={x.min_increase_usd} onChange={e => setRow(a.id, "min_increase_usd", e.target.value)} /></td>
+                    <td className="ac-dim">{a.effective.enabled ? "ON" : "OFF"} · {a.effective.threshold_pct}% · {usd(a.effective.min_increase_usd)}{a.has_override ? " (own)" : ""}</td>
+                    <td>{a.open_alert ? <strong>Alert open</strong> : <span className="ac-dim">{a.effective.enabled ? "watching" : "off"}</span>}</td>
+                    <td><button className="ac-btn" disabled={!dirty(a) || busy === a.id || d.table_missing}
+                                onClick={() => put(a.id, "/api/usage/cost-alert-settings/accounts", { account_ids: [a.id], ...body(x) }, `Saved for ${a.name}.`)}>{busy === a.id ? "Saving..." : "Save"}</button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="ac-actions" style={{ marginTop: 10 }}>
+        <button className="ac-btn" disabled={busy === "reset" || d.table_missing || !d.accounts.some(a => a.has_override)}
+                onClick={() => { if (window.confirm("Clear every per-account setting so all accounts use the all-accounts values?")) put("reset", "/api/usage/cost-alert-settings/accounts", { account_ids: "all", enabled: null, threshold_pct: null, min_increase_usd: null }, "Cleared every per-account setting."); }}>
+          {busy === "reset" ? "Clearing..." : "Clear all per-account settings"}</button>
+      </div>
+      <ul className="ac-list ac-dim">{d.notes.map((t, i) => <li key={i}>{t}</li>)}</ul>
+    </Panel>
+  );
+}
+
+
 export default function ApiCost() {
   const { hasPermission } = useAuth();
   const isAdmin = hasPermission("usage.manage");      // the actual AWS bill is admin-only (usage.manage)
@@ -605,7 +712,7 @@ export default function ApiCost() {
         title="Cloud cost"
         subtitle={isAdmin ? "What CloudOps's own metric polling actually costs in the cloud, as billed" : "How many paid metric reads CloudOps made, from the usage it measured itself"}
       />
-      {isAdmin ? <><MonthlyTotals /><CostExplorer /><TierCost /></> : <Metering />}
+      {isAdmin ? <><MonthlyTotals /><CostExplorer /><TierCost /><CostAlertSettings /></> : <Metering />}
     </div>
   );
 }
