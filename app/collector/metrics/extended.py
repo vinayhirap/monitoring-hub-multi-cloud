@@ -514,7 +514,7 @@ def collect_extended_for_account(session, account, tier="extended"):
                    for d in EXTENDED_METRICS[resource_type]):
             continue
         cw_region = _region_for_service(resource_type, region)
-        # Phase 4c (ENV_POLLING_ENABLED): UAT / DEV resources are collected on fewer ticks; the
+        # Phase 4c (ENV_POLLING_ENABLED): NON-PROD resources are collected on fewer ticks; the
         # poll that does run looks back far enough to cover the skipped ones. Off: one group,
         # extra 0, the exact call this loop always made. wafv2 is exempt (see env_polling).
         if env_polling.enabled():

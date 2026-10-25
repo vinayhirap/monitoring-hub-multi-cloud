@@ -25,7 +25,7 @@ GUARDRAILS (Phase B1, all run by --check; none touches app code, the database or
   p1_set             every key evaluated on the 2-min tick resolves to a catalog metric polled at <= 120 s that the
                      cloud publishes at <= 120 s, and every critical-tier metric is in the P1 set
   env_invariants     with ENV_POLLING on: effective_interval never < base, wafv2 never slowed, base >= 24 h never
-                     slowed, UAT critical-class unchanged, prod-like unchanged, polling_model.base_interval_seconds()
+                     slowed, PROD (and any unplaced label) unchanged, NON-PROD intervals per the POLL_NONPROD_* settings, polling_model.base_interval_seconds()
                      agrees with the catalog tier
   staleness          STALE_MIN / EVAL_WINDOW exceed the interval for every base and every env-slowed interval
   period_vs_publish  GetMetricData Period is never finer than the native publish interval (timestamp shift bug class)
@@ -445,28 +445,30 @@ def check_p1_set(rows, p1_keys=None):
     return problems, warnings
 
 
-def _sql_extra_minutes(seconds, crit, env, um, di, dci):
+def _sql_extra_minutes(seconds, crit, env, di, dci):
     """Mirror of the per-metric arithmetic in app/alert_rules.py _env_poll_extra_sql at 7c72413. The audit cross-checks it
     against env_polling.extra_window_minutes so the SQL the evaluator runs and the collector cannot drift apart."""
     if seconds >= ep.NEVER_SLOW_AT_OR_ABOVE_SECONDS:
         return 0
-    if env == "uat":
-        return 0 if crit else int(math.ceil(seconds * (um - 1) / 60.0))
-    if env == "dev":
+    if env == "nonprod":
         return int(math.ceil(max(0, (dci if crit else di) - seconds) / 60.0))
     return 0
 
 
-_ENVS = ("prod", "uat", "dev", "unknown", "ignore", None, "", " DEV ", "Uat", "junk")
+_ENVS = ("prod", "nonprod", None, "", " NONPROD ", "Non-Prod", " DEV ", "Uat", "unknown", "ignore", "junk")
 _ENV_SETTINGS = [
     {},
-    {"POLL_UAT_MULTIPLIER": "0", "POLL_DEV_INTERVAL_SECONDS": "0", "POLL_DEV_CRITICAL_INTERVAL_SECONDS": "0"},
-    {"POLL_UAT_MULTIPLIER": "12", "POLL_DEV_INTERVAL_SECONDS": "999999", "POLL_DEV_CRITICAL_INTERVAL_SECONDS": "999999"},
-    {"POLL_UAT_MULTIPLIER": "2", "POLL_DEV_INTERVAL_SECONDS": "120", "POLL_DEV_CRITICAL_INTERVAL_SECONDS": "120"},
+    {"POLL_NONPROD_INTERVAL_SECONDS": "0", "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS": "0"},
+    {"POLL_NONPROD_INTERVAL_SECONDS": "999999", "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS": "999999"},
+    {"POLL_NONPROD_INTERVAL_SECONDS": "120", "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS": "120"},
+    {"POLL_NONPROD_NONCRITICAL_MODE": "off"},
+    {"POLL_NONPROD_INTERVAL_SECONDS": "junk", "POLL_NONPROD_NONCRITICAL_MODE": "junk"},
+    {"POLL_DEV_INTERVAL_SECONDS": "1800", "POLL_DEV_CRITICAL_INTERVAL_SECONDS": "300"},      # legacy fallback names
     {"POLL_DEV_NONCRITICAL_MODE": "off"},
-    {"POLL_UAT_MULTIPLIER": "junk", "POLL_DEV_INTERVAL_SECONDS": "junk", "POLL_DEV_NONCRITICAL_MODE": "junk"},
 ]
-_ENV_KEYS = ("POLL_UAT_MULTIPLIER", "POLL_DEV_INTERVAL_SECONDS", "POLL_DEV_CRITICAL_INTERVAL_SECONDS", "POLL_DEV_NONCRITICAL_MODE")
+# The legacy POLL_DEV_* names are cleared too, so an operator's real .env cannot leak into a scenario.
+_ENV_KEYS = ("POLL_NONPROD_INTERVAL_SECONDS", "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS", "POLL_NONPROD_NONCRITICAL_MODE",
+             "POLL_DEV_INTERVAL_SECONDS", "POLL_DEV_CRITICAL_INTERVAL_SECONDS", "POLL_DEV_NONCRITICAL_MODE")
 
 
 def check_env_invariants(rows, ep_mod=None, p1_keys=None):
@@ -486,8 +488,8 @@ def check_env_invariants(rows, ep_mod=None, p1_keys=None):
 
     for settings in _ENV_SETTINGS:
         with envvars(**{k: settings.get(k) for k in _ENV_KEYS}):
-            mode_off = e.dev_noncritical_mode() == "off"
-            um, di, dci = e.uat_multiplier(), e.dev_interval_seconds(), e.dev_critical_interval_seconds()
+            mode_off = e.nonprod_noncritical_mode() == "off"
+            di, dci = e.nonprod_interval_seconds(), e.nonprod_critical_interval_seconds()
             for env in _ENVS:
                 norm = e.normalize_env(env)
                 for crit in (True, False):
@@ -496,7 +498,7 @@ def check_env_invariants(rows, ep_mod=None, p1_keys=None):
                             eff = e.effective_interval(env, base, crit, rtype, True)
                             ctx = f"env={env!r} base={base} critical={crit} type={rtype} settings={settings or 'defaults'}"
                             if eff is None:
-                                if not (norm == "dev" and not crit and mode_off and rtype != "wafv2" and base < DAY):
+                                if not (norm == "nonprod" and not crit and mode_off and rtype != "wafv2" and base < DAY):
                                     bad(f"effective_interval is None (not collected) where it must be collected: {ctx}", ("none", norm, crit, rtype))
                                 continue
                             if eff < base:
@@ -506,27 +508,23 @@ def check_env_invariants(rows, ep_mod=None, p1_keys=None):
                             if base >= DAY and eff != base:
                                 bad(f"a base of {base} s (>= 24 h) was slowed to {eff}: {ctx}", ("daily", norm, crit, rtype))
                             if norm == "prod" and eff != base:
-                                bad(f"prod-like environment slowed to {eff} (base {base}): {ctx}", ("prod", crit, rtype, base))
-                            if rtype != "wafv2" and base < DAY and norm == "uat":
-                                want = base if crit else base * um
-                                if eff != want:
-                                    bad(f"UAT {'critical-class' if crit else 'non-critical'} interval {eff}, expected {want}: {ctx}", ("uat", crit, base, um))
-                            if rtype != "wafv2" and base < DAY and norm == "dev" and crit and eff != max(base, dci):
-                                bad(f"DEV critical-class interval {eff}, expected {max(base, dci)}: {ctx}", ("devcrit", base, dci))
-                            if rtype != "wafv2" and base < DAY and norm == "dev" and not crit and eff != max(base, di):
-                                bad(f"DEV non-critical interval {eff}, expected {max(base, di)}: {ctx}", ("dev", base, di))
+                                bad(f"PROD environment slowed to {eff} (base {base}): {ctx}", ("prod", crit, rtype, base))
+                            if rtype != "wafv2" and base < DAY and norm == "nonprod" and crit and eff != max(base, dci):
+                                bad(f"NON-PROD critical-class interval {eff}, expected {max(base, dci)}: {ctx}", ("npcrit", base, dci))
+                            if rtype != "wafv2" and base < DAY and norm == "nonprod" and not crit and eff != max(base, di):
+                                bad(f"NON-PROD non-critical interval {eff}, expected {max(base, di)}: {ctx}", ("nonprod", base, di))
                             extra = e.extra_window_minutes(env, base, crit, rtype, True)
                             if extra < 0 or (eff == base and extra != 0):
                                 bad(f"extra_window_minutes {extra} inconsistent with effective {eff} (base {base}): {ctx}", ("extra", norm, crit, base))
                             if rtype is None and eff != base:
-                                sqlx = _sql_extra_minutes(base, crit, norm, um, di, dci)
+                                sqlx = _sql_extra_minutes(base, crit, norm, di, dci)
                                 if sqlx != extra:
                                     bad(f"alert_rules SQL formula adds {sqlx} min but env_polling.extra_window_minutes says {extra}: {ctx}", ("sql", norm, crit, base))
-    # real P1 keys: UAT critical-class unchanged
+    # real P1 keys: PROD critical-class unchanged, NON-PROD never faster than base
     for (svc, name) in sorted(p1):
         for base in bases:
-            if e.is_critical_metric(svc, name, p1) and e.effective_interval("uat", base, True, svc, True) != base:
-                bad(f"UAT critical-class metric ({svc}, {name}) is slowed at base {base}", ("p1uat", svc, name, base))
+            if e.is_critical_metric(svc, name, p1) and e.effective_interval("prod", base, True, svc, True) != base:
+                bad(f"PROD critical-class metric ({svc}, {name}) is slowed at base {base}", ("p1prod", svc, name, base))
     return problems
 
 
@@ -572,7 +570,7 @@ def check_staleness(rows, ep_mod=None, stale=None, window=None):
         aws_bases = sorted({r["interval_s"] for r in rows if r["provider"] == "aws" and not r["source"].startswith("describe")})
         for settings in _ENV_SETTINGS:
             with envvars(**{k: settings.get(k) for k in _ENV_KEYS}):
-                for env in ("uat", "dev"):
+                for env in ("nonprod",):
                     for crit in (True, False):
                         for base in aws_bases:
                             eff = e.effective_interval(env, base, crit, None, True)

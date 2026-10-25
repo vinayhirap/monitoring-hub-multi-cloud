@@ -55,6 +55,7 @@ from app.aws.collector_direct import (
     _get_ecs_metric_series,
 )
 from app.db import get_connection
+from app.env_tiers import label as _env_label
 from app import alert_rules as _alert_rules
 from app.alert_visibility import hidden_metrics_sql
 from app.threshold_defaults import normalize_service_key
@@ -616,7 +617,7 @@ def _build_base_accounts():
             "account_name":     acc["account_name"],
             "account_id":       acc["account_id"],
             "region":           region,
-            "environment":      acc.get("environment", "PROD"),
+            "environment":      _env_label(acc.get("environment", "PROD")),
             "owner_team":       acc.get("owner_team", acc.get("team", "")),
             "ec2_total":        total,
             "ec2_running":      running,

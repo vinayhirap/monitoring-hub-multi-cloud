@@ -180,7 +180,7 @@ def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False
         by_source        {source: count}   NEW classification, every considered row
         by_env           {env: count}
         changed_by_source / changed_by_env   the same, restricted to changed rows
-        newly_unknown    rows that are now unknown and were not before
+        newly_unknown    rows that now wait in the Needs-classification queue (source "unknown") and did not before
 
     account_default_override=(account_id, env_or_None) classifies as if that account's default were that value.
     It exists for the preview in the Environments page and REQUIRES dry_run=True: a hypothetical default is never
@@ -267,7 +267,7 @@ def sync_resource_environments(account_id=None, resource_pks=None, dry_run=False
             report["changed"] += 1
             _tally(report["changed_by_source"], res.source)
             _tally(report["changed_by_env"], res.env)
-            if res.env == ec.UNKNOWN and row.get("env_resolved") != ec.UNKNOWN:
+            if res.source == "unknown" and row.get("env_source") != "unknown":
                 report["newly_unknown"] += 1
             updates.append((res.env, res.source, res.reason, tstate, row["id"], row.get("env_override")))
             if collect_changes:

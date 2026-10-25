@@ -28,6 +28,7 @@ import logging
 import math
 from app.db import get_connection
 from app import environment_classifier as _envc
+from app.env_tiers import to_tier as _to_tier
 from app import priority as _priority
 from app.collector import env_polling as _ep
 from app.ws.publisher import publish_alert, publish_alert_resolved
@@ -96,7 +97,7 @@ ENVIRONMENT_MAX_LEN = 50
 
 
 def _environment_from_tags(raw_tags):
-    """resources.tags -> lower-cased environment label. Never raises:
+    """resources.tags -> "prod" | "nonprod" (the Environment tag, no tag = prod). Never raises:
     tags may be NULL, the JSON literal "null", a non-object, or hold
     non-string values -- each of which used to throw outside any try and
     abort the whole cycle."""
@@ -107,8 +108,8 @@ def _environment_from_tags(raw_tags):
     if not isinstance(tags, dict):
         tags = {}
     env = tags.get("environment", tags.get("Environment", "prod"))
-    env = str(env).strip().lower() if env is not None else "prod"
-    return (env or "prod")[:ENVIRONMENT_MAX_LEN]
+    # dev / uat / sit / test / staging / non-prod -> nonprod; production, no tag, or anything unrecognised -> prod
+    return _to_tier(env)[:ENVIRONMENT_MAX_LEN]
 
 
 def _classified_environment(row):
@@ -119,17 +120,15 @@ def _classified_environment(row):
     resource has not been classified yet it is resolved here from its tags and ID, so the
     first evaluation after enabling the flag never falls back to the old "default to prod".
 
-    Returns prod | uat | dev | unknown. "ignore" (a user dismissed the resource from the
-    Needs-classification queue) is reported as "unknown": still prod-like for severity, it
-    only means "stop asking". Nothing here can suppress an alert.
+    Returns prod | nonprod. A resource nobody has placed yet resolves to prod (the fail-safe), and a value
+    stored before the two-environment model ("uat", "dev", "unknown", "ignore") is mapped the same way, so
+    nothing here can suppress an alert that production strength would raise.
     """
     env = row.get("env_resolved")
     if not env:
         env = _envc.resolve_environment(
             tags=row.get("tags"), resource_id=row.get("aws_resource_id")).env
-    if env == _envc.IGNORE:
-        env = _envc.UNKNOWN
-    return env[:ENVIRONMENT_MAX_LEN]
+    return _to_tier(env)[:ENVIRONMENT_MAX_LEN]
 
 
 def _select_threshold_rows(rows):
@@ -621,10 +620,10 @@ def _db_metric_name_sql(resource_type_col="r.resource_type", catalog_col="mc.met
 def _env_poll_row_info(row, p1_keys=None):
     """(evaluate, alert_for_scale) for one reading under ENV_POLLING_ENABLED (Phase 4c).
 
-    evaluate  False only for a DEV non-critical AWS metric while POLL_DEV_EVAL_CRITICAL_ONLY is
-              on (Vinay's design: DEV evaluates critical-class metrics only).
+    evaluate  False only for a NON-PROD non-critical AWS metric while POLL_NONPROD_EVAL_CRITICAL_ONLY is
+              on (Vinay's design: NON-PROD evaluates critical-class metrics only).
     scale     factor on the required breach / healthy cycles for a metric the collector
-              polls less often, so N cycles still means N independent readings (and a UAT
+              polls less often, so N cycles still means N independent readings (and a NON-PROD
               alert needs a longer breach before it opens). 1 for everything on prod cadence.
 
     Flag off, a non-AWS provider, a prod-like or unknown environment -> (True, 1)."""
@@ -717,7 +716,7 @@ def _evaluate_alerts_body(conn, cursor, p1_only=False):
 
     rows = _select_threshold_rows(cursor.fetchall())
     if _ep.enabled():
-        # Phase 4c: DEV evaluates critical-class metrics only (POLL_DEV_EVAL_CRITICAL_ONLY).
+        # Phase 4c: NON-PROD evaluates critical-class metrics only (POLL_NONPROD_EVAL_CRITICAL_ONLY).
         from app.collector.polling_model import p1_metric_keys as _p1k
         _keys = _p1k()
         rows = [r for r in rows if _env_poll_row_info(r, _keys)[0]]
@@ -857,7 +856,7 @@ def _evaluate_row(cursor, row, silenced_map, stats):
         warning_value = integerize_limit(warning_value, comparison)
         critical_value = integerize_limit(critical_value, comparison)
 
-    # Phase 4c: a metric the collector polls less often (UAT / DEV, ENV_POLLING_ENABLED) needs
+    # Phase 4c: a metric the collector polls less often (NON-PROD, ENV_POLLING_ENABLED) needs
     # proportionally more cycles -- N cycles must still mean N independent readings. Applied once,
     # after the anomaly floor above. Prod cadence, extended/slow cadence and flag-off: unchanged.
     if cadence == "core" and _ep.enabled():
@@ -947,9 +946,9 @@ def _evaluate_row(cursor, row, silenced_map, stats):
     if is_critical:
         severity = "CRITICAL"
     elif env_aware:
-        # prod, unknown (and ignore) -> WARNING; uat / dev -> INFO. Unknown is never weaker than prod.
+        # PROD (and anything unplaced) -> WARNING; NON-PROD -> INFO. Unplaced is never weaker than PROD.
         severity = _envc.severity_for(environment, False)
-    elif environment in ("prod", "production"):
+    elif _to_tier(environment) == "prod":
         severity = "WARNING"
     else:
         severity = "INFO"

@@ -90,7 +90,7 @@ Tags starting `aws:` (CloudFormation and similar system tags) are dropped.
 | `TAG_SYNC_INTERVAL_MINUTES` | 60 (minimum 5) | How often the discovery hook sweeps. |
 | `TAG_SYNC_DIRECT_LOOKUP` | off | For S3 buckets and WAFv2 ACLs the sweep could not decide, read their tags directly (see below). Needs `TAG_SYNC_ENABLED`. |
 | `TAG_SYNC_DIRECT_MAX` | 100 | Most direct lookups per account per sweep. |
-| `TAG_SYNC_FEED_ENVIRONMENT` | off | Also lets an `Environment` tag found by the sync decide the resource's environment (source `tag`). **This changes alert strength** (a bucket tagged `dev` becomes dev) and is off on purpose; turn it on separately, later. |
+| `TAG_SYNC_FEED_ENVIRONMENT` | off | Also lets an `Environment` tag found by the sync decide the resource's environment (source `tag`). **This changes alert strength** (a bucket tagged `dev` becomes NON-PROD) and is off on purpose; turn it on separately, later. |
 
 ## AWS call volume
 

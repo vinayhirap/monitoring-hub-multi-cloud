@@ -42,13 +42,13 @@ def test_classifying_the_parent_re_evaluates_its_children(db):
     db.resource(1, "ebs", "vol-1", name="TEST-U4RAD-PROD-ORTHANC")        # conflicting name too
     _edge(db, "i-1", "vol-1")
     _sync()
-    assert _env(db, "i-1")["env"] == "unknown" and _env(db, "vol-1")["env"] == "unknown"
+    assert _env(db, "i-1")["src"] == "unknown" and _env(db, "vol-1")["src"] == "unknown"
 
-    db.x("UPDATE resources SET env_override='dev' WHERE id=%s", (p,))
+    db.x("UPDATE resources SET env_override='nonprod' WHERE id=%s", (p,))
     rep = _sync(resource_pks=[p])                      # only the parent is named
     assert _env(db, "i-1")["src"] == "manual"
     v = _env(db, "vol-1")
-    assert (v["env"], v["src"]) == ("dev", "related")
+    assert (v["env"], v["src"]) == ("nonprod", "related")
     assert rep["applied"] == 2
 
 
@@ -61,7 +61,7 @@ def test_only_attached_to_edges_are_followed(db):
 
 
 def test_a_parents_account_default_is_not_passed_down(db):
-    db.x("UPDATE aws_accounts SET default_env='uat' WHERE id=1")
+    db.x("UPDATE aws_accounts SET default_env='nonprod' WHERE id=1")
     db.resource(1, "ec2", "i-1", name=None)
     db.resource(1, "ebs", "vol-1", name=None)
     _edge(db, "i-1", "vol-1")
@@ -79,8 +79,8 @@ def test_children_beat_the_account_default_but_not_their_own_name(db):
     _edge(db, "i-1", "vol-b")
     _sync()
     a, b = _env(db, "vol-a"), _env(db, "vol-b")
-    assert (a["env"], a["src"]) == ("dev", "related")
-    assert (b["env"], b["src"]) == ("uat", "name")
+    assert (a["env"], a["src"]) == ("nonprod", "related")
+    assert (b["env"], b["src"]) == ("nonprod", "name")
 
 
 def test_dry_run_writes_nothing_and_a_second_run_is_a_no_op(db):
@@ -101,7 +101,7 @@ def test_same_resource_id_in_another_account_is_not_mixed_up(db):
     _edge(db, "i-1", "vol-1", acct=2)
     _sync()
     v = db.one("SELECT env_resolved AS env FROM resources WHERE resource_id='vol-1'")
-    assert v["env"] == "dev"
+    assert v["env"] == "nonprod"
 
 
 def test_tag_state_is_stored_and_honest_about_what_it_cannot_see(db):

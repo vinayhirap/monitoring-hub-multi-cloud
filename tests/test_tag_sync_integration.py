@@ -135,7 +135,7 @@ def test_environment_tag_feeds_classification_only_with_its_own_flag(db, monkeyp
     monkeypatch.setenv("TAG_SYNC_FEED_ENVIRONMENT", "true")
     _classify()
     r = db.one("SELECT env_resolved, env_source FROM resources WHERE resource_id='orders'")
-    assert (r["env_resolved"], r["env_source"]) == ("dev", "tag")
+    assert (r["env_resolved"], r["env_source"]) == ("nonprod", "tag")
 
 
 def _sync_direct(monkeypatch, items, looker, direct_on=True):
@@ -195,7 +195,7 @@ def _provider_rows(db):
     db.resource(1, "vm", "az-vm-ok", tags={"Environment": "prod"})
     db.resource(1, "vm", "az-vm-none", tags={})
     db.resource(1, "some_generic_type", "az-gen", tags={})
-    db.resource(2, "compute_instance", "gcp-vm-ok", tags={"environment": "dev"})
+    db.resource(2, "compute_instance", "gcp-vm-ok", tags={"environment": "nonprod"})
     db.resource(2, "gcs_bucket", "gcp-bkt", tags={})
     db.resource(2, "gke_node", "gcp-node", tags={})
 

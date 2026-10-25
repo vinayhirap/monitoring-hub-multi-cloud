@@ -304,8 +304,12 @@ def _upsert_anomaly_alert(cursor, aws_resource_id, aws_account_id, score, metric
         """, (score, existing["id"]))
         return
 
-    cursor.execute("""
-        SELECT resource_type, tags FROM resources
+    # With ENV_AWARE_CLASSIFICATION on, label the alert with the classified environment (migration 083), exactly
+    # as the threshold evaluator does; otherwise from the Environment tag. Either way: prod | nonprod.
+    from app import environment_classifier as _envc
+    env_col = ", env_resolved" if _envc.flag_enabled() else ""
+    cursor.execute(f"""
+        SELECT resource_type, tags{env_col} FROM resources
         WHERE resource_id = %s AND aws_account_id = %s
     """, (aws_resource_id, aws_account_id))
     resource = cursor.fetchone() or {}
@@ -314,7 +318,8 @@ def _upsert_anomaly_alert(cursor, aws_resource_id, aws_account_id, score, metric
         tags = json.loads(resource.get("tags") or "{}")
     except Exception:
         tags = {}
-    environment = tags.get("environment", tags.get("Environment", "prod")).lower()
+    from app.env_tiers import to_tier
+    environment = to_tier(resource.get("env_resolved") or tags.get("environment", tags.get("Environment", "prod")))
     group_key = f"{aws_account_id}:{resource_type}:multivariate_anomaly"
 
     cursor.execute("""

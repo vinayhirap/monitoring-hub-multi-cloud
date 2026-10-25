@@ -9,7 +9,9 @@ Invariants proved here
   * a metric is never polled faster than its base interval, whatever the POLL_* settings (hostile values too)
   * flag OFF (or ENV_AWARE_CLASSIFICATION missing) gives exactly the prod answer for every metric / environment
   * wafv2, daily (>= 24 h) metrics and the free Describe-API metrics are never slowed
-  * UAT critical-class metrics keep prod cadence; prod / unknown / ignore / unclassified are never slowed
+  * NON-PROD critical-class metrics are slowed to POLL_NONPROD_CRITICAL_INTERVAL_SECONDS (600 s) at most; prod /
+    unplaced (unknown / ignore / NULL / junk) are never slowed (fail-safe = prod); legacy uat / dev values and
+    POLL_DEV_* settings are still understood
   * over a simulated 24 h the real select_due() gives the cadence the docs promise, and every slowed poll
     looks back far enough to cover the ticks it skipped
 """
@@ -26,8 +28,11 @@ from app.collector import polling_model as pm  # noqa: E402
 from tests.conftest import install_stub  # noqa: E402
 
 ROOT = __file__.rsplit("/tests/", 1)[0]
-ENV_VARS = ("ENV_POLLING_ENABLED", "ENV_AWARE_CLASSIFICATION", "POLL_UAT_MULTIPLIER", "POLL_DEV_INTERVAL_SECONDS",
-            "POLL_DEV_CRITICAL_INTERVAL_SECONDS", "POLL_DEV_NONCRITICAL_MODE", "POLL_DEV_EVAL_CRITICAL_ONLY")
+ENV_VARS = ("ENV_POLLING_ENABLED", "ENV_AWARE_CLASSIFICATION",
+            "POLL_NONPROD_INTERVAL_SECONDS", "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS",
+            "POLL_NONPROD_NONCRITICAL_MODE", "POLL_NONPROD_EVAL_CRITICAL_ONLY",
+            "POLL_DEV_INTERVAL_SECONDS", "POLL_DEV_CRITICAL_INTERVAL_SECONDS", "POLL_DEV_NONCRITICAL_MODE",
+            "POLL_DEV_EVAL_CRITICAL_ONLY")
 
 
 def _load(name, rel):
@@ -64,15 +69,19 @@ def _rows(inventory, describe=False):
             yield r["service"], r["db_metric"].lower(), int(r["interval_s"]), (r["service"], r["db_metric"].lower()) in p1
 
 
-ALL_ENVS = ["prod", "uat", "dev", "unknown", "ignore", None, "", "PROD", "weird"]
+ALL_ENVS = ["prod", "nonprod", "uat", "dev", "unknown", "ignore", None, "", "PROD", "NON-PROD", "weird"]
 HOSTILE = [
-    {"POLL_UAT_MULTIPLIER": v} for v in ("-5", "0", "1", "3", "12", "99", "abc", "2.7")
+    {"POLL_NONPROD_INTERVAL_SECONDS": v} for v in ("0", "1", "60", "3600", "999999", "x", "-1")
 ] + [
-    {"POLL_DEV_INTERVAL_SECONDS": v} for v in ("0", "1", "60", "3600", "999999", "x", "-1")
+    {"POLL_NONPROD_CRITICAL_INTERVAL_SECONDS": v} for v in ("0", "1", "119", "600", "999999", "x")
 ] + [
-    {"POLL_DEV_CRITICAL_INTERVAL_SECONDS": v} for v in ("0", "1", "119", "600", "999999", "x")
+    {"POLL_NONPROD_NONCRITICAL_MODE": v} for v in ("off", "slow", "OFF", "bogus")
+] + [   # legacy POLL_DEV_* names are still honoured, hostile values included
+    {"POLL_DEV_INTERVAL_SECONDS": v} for v in ("0", "60", "x")
 ] + [
-    {"POLL_DEV_NONCRITICAL_MODE": v} for v in ("off", "slow", "OFF", "bogus")
+    {"POLL_DEV_CRITICAL_INTERVAL_SECONDS": v} for v in ("1", "999999")
+] + [
+    {"POLL_DEV_NONCRITICAL_MODE": v} for v in ("off", "bogus")
 ] + [{}]
 
 
@@ -99,10 +108,13 @@ def test_setting_the_flag_turns_it_on_for_the_first_time(monkeypatch):
     monkeypatch.setenv("ENV_POLLING_ENABLED", "true")
     assert ep.enabled() is True
     assert ep.effective_interval("prod", 300, False, "ec2") == 300
-    assert ep.effective_interval("uat", 300, False, "ec2") == 900
-    assert ep.effective_interval("dev", 300, False, "ec2") == 3600
-    assert ep.effective_interval("dev", 120, True, "rds") == 600
-    assert ep.effective_interval("uat", 120, True, "rds") == 120
+    assert ep.effective_interval("nonprod", 300, False, "ec2") == 3600
+    assert ep.effective_interval("nonprod", 120, True, "rds") == 600
+    for legacy in ("uat", "dev"):                                # legacy stored values are NON-PROD too
+        assert ep.effective_interval(legacy, 300, False, "ec2") == 3600
+        assert ep.effective_interval(legacy, 120, True, "rds") == 600
+    for unplaced in ("unknown", "ignore", None, "", "weird"):    # fail-safe: unplaced = prod
+        assert ep.effective_interval(unplaced, 300, False, "ec2") == 300
 
 
 def test_enabled_requires_both_flags(monkeypatch):
@@ -134,17 +146,15 @@ def test_never_faster_than_base_and_hard_exemptions_hold(monkeypatch, inventory,
             where = f"{rtype}/{db} env={env!r} {settings}"
             assert eff is None or eff >= base, where
             if eff is None:
-                assert ep.normalize_env(env) == ep.DEV and not crit, where     # only DEV non-critical, mode=off
+                assert ep.normalize_env(env) == ep.NONPROD and not crit, where   # only NON-PROD non-critical, mode=off
             if ep.normalize_env(env) == ep.PROD:
                 assert eff == base, where
             if rtype in ep.EXEMPT_RESOURCE_TYPES or base >= 86400:
                 assert eff == base, where
-            if ep.normalize_env(env) == ep.UAT and crit:
-                assert eff == base, where
-            if ep.normalize_env(env) == ep.DEV and crit and rtype not in ep.EXEMPT_RESOURCE_TYPES and base < 86400:
-                assert eff >= ep.dev_critical_interval_seconds(), where
+            if ep.normalize_env(env) == ep.NONPROD and crit and rtype not in ep.EXEMPT_RESOURCE_TYPES and base < 86400:
+                assert eff >= ep.nonprod_critical_interval_seconds(), where
         for fn in (ep.extra_window_minutes, ep.alert_for_scale):
-            assert fn("uat", base, crit, rtype) >= (1 if fn is ep.alert_for_scale else 0)
+            assert fn("nonprod", base, crit, rtype) >= (1 if fn is ep.alert_for_scale else 0)
 
 
 @pytest.mark.parametrize("settings", HOSTILE[:4] + HOSTILE[-1:], ids=lambda s: str(s))
@@ -176,8 +186,10 @@ def test_every_critical_metric_is_p1_and_nothing_else_on_a_slow_tier(inventory):
 
 
 # ── a simulated day of collector ticks for a PROD-shaped fleet ──────────
-FLEET = ([("prod", i) for i in range(89)] + [("uat", 100 + i) for i in range(10)]
-         + [("dev", 200 + i) for i in range(26)] + [(None, 300 + i) for i in range(209)])
+FLEET = ([("prod", i) for i in range(89)] + [("uat", 100 + i) for i in range(10)]        # "uat"/"dev": legacy values
+         + [("nonprod", 200 + i) for i in range(16)] + [("dev", 250 + i) for i in range(10)]
+         + [(None, 300 + i) for i in range(209)])
+SLOWED_ENVS = ("uat", "dev", "nonprod")
 DAY = 86400
 
 
@@ -209,16 +221,14 @@ def test_a_day_of_ticks_gives_the_documented_cadence(tier, critical):
     log = _simulate(tier, critical)
     per_env = {}
     for env, pk in FLEET:
-        per_env.setdefault(ep.normalize_env(env) if env in ("uat", "dev") else "prod-like", []).append(len(log[pk]))
+        per_env.setdefault(ep.normalize_env(env) if env in SLOWED_ENVS else "prod-like", []).append(len(log[pk]))
     full = DAY / base
     for n in per_env["prod-like"]:
         assert abs(n - full) <= 2                                          # every tick, untouched
-    uat = DAY / (base if critical else base * 3)
-    for n in per_env["uat"]:
-        assert abs(n - uat) <= 2
-    dev = DAY / (max(base, 600) if critical else max(base, 3600))
-    for n in per_env["dev"]:
-        assert abs(n - dev) <= 2
+    nonprod = DAY / (max(base, 600) if critical else max(base, 3600))
+    assert len(per_env["nonprod"]) == 36
+    for n in per_env["nonprod"]:
+        assert abs(n - nonprod) <= 2
 
 
 @pytest.mark.parametrize("tier,critical", [("critical", True), ("standard", False), ("low", False)])
@@ -226,7 +236,7 @@ def test_every_slowed_poll_looks_back_over_the_ticks_it_skipped(tier, critical):
     """Same bucket size, same number of stored points: window (base + extra, rounded up to 5 min by the collector)
     must reach back to the previous collection, so slowing leaves no hole in history."""
     base = pm.TIER_SECONDS[tier]
-    slowed = {pk for env, pk in FLEET if env in ("uat", "dev")}      # prod-like polls every tick with its own window
+    slowed = {pk for env, pk in FLEET if env in SLOWED_ENVS}      # prod-like polls every tick with its own window
     for pk, events in _simulate(tier, critical).items():
         if pk not in slowed:
             continue
@@ -239,7 +249,7 @@ def test_every_slowed_poll_looks_back_over_the_ticks_it_skipped(tier, critical):
 def test_prod_like_resources_are_never_annotated_or_skipped():
     log = _simulate("standard", False)
     for env, pk in FLEET:
-        if env not in ("uat", "dev"):
+        if env not in SLOWED_ENVS:
             assert all(extra == 0 for _t, extra in log[pk])
             assert len(log[pk]) >= DAY / 300 - 2
 
@@ -249,7 +259,7 @@ def test_a_restart_costs_at_most_one_extra_collection_per_slowed_resource():
     for env, pk in FLEET:
         extra = len(restart_log[pk]) - len(base_log[pk])
         assert extra <= 1, (env, pk, extra)
-        if env not in ("uat", "dev"):
+        if env not in SLOWED_ENVS:
             assert extra == 0
 
 
@@ -266,12 +276,12 @@ def test_config_check_passes_on_the_real_catalog(verify, inventory):
     violations, matrix = verify.check_config(inventory, on=True)
     assert violations == []
     row = next(m for m in matrix if m["base"] == 120 and m["critical"])
-    assert (row["prod"], row["uat"], row["dev"]) == (120, 120, 600)
+    assert (row["prod"], row["nonprod"]) == (120, 600)
     row = next(m for m in matrix if m["base"] == 300 and not m["critical"])
-    assert (row["prod"], row["uat"], row["dev"]) == (300, 900, 3600)
+    assert (row["prod"], row["nonprod"]) == (300, 3600)
 
 
-@pytest.mark.parametrize("breaker", ["faster", "slows_prod", "slows_uat_critical", "flag_off_changes"])
+@pytest.mark.parametrize("breaker", ["faster", "slows_prod", "speeds_nonprod_critical", "flag_off_changes"])
 def test_config_check_detects_a_broken_rule(verify, inventory, monkeypatch, breaker):
     vep = verify.ep                       # the module object the script itself uses (other tests may swap sys.modules)
     real = vep.effective_interval
@@ -279,13 +289,13 @@ def test_config_check_detects_a_broken_rule(verify, inventory, monkeypatch, brea
     def broken(env, base, critical, rtype=None, force_enabled=None):
         v = real(env, base, critical, rtype, force_enabled)
         e = vep.normalize_env(env)
-        if breaker == "faster" and e == "uat" and v:
+        if breaker == "faster" and e == "nonprod" and v:
             return v // 2
         if breaker == "slows_prod" and e == "prod" and force_enabled is not False:
             return base * 2
-        if breaker == "slows_uat_critical" and e == "uat" and critical and force_enabled is not False:
-            return base * 3
-        if breaker == "flag_off_changes" and force_enabled is False and e == "dev":
+        if breaker == "speeds_nonprod_critical" and e == "nonprod" and critical and force_enabled is not False:
+            return base                                  # NON-PROD critical must be >= POLL_NONPROD_CRITICAL_INTERVAL_SECONDS
+        if breaker == "flag_off_changes" and force_enabled is False and e == "nonprod":
             return base * 2
         return v
 
@@ -305,20 +315,30 @@ def test_settings_report_after_the_change(verify):
     st = verify.settings_report({"ENV_AWARE_CLASSIFICATION": "true", "ENV_POLLING_ENABLED": "true"})
     assert st["flags"]["enabled"] is True and st["warnings"] == []
     eff = {r["name"]: r["effective"] for r in st["rows"]}
-    assert eff["POLL_UAT_MULTIPLIER"] == 3 and eff["POLL_DEV_INTERVAL_SECONDS"] == 3600
-    assert eff["POLL_DEV_CRITICAL_INTERVAL_SECONDS"] == 600 and eff["POLL_DEV_NONCRITICAL_MODE"] == "slow"
-    assert eff["POLL_DEV_EVAL_CRITICAL_ONLY"] is True
+    assert "POLL_UAT_MULTIPLIER" not in eff
+    assert eff["POLL_NONPROD_INTERVAL_SECONDS"] == 3600
+    assert eff["POLL_NONPROD_CRITICAL_INTERVAL_SECONDS"] == 600 and eff["POLL_NONPROD_NONCRITICAL_MODE"] == "slow"
+    assert eff["POLL_NONPROD_EVAL_CRITICAL_ONLY"] is True
+
+
+def test_settings_report_honours_the_legacy_dev_names(verify):
+    st = verify.settings_report({"POLL_DEV_INTERVAL_SECONDS": "1800", "POLL_DEV_NONCRITICAL_MODE": "off"})
+    eff = {r["name"]: r["effective"] for r in st["rows"]}
+    assert eff["POLL_NONPROD_INTERVAL_SECONDS"] == 1800 and eff["POLL_NONPROD_NONCRITICAL_MODE"] == "off"
+    assert st["warnings"] == []                                   # legacy names are not "typos"
 
 
 def test_settings_report_warns_about_every_trap(verify):
     st = verify.settings_report({
-        "ENV_POLLING_ENABLED": "ture", "POLL_UAT_MULTIPLIER": "99", "POLL_DEV_INTERVAL_SECONDS": "abc",
-        "POLL_DEV_NONCRITICAL_MODE": "none", "POLL_DEV_INTERVALL_SECONDS": "60", "ENV_DIGEST_ENABLED": "true"})
+        "ENV_POLLING_ENABLED": "ture", "POLL_NONPROD_INTERVAL_SECONDS": "abc",
+        "POLL_NONPROD_NONCRITICAL_MODE": "none", "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS": "99999999",
+        "POLL_UAT_MULTIPLIER": "3", "POLL_DEV_INTERVALL_SECONDS": "60", "ENV_DIGEST_ENABLED": "true"})
     text = " | ".join(st["warnings"])
     assert "ENV_POLLING_ENABLED='ture'" in text and "counts as FALSE" in text
-    assert "POLL_UAT_MULTIPLIER=99" in text and "uses 12" in text
-    assert "POLL_DEV_INTERVAL_SECONDS='abc'" in text
-    assert "POLL_DEV_NONCRITICAL_MODE='none'" in text
+    assert "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS=99999999" in text and "uses 86400" in text
+    assert "POLL_NONPROD_INTERVAL_SECONDS='abc'" in text
+    assert "POLL_NONPROD_NONCRITICAL_MODE='none'" in text
+    assert "POLL_UAT_MULTIPLIER is set but nothing reads it" in text      # removed setting is flagged
     assert "POLL_DEV_INTERVALL_SECONDS" in text and "nothing reads it" in text
     assert "ENV_DIGEST_ENABLED" not in text                       # unrelated ENV_ variable is not a typo
 
@@ -367,15 +387,15 @@ def _ser(rid, rtype, env, metric, age_s, pk=None):
 
 def test_analyse_series_groups_expected_and_flags(verify):
     rows = [_ser(f"p{i}", "ec2", "prod", "cpuutilization", 100 + 40 * i) for i in range(6)]
-    rows += [_ser(f"u{i}", "ec2", "uat", "cpuutilization", 100 + 130 * i) for i in range(6)]   # up to 750 s
-    rows += [_ser("d1", "ec2", "dev", "cpuutilization", 9000)]                                  # > 3600 + slack
+    rows += [_ser(f"u{i}", "ec2", "nonprod", "cpuutilization", 100 + 600 * i) for i in range(6)]  # up to 3100 s
+    rows += [_ser("d1", "rds", "nonprod", "cpuutilization", 9000)]                              # critical: 600 s + slack
     rows += [_ser("x1", "ec2", None, "cpuutilization", 200)]
     rows += [_ser("s1", "ec2", "prod", "statuscheckfailed", 30)]                                # free Describe metric
     groups, late = verify.analyse_series(rows, on=True, uptime_min=600, sparse_fn=lambda t, m: False)
     by = {(g["resource_type"], g["env"], g["base_s"]): g for g in groups}
     assert by[("ec2", "prod", 300)]["expected_s"] == 300 and by[("ec2", "prod", 300)]["verdict"] == "OK"
-    assert by[("ec2", "uat", 300)]["expected_s"] == 900 and by[("ec2", "uat", 300)]["verdict"] == "OK"
-    assert by[("ec2", "dev", 300)]["expected_s"] == 3600 and by[("ec2", "dev", 300)]["verdict"] == "SLOWER"
+    assert by[("ec2", "nonprod", 300)]["expected_s"] == 3600 and by[("ec2", "nonprod", 300)]["verdict"] == "OK"
+    assert by[("rds", "nonprod", 120)]["expected_s"] == 600 and by[("rds", "nonprod", 120)]["verdict"] == "SLOWER"
     assert by[("ec2", "unclassified", 300)]["expected_s"] == 300
     assert by[("ec2", "prod", 60)]["expected_s"] == 60                      # Describe metric: never slowed
     assert [x["resource_id"] for x in late] == ["d1"]
@@ -409,8 +429,8 @@ def test_a_whole_old_resource_or_tier_is_still_late(verify):
 
 
 def test_analyse_series_flags_a_slowdown_that_is_not_applied(verify):
-    """flag expected ON but UAT resources are still polled every 5 min (service not restarted / flag not read)."""
-    rows = [_ser(f"u{i}", "ec2", "uat", "cpuutilization", 60 + 30 * i) for i in range(8)]
+    """flag expected ON but NON-PROD resources are still polled every 5 min (service not restarted / flag not read)."""
+    rows = [_ser(f"u{i}", "ec2", "nonprod", "cpuutilization", 60 + 30 * i) for i in range(8)]
     g, _ = verify.analyse_series(rows, on=True, uptime_min=600, sparse_fn=lambda t, m: False)
     assert g[0]["verdict"] == "FASTER"
     g, _ = verify.analyse_series(rows, on=False, uptime_min=600, sparse_fn=lambda t, m: False)
@@ -423,9 +443,9 @@ def test_analyse_series_does_not_judge_sparse_metrics(verify):
     assert late == [] and g[0]["sparse_not_judged"] == 1 and g[0]["verdict"] == "SPARSE_ONLY"
 
 
-def test_alert_findings_dev_daily_metric_is_not_false_stale(verify):
-    """DEV ACM DaysToExpiry (daily, never slowed) is still evaluated, so it is not reported as FALSE_STALE."""
-    f = verify.alert_findings([_alert(1, "certificatemanager", "dev", "daystoexpiry", stale_on=3000)])
+def test_alert_findings_nonprod_daily_metric_is_not_false_stale(verify):
+    """NON-PROD ACM DaysToExpiry (daily, never slowed) is still evaluated, so it is not reported as FALSE_STALE."""
+    f = verify.alert_findings([_alert(1, "certificatemanager", "nonprod", "daystoexpiry", stale_on=3000)])
     assert not [x for x in f if x["kind"] == "FALSE_STALE"]
 
 
@@ -437,37 +457,38 @@ def _alert(i, rtype, env, metric, stale_on=20, status="active", hard=72):
 
 def test_alert_findings(verify):
     rows = [
-        _alert(1, "ec2", "dev", "cpuutilization", stale_on=20),                 # DEV non-critical
-        _alert(2, "rds", "dev", "cpuutilization", stale_on=30),                 # DEV critical-class: evaluated
-        _alert(3, "ec2", "uat", "cpuutilization", stale_on=30),                 # UAT, window grown: ok
-        _alert(4, "ec2", "uat", "cpuutilization", stale_on=20),                 # UAT, limit not grown: tight
+        _alert(1, "ec2", "nonprod", "cpuutilization", stale_on=20),             # NON-PROD non-critical: not evaluated
+        _alert(2, "rds", "nonprod", "cpuutilization", stale_on=30),             # NON-PROD critical-class: evaluated
+        _alert(3, "ec2", "uat", "cpuutilization", stale_on=30),                 # legacy uat = NON-PROD non-critical
+        _alert(4, "rds", "nonprod", "cpuutilization", stale_on=10),             # critical, limit not grown: tight
         _alert(5, "ec2", "prod", "cpuutilization", stale_on=20),                # prod: ignored
-        _alert(6, "rds", "uat", "cpuutilization", stale_on=20),                 # UAT critical-class: unchanged
-        _alert(7, "ec2", "dev", "statuscheckfailed", stale_on=20),              # Describe metric: never slowed
+        _alert(6, "ec2", "unknown", "cpuutilization", stale_on=20),             # unplaced = prod: ignored
+        _alert(7, "ec2", "nonprod", "statuscheckfailed", stale_on=20),          # Describe metric: never slowed
     ]
     f = {x["alert_id"]: x for x in verify.alert_findings(rows)}
     assert f[1]["kind"] == "FALSE_STALE" and f[1]["level"] == "WARN" and "72 h" in f[1]["message"]
     assert f[2]['kind'] == 'SLOWER_LIFECYCLE' and f[2]['level'] == 'INFO'     # evaluated, just every 10 min
-    assert f[3]["kind"] == "SLOWER_LIFECYCLE" and "3x" in f[3]["message"]
+    assert f[2]["kind"] == "SLOWER_LIFECYCLE" and "2x" in f[2]["message"]
+    assert f[3]["kind"] == "FALSE_STALE"                                       # legacy name is normalised
     assert f[4]["kind"] == "STALE_LIMIT_TIGHT" and f[4]["level"] == "FAIL"
     assert 5 not in f and 6 not in f and 7 not in f
 
 
-def test_alert_findings_dev_all_metrics_when_the_setting_says_so(verify, monkeypatch):
-    monkeypatch.setenv("POLL_DEV_EVAL_CRITICAL_ONLY", "false")
-    kinds = [x["kind"] for x in verify.alert_findings([_alert(1, "ec2", "dev", "cpuutilization", stale_on=200)])]
+def test_alert_findings_nonprod_all_metrics_when_the_setting_says_so(verify, monkeypatch):
+    monkeypatch.setenv("POLL_NONPROD_EVAL_CRITICAL_ONLY", "false")
+    kinds = [x["kind"] for x in verify.alert_findings([_alert(1, "ec2", "nonprod", "cpuutilization", stale_on=200)])]
     assert "FALSE_STALE" not in kinds
 
 
-def test_dev_not_collected_mode_marks_alerts_false_stale(verify, monkeypatch):
-    monkeypatch.setenv("POLL_DEV_NONCRITICAL_MODE", "off")
-    monkeypatch.setenv("POLL_DEV_EVAL_CRITICAL_ONLY", "false")
-    f = verify.alert_findings([_alert(1, "ec2", "dev", "cpuutilization", stale_on=200)])
+def test_nonprod_not_collected_mode_marks_alerts_false_stale(verify, monkeypatch):
+    monkeypatch.setenv("POLL_NONPROD_NONCRITICAL_MODE", "off")
+    monkeypatch.setenv("POLL_NONPROD_EVAL_CRITICAL_ONLY", "false")
+    f = verify.alert_findings([_alert(1, "ec2", "nonprod", "cpuutilization", stale_on=200)])
     assert f and f[0]["kind"] == "FALSE_STALE"
 
 
 def test_unknown_advice(verify):
-    sib = [{"resource_id": f"i-{i}", "name": f"payroll-batch-0{i}", "tags": {}, "env": "dev", "source": "name",
+    sib = [{"resource_id": f"i-{i}", "name": f"payroll-batch-0{i}", "tags": {}, "env": "nonprod", "source": "name",
             "aws_account_id": 1} for i in range(1, 4)]
     rows = [
         {"id": 1, "aws_account_id": 1, "account_name": "A", "resource_id": "i-9", "resource_type": "ec2",
@@ -482,14 +503,14 @@ def test_unknown_advice(verify):
     parents = {3: [{"resource_type": "ec2", "resource_id": "i-10", "name": "web-dev-prod", "env_resolved": "unknown",
                     "env_source": "unknown"}]}
     out = {a["resource_id"]: a for a in verify.unknown_advice(rows, parents, sib)}
-    assert out["i-9"]["suggestion"]["env"] == "dev" and any("Environment=prod|uat|dev" in n for n in out["i-9"]["needs"])
+    assert out["i-9"]["suggestion"]["env"] == "nonprod" and any("Environment=prod|nonprod" in n for n in out["i-9"]["needs"])
     assert any("holds no single tier word" in n for n in out["i-10"]["needs"])
     assert any("conflicting tier words" in n for n in out["i-10"]["needs"])
     assert any("tag THAT instance" in n for n in out["vol-1"]["needs"])
     assert any("follows its parent" in n for n in out["vol-1"]["needs"])
     assert any("no attached_to edge" in n for n in out["vol-2"]["needs"])
     for a in out.values():
-        assert a["if_uat_every_s"] == 900 and a["if_dev_every_s"] == 3600
+        assert a["if_nonprod_every_s"] == 3600
 
 
 # ── read-only guarantee ─────────────────────────────────────────────────

@@ -28,9 +28,9 @@ def kind(**kw):
 # ---- mismatch detector --------------------------------------------------------------------------------
 
 def test_tag_and_name_that_disagree_are_flagged():
-    w = warn(env="dev", source="tag", tags={"Environment": "dev"}, name="web-prod-01")
+    w = warn(env="nonprod", source="tag", tags={"Environment": "dev"}, name="web-prod-01")
     assert w[0] == "tag_vs_name"
-    assert "dev" in w[1] and "prod" in w[1] and w[1].startswith("tag_vs_name:")
+    assert "non-prod" in w[1] and "prod" in w[1] and w[1].startswith("tag_vs_name:")
 
 
 def test_tag_and_name_that_agree_are_not():
@@ -38,20 +38,20 @@ def test_tag_and_name_that_agree_are_not():
 
 
 def test_manual_choice_against_the_tag_is_flagged_even_with_a_nonstandard_tag():
-    assert kind(env="dev", source="manual", override="dev", tags={"env": "Production"}) == "manual_vs_tag"
+    assert kind(env="nonprod", source="manual", override="nonprod", tags={"env": "Production"}) == "manual_vs_tag"
 
 
 def test_manual_choice_against_the_name_is_flagged_when_there_is_no_tag():
-    assert kind(env="uat", source="manual", override="uat", name="HCS-PROD-MD-01") == "manual_vs_name"
+    assert kind(env="nonprod", source="manual", override="nonprod", name="HCS-PROD-MD-01") == "manual_vs_name"
 
 
 def test_manual_choice_that_agrees_with_tag_but_not_name_reports_tag_vs_name():
     assert kind(env="prod", source="manual", override="prod", tags={"Environment": "prod"}, name="svc-dev-1") == "tag_vs_name"
 
 
-def test_ignore_is_never_a_mismatch():
-    assert warn(env="ignore", source="manual", override="ignore", tags={"Environment": "prod"}, name="x-dev-1") is not None  # tag vs name still real
-    assert warn(env="ignore", source="manual", override="ignore", tags={"Environment": "prod"}, name="plain") is None
+def test_a_resource_with_no_conflicting_evidence_has_no_warning():
+    assert warn(env="prod", source="manual", override="prod", tags={"Environment": "prod"}, name="x-dev-1") is not None  # tag vs name still real
+    assert warn(env="prod", source="manual", override="prod", tags={"Environment": "prod"}, name="plain") is None
 
 
 def test_unknown_with_no_second_piece_of_evidence_has_no_warning():
@@ -60,26 +60,27 @@ def test_unknown_with_no_second_piece_of_evidence_has_no_warning():
 
 def test_a_name_that_contradicts_itself_is_not_evidence_for_a_mismatch():
     # "prod-to-dev-sync" resolves to unknown; it must not be read as "name says prod" against a dev tag
-    assert warn(env="dev", source="tag", tags={"Environment": "dev"}, name="prod-to-dev-sync") is None
+    assert warn(env="nonprod", source="tag", tags={"Environment": "dev"}, name="prod-to-dev-sync") is None
 
 
-def test_devops_and_nonprod_names_say_nothing():
+def test_devops_says_nothing_and_a_nonprod_name_is_a_nonprod_vote():
     assert warn(env="prod", source="tag", tags={"Environment": "prod"}, name="DevOps-Jenkins") is None
-    assert warn(env="prod", source="tag", tags={"Environment": "prod"}, name="non-prod-gateway") is None
+    assert kind(env="prod", source="tag", tags={"Environment": "prod"}, name="non-prod-gateway") == "tag_vs_name"
+    assert warn(env="nonprod", source="tag", tags={"Environment": "nonprod"}, name="non-prod-gateway") is None
 
 
 def test_lookalike_words_do_not_trigger():
     assert warn(env="prod", source="tag", tags={"Environment": "prod"}, name="product-catalog-latest") is None
 
 
-def test_preprod_name_reads_as_uat_not_prod():
+def test_preprod_name_reads_as_nonprod_not_prod():
     assert kind(env="prod", source="tag", tags={"Environment": "prod"}, name="pre-prod-api") == "tag_vs_name"
-    assert warn(env="uat", source="tag", tags={"Environment": "uat"}, name="pre-prod-api") is None
+    assert warn(env="nonprod", source="tag", tags={"Environment": "uat"}, name="pre-prod-api") is None
 
 
 def test_attached_volume_that_disagrees_with_a_decided_instance():
     inst = Res("prod", "name", "name token 'prod'")
-    w = warn(env="dev", source="name", name="vol-dev-scratch", resource_type="ebs", attached=[(inst, "ec2 HCS-PROD-MD-01")])
+    w = warn(env="nonprod", source="name", name="vol-dev-scratch", resource_type="ebs", attached=[(inst, "ec2 HCS-PROD-MD-01")])
     assert w and w[0] == "volume_vs_instance" and "HCS-PROD-MD-01" in w[1] and "prod" in w[1]
 
 
@@ -90,7 +91,7 @@ def test_volume_following_its_instance_is_not_a_mismatch():
 
 def test_an_instance_decided_only_by_account_default_is_too_weak_to_contradict_a_volume():
     inst = Res("prod", "account", "account default")
-    assert warn(env="dev", source="name", name="x-dev", resource_type="ebs", attached=[(inst, "ec2 a")]) is None
+    assert warn(env="nonprod", source="name", name="x-dev", resource_type="ebs", attached=[(inst, "ec2 a")]) is None
 
 
 def test_attached_ebs_tag_is_described_as_the_instances_tag():
@@ -100,7 +101,7 @@ def test_attached_ebs_tag_is_described_as_the_instances_tag():
 
 
 def test_message_is_short_and_has_no_glyphs():
-    w = warn(env="dev", source="tag", tags={"Environment": "dev"}, name="x" * 400 + "-prod")
+    w = warn(env="nonprod", source="tag", tags={"Environment": "dev"}, name="x" * 400 + "-prod")
     assert w is None or len(w[1]) <= ec.REASON_MAX
     big = warn(env="prod", source="manual", override="prod", tags={"Environment": "dev"})
     assert len(big[1]) <= ec.REASON_MAX and all(ord(ch) < 128 for ch in big[1])
@@ -141,18 +142,18 @@ def test_same_application_tag_with_three_agreeing_siblings_is_high():
 
 
 def test_application_tag_matching_ignores_case_and_key_style():
-    sibs = [sib(f"i-{i}", f"web-{i}", "uat", application="Orders-API") for i in range(2)]
+    sibs = [sib(f"i-{i}", f"web-{i}", "nonprod", application="Orders-API") for i in range(2)]
     s = ec.suggest_environment(target(**{"Application": "orders-api"}), sibs)
-    assert s and s.env == "uat" and s.confidence == "medium"
+    assert s and s.env == "nonprod" and s.confidence == "medium"
 
 
 def test_one_sibling_is_only_low_confidence():
-    s = ec.suggest_environment(target(Application="solo"), [sib("i-1", "a-1", "dev", Application="solo")])
+    s = ec.suggest_environment(target(Application="solo"), [sib("i-1", "a-1", "nonprod", Application="solo")])
     assert s.confidence == "low"
 
 
 def test_siblings_that_disagree_give_no_suggestion():
-    sibs = [sib("i-1", "a", "prod", Application="x"), sib("i-2", "b", "prod", Application="x"), sib("i-3", "c", "uat", Application="x")]
+    sibs = [sib("i-1", "a", "prod", Application="x"), sib("i-2", "b", "prod", Application="x"), sib("i-3", "c", "nonprod", Application="x")]
     assert ec.suggest_environment(target(Application="x"), sibs) is None
 
 
@@ -177,8 +178,8 @@ def test_volumes_copying_their_instances_tags_are_one_piece_of_evidence_not_many
 
 
 def test_stack_tag_is_medium_with_one_sibling_and_high_with_two():
-    one = [sib("i-1", "a", "dev", **{"aws:cloudformation:stack-name": "shop-stack"})]
-    two = one + [sib("i-2", "b", "dev", **{"aws:cloudformation:stack-name": "shop-stack"})]
+    one = [sib("i-1", "a", "nonprod", **{"aws:cloudformation:stack-name": "shop-stack"})]
+    two = one + [sib("i-2", "b", "nonprod", **{"aws:cloudformation:stack-name": "shop-stack"})]
     t = target(**{"aws:cloudformation:stack-name": "shop-stack"})
     assert ec.suggest_environment(t, one).confidence == "medium"
     assert ec.suggest_environment(t, two).confidence == "high"
@@ -202,13 +203,13 @@ def test_two_siblings_sharing_a_prefix_is_low_and_one_is_nothing():
 
 
 def test_prefix_siblings_that_split_give_no_suggestion():
-    sibs = [sib("i-1", "billing-core-prod-1", "prod"), sib("i-2", "billing-core-dev-1", "dev"), sib("i-3", "billing-core-prod-2", "prod")]
+    sibs = [sib("i-1", "billing-core-prod-1", "prod"), sib("i-2", "billing-core-dev-1", "nonprod"), sib("i-3", "billing-core-prod-2", "prod")]
     assert ec.suggest_environment(target(name="billing-core-worker"), sibs) is None
 
 
 def test_two_kinds_of_evidence_pointing_at_different_tiers_give_nothing():
     sibs = [sib(f"i-{i}", f"x-{i}", "prod", Application="a") for i in range(3)]
-    sibs += [sib(f"j-{i}", f"hcs-md-{i}", "dev") for i in range(3)]
+    sibs += [sib(f"j-{i}", f"hcs-md-{i}", "nonprod") for i in range(3)]
     assert ec.suggest_environment(target(name="hcs-md-batch", Application="a"), sibs) is None
 
 
@@ -263,4 +264,4 @@ def test_a_suggestion_is_a_proposal_resolution_is_unchanged():
     t = target(Application="a")
     before = ec.resolve_environment(name=t["name"], resource_id=t["resource_id"], tags=t["tags"])
     ec.suggest_environment(t, [sib(f"i-{i}", f"x{i}", "prod", Application="a") for i in range(3)])
-    assert before.env == "unknown" and ec.resolve_environment(name=t["name"], resource_id=t["resource_id"], tags=t["tags"]) == before
+    assert before.source == "unknown" and ec.resolve_environment(name=t["name"], resource_id=t["resource_id"], tags=t["tags"]) == before

@@ -36,6 +36,20 @@ def _serialize(obj):
 
 
 from app.audit import write_audit as _write_audit
+from app.env_tiers import LABEL as _ENV_LABEL, recognized_tier as _recognized_tier
+
+
+def _account_environment(payload):
+    """The account's environment label: "PROD" or "NON-PROD". Missing -> PROD. Dev / SIT / UAT / Staging / QA /
+    Test (what older clients and forms send) are accepted and stored as NON-PROD; anything unrecognised is
+    rejected rather than guessed."""
+    raw = payload.get("environment")
+    if raw is None or not str(raw).strip():
+        return _ENV_LABEL["prod"]
+    tier = _recognized_tier(raw)
+    if tier is None:
+        raise HTTPException(status_code=400, detail="environment must be PROD or NON-PROD")
+    return _ENV_LABEL[tier]
 
 
 def _bust_accounts_cache():
@@ -234,7 +248,7 @@ def _add_aws_account(payload: dict, current_user: dict) -> tuple[int, str, str]:
     role_arn    = (payload.get("role_arn") or payload.get("iam_role_arn") or "").strip()
     external_id = (payload.get("external_id") or "").strip()
     owner_team  = (payload.get("owner_team") or "").strip()
-    environment = (payload.get("environment") or "PROD").strip().upper()
+    environment = _account_environment(payload)
     description = (payload.get("description") or "").strip()
     if role_arn.lower() in ["n/a", "none", "na", ""]:
         role_arn = ""
@@ -379,7 +393,7 @@ def _add_azure_account(payload: dict, current_user: dict) -> tuple[int, str, str
     client_secret   = (payload.get("client_secret") or "").strip()
     region          = (payload.get("default_region") or "").strip()
     owner_team      = (payload.get("owner_team") or "").strip()
-    environment     = (payload.get("environment") or "PROD").strip().upper()
+    environment     = _account_environment(payload)
     description     = (payload.get("description") or "").strip()
 
     missing = [f for f, v in [("account_name", account_name), ("tenant_id", tenant_id),
@@ -475,7 +489,7 @@ def _add_gcp_account(payload: dict, current_user: dict) -> tuple[int, str, str]:
     service_account_key   = (payload.get("service_account_key") or "").strip()
     region                = (payload.get("default_region") or "").strip()
     owner_team            = (payload.get("owner_team") or "").strip()
-    environment           = (payload.get("environment") or "PROD").strip().upper()
+    environment           = _account_environment(payload)
     description           = (payload.get("description") or "").strip()
 
     missing = [f for f, v in [("account_name", account_name), ("project_id", project_id),

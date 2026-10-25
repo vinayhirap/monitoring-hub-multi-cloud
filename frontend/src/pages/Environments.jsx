@@ -1,6 +1,6 @@
 // src/pages/Environments.jsx
 // Environments and tags. Two separate things live here, and the page keeps them apart:
-//   1. Environment: which tier (Prod / UAT / Dev) CloudOps treats each resource as. Decides alert strength.
+//   1. Environment: which environment (PROD / NON-PROD) CloudOps treats each resource as. Decides alert strength.
 //      Resources nothing can place are "Not placed" and wait in the first tab; they are alerted like prod meanwhile.
 //   2. AWS tags: whether the resource carries the standard Environment tag in AWS. CloudOps only reads AWS; the
 //      second tab hands you a script to run with your own credentials.
@@ -28,8 +28,12 @@ const CLOUDOPS_TAGS = [
   ["Application", "what the resource belongs to"],
 ];
 
-const ENV_LABEL = { prod: "Prod", uat: "UAT", dev: "Dev", unknown: "Not placed", ignore: "Ignored" };
-const ENV_LONG = { prod: "Production", uat: "UAT", dev: "Development" };
+// Two environments. Older audit-history rows may still carry the pre-2026 values (uat, dev, unknown, ignore), so
+// those keys are kept for display only: uat/dev read as NON-PROD, unknown/ignore as PROD (the fail-safe).
+const ENV_LABEL = { prod: "PROD", nonprod: "NON-PROD", uat: "NON-PROD", dev: "NON-PROD", unknown: "Not placed", ignore: "PROD" };
+const ENV_LONG = { prod: "PROD", nonprod: "NON-PROD", uat: "NON-PROD", dev: "NON-PROD" };
+const ENVS = ["prod", "nonprod"];
+const envClass = e => (e === "uat" || e === "dev") ? "nonprod" : (e === "ignore" ? "prod" : e);
 const SOURCE_LABEL = {
   manual: "Set by a person", tag: "From the AWS tag", name: "From the name", related: "From the attached resource",
   account: "From the account default", unknown: "Nothing identifies it",
@@ -39,9 +43,9 @@ const TAG_LABEL = {
   missing: "No Environment tag", not_checked: "Cannot be checked",
 };
 const TAG_HINT = {
-  ok: "The Environment tag is there and says exactly prod, uat or dev.",
+  ok: "The Environment tag is there and says exactly prod or nonprod.",
   nonstandard: "A tag exists but its name or value is not the standard one (for example Env=Production).",
-  invalid: "An environment tag exists but its value is not prod, uat or dev.",
+  invalid: "An environment tag exists but its value is not prod or nonprod.",
   missing: "The resource has no Environment tag in AWS.",
   not_checked: "CloudOps has no reading of this resource's own AWS tags (for example EBS volumes, or any type the tag sync does not cover or while it is off), so it cannot tell.",
 };
@@ -62,7 +66,7 @@ function CloudBadge({ provider }) {
 
 function EnvBadge({ env }) {
   if (!env) return <span className="env-badge env-none">Not placed</span>;
-  return <span className={`env-badge env-${env}`}>{ENV_LABEL[env] || env}</span>;
+  return <span className={`env-badge env-${envClass(env)}`}>{ENV_LABEL[env] || env}</span>;
 }
 
 function TagBadge({ state }) {
@@ -82,7 +86,7 @@ function saveText(name, text) {
 function nextStep(r, view, canManage) {
   const other = r.provider && r.provider !== "aws";
   if (view === "tagging" && other) {
-    return `Add the ${r.provider === "gcp" ? "label" : "tag"} environment = ${r.env || "prod, uat or dev"} in the ${PROVIDER_LABEL[r.provider]} console. The script covers AWS only.`;
+    return `Add the ${r.provider === "gcp" ? "label" : "tag"} environment = ${r.env || "prod or nonprod"} in the ${PROVIDER_LABEL[r.provider]} console. The script covers AWS only.`;
   }
   if (view === "tagging") {
     if (!ENV_LONG[r.env]) {
@@ -98,7 +102,7 @@ function nextStep(r, view, canManage) {
     return "Nothing to do.";
   }
   if (view === "needs_classification") {
-    return canManage ? "Mark it Prod, UAT or Dev." : "Ask someone with edit access to place it.";
+    return canManage ? "Mark it PROD or NON-PROD." : "Ask someone with edit access to place it.";
   }
   // the stored reason is a lowercase fragment ("account default", "attached to ec2 X ..."); show it as a sentence
   const why = r.reason || SOURCE_LABEL[r.source] || "";
@@ -163,7 +167,7 @@ function DefaultPreview({ preview, accounts, busy, onConfirm, onCancel }) {
           </table>
         )}
         <div className="env-chips">
-          {["prod", "uat", "dev", "unknown"].filter(k => d.by_env[k]).map(k => <span key={k} className={`env-chip env-${k}`}>{ENV_LABEL[k]} after: {d.by_env[k]}</span>)}
+          {[...ENVS, "unknown"].filter(k => d.by_env[k]).map(k => <span key={k} className={`env-chip env-${k}`}>{ENV_LABEL[k]} after: {d.by_env[k]}</span>)}
         </div>
         {!al.flag_on && <div className="env-modal-note">Alerting is unchanged: environment-aware classification is switched off, so this only changes labels.</div>}
         {al.flag_on && (
@@ -320,7 +324,7 @@ export default function Environments() {
     try {
       setPlan(await getTagPlan({
         account_id: filters.account_id,
-        env: ["prod", "uat", "dev"].includes(filters.env) ? filters.env : "",
+        env: ENVS.includes(filters.env) ? filters.env : "",
         region: filters.region,
         resource_type: ["ec2", "ebs"].includes(filters.resource_type) ? filters.resource_type : "",
       }));
@@ -457,11 +461,11 @@ export default function Environments() {
         <summary>What do these terms mean?</summary>
         <dl>
           <dt>Environment</dt>
-          <dd>The tier a resource belongs to: Prod (live), UAT (final testing, also pre-prod, staging and QA) or Dev (building and testing).</dd>
+          <dd>Which of the two environments a resource belongs to: PROD (live) or NON-PROD (everything else: dev, test, SIT, UAT, QA, staging).</dd>
           <dt>Not placed</dt>
           <dd>CloudOps could not tell the tier from a tag, the name or what the resource is attached to. It is alerted as if it were Prod until someone places it.</dd>
           <dt>Environment tag</dt>
-          <dd>A label named Environment, with the value prod, uat or dev, on the resource in AWS. It is the most reliable source, and other teams can see it too.</dd>
+          <dd>A label named Environment, with the value prod or nonprod, on the resource in AWS. It is the most reliable source, and other teams can see it too.</dd>
           <dt>Tags CloudOps uses</dt>
           <dd>
             Environment (required: it sets alert strength and polling), then Criticality, Owner and Application, which say how
@@ -498,7 +502,7 @@ export default function Environments() {
                 : <>All {totalResources} resources have an environment.</>}
             </div>
             <div className="env-chips">
-              {["prod", "uat", "dev"].map(k => <span key={k} className={`env-chip env-${k}`}>{ENV_LABEL[k]} {byEnv[k] || 0}</span>)}
+              {ENVS.map(k => <span key={k} className={`env-chip env-${k}`}>{ENV_LABEL[k]} {byEnv[k] || 0}</span>)}
               <span className="env-chip env-unknown">Not placed {needs}</span>
             </div>
             {needs > 0 && <button className="env-link" onClick={() => switchView("needs_classification")}>Place them</button>}
@@ -554,7 +558,7 @@ export default function Environments() {
                 <div className="env-account-name">{a.account_name} <CloudBadge provider={a.provider} /></div>
                 <div className="env-account-meta">{a.total} resources, {a.needs_classification} not placed</div>
                 <div className="env-chips">
-                  {["prod", "uat", "dev"].filter(k => a.by_env?.[k]).map(k => (
+                  {ENVS.filter(k => a.by_env?.[k]).map(k => (
                     <span key={k} className={`env-chip env-${k}`}>{ENV_LABEL[k]} {a.by_env[k]}</span>
                   ))}
                 </div>
@@ -563,9 +567,8 @@ export default function Environments() {
                   <select value={a.default_env || ""} disabled={!canManage || busy}
                           onChange={e => changeDefault(a.account_id, e.target.value)}>
                     <option value="">None</option>
-                    <option value="prod">Prod</option>
-                    <option value="uat">UAT</option>
-                    <option value="dev">Dev</option>
+                    <option value="prod">PROD</option>
+                    <option value="nonprod">NON-PROD</option>
                   </select>
                 </label>
               </div>
@@ -630,7 +633,7 @@ export default function Environments() {
                 <span className="env-quick-n">{g.n} waiting</span>
               </div>
               <div className="env-quick-actions">
-                {["prod", "uat", "dev"].map(e => (
+                {ENVS.map(e => (
                   <button key={e} disabled={busy} onClick={() => applyGroup(g, e)}>Mark all {ENV_LABEL[e]}</button>
                 ))}
               </div>
@@ -659,7 +662,7 @@ export default function Environments() {
             instances and EBS volumes; tag other types in the AWS console or Tag Editor.
             <div className="env-scope">
               Script scope: {filters.account_id ? (accounts.find(a => String(a.account_id) === String(filters.account_id))?.account_name || "one account") : "all accounts"}
-              {["prod", "uat", "dev"].includes(filters.env) ? `, ${ENV_LONG[filters.env]} only` : ""}
+              {ENVS.includes(filters.env) ? `, ${ENV_LONG[filters.env]} only` : ""}
               {filters.region ? `, ${filters.region}` : ""}
               {["ec2", "ebs"].includes(filters.resource_type) ? `, ${filters.resource_type} only` : ""}
               . Change the filters below to narrow it.
@@ -688,7 +691,7 @@ export default function Environments() {
         {view !== "needs_classification" && view !== "compliance" && (
           <select aria-label="Environment" value={filters.env} onChange={e => setFilter("env", e.target.value)}>
             <option value="">Any environment</option>
-            {(view === "tagging" ? ["prod", "uat", "dev"] : ["prod", "uat", "dev", "unknown", "ignore", "unclassified"]).map(v =>
+            {(view === "tagging" ? ENVS : [...ENVS, "unclassified"]).map(v =>
               <option key={v} value={v}>{ENV_LABEL[v] || "Not yet evaluated"}</option>)}
           </select>
         )}
@@ -723,9 +726,9 @@ export default function Environments() {
       {canManage && view !== "compliance" && (
         <div className="env-bulk">
           <span>{selected.size} selected</span>
-          {["prod", "uat", "dev", "ignore"].map(e => (
+          {ENVS.map(e => (
             <button key={e} disabled={!selected.size || busy} onClick={() => apply(e)}
-                    title={e === "ignore" ? "Stop listing it as waiting. It is still alerted like Prod." : undefined}>
+                    title={e === "prod" ? "Confirm as PROD. Unplaced resources are already alerted like PROD; this takes them off the waiting list." : undefined}>
               Mark {ENV_LABEL[e]}
             </button>
           ))}
@@ -815,7 +818,7 @@ export default function Environments() {
               <span>{plan.resources} resource(s), {plan.commands} command(s), {plan.accounts} account(s)</span>
             </div>
             <div className="env-plan-envs">
-              {["prod", "uat", "dev"].filter(k => plan.by_env?.[k]).map(k => (
+              {ENVS.filter(k => plan.by_env?.[k]).map(k => (
                 <span key={k} className={`env-chip env-${k}`}>{ENV_LABEL[k]} {plan.by_env[k]}</span>
               ))}
             </div>

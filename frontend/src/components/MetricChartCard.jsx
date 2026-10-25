@@ -93,10 +93,10 @@ export default function MetricChartCard({
   // The period of a point can never be finer than the collection period: a 5-min
   // metric charted on 1H still has one point per 5 min (the console says 5 min too).
   const periodLabel = fmtPeriod(Math.max(bucket || 0, meta?.period_seconds || 0) || null);
-  // Environment-based polling (phase 4c): a UAT / DEV resource is collected less often than prod. The
+  // Environment-based polling (phase 4c): a NON-PROD resource is collected less often than PROD. The
   // API sends the REAL interval in poll_label plus the prod one in poll_base_label; a metric that is
   // not collected for that environment has poll_not_collected instead.
-  const envName = meta?.poll_env ? String(meta.poll_env).toUpperCase() : "";
+  const envName = meta?.poll_env === "nonprod" ? "NON-PROD" : (meta?.poll_env ? "PROD" : "");
   const notCollected = !!meta?.poll_not_collected;
   const slowedNote = meta?.poll_slowed && meta?.poll_base_label
     ? ` (${envName}; ${meta.poll_base_label} on prod)` : "";

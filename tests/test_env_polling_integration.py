@@ -3,10 +3,10 @@
 tests/test_alert_lifecycle_integration.py for the scratch DB recipe). The scratch schema needs the
 fixture PLUS migrations 074..083 and 086 (resources.env_resolved).
 
-  * a UAT resource polled less often is NOT reported stale / 'no data' between its polls
+  * a NON-PROD resource polled less often is NOT reported stale / 'no data' between its polls
   * the evaluation window and the required breach cycles follow the effective interval
-  * P1 metrics on UAT and everything on prod are evaluated exactly as before
-  * DEV non-critical metrics are not evaluated; DEV critical ones are
+  * everything on prod (and unplaced resources, which are prod) is evaluated exactly as before
+  * NON-PROD non-critical metrics are not evaluated; NON-PROD critical ones are (every 10 min, 2x the cycles)
   * scripts/polling_plan_report.py runs read-only against the DB and its numbers equal an
     independent count of what the collectors would request
 """
@@ -29,8 +29,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 @pytest.fixture()
 def db(monkeypatch):
-    for v in ("POLL_UAT_MULTIPLIER", "POLL_DEV_INTERVAL_SECONDS", "POLL_DEV_CRITICAL_INTERVAL_SECONDS",
-              "POLL_DEV_NONCRITICAL_MODE", "POLL_DEV_EVAL_CRITICAL_ONLY"):
+    for v in ("POLL_DEV_INTERVAL_SECONDS", "POLL_DEV_CRITICAL_INTERVAL_SECONDS",
+              "POLL_DEV_NONCRITICAL_MODE", "POLL_DEV_EVAL_CRITICAL_ONLY",
+              "POLL_NONPROD_INTERVAL_SECONDS", "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS",
+              "POLL_NONPROD_NONCRITICAL_MODE", "POLL_NONPROD_EVAL_CRITICAL_ONLY"):
         monkeypatch.delenv(v, raising=False)
     monkeypatch.delenv("ENV_POLLING_ENABLED", raising=False)
     monkeypatch.delenv("ENV_AWARE_CLASSIFICATION", raising=False)
@@ -59,9 +61,9 @@ def _flag(monkeypatch, on):
     alert_rules._ENV_EXTRA_CACHE.clear()
 
 
-def _res(db, rid, rtype, env):
+def _res(db, rid, rtype, env, source="tag"):
     pk = db.resource(1, rtype, rid)
-    db.x("UPDATE resources SET env_resolved=%s, env_source='tag' WHERE id=%s", (env, pk))
+    db.x("UPDATE resources SET env_resolved=%s, env_source=%s WHERE id=%s", (env, source, pk))
     return pk
 
 
@@ -80,18 +82,18 @@ def test_prod_reading_outside_the_window_is_not_evaluated_either_way(db, monkeyp
     assert _alerts(db) == []
 
 
-def test_uat_reading_inside_the_extended_window_is_evaluated_only_with_flag(db, monkeypatch):
+def test_nonprod_critical_reading_inside_the_extended_window_is_evaluated_only_with_flag(db, monkeypatch):
     for flag, expect in ((False, 0), (True, 1)):
         db.reset(); db.account(1, "Acct")
         _flag(monkeypatch, flag)
-        pk = _res(db, "i-uat", "ec2", "uat")
-        db.threshold(1, "ec2", "cpuutilization", 70, 90, unit="Percent", period=5)
-        db.metric(pk, "cpuutilization", 95, age_min=15)       # window 10 -> 20 min for a 3x slowed metric
+        pk = _res(db, "db-np", "rds", "nonprod")
+        db.threshold(1, "rds", "cpuutilization", 70, 90, unit="Percent", period=5)
+        db.metric(pk, "cpuutilization", 95, age_min=15)       # window 10 -> 18 min for a 600 s NON-PROD critical metric
         run_eval()
         pending = db.one("SELECT COUNT(*) n FROM alert_pending")["n"]
         assert pending == expect, (flag, pending)
         if flag:
-            assert _alerts(db) == []                          # 3 cycles required, one seen: no alert yet
+            assert _alerts(db) == []                          # 2 cycles required, one seen: no alert yet
 
 
 # ── staleness (the "no data" risk) ──────────────────────────────────────
@@ -100,42 +102,42 @@ def _state(db, aid):
     return db.one(sql, (aid,))["state"]
 
 
-def test_uat_alert_between_polls_is_firing_not_stale(db, monkeypatch):
-    pk_u = _res(db, "i-uat", "ec2", "uat")
-    pk_p = _res(db, "i-prod", "ec2", "prod")
-    a_u = db.alert(1, "i-uat", "cpuutilization", seen_min_ago=28)
-    a_p = db.alert(1, "i-prod", "cpuutilization", seen_min_ago=28)
+def test_nonprod_critical_alert_between_polls_is_firing_not_stale(db, monkeypatch):
+    pk_u = _res(db, "db-np", "rds", "nonprod")
+    pk_p = _res(db, "db-prod", "rds", "prod")
+    a_u = db.alert(1, "db-np", "cpuutilization", seen_min_ago=25)
+    a_p = db.alert(1, "db-prod", "cpuutilization", seen_min_ago=25)
     _flag(monkeypatch, False)
     assert _state(db, a_u) == "stale" and _state(db, a_p) == "stale"        # today: 20 min limit
     _flag(monkeypatch, True)
-    assert _state(db, a_u) == "firing"                                      # uat polled every 15 min: 30 min limit
+    assert _state(db, a_u) == "firing"                                      # non-prod critical polled every 10 min: wider limit
     assert _state(db, a_p) == "stale"                                       # prod untouched
     db.x("UPDATE alerts SET last_seen_at = UTC_TIMESTAMP() - INTERVAL 45 MINUTE WHERE id=%s", (a_u,))
     assert _state(db, a_u) == "stale"                                       # a REAL outage still goes stale
 
 
-def test_dev_hourly_metric_stale_limit_follows_its_poll(db, monkeypatch):
-    _res(db, "i-dev", "ec2", "dev")
-    aid = db.alert(1, "i-dev", "cpuutilization", seen_min_ago=70)
+def test_nonprod_hourly_metric_stale_limit_follows_its_poll(db, monkeypatch):
+    _res(db, "i-np", "ec2", "nonprod")
+    aid = db.alert(1, "i-np", "cpuutilization", seen_min_ago=70)
     _flag(monkeypatch, True)
     assert _state(db, aid) == "firing"                                      # 20 + 55 = 75 min
     db.x("UPDATE alerts SET last_seen_at = UTC_TIMESTAMP() - INTERVAL 80 MINUTE WHERE id=%s", (aid,))
     assert _state(db, aid) == "stale"
 
 
-def test_unknown_unclassified_and_p1_uat_keep_the_prod_limit(db, monkeypatch):
-    _res(db, "i-unk", "ec2", "unknown")
-    _res(db, "i-null", "ec2", None)
-    _res(db, "db-uat", "rds", "uat")
+def test_unplaced_and_legacy_resources_are_prod_and_keep_the_prod_limit(db, monkeypatch):
+    _res(db, "i-unk", "ec2", "prod", source="unknown")      # unplaced: prod, waiting in the classification queue
+    _res(db, "i-null", "ec2", None)                         # NULL env_resolved is prod too
+    _res(db, "i-legacy", "ec2", "unknown")                  # a pre-migration value is normalised to prod
     ids = [db.alert(1, "i-unk", "cpuutilization", seen_min_ago=28),
            db.alert(1, "i-null", "cpuutilization", seen_min_ago=28),
-           db.alert(1, "db-uat", "cpuutilization", seen_min_ago=28)]
+           db.alert(1, "i-legacy", "cpuutilization", seen_min_ago=28)]
     _flag(monkeypatch, True)
     assert [_state(db, i) for i in ids] == ["stale", "stale", "stale"]
 
 
 def test_slow_and_extended_classes_and_describe_metrics_are_not_touched(db, monkeypatch):
-    _res(db, "bkt", "s3", "uat")
+    _res(db, "bkt", "s3", "nonprod")
     aid = db.alert(1, "bkt", "bucketsizebytes", seen_min_ago=60 * 40)       # daily class: 3000 min limit
     _flag(monkeypatch, False)
     before = _state(db, aid)
@@ -153,44 +155,42 @@ def _cycles_to_alert(db, rid, limit=14):
     return None
 
 
-def test_uat_needs_three_times_the_breach_cycles_prod_unchanged(db, monkeypatch):
+def test_nonprod_critical_needs_twice_the_breach_cycles_prod_unchanged(db, monkeypatch):
     _flag(monkeypatch, True)
-    pu = _res(db, "i-uat", "ec2", "uat")
-    pp = _res(db, "i-prod", "ec2", "prod")
-    db.threshold(1, "ec2", "cpuutilization", 70, 90, unit="Percent", period=5)
-    db.metric(pu, "cpuutilization", 95)
+    pn = _res(db, "db-np", "rds", "nonprod")
+    pp = _res(db, "db-prod", "rds", "prod")
+    db.threshold(1, "rds", "cpuutilization", 70, 90, unit="Percent", period=5)
+    db.metric(pn, "cpuutilization", 95)
     db.metric(pp, "cpuutilization", 95)
     run_eval()
     rows = _alerts(db)
-    assert [r["resource_id"] for r in rows] == ["i-prod"]                  # prod: first cycle, as before
-    _age(db, 6); db.metric(pu, "cpuutilization", 95); run_eval()                   # cycle 2
-    assert [r["resource_id"] for r in _alerts(db)] == ["i-prod"]
-    _age(db, 6); db.metric(pu, "cpuutilization", 95); run_eval()                   # cycle 3
-    assert sorted(r["resource_id"] for r in _alerts(db)) == ["i-prod", "i-uat"]    # uat: third cycle
+    assert [r["resource_id"] for r in rows] == ["db-prod"]                 # prod: first cycle, as before
+    _age(db, 6); db.metric(pn, "cpuutilization", 95); run_eval()                   # cycle 2
+    assert sorted(r["resource_id"] for r in _alerts(db)) == ["db-np", "db-prod"]   # non-prod: second cycle
 
 
-def test_uat_p1_metric_alerts_on_the_first_cycle(db, monkeypatch):
+def test_unplaced_resource_alerts_on_the_first_cycle(db, monkeypatch):
     _flag(monkeypatch, True)
-    pk = _res(db, "db-uat", "rds", "uat")
+    pk = _res(db, "db-unk", "rds", "prod", source="unknown")
     db.threshold(1, "rds", "cpuutilization", 70, 90, unit="Percent", period=5)
     db.metric(pk, "cpuutilization", 95)
     run_eval()
-    assert [r["resource_id"] for r in _alerts(db)] == ["db-uat"]
+    assert [r["resource_id"] for r in _alerts(db)] == ["db-unk"]
 
 
-def test_flag_off_uat_alerts_on_the_first_cycle(db, monkeypatch):
+def test_flag_off_nonprod_alerts_on_the_first_cycle(db, monkeypatch):
     _flag(monkeypatch, False)
-    pk = _res(db, "i-uat", "ec2", "uat")
+    pk = _res(db, "i-np", "ec2", "nonprod")
     db.threshold(1, "ec2", "cpuutilization", 70, 90, unit="Percent", period=5)
     db.metric(pk, "cpuutilization", 95)
     run_eval()
     assert len(_alerts(db)) == 1
 
 
-def test_dev_non_critical_is_not_evaluated_dev_critical_is(db, monkeypatch):
+def test_nonprod_non_critical_is_not_evaluated_nonprod_critical_is(db, monkeypatch):
     _flag(monkeypatch, True)
-    pe = _res(db, "i-dev", "ec2", "dev")
-    pr = _res(db, "db-dev", "rds", "dev")
+    pe = _res(db, "i-np", "ec2", "nonprod")
+    pr = _res(db, "db-np", "rds", "nonprod")
     db.threshold(1, "ec2", "cpuutilization", 70, 90, unit="Percent", period=5)
     db.threshold(1, "rds", "cpuutilization", 70, 90, unit="Percent", period=5)
     db.metric(pe, "cpuutilization", 95)
@@ -198,19 +198,19 @@ def test_dev_non_critical_is_not_evaluated_dev_critical_is(db, monkeypatch):
     for _ in range(4):
         _age(db, 6); db.metric(pe, "cpuutilization", 95); db.metric(pr, "cpuutilization", 95); run_eval()
     got = {r["resource_id"] for r in _alerts(db)}
-    assert got == {"db-dev"}                                               # 2 cycles needed, 4 given
+    assert got == {"db-np"}                                                # 2 cycles needed, 4 given
 
 
-def test_stale_slowed_alert_recovers_normally_with_scaled_healthy_streak(db, monkeypatch):
+def test_slowed_alert_recovers_normally_with_scaled_healthy_streak(db, monkeypatch):
     _flag(monkeypatch, True)
-    pk = _res(db, "i-uat", "ec2", "uat")
-    db.threshold(1, "ec2", "cpuutilization", 70, 90, unit="Percent", period=5)
-    aid = db.alert(1, "i-uat", "cpuutilization", seen_min_ago=1)
+    pk = _res(db, "db-np", "rds", "nonprod")
+    db.threshold(1, "rds", "cpuutilization", 70, 90, unit="Percent", period=5)
+    aid = db.alert(1, "db-np", "cpuutilization", seen_min_ago=1)
     db.metric(pk, "cpuutilization", 10)
-    for n in range(1, 4):
+    for n in range(1, 3):
         _age(db, 6); db.metric(pk, "cpuutilization", 10); run_eval()
         status = db.get(aid)["status"]
-        assert status == ("resolved" if n == 3 else "active"), (n, status)
+        assert status == ("resolved" if n == 2 else "active"), (n, status)
 
 
 # ── report script ───────────────────────────────────────────────────────
@@ -218,8 +218,9 @@ def _report(scenario="current"):
     env = dict(os.environ, DB_HOST=os.getenv("MH_TEST_DB_HOST", "127.0.0.1"),
                DB_PORT=os.getenv("MH_TEST_DB_PORT", "3306"), DB_USER=os.getenv("MH_TEST_DB_USER", "mh"),
                DB_PASSWORD=os.getenv("MH_TEST_DB_PASSWORD", "mh"), DB_NAME=os.getenv("MH_TEST_DB_NAME", "mh_test"),
-               POLL_DEV_NONCRITICAL_MODE="slow")
-    for v in ("POLL_UAT_MULTIPLIER", "POLL_DEV_INTERVAL_SECONDS", "POLL_DEV_CRITICAL_INTERVAL_SECONDS"):
+               POLL_NONPROD_NONCRITICAL_MODE="slow")
+    for v in ("POLL_DEV_INTERVAL_SECONDS", "POLL_DEV_CRITICAL_INTERVAL_SECONDS", "POLL_NONPROD_INTERVAL_SECONDS",
+              "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS"):
         env.pop(v, None)
     p = subprocess.run([sys.executable, "scripts/polling_plan_report.py", "--json", "--scenario", scenario],
                        cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
@@ -228,11 +229,12 @@ def _report(scenario="current"):
 
 
 def _seed_fleet(db):
-    for i, env in enumerate(["prod", "prod", "uat", "uat", "uat", "dev", None]):
+    # 2 prod, 4 non-prod (3 formerly UAT + 1 formerly Dev), 1 unplaced (prod with env_source='unknown')
+    for i, (env, src) in enumerate([("prod", "tag"), ("prod", "tag"), ("nonprod", "account"), ("nonprod", "account"),
+                                    ("nonprod", "account"), ("nonprod", "tag"), ("prod", "unknown")]):
         pk = db.resource(1, "ec2", f"i-{i}")
-        db.x("UPDATE resources SET env_resolved=%s, env_source=%s WHERE id=%s",
-             (env, "account" if env == "uat" else "tag", pk))
-    for i, env in enumerate(["prod", "uat"]):
+        db.x("UPDATE resources SET env_resolved=%s, env_source=%s WHERE id=%s", (env, src, pk))
+    for i, env in enumerate(["prod", "nonprod"]):
         pk = db.resource(1, "rds", f"db-{i}")
         db.x("UPDATE resources SET env_resolved=%s, env_source='tag' WHERE id=%s", (env, pk))
 
@@ -246,17 +248,19 @@ def test_report_matches_an_independent_count_and_writes_nothing(db):
     before = {t: db.one(f"SELECT COUNT(*) n FROM {t}")["n"] for t in ("resources", "metrics", "alerts", "alert_pending")}
     plan = _report()
     # ec2 standard tier: CPU + NetworkIn + NetworkOut = 3 metrics / instance, 288 collections a day
-    assert _row(plan, "standard", "prod-like", "ec2")["resources"] == 3            # prod, prod, unclassified
-    assert _row(plan, "standard", "prod-like", "ec2")["off_units_day"] == 3 * 3 * 288
-    assert _row(plan, "standard", "prod-like", "ec2")["on_units_day"] == 3 * 3 * 288      # prod-like: no saving
-    uat = _row(plan, "standard", "uat", "ec2")
-    assert uat["resources"] == 3 and uat["off_units_day"] == 3 * 3 * 288
-    assert uat["effective_interval"] == 900 and uat["on_units_day"] == 3 * 3 * 96
-    dev = _row(plan, "standard", "dev", "ec2")
-    assert dev["effective_interval"] == 3600 and dev["on_units_day"] == 1 * 3 * 24
-    # rds: 3 critical metrics every 2 min stay at 720/day on prod AND uat (P1 class), dev is 10 min
-    assert _row(plan, "critical", "uat", "rds")["on_units_day"] == _row(plan, "critical", "uat", "rds")["off_units_day"]
-    assert _row(plan, "critical", "prod-like", "rds")["off_units_day"] == 1 * 3 * 720
+    prod = _row(plan, "standard", "prod", "ec2")
+    assert prod["resources"] == 3                                                  # prod, prod, unplaced (prod)
+    assert prod["off_units_day"] == 3 * 3 * 288
+    assert prod["on_units_day"] == 3 * 3 * 288                                     # prod: no saving
+    nonprod = _row(plan, "standard", "nonprod", "ec2")
+    assert nonprod["resources"] == 4 and nonprod["off_units_day"] == 4 * 3 * 288
+    assert nonprod["effective_interval"] == 3600 and nonprod["on_units_day"] == 4 * 3 * 24   # one policy for ex-UAT and ex-Dev
+    # rds: 3 critical metrics every 2 min = 720/day on prod, slowed to every 10 min (144/day) on NON-PROD
+    assert _row(plan, "critical", "prod", "rds")["off_units_day"] == 1 * 3 * 720
+    assert _row(plan, "critical", "prod", "rds")["on_units_day"] == 1 * 3 * 720
+    npr = _row(plan, "critical", "nonprod", "rds")
+    assert npr["effective_interval"] == 600 and npr["off_units_day"] == 1 * 3 * 720 and npr["on_units_day"] == 1 * 3 * 144
+    assert not any(r["env"] not in ("prod", "nonprod") for r in plan["rows"])      # exactly two environments
     # the report only reads
     after = {t: db.one(f"SELECT COUNT(*) n FROM {t}")["n"] for t in before}
     assert after == before
@@ -280,7 +284,7 @@ def test_report_prod_only_fleet_shows_zero_saving(db):
 
 
 def test_report_renders_on_an_empty_database(db):
-    """DEV had nothing to plan and the first version crashed with KeyError: 'off_calls_day'."""
+    """NON-PROD had nothing to plan and the first version crashed with KeyError: 'off_calls_day'."""
     env = dict(os.environ, DB_HOST=os.getenv("MH_TEST_DB_HOST", "127.0.0.1"),
                DB_PORT=os.getenv("MH_TEST_DB_PORT", "3306"), DB_USER=os.getenv("MH_TEST_DB_USER", "mh"),
                DB_PASSWORD=os.getenv("MH_TEST_DB_PASSWORD", "mh"), DB_NAME=os.getenv("MH_TEST_DB_NAME", "mh_test"))

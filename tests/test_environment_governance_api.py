@@ -101,11 +101,11 @@ def test_the_same_editor_cannot_change_another_accounts_default_either():
 def test_preview_of_an_allowed_account_calls_the_dry_run_and_returns_it():
     api = _api(accessible={1})
     g = _with_gov(api, preview_default={"rows_rewritten": 4})
-    assert api.preview_account_default(1, env="uat", current_user=EDITOR_ONE) == {"rows_rewritten": 4}
-    assert g.calls == [("preview_default", (1, "uat"), {})]
+    assert api.preview_account_default(1, env="nonprod", current_user=EDITOR_ONE) == {"rows_rewritten": 4}
+    assert g.calls == [("preview_default", (1, "nonprod"), {})]
 
 
-@pytest.mark.parametrize("raw,expected", [(None, None), ("", None), ("none", None), ("CLEAR", None), (" Dev ", "dev")])
+@pytest.mark.parametrize("raw,expected", [(None, None), ("", None), ("none", None), ("CLEAR", None), (" NonProd ", "nonprod"), (" PROD ", "prod")])
 def test_preview_env_values_match_the_put(raw, expected):
     api = _api()
     g = _with_gov(api, preview_default={"ok": True})
@@ -116,7 +116,8 @@ def test_preview_env_values_match_the_put(raw, expected):
 def test_preview_rejects_an_unknown_environment_and_a_missing_account():
     api = _api()
     _with_gov(api, preview_default={"ok": True})
-    assert _http(api.preview_account_default, 1, env="staging", current_user=EDITOR_ONE).status_code == 400
+    assert _http(api.preview_account_default, 1, env="staging", current_user=EDITOR_ONE).status_code == 400   # only prod / nonprod are accepted
+    assert _http(api.preview_account_default, 1, env="uat", current_user=EDITOR_ONE).status_code == 400
     _with_gov(api, preview_default=None)
     assert _http(api.preview_account_default, 9, env="prod", current_user=EDITOR_ONE).status_code == 404
 

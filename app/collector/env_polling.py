@@ -6,15 +6,16 @@ PURE decision logic: no database, no boto3, no scheduler imports. Everything the
 collectors, the alert evaluator, the metric-meta API and the report script need to
 agree on lives here, so none of them can drift.
 
-DESIGN (confirmed with Vinay)
------------------------------
-  prod / unknown / ignore   polled exactly as before (prod-like, never slowed)
-  uat    critical-class     unchanged (a P1-set metric on UAT is still P2 in the 4b matrix,
-                            so it keeps prod cadence -- detection latency does not move)
-  uat    everything else    base interval x POLL_UAT_MULTIPLIER (default 3)
-  dev    critical-class     max(base, POLL_DEV_CRITICAL_INTERVAL_SECONDS)  (default 600 s)
-  dev    everything else    max(base, POLL_DEV_INTERVAL_SECONDS)           (default 3600 s)
-                            or not collected at all when POLL_DEV_NONCRITICAL_MODE=off
+DESIGN (two environments: PROD and NON-PROD, see app/env_tiers.py)
+------------------------------------------------------------------
+  PROD (and anything unplaced)  polled exactly as before, never slowed
+  NON-PROD critical-class       max(base, POLL_NONPROD_CRITICAL_INTERVAL_SECONDS)   (default 600 s)
+  NON-PROD everything else      max(base, POLL_NONPROD_INTERVAL_SECONDS)            (default 3600 s)
+                                or not collected at all when POLL_NONPROD_NONCRITICAL_MODE=off
+  NON-PROD alert evaluation     critical-class metrics only (POLL_NONPROD_EVAL_CRITICAL_ONLY, default true)
+
+The four POLL_NONPROD_* settings fall back to the POLL_DEV_* names they replaced (an operator who tuned the old
+Dev values keeps them). POLL_UAT_MULTIPLIER no longer exists: UAT / SIT / QA are NON-PROD like Dev.
 
 "critical-class" = a key in polling_model.p1_metric_keys() (the set evaluated on every
 2-minute tick). A slowed interval is NEVER shorter than the base interval, and a base
@@ -41,14 +42,12 @@ import threading
 
 FLAG_ENV = "ENV_POLLING_ENABLED"
 
-PROD, UAT, DEV, UNKNOWN, IGNORE = "prod", "uat", "dev", "unknown", "ignore"
+from app.env_tiers import PROD, NONPROD, to_tier
 
 # Defaults (each overridable by an environment variable, read at call time).
-DEFAULT_UAT_MULTIPLIER = 3
-DEFAULT_DEV_INTERVAL_SECONDS = 3600
-DEFAULT_DEV_CRITICAL_INTERVAL_SECONDS = 600
-DEFAULT_DEV_NONCRITICAL_MODE = "slow"          # slow | off
-MAX_MULTIPLIER = 12
+DEFAULT_NONPROD_INTERVAL_SECONDS = 3600
+DEFAULT_NONPROD_CRITICAL_INTERVAL_SECONDS = 600
+DEFAULT_NONPROD_NONCRITICAL_MODE = "slow"      # slow | off
 MIN_INTERVAL_SECONDS = 120
 MAX_INTERVAL_SECONDS = 86400
 
@@ -82,43 +81,55 @@ def enabled():
     return requested() and classification_enabled()
 
 
+# New name first, then the POLL_DEV_* name it replaced.
+_LEGACY_NAMES = {
+    "POLL_NONPROD_INTERVAL_SECONDS": "POLL_DEV_INTERVAL_SECONDS",
+    "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS": "POLL_DEV_CRITICAL_INTERVAL_SECONDS",
+    "POLL_NONPROD_NONCRITICAL_MODE": "POLL_DEV_NONCRITICAL_MODE",
+    "POLL_NONPROD_EVAL_CRITICAL_ONLY": "POLL_DEV_EVAL_CRITICAL_ONLY",
+}
+
+
+def _getenv(name, default=""):
+    """os.getenv for a POLL_NONPROD_* setting, falling back to the legacy POLL_DEV_* name when the new one is unset."""
+    v = os.getenv(name)
+    if v is None or not v.strip():
+        v = os.getenv(_LEGACY_NAMES.get(name, ""), None)
+    return default if v is None else v
+
+
 def _int_env(name, default, lo, hi):
     try:
-        v = int(float(os.getenv(name, "").strip()))
+        v = int(float(_getenv(name, "").strip()))
     except (TypeError, ValueError):
         return default
     return max(lo, min(hi, v))
 
 
-def uat_multiplier():
-    return _int_env("POLL_UAT_MULTIPLIER", DEFAULT_UAT_MULTIPLIER, 1, MAX_MULTIPLIER)
-
-
-def dev_interval_seconds():
-    return _int_env("POLL_DEV_INTERVAL_SECONDS", DEFAULT_DEV_INTERVAL_SECONDS,
+def nonprod_interval_seconds():
+    return _int_env("POLL_NONPROD_INTERVAL_SECONDS", DEFAULT_NONPROD_INTERVAL_SECONDS,
                     MIN_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS)
 
 
-def dev_critical_interval_seconds():
-    return _int_env("POLL_DEV_CRITICAL_INTERVAL_SECONDS", DEFAULT_DEV_CRITICAL_INTERVAL_SECONDS,
+def nonprod_critical_interval_seconds():
+    return _int_env("POLL_NONPROD_CRITICAL_INTERVAL_SECONDS", DEFAULT_NONPROD_CRITICAL_INTERVAL_SECONDS,
                     MIN_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS)
 
 
-def dev_noncritical_mode():
-    v = os.getenv("POLL_DEV_NONCRITICAL_MODE", DEFAULT_DEV_NONCRITICAL_MODE).strip().lower()
-    return v if v in ("slow", "off") else DEFAULT_DEV_NONCRITICAL_MODE
+def nonprod_noncritical_mode():
+    v = _getenv("POLL_NONPROD_NONCRITICAL_MODE", DEFAULT_NONPROD_NONCRITICAL_MODE).strip().lower()
+    return v if v in ("slow", "off") else DEFAULT_NONPROD_NONCRITICAL_MODE
 
 
-def dev_eval_critical_only():
-    """DEV: only critical-class metrics are evaluated for alerts (Vinay's design)."""
-    return os.getenv("POLL_DEV_EVAL_CRITICAL_ONLY", "true").strip().lower() in _TRUE
+def nonprod_eval_critical_only():
+    """NON-PROD: only critical-class metrics are evaluated for alerts (Vinay's design, formerly Dev only)."""
+    return _getenv("POLL_NONPROD_EVAL_CRITICAL_ONLY", "true").strip().lower() in _TRUE
 
 
 # ── classification helpers ──────────────────────────────────────────────
 def normalize_env(env):
-    """'uat' | 'dev' | 'prod'. Anything else (None, unknown, ignore, junk) is prod-like."""
-    e = (env or "").strip().lower()
-    return e if e in (UAT, DEV) else PROD
+    """'prod' | 'nonprod'. Anything unrecognised (None, '', unknown, ignore, junk) is prod: never slowed."""
+    return to_tier(env)
 
 
 def is_critical_metric(resource_type, db_metric_name, p1_keys=None):
@@ -132,7 +143,7 @@ def is_critical_metric(resource_type, db_metric_name, p1_keys=None):
 # ── the decision ────────────────────────────────────────────────────────
 def effective_interval(env, base_interval, critical, resource_type=None, force_enabled=None):
     """Seconds between collections for this (environment, metric), or None when the metric
-    is not collected at all (DEV non-critical with POLL_DEV_NONCRITICAL_MODE=off).
+    is not collected at all (NON-PROD non-critical with POLL_NONPROD_NONCRITICAL_MODE=off).
 
     Never below base_interval; prod-like environments and exempt types always get
     base_interval. `force_enabled` lets tests/report script evaluate the flag-ON answer
@@ -141,17 +152,14 @@ def effective_interval(env, base_interval, critical, resource_type=None, force_e
     on = enabled() if force_enabled is None else force_enabled
     if not on or base >= NEVER_SLOW_AT_OR_ABOVE_SECONDS or resource_type in EXEMPT_RESOURCE_TYPES:
         return base
-    e = normalize_env(env)
-    if e == PROD:
+    if normalize_env(env) == PROD:
         return base
-    if e == UAT:
-        return base if critical else base * uat_multiplier()
-    # dev
+    # NON-PROD
     if critical:
-        return max(base, dev_critical_interval_seconds())
-    if dev_noncritical_mode() == "off":
+        return max(base, nonprod_critical_interval_seconds())
+    if nonprod_noncritical_mode() == "off":
         return None
-    return max(base, dev_interval_seconds())
+    return max(base, nonprod_interval_seconds())
 
 
 def multiplier(env, base_interval, critical, resource_type=None, force_enabled=None):
@@ -180,8 +188,7 @@ def alert_for_scale(env, base_interval, critical, resource_type=None, force_enab
     The evaluator counts one cycle per ~5 minutes and re-reads the cached last value on every
     pass, so one slowed reading would be counted several times and an alert would fire (or
     resolve) on a single datapoint. Scaling the cycle requirement by the number of cycles a
-    reading stays current keeps 'N independent readings', which is also exactly the longer
-    UAT alert-for duration. 1 for anything unchanged."""
+    reading stays current keeps 'N independent readings'. 1 for anything unchanged."""
     eff = effective_interval(env, base_interval, critical, resource_type, force_enabled)
     if eff is None:
         return 1
@@ -192,10 +199,10 @@ def alert_for_scale(env, base_interval, critical, resource_type=None, force_enab
 
 
 def evaluate_for_alerts(env, critical, resource_type=None, force_enabled=None, base_interval=None):
-    """False only for DEV non-critical metrics when POLL_DEV_EVAL_CRITICAL_ONLY is on.
+    """False only for NON-PROD non-critical metrics when POLL_NONPROD_EVAL_CRITICAL_ONLY is on.
 
     A metric whose base interval is a day or longer (certificate expiry, S3 storage) is never slowed by
-    this feature, so it is always evaluated: skipping it would silence a rare daily signal (a DEV
+    this feature, so it is always evaluated: skipping it would silence a rare daily signal (a NON-PROD
     certificate nearing expiry) for no saving. `base_interval=None` (callers that do not know it) keeps
     the old answer."""
     on = enabled() if force_enabled is None else force_enabled
@@ -203,9 +210,9 @@ def evaluate_for_alerts(env, critical, resource_type=None, force_enabled=None, b
         return True
     if base_interval is not None and base_interval >= NEVER_SLOW_AT_OR_ABOVE_SECONDS:
         return True
-    if normalize_env(env) != DEV:
+    if normalize_env(env) != NONPROD:
         return True
-    return bool(critical) or not dev_eval_critical_only()
+    return bool(critical) or not nonprod_eval_critical_only()
 
 
 # ── per-resource scheduling (stateful, in-memory) ───────────────────────

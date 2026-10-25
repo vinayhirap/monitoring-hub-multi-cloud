@@ -13,24 +13,24 @@ import csv
 import io
 from collections import Counter
 
+from app.env_tiers import is_nonprod, to_tier
+
 TAG_BUCKETS = ("ok", "nonstandard", "invalid", "missing", "not_checked", "pending")
 SOURCE_BUCKETS = ("manual", "tag", "name", "related", "account", "unknown", "pending")
 CHECKABLE = ("ok", "nonstandard", "invalid", "missing")      # not_checked and pending are NOT in here, on purpose
 PRIORITY_LABEL = {1: "P1", 2: "P2", 3: "P3", 4: "P4"}
 
-# Same matrix as docs/PRIORITY_AND_ROUTING.md (prod CRITICAL=P1 ... dev WARNING=P4). It is repeated here, not
-# imported, because the preview must work on a tree that does not have app/priority.py yet. It ignores the
-# Criticality=critical tag bump, which needs the resource's tags; the preview says so.
-_PRIORITY = {("prod", True): 1, ("prod", False): 2, ("uat", True): 2, ("uat", False): 3,
-             ("dev", True): 3, ("dev", False): 4}
+# Same matrix as docs/PRIORITY_AND_ROUTING.md (PROD critical=P1, warning=P2; NON-PROD critical=P3, warning=P4). It
+# ignores the Criticality=critical tag bump, which needs the resource's tags; the preview says so.
+_PRIORITY = {("prod", True): 1, ("prod", False): 2, ("nonprod", True): 3, ("nonprod", False): 4}
 
 
 def _prod_like(env):
-    return env not in ("uat", "dev")
+    return not is_nonprod(env)
 
 
 def priority_for(env, is_critical):
-    return _PRIORITY[("prod" if _prod_like(env) else env, bool(is_critical))]
+    return _PRIORITY[(to_tier(env), bool(is_critical))]
 
 
 def pct(n, total):
@@ -45,7 +45,7 @@ def alert_impact(changes, alerts, *, flag_on, priority_on):
     alerts    iterable of dicts with resource_id and severity (open alerts of the account)
     Severity and priority only move when ENV_AWARE_CLASSIFICATION is on (flag_on); with it off nothing about an
     alert changes and the answer says so. CRITICAL never changes severity; a warning-level alert is WARNING on a
-    prod-like resource and INFO on uat / dev (environment_classifier.severity_for).
+    PROD resource and INFO on NON-PROD (environment_classifier.severity_for).
     """
     out = {"flag_on": bool(flag_on), "priority_on": bool(priority_on and flag_on), "open_alerts_affected": 0,
            "warning_to_info": 0, "info_to_warning": 0, "priority_shifts": []}

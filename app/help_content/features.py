@@ -280,7 +280,7 @@ def glossary():
             ["No data", "The cloud returned no point in the window."],
             ["Static / dynamic threshold", "Typed lines versus a learned band around the metric's own baseline."],
             ["Placeholder threshold", "1,000,000 / 5,000,000 '>': alert only on a sustained anomaly."],
-            ["Environment", "prod, uat or dev, decided as described under Environments and tagging."],
+            ["Environment", "PROD or NON-PROD, decided as described under Environments and tagging."],
             ["Priority", "P1 to P4, from environment and severity."],
             ["Error budget", "The bad time an SLO target allows."],
             ["Maintenance window", "A planned period in which paging is silenced."],
@@ -291,7 +291,7 @@ def glossary():
 def faq():
     return section("faq", "FAQ", "Reference", "viewer", None, [
         h("Why is my alert Info and not Warning?"),
-        p("The resource is UAT or Dev. Set its Environment on the Environments page if it is really Production."),
+        p("The resource is NON-PROD. Set its Environment on the Environments page if it is really Production."),
         h("Why is a chart a few minutes behind?"),
         p("The cloud publishes metrics late and CloudOps polls on a tier. See Metrics and polling."),
         h("Why does a resource say Needs classification?"),

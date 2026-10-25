@@ -54,24 +54,25 @@ def _open_alert(db, acct, rid, sev, stored_env="prod", status="active", metric="
 def _seed(db):
     """Nine open alerts + one resolved (must be ignored). Expected results are in the tests."""
     # account 1 ------------------------------------------------------------------------------
-    db.resource(1, "ec2", "dev-web")                                   # name token dev  -> dev
+    db.resource(1, "ec2", "dev-web")                                   # name token dev  -> nonprod
     db.resource(1, "ec2", "prod-db-1")                                 # name token prod -> prod
-    db.resource(1, "ec2", "i-0abc")                                    # nothing         -> unknown
-    db.resource(1, "ec2", "staging-api")                               # name token      -> uat
-    db.resource(1, "ec2", "i-tagged-dev", tags={"Environment": "dev"})  # tag             -> dev
+    r0 = db.resource(1, "ec2", "i-0abc")                               # nothing: unplaced -> prod (fail-safe)
+    db.x("UPDATE resources SET env_resolved='prod', env_source='unknown' WHERE id=%s", (r0,))
+    db.resource(1, "ec2", "staging-api")                               # name token      -> nonprod
+    db.resource(1, "ec2", "i-tagged-dev", tags={"Environment": "dev"})  # tag             -> nonprod
     r = db.resource(1, "ec2", "i-manual-prod", tags={"Environment": "dev"})
     db.x("UPDATE resources SET env_resolved='prod', env_source='manual' WHERE id=%s", (r,))  # manual wins
-    db.resource(1, "ec2", "dev-crit")                                  # dev, but CRITICAL
+    db.resource(1, "ec2", "dev-crit")                                  # nonprod, but CRITICAL
     # account 2 ------------------------------------------------------------------------------
-    db.resource(2, "ec2", "dev-other")                                 # dev
+    db.resource(2, "ec2", "dev-other")                                 # nonprod
     # (no resource row at all for "ghost")
 
     _open_alert(db, 1, "dev-web", "WARNING")                           # stored prod label, WARNING
     _open_alert(db, 1, "prod-db-1", "WARNING")
     _open_alert(db, 1, "i-0abc", "WARNING")
     _open_alert(db, 1, "staging-api", "WARNING", status="acknowledged")
-    _open_alert(db, 1, "i-tagged-dev", "INFO", stored_env="dev")       # flag-off label already 'dev'
-    _open_alert(db, 1, "i-manual-prod", "INFO", stored_env="dev")
+    _open_alert(db, 1, "i-tagged-dev", "INFO", stored_env="nonprod")  # flag-off label already 'nonprod'
+    _open_alert(db, 1, "i-manual-prod", "INFO", stored_env="nonprod")
     _open_alert(db, 1, "dev-crit", "CRITICAL")
     _open_alert(db, 2, "dev-other", "WARNING")
     _open_alert(db, 2, "ghost", "WARNING")
@@ -103,30 +104,30 @@ def test_counts_for_all_accounts_match_the_hand_worked_numbers(db):
     # WARNING->INFO: dev-web, staging-api (acknowledged counts as open), dev-other           = 3
     # INFO->WARNING: i-manual-prod (manual 'prod' beats its dev tag)                          = 1
     assert s["severity_changes"] == {"WARNING->INFO": 3, "INFO->WARNING": 1}
-    # label changes: dev-web prod->dev, i-0abc prod->unknown, staging-api prod->uat,
-    #                i-manual-prod dev->prod, dev-crit prod->dev, dev-other prod->dev        = 6
-    # (prod-db-1 prod->prod and i-tagged-dev dev->dev are unchanged; ghost has no resource)
-    assert s["label_changes"] == 6
-    assert s["label_pairs"][("prod", "dev")] == 3
-    assert s["label_pairs"][("prod", "unknown")] == 1
-    assert s["label_pairs"][("prod", "uat")] == 1
-    assert s["label_pairs"][("dev", "prod")] == 1
+    # label changes: dev-web prod->nonprod, staging-api prod->nonprod, dev-crit prod->nonprod,
+    #                dev-other prod->nonprod, i-manual-prod nonprod->prod                    = 5
+    # (prod-db-1 and i-0abc prod->prod [unplaced = prod] and i-tagged-dev nonprod->nonprod are
+    #  unchanged; ghost has no resource)
+    assert s["label_changes"] == 5
+    assert s["label_pairs"][("prod", "nonprod")] == 4
+    assert s["label_pairs"][("nonprod", "prod")] == 1
+    assert sum(s["label_pairs"].values()) == 5
     assert s["critical_open"] == 1
-    # the open CRITICAL on a dev resource lands on WARNING today but INFO with the flag on
+    # the open CRITICAL on a nonprod resource lands on WARNING today but INFO with the flag on
     assert s["critical_deescalation_differs"] == 1
 
 
-def test_unknown_stays_warning_and_dev_named_flips_warning_to_info(db):
+def test_unplaced_stays_warning_and_nonprod_named_flips_warning_to_info(db):
     """The two cases the acceptance criteria call out."""
     _seed(db)
     _, _, rows, _ = _run(db)
     by_res = {r["resource_id"]: r for r in rows}
     unknown = by_res["i-0abc"]
-    assert unknown["flag_on_environment"] == "unknown"
+    assert unknown["flag_on_environment"] == "prod"                # unplaced = prod (fail-safe)
     assert unknown["severity_if_raised_flag_on"] == "WARNING"      # never weaker than prod
     assert unknown["severity_change"] == ""                        # stored WARNING stays WARNING
     dev = by_res["dev-web"]
-    assert dev["flag_on_environment"] == "dev"
+    assert dev["flag_on_environment"] == "nonprod"
     assert dev["severity_change"] == "WARNING->INFO"
 
 
@@ -136,7 +137,7 @@ def test_account_filter(db):
     assert s["open_alerts"] == 7
     assert s["no_resource_row"] == 0
     assert s["severity_changes"] == {"WARNING->INFO": 2, "INFO->WARNING": 1}
-    assert s["label_changes"] == 5
+    assert s["label_changes"] == 4
     assert {r["account_id"] for r in rows} == {1}
 
 
@@ -146,7 +147,7 @@ def test_grouping_by_account_environment_and_type(db):
     assert s["by_account"]["U4RAD"]["alerts"] == 7 and s["by_account"]["AuroGov"]["alerts"] == 1
     assert s["by_account"]["U4RAD"]["WARNING->INFO"] == 2
     assert s["by_account"]["AuroGov"]["WARNING->INFO"] == 1
-    assert s["by_environment"]["dev"]["alerts"] == 4          # dev-web, i-tagged-dev, dev-crit, dev-other
+    assert s["by_environment"]["nonprod"]["alerts"] == 5      # dev-web, i-tagged-dev, staging-api, dev-crit, dev-other
     assert s["by_environment"]["prod"]["INFO->WARNING"] == 1
     assert s["by_resource_type"]["ec2"]["alerts"] == 8        # ghost has no type and is not counted
 
@@ -175,7 +176,7 @@ def test_text_and_csv_output(db, tmp_path):
     assert len(got) == 9
     dev_web = next(r for r in got if r["resource_id"] == "dev-web")
     assert dev_web["stored_severity"] == "WARNING" and dev_web["severity_change"] == "WARNING->INFO"
-    assert dev_web["flag_on_environment"] == "dev"
+    assert dev_web["flag_on_environment"] == "nonprod"
 
 
 # ── read-only guarantees ────────────────────────────────────────────────────────────────────────
@@ -254,7 +255,7 @@ def test_report_prediction_matches_what_the_real_evaluator_does(db, monkeypatch)
         assert predicted[rid]["severity_if_raised_flag_on"] == sev, rid
         assert predicted[rid]["flag_on_environment"] == label, rid
     # sanity on the interesting ones, straight from the evaluator
-    assert on_actual["dev-web"] == ("INFO", "dev")
-    assert on_actual["i-0abc"] == ("WARNING", "unknown")
-    assert on_actual["staging-api"] == ("INFO", "uat")
-    assert on_actual["i-tagged-weird"] == ("INFO", "uat")      # "Qa" is a uat token
+    assert on_actual["dev-web"] == ("INFO", "nonprod")
+    assert on_actual["i-0abc"] == ("WARNING", "prod")          # unplaced -> prod
+    assert on_actual["staging-api"] == ("INFO", "nonprod")
+    assert on_actual["i-tagged-weird"] == ("INFO", "nonprod")  # "Qa" is a nonprod token

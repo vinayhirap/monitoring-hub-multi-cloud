@@ -91,7 +91,8 @@ def test_resource_row_tags_are_valid_json():
         def execute(self, sql, params=None):
             calls.append(params)
     mod._ensure_resource_row(Cur(), {"id": 1, "aws_account_id": 2, "name": "x", "environment": 'pr"od'})
-    assert json.loads(calls[0][3]) == {"environment": 'pr"od'}
+    # unrecognised garbage is stored as the fail-safe tier; the tags blob must stay valid JSON
+    assert json.loads(calls[0][3]) == {"environment": "prod"}
 
 
 def test_synthetic_alert_insert_sets_account():

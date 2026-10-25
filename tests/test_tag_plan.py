@@ -39,7 +39,7 @@ def test_guards_against_running_in_the_wrong_account():
 
 def test_only_evidence_based_sources_are_exported_by_default():
     rows = [row("i-0000000a", src="manual"), row("i-0000000b", src="name"), row("i-0000000c", src="related"),
-            row("i-0000000d", src="account"), row("i-0000000e", env="unknown", src="unknown")]
+            row("i-0000000d", src="account"), row("i-0000000e", env="prod", src="unknown")]
     p = plan(rows)
     assert p["resources"] == 3
     assert "i-0000000d" not in p["script"] and "i-0000000e" not in p["script"]
@@ -55,24 +55,24 @@ def test_resources_that_are_already_tagged_to_standard_or_not_checked_are_left_o
 
 
 def test_attached_volumes_follow_their_instance_and_unattached_ones_use_their_own_state():
-    rows = [row("i-0000000a", env="dev"),
-            row("vol-0000000a", "ebs", env="dev", state="not_checked", tags={"parent_ec2": "i-0000000a"}),
-            row("vol-0000000b", "ebs", env="uat", state="missing", tags={"_ebs_state": "available"}),
+    rows = [row("i-0000000a", env="nonprod"),
+            row("vol-0000000a", "ebs", env="nonprod", state="not_checked", tags={"parent_ec2": "i-0000000a"}),
+            row("vol-0000000b", "ebs", env="prod", state="missing", tags={"_ebs_state": "available"}),
             row("vol-0000000c", "ebs", env="prod", state="not_checked", tags={"parent_ec2": "i-0000000z"})]
     s = plan(rows)["script"]
-    assert "vol-0000000a" in s and "Value=dev" in s
-    assert "vol-0000000b" in s and "Value=uat" in s
+    assert "vol-0000000a" in s and "Value=nonprod" in s
+    assert "vol-0000000b" in s and "Value=prod" in s
     assert "vol-0000000c" not in s            # its instance is not being exported
 
 
 def test_groups_by_account_region_and_environment_and_batches_at_100():
     rows = [row(f"i-{n:08x}") for n in range(250)]
-    rows += [row("i-0000ffff", env="dev"), row("i-0001ffff", region="us-east-1"),
+    rows += [row("i-0000ffff", env="nonprod"), row("i-0001ffff", region="us-east-1"),
              row("i-0002ffff", acct=2, aws="210987654321", name="other")]
     p = plan(rows)
     assert p["commands"] == 3 + 1 + 1 + 1 and p["accounts"] == 2
     assert "210987654321) echo" in p["script"] and "tag_account_210987654321() {" in p["script"]
-    assert p["by_env"] == {"prod": 251 + 1, "dev": 1}
+    assert p["by_env"] == {"prod": 251 + 1, "nonprod": 1}
     assert {"account_id": "123456789012", "account_name": "acct", "region": "ap-south-1", "env": "prod", "count": 250} in p["groups"]
 
 
@@ -134,17 +134,17 @@ def test_script_is_valid_bash_and_dry_run_prints_instead_of_running():
 
 
 def test_header_says_where_to_run_and_summarises_by_environment():
-    s = plan([row("i-0000000a"), row("i-0000000b", env="dev"), row("i-0000000c", env="dev")])["script"]
+    s = plan([row("i-0000000a"), row("i-0000000b", env="nonprod"), row("i-0000000c", env="nonprod")])["script"]
     assert "WHERE TO RUN IT" in s and "AWS CloudShell" in s and "ec2:CreateTags" in s and "DRY_RUN=1" in s
-    assert "SUMMARY  (dev 2, prod 1; 3 resource(s) in 1 account(s))" in s
+    assert "SUMMARY  (nonprod 2, prod 1; 3 resource(s) in 1 account(s))" in s
     assert "i-0000000b" in s.split("set -euo")[0] or "  #   i-0000000b" in s    # names/ids listed as review comments
 
 
 def test_filters_apply_after_volumes_are_matched_to_their_instance():
-    rows = [row("i-0000000a", env="prod"), row("i-0000000b", env="dev"),
+    rows = [row("i-0000000a", env="prod"), row("i-0000000b", env="nonprod"),
             row("vol-0000000a", "ebs", env="prod", tags={"parent_ec2": "i-0000000a"}),
             row("i-0000000c", env="prod", region="us-east-1")]
-    assert plan(rows, env="dev")["resources"] == 1
+    assert plan(rows, env="nonprod")["resources"] == 1
     assert plan(rows, resource_type="ebs")["resources"] == 1
     assert plan(rows, region="us-east-1")["resources"] == 1
     p = plan(rows, env="prod", region="ap-south-1")

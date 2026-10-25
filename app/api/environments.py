@@ -6,10 +6,10 @@ Environment classification API (phase 4a).
   GET  /api/environments/resources               the Needs-classification queue, the Tagging view, or every resource
   GET  /api/environments/tag-plan                an AWS CLI script that writes the Environment tag for CloudOps decisions
                                                  (environments.manage; AWS accounts only; optional env / region / type filters)
-  POST /api/environments/classify                mark one or many resources prod|uat|dev|ignore|clear, or a whole
+  POST /api/environments/classify                mark one or many resources prod|nonprod|clear, or a whole
                                                  group ({"group": {"account_id", "resource_type"}}) of the resources
                                                  still waiting in the Needs-classification queue
-  PUT  /api/environments/accounts/{id}/default   set / clear an account's default environment
+  PUT  /api/environments/accounts/{id}/default   set (prod | nonprod) / clear an account's default environment
   GET  /api/environments/accounts/{id}/default/preview   what that change would do (read-only, nothing is written)
   GET  /api/environments/resources/{id}/history  who changed one resource's environment, and from what
   GET  /api/environments/compliance              tag state and decision source per account and resource type
@@ -28,9 +28,9 @@ needs the same scope check as a single resource.
 Every change is written to audit_logs (app/audit.py): who, what, how many, which
 accounts, and the before/after environment counts.
 
-"ignore" means "stop asking me about this resource". It does NOT suppress alerts:
-an ignored resource is prod-like for alerting (environment_classifier.is_prod_like),
-exactly like an unknown one. Nothing in this module can silence a resource.
+There are two environments, prod and nonprod. A resource nothing can place resolves to prod (the fail-safe) with
+source "unknown" and waits in the Needs-classification queue until a person confirms it ("Mark PROD") or moves it
+("Mark NON-PROD"). Nothing in this module can silence a resource.
 """
 import logging
 from datetime import datetime
@@ -141,7 +141,7 @@ def summary(current_user: dict = Depends(require_permission("environments.view")
             cur.execute(f"""
                 SELECT r.tags, r.env_override FROM resources r
                 JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
-                WHERE {_LIVE_WHERE}{scope_sql} AND r.env_override IN ('prod', 'uat', 'dev')
+                WHERE {_LIVE_WHERE}{scope_sql} AND r.env_override IN ('prod', 'nonprod')
             """, _live_params() + scope_params)
             conflicts = sum(1 for r in cur.fetchall() if _conflict(r["env_override"], r["tags"]))
             mismatch_kinds = {}
@@ -266,10 +266,10 @@ def list_resources(
     if env:
         if env == "unclassified":
             where += " AND r.env_resolved IS NULL"
-        elif env in (*ec.TIERS, ec.UNKNOWN, ec.IGNORE):
+        elif env in ec.TIERS:
             where += " AND r.env_resolved = %s"; params.append(env)
         else:
-            raise HTTPException(status_code=400, detail="env must be prod, uat, dev, unknown, ignore or unclassified")
+            raise HTTPException(status_code=400, detail="env must be prod, nonprod or unclassified")
     if source:
         if source not in ec.SOURCES:
             raise HTTPException(status_code=400, detail="source must be manual, tag, name, related, account or unknown")
@@ -352,7 +352,7 @@ def tag_plan(
     if not chosen or any(x not in ("manual", "name", "related", "account") for x in chosen):
         raise HTTPException(status_code=400, detail="sources must be a list of manual, name, related, account")
     if env and env not in ec.TIERS:
-        raise HTTPException(status_code=400, detail="env must be prod, uat or dev")
+        raise HTTPException(status_code=400, detail="env must be prod or nonprod")
     if resource_type and resource_type not in ("ec2", "ebs"):
         raise HTTPException(status_code=400, detail="the script covers ec2 and ebs only")
     scope_sql, scope_params = _scope(current_user)
@@ -466,14 +466,14 @@ def classify(request: Request, payload: dict = Body(...),
              current_user: dict = Depends(require_permission("environments.manage"))):
     env = str(payload.get("env", "")).strip().lower()
     if env not in _CHOICES:
-        raise HTTPException(status_code=400, detail="env must be one of: prod, uat, dev, ignore, clear")
+        raise HTTPException(status_code=400, detail="env must be one of: prod, nonprod, clear")
     via = payload.get("via")
     if via is not None and via not in _VIA:
         raise HTTPException(status_code=400, detail="via must be 'suggestion' when given")
     group_info = None
     if payload.get("group") is not None:
         if env == "clear":
-            raise HTTPException(status_code=400, detail="A group can be marked prod, uat, dev or ignore, not cleared")
+            raise HTTPException(status_code=400, detail="A group can be marked prod or nonprod, not cleared")
         pks, group_info = _group_pks(current_user, payload.get("group"))
     else:
         raw_ids = payload.get("resource_ids")
@@ -566,7 +566,7 @@ def set_account_default(account_id: int, request: Request, payload: dict = Body(
     else:
         new_default = str(raw).strip().lower()
         if new_default not in ec.TIERS:
-            raise HTTPException(status_code=400, detail="env must be prod, uat, dev or null")
+            raise HTTPException(status_code=400, detail="env must be prod, nonprod or null")
     _require_account_access(current_user, [account_id])
 
     conn = get_connection()
@@ -625,7 +625,7 @@ def _parse_default(raw):
         return None
     value = str(raw).strip().lower()
     if value not in ec.TIERS:
-        raise HTTPException(status_code=400, detail="env must be prod, uat, dev or none")
+        raise HTTPException(status_code=400, detail="env must be prod, nonprod or none")
     return value
 
 

@@ -37,6 +37,7 @@ from urllib3.connection import HTTPConnection, HTTPSConnection
 from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 
 from app.db import get_connection
+from app.env_tiers import to_tier
 
 logger = logging.getLogger(__name__)
 
@@ -858,7 +859,7 @@ def _ensure_resource_row(cursor, check: dict) -> str:
         ON DUPLICATE KEY UPDATE name = VALUES(name), tags = VALUES(tags)
     """, (
         check["aws_account_id"], resource_id, check["name"],
-        json.dumps({"environment": check["environment"]}),
+        json.dumps({"environment": to_tier(check["environment"])}),
     ))
     return resource_id
 
@@ -891,7 +892,7 @@ def _write_or_update_alert(cursor, resource_id: str, check: dict, error_message:
         VALUES (%s, %s, 'synthetic_uptime', 'CRITICAL', %s, %s, 'active',
                 UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0, %s, %s)
     """, (
-        account_id, resource_id, check["environment"], group_key,
+        account_id, resource_id, to_tier(check["environment"]), group_key,
         check["consecutive_failures"], check["consecutive_failure_threshold"],
     ))
     logger.warning(
@@ -949,7 +950,7 @@ def _write_or_update_cert_alert(cursor, resource_id: str, check: dict, days_left
         VALUES (%s, %s, %s, %s, %s, %s, 'active',
                 UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0, %s, %s, %s, %s)
     """, (
-        account_id, resource_id, CERT_ALERT_METRIC, severity, check["environment"], group_key,
+        account_id, resource_id, CERT_ALERT_METRIC, severity, to_tier(check["environment"]), group_key,
         days_left, threshold_days, days_left, threshold_days,
     ))
     logger.warning(

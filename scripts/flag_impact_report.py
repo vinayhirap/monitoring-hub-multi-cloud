@@ -10,7 +10,7 @@ It uses the evaluator's OWN functions, not a copy of the rules:
   * app.collector.alert_evaluator._classified_environment   (label with the flag ON)
   * app.collector.alert_evaluator._environment_from_tags    (label with the flag OFF, today)
 The single rule that is not a function in the evaluator is its flag-OFF severity line
-("prod"/"production" -> WARNING, anything else -> INFO); it is repeated here as
+("prod" -> WARNING, "nonprod" -> INFO); it is repeated here as
 `severity_flag_off()` and covered by a test that runs the real evaluator and compares.
 
 Sections
@@ -53,9 +53,10 @@ CSV_FIELDS = [
 # ----------------------------------------------------------------------------------------------
 def severity_flag_off(label):
     """What the evaluator assigns a WARNING-level breach with the flag OFF (alert_evaluator.py,
-    the `elif environment in ("prod", "production")` branch). CRITICAL is unaffected by any
-    environment logic and is never produced here."""
-    return "WARNING" if label in ("prod", "production") else "INFO"
+    the `elif _to_tier(environment) == "prod"` branch). CRITICAL is unaffected by any
+    environment logic and is never produced here. The label is "prod" | "nonprod" (an unrecognised one is prod)."""
+    from app.env_tiers import to_tier
+    return "WARNING" if to_tier(label) == "prod" else "INFO"
 
 
 def analyse_alert(alert, ev, envc):
@@ -203,7 +204,7 @@ def render_text(s, account_id=None, in_place_note=""):
     add("     later drops below the critical line (existing de-escalation), and then to the environment's")
     add(f"     warning-level severity. {s['critical_deescalation_differs']} open CRITICAL alert(s) would land on a "
         "different level with the flag on than today.")
-    add("  4. Nothing here suppresses an alert: unknown and ignore stay prod-like (WARNING).")
+    add("  4. Nothing here suppresses an alert: an unplaced resource (env_source='unknown') is PROD (WARNING).")
     add("")
     add("PRIORITY_ENABLED / PRIORITY_ROUTING_ENABLED")
     add("-" * 72)

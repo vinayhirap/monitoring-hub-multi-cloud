@@ -636,7 +636,8 @@ def render_markdown(report: dict) -> str:
         rows.append(("Region", f["region"]))
     env = str(f.get("environment") or "")
     if env and env.lower() not in ("unknown", "none"):
-        rows.append(("Environment", env.upper() if len(env) <= 4 else env.title()))
+        from app.env_tiers import label as _env_label           # prod | nonprod (and older stored values) -> PROD | NON-PROD
+        rows.append(("Environment", _env_label(env)))
     rows += [
         ("Severity", str(f.get("severity") or "").title()),
         ("Status", status),

@@ -205,29 +205,29 @@ def test_env_invariants_catch_broken_policies():
 
         def faster(env, base, crit, rtype=None, force_enabled=None):         # slower than base is the only legal direction
             eff = real(env, base, crit, rtype, force_enabled)
-            return None if eff is None else (eff - 1 if real_ep.normalize_env(env) == "uat" and not crit else eff)
+            return None if eff is None else (eff - 1 if real_ep.normalize_env(env) == "nonprod" and not crit else eff)
 
         def slows_waf(env, base, crit, rtype=None, force_enabled=None):
-            return base * 3 if (rtype == "wafv2" and real_ep.normalize_env(env) == "uat") else real(env, base, crit, rtype, force_enabled)
+            return base * 3 if (rtype == "wafv2" and real_ep.normalize_env(env) == "nonprod") else real(env, base, crit, rtype, force_enabled)
 
         def slows_daily(env, base, crit, rtype=None, force_enabled=None):
-            return base * 2 if (base >= 86400 and real_ep.normalize_env(env) == "dev") else real(env, base, crit, rtype, force_enabled)
+            return base * 2 if (base >= 86400 and real_ep.normalize_env(env) == "nonprod") else real(env, base, crit, rtype, force_enabled)
 
-        def slows_uat_critical(env, base, crit, rtype=None, force_enabled=None):
-            return base * 3 if (crit and real_ep.normalize_env(env) == "uat" and base < 86400) else real(env, base, crit, rtype, force_enabled)
+        def slows_nonprod_critical(env, base, crit, rtype=None, force_enabled=None):
+            return base * 3 if (crit and real_ep.normalize_env(env) == "nonprod" and base < 86400) else real(env, base, crit, rtype, force_enabled)
 
         def slows_prod(env, base, crit, rtype=None, force_enabled=None):
             return base * 2 if (real_ep.normalize_env(env) == "prod" and base == 300) else real(env, base, crit, rtype, force_enabled)
 
-        def drops_dev(env, base, crit, rtype=None, force_enabled=None):       # None while POLL_DEV_NONCRITICAL_MODE is "slow"
-            return None if (real_ep.normalize_env(env) == "dev" and not crit and rtype != "wafv2" and base == 900) else real(env, base, crit, rtype, force_enabled)
+        def drops_nonprod(env, base, crit, rtype=None, force_enabled=None):       # None while POLL_NONPROD_NONCRITICAL_MODE is "slow"
+            return None if (real_ep.normalize_env(env) == "nonprod" and not crit and rtype != "wafv2" and base == 900) else real(env, base, crit, rtype, force_enabled)
 
         def extra_zero(env, base, crit, rtype=None, force_enabled=None):      # claims no extra window although the interval grew
             return 0
 
         res = {}
-        for name, fn in (("faster", faster), ("waf", slows_waf), ("daily", slows_daily), ("uat_critical", slows_uat_critical),
-                         ("prod", slows_prod), ("drops_dev", drops_dev)):
+        for name, fn in (("faster", faster), ("waf", slows_waf), ("daily", slows_daily), ("nonprod_critical", slows_nonprod_critical),
+                         ("prod", slows_prod), ("drops_nonprod", drops_nonprod)):
             res[name] = len(pa.check_env_invariants(rows, EP(effective_interval=fn)))
         res["extra_zero"] = len(pa.check_env_invariants(rows, EP(extra_window_minutes=extra_zero)))
         print(json.dumps(res))
@@ -264,18 +264,17 @@ def test_staleness_tables_exceed_every_interval_including_env_slowed():
 def test_sql_extra_formula_matches_env_polling():
     out = run("""
         bad = []
-        for um in (1, 3, 12):
-            for di in (120, 3600, 86400):
-                for dci in (120, 600):
-                    for base in (120, 300, 900, 3600, 86400):
-                        for crit in (True, False):
-                            for env in ("uat", "dev", "prod"):
-                                with pa.envvars(POLL_UAT_MULTIPLIER=um, POLL_DEV_INTERVAL_SECONDS=di, POLL_DEV_CRITICAL_INTERVAL_SECONDS=dci):
-                                    a = real_ep.extra_window_minutes(env, base, crit, None, True)
-                                    b = pa._sql_extra_minutes(base, crit, env, real_ep.uat_multiplier(), real_ep.dev_interval_seconds(),
-                                                              real_ep.dev_critical_interval_seconds())
-                                    if a != b:
-                                        bad.append([um, di, dci, base, crit, env, a, b])
+        for di in (120, 3600, 86400):
+            for dci in (120, 600):
+                for base in (120, 300, 900, 3600, 86400):
+                    for crit in (True, False):
+                        for env in ("prod", "nonprod", "uat", "junk"):
+                            with pa.envvars(POLL_NONPROD_INTERVAL_SECONDS=di, POLL_NONPROD_CRITICAL_INTERVAL_SECONDS=dci):
+                                a = real_ep.extra_window_minutes(env, base, crit, None, True)
+                                b = pa._sql_extra_minutes(base, crit, real_ep.normalize_env(env), real_ep.nonprod_interval_seconds(),
+                                                          real_ep.nonprod_critical_interval_seconds())
+                                if a != b:
+                                    bad.append([di, dci, base, crit, env, a, b])
         print(json.dumps(bad))
     """)
     assert out == []

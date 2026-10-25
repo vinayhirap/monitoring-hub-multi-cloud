@@ -15,14 +15,14 @@ opened read-only), writes nothing, and never changes a flag. It does not call AW
 SECTIONS
   1 config   flags and POLL_* values (raw vs the value the code really uses, clamps, typos, duplicate .env
              lines), then the interval rules checked against every scheduled AWS metric: never faster than the
-             base interval, flag OFF == the prod answer, prod-like / wafv2 / daily / Describe-API metrics /
-             UAT critical-class never slowed, DEV critical >= POLL_DEV_CRITICAL_INTERVAL_SECONDS.
+             base interval, flag OFF == the prod answer, PROD / wafv2 / daily / Describe-API metrics never
+             slowed, NON-PROD critical >= POLL_NONPROD_CRITICAL_INTERVAL_SECONDS.
   2 series   per resource type x environment x tier: configured interval versus the age of the last
              collection (metrics.metric_timestamp is the WRITE time, so now - it = time since the collector
              last stored a value for that series). Flags SLOWER, FASTER (group test), STILL_COLLECTED.
-  3 alerts   every open DEV / UAT alert: will it go falsely stale, or is its stale limit too tight?
-  4 unknown  the unclassified EC2 / EBS resources on the 5-minute tier and the tag / name that would
-             classify each (nothing is changed).
+  3 alerts   every open NON-PROD alert: will it go falsely stale, or is its stale limit too tight?
+  4 unknown  the unplaced EC2 / EBS resources (env_source='unknown', treated as PROD) on the 5-minute tier
+             and the tag / name that would classify each (nothing is changed).
 
 HOW TO READ THE SERIES VERDICTS (what this can and cannot prove)
   * A single series cannot show it was polled FASTER than configured. FASTER is a group test: it needs 6+
@@ -39,7 +39,7 @@ HOW TO READ THE SERIES VERDICTS (what this can and cannot prove)
 
 EXIT CODE  0 = no hard finding   1 = at least one FAIL (an invariant broken, SLOWER / FASTER /
 STILL_COLLECTED group, an alert whose stale limit is shorter than its polling gap)   2 = could not run
-(migration 083 missing, no database). WARN findings (e.g. DEV alerts that will stop being evaluated) are
+(migration 083 missing, no database). WARN findings (e.g. NON-PROD alerts that will stop being evaluated) are
 expected consequences of the design and do not change the exit code.
 """
 import argparse
@@ -61,23 +61,41 @@ from app.collector import env_polling as ep  # noqa: E402
 from app.collector import polling_model as pm  # noqa: E402
 
 OPEN_STATUSES = ("active", "acknowledged")
-ENVS = ("prod", "uat", "dev", "unknown", "ignore", None)
-PROD_LIKE = ("prod", "unknown", "ignore", None)
+ENVS = ("prod", "nonprod", None)                # None = a NULL env_resolved, handled as PROD
+PROD_LIKE = ("prod", None)
 STALE_RESOURCE_HOURS = 48                  # same freshness rule as runner.STALE_RESOURCE_HOURS
 MIN_RESOURCES_FOR_FASTER = 6
 FAIL, WARN, INFO = "FAIL", "WARN", "INFO"
 HARD_VERDICTS = ("SLOWER", "FASTER", "STILL_COLLECTED")
 
-FLAG_VARS = ("ENV_POLLING_ENABLED", "ENV_AWARE_CLASSIFICATION", "POLL_DEV_EVAL_CRITICAL_ONLY")
+FLAG_VARS = ("ENV_POLLING_ENABLED", "ENV_AWARE_CLASSIFICATION", "POLL_NONPROD_EVAL_CRITICAL_ONLY")
 INT_VARS = (
-    ("POLL_UAT_MULTIPLIER", 1, ep.MAX_MULTIPLIER, ep.DEFAULT_UAT_MULTIPLIER),
-    ("POLL_DEV_INTERVAL_SECONDS", ep.MIN_INTERVAL_SECONDS, ep.MAX_INTERVAL_SECONDS, ep.DEFAULT_DEV_INTERVAL_SECONDS),
-    ("POLL_DEV_CRITICAL_INTERVAL_SECONDS", ep.MIN_INTERVAL_SECONDS, ep.MAX_INTERVAL_SECONDS,
-     ep.DEFAULT_DEV_CRITICAL_INTERVAL_SECONDS),
+    ("POLL_NONPROD_INTERVAL_SECONDS", ep.MIN_INTERVAL_SECONDS, ep.MAX_INTERVAL_SECONDS,
+     ep.DEFAULT_NONPROD_INTERVAL_SECONDS),
+    ("POLL_NONPROD_CRITICAL_INTERVAL_SECONDS", ep.MIN_INTERVAL_SECONDS, ep.MAX_INTERVAL_SECONDS,
+     ep.DEFAULT_NONPROD_CRITICAL_INTERVAL_SECONDS),
 )
-KNOWN_VARS = {"ENV_POLLING_ENABLED", "ENV_AWARE_CLASSIFICATION", "POLL_UAT_MULTIPLIER",
-              "POLL_DEV_INTERVAL_SECONDS", "POLL_DEV_CRITICAL_INTERVAL_SECONDS", "POLL_DEV_NONCRITICAL_MODE",
-              "POLL_DEV_EVAL_CRITICAL_ONLY"}
+# New POLL_NONPROD_* names and the POLL_DEV_* names they replaced (still honoured by env_polling as a fallback).
+LEGACY_NAMES = {
+    "POLL_NONPROD_INTERVAL_SECONDS": "POLL_DEV_INTERVAL_SECONDS",
+    "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS": "POLL_DEV_CRITICAL_INTERVAL_SECONDS",
+    "POLL_NONPROD_NONCRITICAL_MODE": "POLL_DEV_NONCRITICAL_MODE",
+    "POLL_NONPROD_EVAL_CRITICAL_ONLY": "POLL_DEV_EVAL_CRITICAL_ONLY",
+}
+KNOWN_VARS = {"ENV_POLLING_ENABLED", "ENV_AWARE_CLASSIFICATION"} | set(LEGACY_NAMES) | set(LEGACY_NAMES.values())
+
+
+def _lookup(env, name):
+    """(raw, name_used): the new name, else its legacy POLL_DEV_* name when the new one is unset/blank."""
+    raw = env.get(name)
+    if raw is not None and raw.strip():
+        return raw, name
+    legacy = LEGACY_NAMES.get(name)
+    if legacy:
+        lraw = env.get(legacy)
+        if lraw is not None and lraw.strip():
+            return lraw, legacy
+    return raw, name
 _FALSE_WORDS = ("", "0", "false", "no", "off")
 
 
@@ -110,8 +128,8 @@ def settings_report(env=None, env_file_entries=None):
     env = os.environ if env is None else env
     rows, warnings = [], []
     for name in FLAG_VARS:
-        raw = env.get(name)
-        default = name == "POLL_DEV_EVAL_CRITICAL_ONLY"            # the only flag that defaults to true
+        raw, _used = _lookup(env, name)
+        default = name == "POLL_NONPROD_EVAL_CRITICAL_ONLY"        # the only flag that defaults to true
         eff = (raw if raw is not None else ("true" if default else "false")).strip().lower() in ep._TRUE
         status = "default" if raw is None else "ok"
         if raw is not None and raw.strip().lower() not in ep._TRUE and raw.strip().lower() not in _FALSE_WORDS:
@@ -120,7 +138,7 @@ def settings_report(env=None, env_file_entries=None):
                             f"(use true or false)")
         rows.append({"name": name, "raw": raw, "effective": eff, "default": default, "status": status})
     for name, lo, hi, default in INT_VARS:
-        raw = env.get(name)
+        raw, _used = _lookup(env, name)
         try:
             parsed = int(float((raw or "").strip()))
             eff = max(lo, min(hi, parsed))
@@ -132,14 +150,14 @@ def settings_report(env=None, env_file_entries=None):
             if raw is not None and raw.strip() != "":
                 warnings.append(f"{name}={raw!r} is not a number; the code uses the default {default}")
         rows.append({"name": name, "raw": raw, "effective": eff, "default": default, "status": status})
-    raw = env.get("POLL_DEV_NONCRITICAL_MODE")
-    mode = (raw if raw is not None else ep.DEFAULT_DEV_NONCRITICAL_MODE).strip().lower()
-    eff = mode if mode in ("slow", "off") else ep.DEFAULT_DEV_NONCRITICAL_MODE
+    raw, _used = _lookup(env, "POLL_NONPROD_NONCRITICAL_MODE")
+    mode = (raw if raw is not None else ep.DEFAULT_NONPROD_NONCRITICAL_MODE).strip().lower()
+    eff = mode if mode in ("slow", "off") else ep.DEFAULT_NONPROD_NONCRITICAL_MODE
     status = "default" if raw is None else ("ok" if eff == mode else "invalid")
     if status == "invalid":
-        warnings.append(f"POLL_DEV_NONCRITICAL_MODE={raw!r} is not slow|off; the code uses {eff!r}")
-    rows.append({"name": "POLL_DEV_NONCRITICAL_MODE", "raw": raw, "effective": eff,
-                 "default": ep.DEFAULT_DEV_NONCRITICAL_MODE, "status": status})
+        warnings.append(f"{_used}={raw!r} is not slow|off; the code uses {eff!r}")
+    rows.append({"name": "POLL_NONPROD_NONCRITICAL_MODE", "raw": raw, "effective": eff,
+                 "default": ep.DEFAULT_NONPROD_NONCRITICAL_MODE, "status": status})
 
     requested = (env.get("ENV_POLLING_ENABLED") or "false").strip().lower() in ep._TRUE
     classification = (env.get("ENV_AWARE_CLASSIFICATION") or "false").strip().lower() in ep._TRUE
@@ -200,24 +218,22 @@ def check_config(rows, on=True):
                 violations.append(f"{where}: flag OFF gives {eff_off}, must equal base")
             if eff is not None and eff < base:
                 violations.append(f"{where}: effective {eff} is FASTER than base")
-            if eff is None and not (e == ep.DEV and not critical):
-                violations.append(f"{where}: not collected, only DEV non-critical may be")
+            if eff is None and not (e == ep.NONPROD and not critical):
+                violations.append(f"{where}: not collected, only NON-PROD non-critical may be")
             if e == ep.PROD and eff != base:
                 violations.append(f"{where}: prod-like environment was slowed to {eff}")
             if rtype in ep.EXEMPT_RESOURCE_TYPES and eff != base:
                 violations.append(f"{where}: exempt type was slowed to {eff}")
             if base >= ep.NEVER_SLOW_AT_OR_ABOVE_SECONDS and eff != base:
                 violations.append(f"{where}: daily metric was slowed to {eff}")
-            if e == ep.UAT and critical and eff != base:
-                violations.append(f"{where}: UAT critical-class metric was slowed to {eff}")
-            if (on and e == ep.DEV and critical and rtype not in ep.EXEMPT_RESOURCE_TYPES
+            if (on and e == ep.NONPROD and critical and rtype not in ep.EXEMPT_RESOURCE_TYPES
                     and base < ep.NEVER_SLOW_AT_OR_ABOVE_SECONDS
-                    and eff is not None and eff < ep.dev_critical_interval_seconds()):
-                violations.append(f"{where}: DEV critical {eff} < POLL_DEV_CRITICAL_INTERVAL_SECONDS")
+                    and eff is not None and eff < ep.nonprod_critical_interval_seconds()):
+                violations.append(f"{where}: NON-PROD critical {eff} < POLL_NONPROD_CRITICAL_INTERVAL_SECONDS")
             exempt = rtype in ep.EXEMPT_RESOURCE_TYPES or base >= ep.NEVER_SLOW_AT_OR_ABOVE_SECONDS
             if not exempt:
                 seen.setdefault((base, critical), {})[e] = eff
-    matrix = [{"base": b, "critical": c, "prod": v.get("prod"), "uat": v.get("uat"), "dev": v.get("dev")}
+    matrix = [{"base": b, "critical": c, "prod": v.get("prod"), "nonprod": v.get("nonprod")}
               for (b, c), v in sorted(seen.items())]
     return violations, matrix
 
@@ -290,7 +306,7 @@ def analyse_series(rows, on, uptime_min=None, sparse_fn=None):
     def _gkey(r):
         m = (r["metric_name"] or "").lower()
         e = r.get("env")
-        return (r["resource_type"], e if e in ("prod", "uat", "dev", "unknown", "ignore") else "unclassified",
+        return (r["resource_type"], e if e in ("prod", "nonprod") else "unclassified",
                 pm.base_interval_seconds("aws", r["resource_type"], m))
 
     alive, group_fresh = set(), set()
@@ -311,7 +327,7 @@ def analyse_series(rows, on, uptime_min=None, sparse_fn=None):
             base = pm.DESCRIBE_POLL_SECONDS
         critical = ep.is_critical_metric(rtype, metric)
         expected = base if describe else ep.effective_interval(env, base, critical, rtype, force_enabled=on)
-        label = env if env in ("prod", "uat", "dev", "unknown", "ignore") else "unclassified"
+        label = env if env in ("prod", "nonprod") else "unclassified"
         key = (rtype, label, base, bool(critical), describe)
         g = groups.setdefault(key, {"resource_type": rtype, "env": label, "base": base, "critical": bool(critical),
                                     "describe": describe, "expected": expected, "series": 0, "sparse": 0,
@@ -352,14 +368,14 @@ def analyse_series(rows, on, uptime_min=None, sparse_fn=None):
 
 
 def _env_rank(label):
-    return {"prod": 0, "unknown": 1, "unclassified": 2, "ignore": 3, "uat": 4, "dev": 5}.get(label, 9)
+    return {"prod": 0, "unclassified": 1, "nonprod": 2}.get(label, 9)
 
 
 # ======================================================================================
-# 3. DEV / UAT alerts (pure)
+# 3. NON-PROD alerts (pure)
 # ======================================================================================
 def alert_findings(rows):
-    """Open alerts on UAT / DEV resources, judged as if the flag were ON.
+    """Open alerts on NON-PROD resources, judged as if the flag were ON.
 
     rows: id, resource_id, resource_type, name, account, env, metric_name, status, severity, age_min,
           stale_on_min, stale_off_min, hard_expiry_h (and optionally seen_at, a datetime).
@@ -368,7 +384,7 @@ def alert_findings(rows):
     p1 = _p1()
     for r in rows:
         env = ep.normalize_env(r.get("env"))
-        if env not in (ep.UAT, ep.DEV):
+        if env != ep.NONPROD:
             continue
         rtype, metric = r["resource_type"], (r["metric_name"] or "").lower()
         critical = (rtype, metric) in p1
@@ -384,7 +400,7 @@ def alert_findings(rows):
             exp = f", then closed as no_data_expired {r.get('hard_expiry_h')} h after it was last seen" \
                 if r.get("hard_expiry_h") is not None else ""
             out.append({**head, "level": WARN, "kind": "FALSE_STALE",
-                        "message": f"DEV non-critical metric is no longer evaluated: this {r.get('status')} alert is not "
+                        "message": f"NON-PROD non-critical metric is no longer evaluated: this {r.get('status')} alert is not "
                                    f"refreshed, shows Stale after {when}{exp}. The condition may still hold or have "
                                    f"cleared; nothing will resolve it by recovery."})
             continue
@@ -406,14 +422,14 @@ def alert_findings(rows):
 
 
 # ======================================================================================
-# 4. unknown EC2 / EBS on the 5-minute tier (pure)
+# 4. unplaced (env_source='unknown') EC2 / EBS on the 5-minute tier (pure)
 # ======================================================================================
 _ENVISH = tuple(ec.TAG_KEYS)
-TIER_HINT = "prod|production|prd  /  uat|qa|stage|staging|preprod  /  dev|test|sandbox"
+TIER_HINT = "prod|production|prd  /  nonprod|dev|test|sit|uat|qa|staging|preprod|sandbox"
 
 
 def unknown_advice(rows, parents_by_pk, siblings):
-    """rows: unknown EC2/EBS resource dicts. parents_by_pk: {row id: [parent dicts]} (attached_to edges).
+    """rows: unplaced (env_source='unknown') EC2/EBS resource dicts. parents_by_pk: {row id: [parent dicts]} (attached_to edges).
     siblings: classified resources of the same accounts (for ec.SuggestionIndex), dicts with resource_id, name,
     tags, env, source, aws_account_id. -> one dict per row, nothing is written."""
     idx_by_acct = {}
@@ -430,10 +446,10 @@ def unknown_advice(rows, parents_by_pk, siblings):
         envish = [(folded[k][0], folded[k][1]) for k in _ENVISH if k in folded]
         needs = []
         if not envish:
-            needs.append("add the tag Environment=prod|uat|dev (accepted keys: " + ", ".join(_ENVISH) + ")")
+            needs.append("add the tag Environment=prod|nonprod (accepted keys: " + ", ".join(_ENVISH) + ")")
         else:
             k, v = envish[0]
-            needs.append(f"tag {k}={v!r} holds no single tier word: use prod, uat or dev")
+            needs.append(f"tag {k}={v!r} holds no single tier word: use prod or nonprod (dev / test / sit / uat / qa / staging all mean nonprod)")
         name = r.get("name")
         tiers, words = ec._scan(name) if name else ([], [])
         if not name:
@@ -446,7 +462,7 @@ def unknown_advice(rows, parents_by_pk, siblings):
         copied = tags.get("parent_ec2") if r["resource_type"] == "ebs" else None
         if copied:
             needs.insert(0, f"this volume carries the tags of its instance {copied}: tag THAT instance with "
-                            f"Environment=prod|uat|dev and the volume follows after the next discovery")
+                            f"Environment=prod|nonprod and the volume follows after the next discovery")
         if r["resource_type"] == "ebs":
             if parents:
                 p = parents[0]
@@ -467,8 +483,7 @@ def unknown_advice(rows, parents_by_pk, siblings):
             "tag_state": ec.tag_state(r["resource_type"], tags),
             "why_unknown": r.get("env_reason") or "no override, tag, name token or account default",
             "env_tags_present": [f"{k}={v}" for k, v in envish], "needs": needs, "suggestion": suggestion,
-            "if_uat_every_s": ep.effective_interval("uat", base, False, r["resource_type"], True),
-            "if_dev_every_s": ep.effective_interval("dev", base, False, r["resource_type"], True),
+            "if_nonprod_every_s": ep.effective_interval("nonprod", base, False, r["resource_type"], True),
         })
     return out
 
@@ -551,7 +566,7 @@ def fetch_alerts(cur, account_id=None):
         FROM alerts a
         JOIN resources r ON r.resource_id = a.resource_id AND r.aws_account_id = a.aws_account_id
         JOIN aws_accounts aa ON aa.id = a.aws_account_id AND aa.status = 'active' AND aa.provider = 'aws'
-        WHERE a.status IN ('active', 'acknowledged') AND r.env_resolved IN ('uat', 'dev') {acct}
+        WHERE a.status IN ('active', 'acknowledged') AND r.env_resolved = 'nonprod' {acct}
         ORDER BY aa.account_name, r.env_resolved, a.triggered_at
     """, (account_id,) if account_id else ())
 
@@ -565,7 +580,7 @@ def fetch_unknown(cur, account_id=None):
         FROM resources r
         JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active' AND aa.provider = 'aws'
         WHERE r.resource_type IN ('ec2', 'ebs')
-          AND (r.env_resolved IS NULL OR r.env_resolved = 'unknown') {_COLLECTED} {acct}
+          AND r.env_source = 'unknown' {_COLLECTED} {acct}
         ORDER BY aa.account_name, r.resource_type, r.name, r.resource_id
     """, params)
     if not rows:
@@ -590,7 +605,8 @@ def fetch_unknown(cur, account_id=None):
                     parents[r["id"]].append(p)
     sibs = _q(cur, f"""
         SELECT r.aws_account_id, r.resource_id, r.name, r.tags, r.env_resolved AS env, r.env_source AS source
-        FROM resources r WHERE r.aws_account_id IN ({ph}) AND r.env_resolved IN ('prod', 'uat', 'dev')
+        FROM resources r WHERE r.aws_account_id IN ({ph}) AND r.env_resolved IN ('prod', 'nonprod')
+          AND COALESCE(r.env_source, '') != 'unknown'
     """, accts)
     return rows, dict(parents), sibs
 
@@ -628,17 +644,17 @@ def render_config(st, violations, matrix):
         out.append(f"   ! {w}")
     out.append("")
     out.append("== 1b. INTERVAL RULES over every scheduled AWS metric  (base -> effective, flag ON)")
-    out.append(f"   {'tier base':>10} {'class':10}{'prod/unknown':>14}{'uat':>8}{'dev':>8}")
+    out.append(f"   {'tier base':>10} {'class':10}{'prod':>14}{'nonprod':>10}")
     for m in matrix:
         out.append(f"   {_fmt_iv(m['base']):>10} {'critical' if m['critical'] else 'normal':10}"
-                   f"{_fmt_iv(m['prod']):>14}{_fmt_iv(m['uat']):>8}{_fmt_iv(m['dev']):>8}")
+                   f"{_fmt_iv(m['prod']):>14}{_fmt_iv(m['nonprod']):>10}")
     out.append("   (wafv2, daily metrics and the free Describe-API metrics are never slowed and are not listed)")
     if violations:
         out.append(f"   FAIL: {len(violations)} rule violation(s)")
         out += [f"     - {v}" for v in violations[:40]]
     else:
-        out.append("   OK: no rule violated (never faster than base; flag OFF == prod; prod-like, wafv2, daily, "
-                   "Describe and UAT critical-class unchanged)")
+        out.append("   OK: no rule violated (never faster than base; flag OFF == prod; PROD, wafv2, daily and "
+                   "Describe metrics unchanged)")
     return "\n".join(out)
 
 
@@ -679,7 +695,7 @@ def render_series(groups, late, on, uptime_min):
 
 
 def render_alerts(findings, n_rows):
-    out = [f"== 3. OPEN DEV / UAT ALERTS  ({n_rows} open; judged as if ENV_POLLING_ENABLED were ON)"]
+    out = [f"== 3. OPEN NON-PROD ALERTS  ({n_rows} open; judged as if ENV_POLLING_ENABLED were ON)"]
     if not findings:
         out.append("   none affected")
         return "\n".join(out)
@@ -694,25 +710,24 @@ def render_alerts(findings, n_rows):
 
 
 def render_unknown(advice):
-    out = [f"== 4. UNCLASSIFIED EC2 / EBS ON THE 5-MINUTE TIER  ({len(advice)}; nothing is changed)"]
+    out = [f"== 4. UNPLACED EC2 / EBS ON THE 5-MINUTE TIER, TREATED AS PROD  ({len(advice)}; nothing is changed)"]
     if not advice:
         out.append("   none")
         return "\n".join(out)
     c = Counter(a["resource_type"] for a in advice)
     out.append("   " + ", ".join(f"{k}={v}" for k, v in sorted(c.items())))
-    out.append("   A label changes more than polling: with ENV_AWARE_CLASSIFICATION a uat/dev label also turns WARNING "
+    out.append("   A label changes more than polling: with ENV_AWARE_CLASSIFICATION a NON-PROD label also turns WARNING "
                "into INFO. Label a resource only when it truly is not production.")
     for a in advice:
         out.append(f"   {a['account']}  {a['resource_type']} {a['resource_id']}  name={a['name'] or '-'}  "
                    f"state={a['state'] or '-'}  source={a['env_source'] or '-'}")
-        out.append(f"       why unknown: {a['why_unknown']}")
+        out.append(f"       why unplaced: {a['why_unknown']}")
         for n in a["needs"]:
             out.append(f"       - {n}")
         if a["suggestion"]:
             s = a["suggestion"]
             out.append(f"       suggestion: {s['env']} ({s['confidence']}, {s['basis']}): {s['reason']}")
-        out.append(f"       effect: prod = unchanged (5 min); uat = every {_fmt_iv(a['if_uat_every_s'])}; "
-                   f"dev = every {_fmt_iv(a['if_dev_every_s'])}")
+        out.append(f"       effect: prod = unchanged (5 min); nonprod = every {_fmt_iv(a['if_nonprod_every_s'])}")
     return "\n".join(out)
 
 
@@ -770,7 +785,7 @@ def run(args):
             if "alerts" in wanted:
                 arows = fetch_alerts(cur, args.account_id)
                 findings = alert_findings(arows)
-                report["alerts"] = {"open_dev_uat": len(arows), "findings": findings}
+                report["alerts"] = {"open_nonprod": len(arows), "findings": findings}
                 texts.append(render_alerts(findings, len(arows)))
                 fails += sum(1 for f in findings if f["level"] == FAIL)
             if "unknown" in wanted:
@@ -790,7 +805,7 @@ def run(args):
 def write_unknown_csv(advice, path):
     cols = ["account", "resource_type", "resource_id", "name", "state", "env_source", "why_unknown",
             "env_tags_present", "needs", "suggestion_env", "suggestion_confidence", "suggestion_reason",
-            "if_uat_every_s", "if_dev_every_s"]
+            "if_nonprod_every_s"]
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=cols)
         w.writeheader()
@@ -801,7 +816,7 @@ def write_unknown_csv(advice, path):
                         "why_unknown": a["why_unknown"], "env_tags_present": "; ".join(a["env_tags_present"]),
                         "needs": " | ".join(a["needs"]), "suggestion_env": s.get("env"),
                         "suggestion_confidence": s.get("confidence"), "suggestion_reason": s.get("reason"),
-                        "if_uat_every_s": a["if_uat_every_s"], "if_dev_every_s": a["if_dev_every_s"]})
+                        "if_nonprod_every_s": a["if_nonprod_every_s"]})
 
 
 def main(argv=None):
@@ -815,7 +830,7 @@ def main(argv=None):
                     help="run only this section (repeatable)")
     ap.add_argument("--config-only", action="store_true", help="no database access")
     ap.add_argument("--json", action="store_true", help="print JSON instead of text")
-    ap.add_argument("--csv-unknown", default=None, help="also write the unclassified EC2/EBS list to this CSV")
+    ap.add_argument("--csv-unknown", default=None, help="also write the unplaced EC2/EBS list to this CSV")
     args = ap.parse_args(argv)
     try:
         report, texts, fails, code = run(args)

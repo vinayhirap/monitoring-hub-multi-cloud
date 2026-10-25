@@ -28,6 +28,7 @@ import os
 from datetime import datetime, timedelta
 
 from app.email import mailer
+from app.env_tiers import label as env_label
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ def build_cert_message(check, stage, action, days_left, tls, account_name=""):
              f"Check:        {name}",
              f"Target:       {check.get('target')}",
              f"Account:      {account_name or check.get('aws_account_id')}",
-             f"Environment:  {check.get('environment') or '-'}",
+             f"Environment:  {env_label(check.get('environment')) if check.get('environment') else '-'}",
              f"Expires on:   {when_text}",
              f"Issuer:       {tls.get('cert_issuer') or '-'}",
              f"Subject:      {tls.get('cert_subject') or '-'}",
@@ -148,7 +149,7 @@ def build_outage_message(check, down, error=None, minutes=None, account_name="")
         lines = [f"{name} is DOWN.", "",
                  f"Target:       {check.get('target')}",
                  f"Account:      {account_name or check.get('aws_account_id')}",
-                 f"Environment:  {check.get('environment') or '-'}",
+                 f"Environment:  {env_label(check.get('environment')) if check.get('environment') else '-'}",
                  f"Failed probes in a row: {check.get('consecutive_failures')}"]
         if error:
             lines.append(f"Last error:   {str(error)[:300]}")

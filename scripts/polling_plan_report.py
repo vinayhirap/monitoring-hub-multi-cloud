@@ -14,13 +14,13 @@ database and nothing is sent to AWS.
 
 Usage (in /opt/monitoring-hub/app, venv python):
     /opt/monitoring-hub/venv/bin/python3 scripts/polling_plan_report.py
-    ... --scenario defaults-cleared     # account-default labels treated as unknown (prod-like)
+    ... --scenario defaults-cleared     # account-default labels treated as unplaced (PROD)
     ... --json                          # machine readable
 
 Scenarios
     current           environment labels exactly as stored (resources.env_resolved)
     defaults-cleared  labels that only came from an account default (env_source='account')
-                      are treated as unknown, i.e. prod-like. This is the SAFE LOWER BOUND of the
+                      are treated as unplaced, i.e. PROD (the fail-safe tier). This is the SAFE LOWER BOUND of the
                       savings: it is what you get if the defaults are removed and only real tags,
                       names and manual choices remain.
 
@@ -225,7 +225,7 @@ def _emit(rows, acc, tier, rtype, resources, base, critical, cost_fn):
     """One row per environment class actually present in `resources`."""
     by_env = defaultdict(list)
     for r in resources:
-        by_env[ep.normalize_env(r.get("env_resolved")) if r.get("env_resolved") in ("uat", "dev") else "prod-like"].append(r)
+        by_env[ep.normalize_env(r.get("env_resolved"))].append(r)
     per_day_off = DAY / float(base)
     # TODAY (flag off) every resource of the group goes into the same requests, so the baseline
     # call count is that of the WHOLE group, shared out to the environments by billed metrics.
@@ -235,13 +235,13 @@ def _emit(rows, acc, tier, rtype, resources, base, critical, cost_fn):
         calls0, units0 = cost_fn(rs, 0)
         off_calls = (calls_all * (units0 / float(units_all)) if units_all else 0.0) * per_day_off
         off_units = units0 * per_day_off
-        eff = ep.effective_interval(env if env != "prod-like" else None, base, critical,
+        eff = ep.effective_interval(env, base, critical,
                                     rs[0].get("resource_type"), True)
-        if eff is None:                                        # dev non-critical, mode=off
+        if eff is None:                                        # NON-PROD non-critical, mode=off
             on_calls = on_units = 0.0
             eff_label = None
         else:
-            extra = ep.round_extra(ep.extra_window_minutes(env if env != "prod-like" else None, base, critical,
+            extra = ep.round_extra(ep.extra_window_minutes(env, base, critical,
                                                            rs[0].get("resource_type"), True))
             calls1, units1 = cost_fn(rs, extra)
             on_calls, on_units = calls1 * DAY / float(eff), units1 * DAY / float(eff)
@@ -261,8 +261,8 @@ def _pct(a, b):
 
 def render(plan):
     out = [f"Scenario: {plan['scenario']}  (flag OFF = today, flag ON = ENV_POLLING_ENABLED with current POLL_* settings)",
-           f"UAT multiplier {ep.uat_multiplier()}x | DEV interval {ep.dev_interval_seconds()} s | "
-           f"DEV critical {ep.dev_critical_interval_seconds()} s | DEV non-critical mode {ep.dev_noncritical_mode()}", ""]
+           f"NON-PROD interval {ep.nonprod_interval_seconds()} s | "
+           f"NON-PROD critical {ep.nonprod_critical_interval_seconds()} s | NON-PROD non-critical mode {ep.nonprod_noncritical_mode()}", ""]
     hdr = f"{'tier':14}{'env':10}{'type':28}{'res':>5}{'every':>9}{'->':>3}{'every':>9}{'calls/d off':>13}{'calls/d on':>12}{'units/d off':>13}{'units/d on':>12}"
     out.append(hdr)
     out.append("-" * len(hdr))

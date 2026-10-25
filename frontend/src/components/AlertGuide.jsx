@@ -6,15 +6,14 @@ import { useEffect, useState } from "react";
 
 const SEVERITY = [
   { cls: "ag-dot-crit", name: "Critical (red)", text: "A critical line was crossed, or a core availability signal failed. Act now." },
-  { cls: "ag-dot-warn", name: "Warning (amber)", text: "A warning line was crossed on a Production resource, or on one that has not been placed in an environment yet. Look at it soon." },
-  { cls: "ag-dot-info", name: "Info (blue)", text: "The same kind of breach on a UAT or Dev resource. It is a heads-up, not a page: test systems are allowed to misbehave. If a resource shows Info and should be Production, set its Environment on the Environments page." },
+  { cls: "ag-dot-warn", name: "Warning (amber)", text: "A warning line was crossed on a PROD resource, or on one that has not been placed in an environment yet. Look at it soon." },
+  { cls: "ag-dot-info", name: "Info (blue)", text: "The same kind of breach on a NON-PROD resource. It is a heads-up, not a page: test systems are allowed to misbehave. If a resource shows Info and should be PROD, set its Environment on the Environments page." },
   { cls: "ag-dot-ok", name: "Resolved (green)", text: "The metric came back inside its limits and the alert closed." },
 ];
 
 const PRIORITY = [
-  { env: "Prod", crit: "P1", other: "P2" },
-  { env: "UAT", crit: "P2", other: "P3" },
-  { env: "Dev", crit: "P3", other: "P4" },
+  { env: "PROD", crit: "P1", other: "P2" },
+  { env: "NON-PROD", crit: "P3", other: "P4" },
 ];
 
 const POLLING = [
@@ -55,7 +54,7 @@ export default function AlertGuide({ accountId = "" }) {
       {prio && (
         <>
           <h3>How urgent is the alert (priority)</h3>
-          <p className="ag-note">Priority comes from the environment and the severity together. A resource tagged Criticality=critical goes up one level (never above P1). Resources not yet placed in an environment are ranked like Prod.</p>
+          <p className="ag-note">Priority comes from the environment and the severity together. A resource tagged Criticality=critical goes up one level (never above P1). Resources not yet placed in an environment are ranked like PROD.</p>
           <table className="ag-table">
             <thead><tr><th>Environment</th><th>Critical alert</th><th>Warning or info alert</th></tr></thead>
             <tbody>

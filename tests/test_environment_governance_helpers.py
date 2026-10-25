@@ -17,38 +17,38 @@ def _alerts(*pairs):
 
 
 def test_with_the_flag_off_nothing_about_an_alert_changes():
-    out = eg.alert_impact({"a": ("prod", "dev")}, _alerts(("a", "WARNING")), flag_on=False, priority_on=True)
+    out = eg.alert_impact({"a": ("prod", "nonprod")}, _alerts(("a", "WARNING")), flag_on=False, priority_on=True)
     assert out["flag_on"] is False and out["open_alerts_affected"] == 0 and out["priority_shifts"] == []
     assert out["priority_on"] is False
 
 
-def test_prod_like_to_dev_turns_warning_into_info_and_keeps_critical():
-    ch = {"a": (None, "dev"), "b": ("unknown", "uat"), "c": ("prod", "dev")}
+def test_prod_like_to_nonprod_turns_warning_into_info_and_keeps_critical():
+    ch = {"a": (None, "nonprod"), "b": ("unknown", "nonprod"), "c": ("prod", "nonprod")}
     out = eg.alert_impact(ch, _alerts(("a", "WARNING"), ("b", "INFO"), ("c", "CRITICAL")), flag_on=True, priority_on=False)
-    # "b" is already INFO level (prod-like INFO counts as warning level) and moves to uat: still reported as warning_to_info
+    # "b" is already INFO level (prod-like INFO counts as warning level) and moves to nonprod: still reported as warning_to_info
     assert out["warning_to_info"] == 2 and out["info_to_warning"] == 0
     assert out["open_alerts_affected"] == 2          # the critical one keeps its severity and, with priority off, is untouched
 
 
-def test_dev_to_prod_turns_info_into_warning():
-    out = eg.alert_impact({"a": ("dev", "prod")}, _alerts(("a", "INFO")), flag_on=True, priority_on=False)
+def test_nonprod_to_prod_turns_info_into_warning():
+    out = eg.alert_impact({"a": ("nonprod", "prod")}, _alerts(("a", "INFO")), flag_on=True, priority_on=False)
     assert out["info_to_warning"] == 1
 
 
 def test_priority_shifts_follow_the_matrix():
-    ch = {"a": ("prod", "uat"), "b": ("prod", "dev"), "c": ("uat", "prod")}
+    ch = {"a": ("prod", "nonprod"), "b": ("prod", "nonprod"), "c": ("nonprod", "prod")}
     out = eg.alert_impact(ch, _alerts(("a", "CRITICAL"), ("b", "WARNING"), ("c", "WARNING")), flag_on=True, priority_on=True)
     shifts = {(s["from"], s["to"]): s["count"] for s in out["priority_shifts"]}
-    assert shifts == {("P1", "P2"): 1, ("P2", "P4"): 1, ("P3", "P2"): 1}
+    assert shifts == {("P1", "P3"): 1, ("P2", "P4"): 1, ("P4", "P2"): 1}
 
 
 def test_priority_flag_only_matters_when_the_environment_flag_is_on():
-    out = eg.alert_impact({"a": ("prod", "dev")}, _alerts(("a", "WARNING")), flag_on=False, priority_on=True)
+    out = eg.alert_impact({"a": ("prod", "nonprod")}, _alerts(("a", "WARNING")), flag_on=False, priority_on=True)
     assert out["priority_shifts"] == []
 
 
 def test_alerts_on_unchanged_resources_are_ignored():
-    out = eg.alert_impact({"a": ("prod", "dev")}, _alerts(("zzz", "WARNING")), flag_on=True, priority_on=True)
+    out = eg.alert_impact({"a": ("prod", "nonprod")}, _alerts(("zzz", "WARNING")), flag_on=True, priority_on=True)
     assert out["open_alerts_affected"] == 0
 
 
@@ -57,15 +57,15 @@ def test_unknown_is_prod_like_for_priority():
 
 
 def test_default_change_summary_counts_moves_and_environment_changes():
-    report = {"total": 5, "changed": 3, "by_env": {"uat": 4, "prod": 1}, "by_source": {"account": 4, "name": 1}}
+    report = {"total": 5, "changed": 3, "by_env": {"nonprod": 4, "prod": 1}, "by_source": {"account": 4, "name": 1}}
     changes = [
-        {"resource_id": "a", "old_env": "unknown", "old_source": "unknown", "new_env": "uat", "new_source": "account"},
-        {"resource_id": "b", "old_env": "uat", "old_source": "account", "new_env": "uat", "new_source": "account"},   # reason text only
-        {"resource_id": "c", "old_env": None, "old_source": None, "new_env": "uat", "new_source": "account"},
+        {"resource_id": "a", "old_env": "unknown", "old_source": "unknown", "new_env": "nonprod", "new_source": "account"},
+        {"resource_id": "b", "old_env": "nonprod", "old_source": "account", "new_env": "nonprod", "new_source": "account"},   # reason text only
+        {"resource_id": "c", "old_env": None, "old_source": None, "new_env": "nonprod", "new_source": "account"},
     ]
-    out = eg.default_change_summary(report, changes, None, "uat", [], flag_on=False, priority_on=False)
+    out = eg.default_change_summary(report, changes, None, "nonprod", [], flag_on=False, priority_on=False)
     assert out["rows_rewritten"] == 3 and out["environment_changes"] == 2 and out["ignores_criticality_tag"] is True
-    assert {(m["from"], m["to"]): m["count"] for m in out["moves"]} == {("unknown", "uat"): 1, ("uat", "uat"): 1, ("unclassified", "uat"): 1}
+    assert {(m["from"], m["to"]): m["count"] for m in out["moves"]} == {("unknown", "nonprod"): 1, ("nonprod", "nonprod"): 1, ("unclassified", "nonprod"): 1}
 
 
 # ---- compliance ---------------------------------------------------------------------------------------
@@ -196,7 +196,7 @@ def _rows():
     base = {"aws_account_id": 1, "resource_type": "ec2", "tags": None, "env_resolved": None, "env_source": None,
             "env_reason": None, "tag_state": None, "default_env": None, "env_override": None}
     return [dict(base, id=1, resource_id="i-1", name="web-prod-1"),
-            dict(base, id=2, resource_id="i-2", name="x-dev-1", env_override="uat")]
+            dict(base, id=2, resource_id="i-2", name="x-dev-1", env_override="prod")]
 
 
 class _MissingColumn(Exception):
@@ -264,14 +264,14 @@ def test_sync_after_migration_098_writes_warnings_in_a_separate_guarded_statemen
     assert written[0][0].endswith("WHERE id = %s AND env_override <=> %s") and "env_warning" not in written[0][0]
     sql, chunk = written[1]
     assert sql == "UPDATE resources SET env_warning = %s WHERE id = %s AND env_override <=> %s"
-    assert chunk[0][1] == 2 and chunk[0][0].startswith("manual_vs_name:") and chunk[0][2] == "uat"
+    assert chunk[0][1] == 2 and chunk[0][0].startswith("manual_vs_name:") and chunk[0][2] == "prod"
 
 
 def test_hypothetical_default_can_never_be_written():
     install_stub("app.db", get_connection=lambda: None)
     mod = load_module("app/collector/env_sync.py")
     try:
-        mod.sync_resource_environments(account_id=1, account_default_override=(1, "dev"))
+        mod.sync_resource_environments(account_id=1, account_default_override=(1, "nonprod"))
     except ValueError as e:
         assert "dry_run" in str(e)
     else:

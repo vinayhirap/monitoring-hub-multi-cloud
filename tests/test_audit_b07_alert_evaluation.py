@@ -61,10 +61,13 @@ def _load_evaluator(conn_factory=None, publish_log=None):
     ("null", "prod"),                       # json.dumps(None)
     ("[1, 2]", "prod"),                     # non-object JSON
     ("not json", "prod"),
-    ('{"Environment": "UAT"}', "uat"),
+    ('{"Environment": "UAT"}', "nonprod"),
     ('{"environment": null}', "prod"),
-    ('{"environment": 5}', "5"),            # non-string value
-    ('{"Environment": "development"}', "development"),
+    ('{"environment": 5}', "prod"),         # non-string, unrecognised -> prod (fail-safe)
+    ('{"Environment": "development"}', "nonprod"),
+    ('{"Environment": "Non-Prod"}', "nonprod"),
+    ('{"Environment": "Production"}', "prod"),
+    ('{"Environment": "garbage"}', "prod"),
 ])
 def test_environment_from_tags_never_raises(raw, expected):
     mod = _load_evaluator()
@@ -74,7 +77,8 @@ def test_environment_from_tags_never_raises(raw, expected):
 def test_environment_truncated_to_column_width():
     mod = _load_evaluator()
     env = mod._environment_from_tags('{"environment": "' + "x" * 200 + '"}')
-    assert len(env) == mod.ENVIRONMENT_MAX_LEN == 50
+    assert mod.ENVIRONMENT_MAX_LEN == 50
+    assert env == "prod" and len(env) <= mod.ENVIRONMENT_MAX_LEN
 
 
 def test_threshold_disabled_sweep_uses_collector_metric_names():

@@ -65,7 +65,7 @@ const GCP_REGIONS = [
   { id: "europe-central2",   label: "europe-central2 (Warsaw)" },
 ];
 
-const ENVIRONMENTS = ["Production", "Staging", "Development", "QA"];
+const ENVIRONMENTS = ["PROD", "NON-PROD"];
 
 const PROVIDER_TABS = [
   { id: "aws",   label: "AWS" },
@@ -80,7 +80,7 @@ const INITIAL_FORM = {
   // shared
   account_name:   "",
   primary_region: "",
-  environment:    "Production",
+  environment:    "PROD",
   owner_team:     "",
   alias:          "",
   description:    "",
@@ -488,7 +488,7 @@ export default function AccountOnboarding() {
               <polyline points="20 6 9 17 4 12"/>
             </svg>
             <strong>{success}</strong> onboarded successfully!
-            {" "}Next: <Link to="/environments" className="ob-success-link">classify its resources as prod, uat or dev</Link>.
+            {" "}Next: <Link to="/environments" className="ob-success-link">classify its resources as PROD or NON-PROD</Link>.
             They appear there after the first discovery run (a few minutes); anything unclassified is alerted at prod strength until then. The Environments page keeps a reminder for this account until its resources are placed.
             <button onClick={() => setSuccess(null)} aria-label="Dismiss"><XIcon size={13} /></button>
           </div>

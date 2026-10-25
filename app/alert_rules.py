@@ -157,7 +157,7 @@ def _by_class_sql(mapping, r="r", acc="acc"):
 
 
 # ── Environment-aware polling (Phase 4c, ENV_POLLING_ENABLED) ───────────
-# A UAT / DEV resource is collected less often (app/collector/env_polling.py), so its newest
+# A NON-PROD resource is collected less often (app/collector/env_polling.py), so its newest
 # reading is legitimately older. The evaluation window and the staleness limit therefore grow by
 # the SAME number of minutes the collector skips, per (resource environment, metric); otherwise
 # a deliberately slowed resource would be reported "no data" / stale between its polls. With the
@@ -171,8 +171,8 @@ def _env_poll_extra_sql(r, acc, metric):
     from app.collector import env_polling as ep
     if not ep.enabled():
         return None
-    um, di, dci = ep.uat_multiplier(), ep.dev_interval_seconds(), ep.dev_critical_interval_seconds()
-    ck = (r, acc, metric, um, di, dci)
+    di, dci = ep.nonprod_interval_seconds(), ep.nonprod_critical_interval_seconds()
+    ck = (r, acc, metric, di, dci)
     hit = _ENV_EXTRA_CACHE.get(ck)
     if hit is not None:
         return hit
@@ -182,11 +182,12 @@ def _env_poll_extra_sql(r, acc, metric):
     def env_expr(seconds, crit):
         if seconds >= ep.NEVER_SLOW_AT_OR_ABOVE_SECONDS:
             return "0"
-        uat = 0 if crit else int(math.ceil(seconds * (um - 1) / 60.0))
-        dev = int(math.ceil(max(0, (dci if crit else di) - seconds) / 60.0))
-        if not uat and not dev:
+        extra = int(math.ceil(max(0, (dci if crit else di) - seconds) / 60.0))
+        if not extra:
             return "0"
-        return f"CASE {r}.env_resolved WHEN 'uat' THEN {uat} WHEN 'dev' THEN {dev} ELSE 0 END"
+        # 'uat' / 'dev' are values stored before the two-environment model; they mean NON-PROD until migration 123
+        # and the next environment sync have rewritten them
+        return f"CASE WHEN {r}.env_resolved IN ('nonprod', 'uat', 'dev') THEN {extra} ELSE 0 END"
 
     p1 = pm.p1_metric_keys()
     parts = [f"WHEN {acc}.provider <> 'aws' THEN 0 ",

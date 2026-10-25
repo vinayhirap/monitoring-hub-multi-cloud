@@ -134,7 +134,7 @@ def _sibling_pool(account_ids):
                        r.env_source AS source
                 FROM resources r JOIN aws_accounts aa ON aa.id = r.aws_account_id AND aa.status = 'active'
                 WHERE {live} AND r.aws_account_id IN ({marks})
-                  AND r.env_resolved IN ('prod', 'uat', 'dev') AND r.env_source IN ('manual', 'tag', 'name')
+                  AND r.env_resolved IN ('prod', 'nonprod') AND r.env_source IN ('manual', 'tag', 'name')
             """, live_p + list(account_ids))
             rows = cur.fetchall()
         finally:

@@ -27,10 +27,8 @@
 .env-empty { text-align: center; color: var(--text-muted); padding: 24px; }
 .env-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; border: 1px solid var(--border-md); }
 .env-prod { color: var(--red); border-color: var(--red); }
-.env-uat { color: var(--accent); border-color: var(--accent); }
-.env-dev { color: var(--text-muted); }
+.env-nonprod { color: var(--accent); border-color: var(--accent); }
 .env-unknown, .env-none { color: var(--text-muted); border-style: dashed; }
-.env-ignore { color: var(--text-muted); text-decoration: line-through; }
 .env-pager { display: flex; align-items: center; gap: 12px; justify-content: flex-end; margin-top: var(--space-4); font-size: 12px; color: var(--text-muted); }
 .tag-ok { color: var(--green, #22c55e); border-color: var(--green, #22c55e); }
 .tag-nonstandard { color: var(--accent); border-color: var(--accent); }

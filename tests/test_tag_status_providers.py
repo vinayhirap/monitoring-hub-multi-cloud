@@ -55,9 +55,9 @@ def test_no_provider_means_exactly_the_old_behaviour():
     assert ec.tag_state("vm", {}, None, None) == "not_checked"
     assert ec.tag_state("vm", {}) == "not_checked"
     assert ec.tag_state("ec2", {}, None, None) == "missing"
-    assert ec.tag_state("ec2", {"Environment": "dev"}, None, "aws") == "ok"
+    assert ec.tag_state("ec2", {"Environment": "nonprod"}, None, "aws") == "ok"
     # an AWS type name on a non-AWS account is not judged as AWS
-    assert ec.tag_state("ec2", {"Environment": "dev"}, None, "azure") == "not_checked"
+    assert ec.tag_state("ec2", {"Environment": "nonprod"}, None, "azure") == "not_checked"
 
 
 def test_sync_types_and_provider_types_do_not_overlap_with_aws_collected_types():

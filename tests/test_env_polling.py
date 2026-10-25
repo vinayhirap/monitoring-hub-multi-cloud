@@ -7,8 +7,9 @@ the real-DB checks are in tests/test_env_polling_integration.py.
 
 Acceptance criteria covered here:
   * flag off  -> the set of (resource, metric) collected per tick is identical to before
-  * flag on   -> prod / unknown / ignore / unclassified are collected exactly as before and
+  * flag on   -> prod / unplaced (unknown, legacy "ignore", NULL, junk) are collected exactly as before and
                  NO P1 metric is ever slowed on any prod-like environment
+  * two environments only: "nonprod" is slowed; the legacy stored values "uat" / "dev" read as nonprod
   * a reclassified resource changes cadence on the next tick, no restart
   * windows / staleness / required cycles follow the effective interval
 """
@@ -27,7 +28,9 @@ from tests.conftest import load_module, install_stub  # noqa: E402
 
 PROD_LIKE = ["prod", "unknown", "ignore", None, "", "PROD", "weird-label"]
 ALL_BASES = sorted(set(pm.TIER_SECONDS.values()))
-ENV_VARS = ("ENV_POLLING_ENABLED", "ENV_AWARE_CLASSIFICATION", "POLL_UAT_MULTIPLIER",
+ENV_VARS = ("ENV_POLLING_ENABLED", "ENV_AWARE_CLASSIFICATION",
+            "POLL_NONPROD_INTERVAL_SECONDS", "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS",
+            "POLL_NONPROD_NONCRITICAL_MODE", "POLL_NONPROD_EVAL_CRITICAL_ONLY",
             "POLL_DEV_INTERVAL_SECONDS", "POLL_DEV_CRITICAL_INTERVAL_SECONDS",
             "POLL_DEV_NONCRITICAL_MODE", "POLL_DEV_EVAL_CRITICAL_ONLY")
 
@@ -61,7 +64,7 @@ def test_needs_both_flags(monkeypatch):
     assert ep.enabled()
 
 
-@pytest.mark.parametrize("env", ["uat", "dev", "prod", "unknown", None])
+@pytest.mark.parametrize("env", ["nonprod", "uat", "dev", "prod", "unknown", None])
 @pytest.mark.parametrize("base", ALL_BASES)
 @pytest.mark.parametrize("critical", [True, False])
 def test_flag_off_nothing_is_ever_slowed(env, base, critical):
@@ -84,9 +87,10 @@ def test_prod_like_environments_are_never_slowed_with_flag_on(on, env, base, cri
 
 
 def test_no_p1_metric_is_slowed_on_prod_even_with_hostile_settings(on, monkeypatch):
-    monkeypatch.setenv("POLL_UAT_MULTIPLIER", "12")
-    monkeypatch.setenv("POLL_DEV_INTERVAL_SECONDS", "86400")
-    monkeypatch.setenv("POLL_DEV_CRITICAL_INTERVAL_SECONDS", "86400")
+    for name in ("POLL_NONPROD_INTERVAL_SECONDS", "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS",
+                 "POLL_DEV_INTERVAL_SECONDS", "POLL_DEV_CRITICAL_INTERVAL_SECONDS"):
+        monkeypatch.setenv(name, "86400")
+    monkeypatch.setenv("POLL_NONPROD_NONCRITICAL_MODE", "off")
     p1 = pm.p1_metric_keys()
     assert p1, "the P1 set must not be empty"
     for rtype, metric in sorted(p1):
@@ -108,84 +112,120 @@ def test_every_core_p1_metric_is_on_the_critical_tier_and_nothing_else_is():
 
 
 # ── the decision table ──────────────────────────────────────────────────
-def test_uat_non_critical_is_three_times_base(on):
-    assert ep.effective_interval("uat", 300, False) == 900
-    assert ep.effective_interval("uat", 900, False) == 2700
-    assert ep.effective_interval("uat", 3600, False) == 10800
+def test_nonprod_intervals(on):
+    assert ep.effective_interval("nonprod", 120, True) == 600       # critical class: 10 min
+    assert ep.effective_interval("nonprod", 300, False) == 3600     # everything else: hourly
+    assert ep.effective_interval("nonprod", 900, False) == 3600
 
 
-def test_uat_critical_class_keeps_prod_cadence(on):
-    assert ep.effective_interval("uat", 120, True) == 120
-    assert ep.alert_for_scale("uat", 120, True) == 1
-    assert ep.extra_window_minutes("uat", 120, True) == 0
+@pytest.mark.parametrize("legacy", ["uat", "dev", "UAT", "Dev", "staging", "non-prod"])
+def test_legacy_and_alias_values_poll_like_nonprod(on, legacy):
+    """There is no separate UAT cadence any more (no POLL_UAT_MULTIPLIER): anything that reads as non-prod is."""
+    assert ep.normalize_env(legacy) == "nonprod"
+    assert ep.effective_interval(legacy, 120, True) == 600
+    assert ep.effective_interval(legacy, 300, False) == 3600
+    assert ep.evaluate_for_alerts(legacy, False) is False
 
 
-def test_dev_intervals(on):
-    assert ep.effective_interval("dev", 120, True) == 600       # critical class: 10 min
-    assert ep.effective_interval("dev", 300, False) == 3600     # everything else: hourly
-    assert ep.effective_interval("dev", 900, False) == 3600
+def test_normalize_env_is_failsafe_prod():
+    for junk in (None, "", "unknown", "ignore", "banana", "prod/dev"):
+        assert ep.normalize_env(junk) == "prod", junk
+    assert ep.normalize_env("nonprod") == "nonprod"
+
+
+def test_uat_multiplier_is_gone():
+    assert not hasattr(ep, "uat_multiplier") and not hasattr(ep, "MAX_MULTIPLIER")
+    assert not hasattr(ep, "DEFAULT_UAT_MULTIPLIER")
 
 
 def test_never_shorter_than_base(on, monkeypatch):
-    monkeypatch.setenv("POLL_DEV_INTERVAL_SECONDS", "300")
-    assert ep.effective_interval("dev", 3600, False) == 3600     # hourly base is not made faster
-    monkeypatch.setenv("POLL_DEV_CRITICAL_INTERVAL_SECONDS", "120")
-    assert ep.effective_interval("dev", 120, True) == 120
+    monkeypatch.setenv("POLL_NONPROD_INTERVAL_SECONDS", "300")
+    assert ep.effective_interval("nonprod", 3600, False) == 3600     # hourly base is not made faster
+    monkeypatch.setenv("POLL_NONPROD_CRITICAL_INTERVAL_SECONDS", "120")
+    assert ep.effective_interval("nonprod", 120, True) == 120
 
 
 def test_daily_metrics_are_left_alone(on):
-    for env in ("uat", "dev"):
+    for env in ("nonprod", "uat", "dev"):
         assert ep.effective_interval(env, 86400, False) == 86400
 
 
 def test_wafv2_is_exempt(on):
-    for env in ("uat", "dev"):
+    for env in ("nonprod", "uat", "dev"):
         assert ep.effective_interval(env, 300, False, "wafv2") == 300
 
 
-def test_dev_noncritical_off_mode_not_collected(on, monkeypatch):
-    monkeypatch.setenv("POLL_DEV_NONCRITICAL_MODE", "off")
-    assert ep.effective_interval("dev", 300, False) is None
-    assert ep.effective_interval("dev", 120, True) == 600        # critical class still collected
-    assert ep.multiplier("dev", 300, False) is None
-    assert ep.extra_window_minutes("dev", 300, False) == 0
-    assert ep.alert_for_scale("dev", 300, False) == 1
+def test_nonprod_noncritical_off_mode_not_collected(on, monkeypatch):
+    monkeypatch.setenv("POLL_NONPROD_NONCRITICAL_MODE", "off")
+    assert ep.effective_interval("nonprod", 300, False) is None
+    assert ep.effective_interval("nonprod", 120, True) == 600        # critical class still collected
+    assert ep.multiplier("nonprod", 300, False) is None
+    assert ep.extra_window_minutes("nonprod", 300, False) == 0
+    assert ep.alert_for_scale("nonprod", 300, False) == 1
+    assert ep.effective_interval("uat", 300, False) is None          # legacy value, same tier
+    assert ep.effective_interval("prod", 300, False) == 300          # prod never affected
 
 
 def test_env_var_overrides_and_clamps(on, monkeypatch):
-    monkeypatch.setenv("POLL_UAT_MULTIPLIER", "2")
-    assert ep.effective_interval("uat", 300, False) == 600
-    monkeypatch.setenv("POLL_UAT_MULTIPLIER", "9999")
-    assert ep.uat_multiplier() == ep.MAX_MULTIPLIER
-    monkeypatch.setenv("POLL_UAT_MULTIPLIER", "0")
-    assert ep.uat_multiplier() == 1                              # 1 = no slowdown, never below base
-    monkeypatch.setenv("POLL_UAT_MULTIPLIER", "banana")
-    assert ep.uat_multiplier() == ep.DEFAULT_UAT_MULTIPLIER
-    monkeypatch.setenv("POLL_DEV_INTERVAL_SECONDS", "10")
-    assert ep.dev_interval_seconds() == ep.MIN_INTERVAL_SECONDS
-    monkeypatch.setenv("POLL_DEV_NONCRITICAL_MODE", "nonsense")
-    assert ep.dev_noncritical_mode() == "slow"
+    assert ep.nonprod_interval_seconds() == ep.DEFAULT_NONPROD_INTERVAL_SECONDS == 3600
+    assert ep.nonprod_critical_interval_seconds() == ep.DEFAULT_NONPROD_CRITICAL_INTERVAL_SECONDS == 600
+    monkeypatch.setenv("POLL_NONPROD_INTERVAL_SECONDS", "10")
+    assert ep.nonprod_interval_seconds() == ep.MIN_INTERVAL_SECONDS
+    monkeypatch.setenv("POLL_NONPROD_INTERVAL_SECONDS", "999999")
+    assert ep.nonprod_interval_seconds() == ep.MAX_INTERVAL_SECONDS
+    monkeypatch.setenv("POLL_NONPROD_INTERVAL_SECONDS", "banana")
+    assert ep.nonprod_interval_seconds() == ep.DEFAULT_NONPROD_INTERVAL_SECONDS
+    monkeypatch.setenv("POLL_NONPROD_NONCRITICAL_MODE", "nonsense")
+    assert ep.nonprod_noncritical_mode() == "slow"
+    monkeypatch.setenv("POLL_NONPROD_NONCRITICAL_MODE", "OFF")
+    assert ep.nonprod_noncritical_mode() == "off"
+
+
+def test_legacy_poll_dev_names_are_the_fallback(on, monkeypatch):
+    """An operator who tuned POLL_DEV_* keeps those values; the new POLL_NONPROD_* name wins when both are set."""
+    monkeypatch.setenv("POLL_DEV_INTERVAL_SECONDS", "1800")
+    monkeypatch.setenv("POLL_DEV_CRITICAL_INTERVAL_SECONDS", "300")
+    monkeypatch.setenv("POLL_DEV_NONCRITICAL_MODE", "off")
+    monkeypatch.setenv("POLL_DEV_EVAL_CRITICAL_ONLY", "false")
+    assert ep.nonprod_interval_seconds() == 1800
+    assert ep.nonprod_critical_interval_seconds() == 300
+    assert ep.nonprod_noncritical_mode() == "off"
+    assert ep.nonprod_eval_critical_only() is False
+    assert ep.effective_interval("nonprod", 120, True) == 300
+    monkeypatch.setenv("POLL_NONPROD_INTERVAL_SECONDS", "2400")
+    monkeypatch.setenv("POLL_NONPROD_CRITICAL_INTERVAL_SECONDS", "900")
+    monkeypatch.setenv("POLL_NONPROD_NONCRITICAL_MODE", "slow")
+    monkeypatch.setenv("POLL_NONPROD_EVAL_CRITICAL_ONLY", "true")
+    assert ep.nonprod_interval_seconds() == 2400
+    assert ep.nonprod_critical_interval_seconds() == 900
+    assert ep.nonprod_noncritical_mode() == "slow"
+    assert ep.nonprod_eval_critical_only() is True
+    monkeypatch.setenv("POLL_NONPROD_INTERVAL_SECONDS", "   ")          # blank counts as unset
+    assert ep.nonprod_interval_seconds() == 1800
 
 
 def test_extra_window_and_alert_for_scale(on):
-    assert ep.extra_window_minutes("uat", 300, False) == 10      # 900-300 s
-    assert ep.extra_window_minutes("uat", 900, False) == 30
-    assert ep.extra_window_minutes("dev", 300, False) == 55
-    assert ep.extra_window_minutes("dev", 120, True) == 8
-    assert ep.alert_for_scale("uat", 300, False) == 3
-    assert ep.alert_for_scale("uat", 900, False) == 3
-    assert ep.alert_for_scale("dev", 120, True) == 2             # 600 s / one 5-min cycle
-    assert ep.alert_for_scale("dev", 300, False) == 12
+    assert ep.extra_window_minutes("nonprod", 300, False) == 55      # 3600-300 s
+    assert ep.extra_window_minutes("nonprod", 900, False) == 45
+    assert ep.extra_window_minutes("nonprod", 120, True) == 8
+    assert ep.extra_window_minutes("uat", 300, False) == 55          # legacy value, same tier
+    assert ep.extra_window_minutes("prod", 300, False) == 0
+    assert ep.alert_for_scale("nonprod", 120, True) == 2             # 600 s / one 5-min cycle
+    assert ep.alert_for_scale("nonprod", 300, False) == 12
+    assert ep.alert_for_scale("nonprod", 900, False) == 4
+    assert ep.alert_for_scale("prod", 300, False) == 1
 
 
-def test_dev_non_critical_not_evaluated_by_default(on, monkeypatch):
+def test_nonprod_non_critical_not_evaluated_by_default(on, monkeypatch):
+    assert ep.evaluate_for_alerts("nonprod", False) is False
+    assert ep.evaluate_for_alerts("nonprod", True) is True
+    assert ep.evaluate_for_alerts("uat", False) is False             # legacy value: same tier, same rule
     assert ep.evaluate_for_alerts("dev", False) is False
-    assert ep.evaluate_for_alerts("dev", True) is True
-    assert ep.evaluate_for_alerts("uat", False) is True
     assert ep.evaluate_for_alerts("prod", False) is True
-    monkeypatch.setenv("POLL_DEV_EVAL_CRITICAL_ONLY", "false")
-    assert ep.evaluate_for_alerts("dev", False) is True
-    assert ep.evaluate_for_alerts("dev", False, "wafv2") is True
+    assert ep.evaluate_for_alerts("unknown", False) is True
+    monkeypatch.setenv("POLL_NONPROD_EVAL_CRITICAL_ONLY", "false")
+    assert ep.evaluate_for_alerts("nonprod", False) is True
+    assert ep.evaluate_for_alerts("nonprod", False, "wafv2") is True
 
 
 # ── scheduling: simulate a day of ticks ─────────────────────────────────
@@ -211,14 +251,14 @@ def _res(i, env, rtype="ec2"):
 
 
 def test_flag_off_returns_the_same_objects_in_order():
-    rs = [_res(1, "uat"), _res(2, "dev"), _res(3, "prod"), _res(4, None)]
+    rs = [_res(1, "nonprod"), _res(2, "dev"), _res(3, "prod"), _res(4, None)]
     due, skipped = ep.select_due(rs, "standard", 300, 1000.0, force_enabled=False)
     assert due == rs and all(a is b for a, b in zip(due, rs)) and skipped == 0
     assert all("_poll_extra_min" not in r for r in due)
 
 
 def test_flag_off_through_real_env_reading_is_also_identity():
-    rs = [_res(1, "uat")]
+    rs = [_res(1, "nonprod")]
     due, skipped = ep.select_due(rs, "standard", 300, 1000.0)       # env flag unset
     assert due == rs and skipped == 0
 
@@ -231,90 +271,81 @@ def test_prod_like_resources_are_collected_every_tick_unannotated(on):
         assert all("_poll_extra_min" not in r for r in due)
 
 
-def test_uat_standard_tier_collects_a_third_as_often(on):
-    seen = _simulate([_res(1, "uat"), _res(2, "prod")], "standard", 300)
+def test_nonprod_standard_tier_is_hourly(on):
+    seen = _simulate([_res(1, "nonprod"), _res(2, "prod"), _res(3, "uat")], "standard", 300)
     assert len(seen[2]) == 288                                       # prod: every tick
-    assert 94 <= len(seen[1]) <= 98                                  # uat: 288 / 3
+    assert 22 <= len(seen[1]) <= 26                                  # nonprod: 288 / 12
+    assert 22 <= len(seen[3]) <= 26                                  # legacy "uat" value: same tier
     gaps = [b - a for a, b in zip(seen[1], seen[1][1:])]
-    assert max(gaps) <= 900 + 300 and min(gaps) >= 600               # a tick of slack either side
+    assert max(gaps) <= 3600 + 300 and min(gaps) >= 3300             # a tick of slack either side
 
 
-def test_uat_cadence_survives_tick_jitter(on):
-    seen = _simulate([_res(1, "uat")], "standard", 300, jitter=60)
-    assert 90 <= len(seen[1]) <= 100
+def test_nonprod_cadence_survives_tick_jitter(on):
+    seen = _simulate([_res(1, "nonprod")], "standard", 300, jitter=60)
+    assert 20 <= len(seen[1]) <= 28
 
 
-def test_uat_critical_tier_is_never_slowed(on):
-    seen = _simulate([_res(1, "uat")], "critical", 120)
-    assert len(seen[1]) == 720
-
-
-def test_dev_standard_tier_is_hourly(on):
-    seen = _simulate([_res(1, "dev")], "standard", 300)
-    assert 22 <= len(seen[1]) <= 26
-
-
-def test_dev_non_critical_off_mode_collects_nothing(on, monkeypatch):
-    monkeypatch.setenv("POLL_DEV_NONCRITICAL_MODE", "off")
-    seen = _simulate([_res(1, "dev")], "standard", 300, seconds=7200)
+def test_nonprod_non_critical_off_mode_collects_nothing(on, monkeypatch):
+    monkeypatch.setenv("POLL_NONPROD_NONCRITICAL_MODE", "off")
+    seen = _simulate([_res(1, "nonprod")], "standard", 300, seconds=7200)
     assert seen[1] == []
 
 
-def test_dev_critical_tier_every_ten_minutes(on):
-    seen = _simulate([_res(1, "dev")], "critical", 120)
+def test_nonprod_critical_tier_every_ten_minutes(on):
+    seen = _simulate([_res(1, "nonprod")], "critical", 120)
     assert 140 <= len(seen[1]) <= 148                                # 144 per day
 
 
 def test_first_collection_is_immediate_and_covers_the_whole_window(on):
     st = ep.PollState()
-    due, _ = ep.select_due([_res(1, "uat")], "standard", 300, 1000.0, state_obj=st)
+    due, _ = ep.select_due([_res(1, "nonprod")], "standard", 300, 1000.0, state_obj=st)
     assert [r["id"] for r in due] == [1]
-    assert due[0]["_poll_extra_min"] == 10                           # (900 - 300) s
+    assert due[0]["_poll_extra_min"] == 55                           # (3600 - 300) s
 
 
 def test_second_poll_looks_back_over_every_skipped_tick(on):
     st = ep.PollState()
-    ep.select_due([_res(5, "uat")], "standard", 300, 0.0, state_obj=st)
+    ep.select_due([_res(5, "nonprod")], "standard", 300, 0.0, state_obj=st)
     last = st.get((5, "standard", False))
     t = last
     got = None
-    for _ in range(10):
+    for _ in range(20):
         t += 300
-        due, _ = ep.select_due([_res(5, "uat")], "standard", 300, t, state_obj=st)
+        due, _ = ep.select_due([_res(5, "nonprod")], "standard", 300, t, state_obj=st)
         if due:
             got = (t, due[0]["_poll_extra_min"], t - last)
             break
-    assert got, "a uat resource must come due again"
+    assert got, "a nonprod resource must come due again"
     _t, extra, gap = got
     assert extra * 60 >= gap - 300                                   # window covers gap + base lookback
-    assert gap >= 600
+    assert gap >= 3300
 
 
 def test_missed_runs_widen_the_window_but_stay_bounded(on):
     st = ep.PollState()
     st.set((9, "standard", False), 0.0)
-    due, _ = ep.select_due([_res(9, "uat")], "standard", 300, 100_000.0, state_obj=st)
-    assert due and due[0]["_poll_extra_min"] <= math.ceil((2 * 900 - 300) / 60.0)
+    due, _ = ep.select_due([_res(9, "nonprod")], "standard", 300, 100_000.0, state_obj=st)
+    assert due and due[0]["_poll_extra_min"] <= math.ceil((2 * 3600 - 300) / 60.0)
 
 
 def test_reclassification_changes_cadence_on_the_next_tick(on):
     st = ep.PollState()
     t = 1_700_000_000.0
-    r = _res(7, "uat")
+    r = _res(7, "nonprod")
     ep.select_due([r], "standard", 300, t, state_obj=st)               # collected, state recorded
     due, skipped = ep.select_due([r], "standard", 300, t + 300, state_obj=st)
-    assert due == [] and skipped == 1                                  # uat: skipped
+    assert due == [] and skipped == 1                                  # nonprod: skipped
     r2 = _res(7, "prod")                                               # an operator reclassifies it
     due, skipped = ep.select_due([r2], "standard", 300, t + 600, state_obj=st)
     assert [x["id"] for x in due] == [7] and skipped == 0              # prod: next tick, no restart
-    r3 = _res(7, "dev")
+    r3 = _res(7, "nonprod")
     due, _ = ep.select_due([r3], "standard", 300, t + 900, state_obj=st)
     assert due == []                                                   # and back down again
 
 
 def test_restart_makes_every_slowed_resource_due_once(on):
     st = ep.PollState()
-    rs = [_res(i, "uat") for i in range(6)]
+    rs = [_res(i, "nonprod") for i in range(6)]
     ep.select_due(rs, "standard", 300, 0.0, state_obj=st)
     st.clear()                                                         # process restart
     due, _ = ep.select_due(rs, "standard", 300, 300.0, state_obj=st)
@@ -322,26 +353,26 @@ def test_restart_makes_every_slowed_resource_due_once(on):
 
 
 def test_slowed_fleet_is_staggered_not_bunched(on):
-    rs = [_res(i, "uat") for i in range(300)]
+    rs = [_res(i, "nonprod") for i in range(300)]
     seen = _simulate(rs, "standard", 300, seconds=3600)
     per_tick = {}
     for times in seen.values():
         for t in times:
             per_tick[t] = per_tick.get(t, 0) + 1
-    # after the first tick the load is spread over the 3-tick cycle, never all on one tick
+    # after the first tick the load is spread over the 12-tick cycle, never all on one tick
     later = [n for t, n in sorted(per_tick.items())[3:]]
     assert max(later) < 300 and min(later) > 0
 
 
 def test_state_is_per_tier_and_per_criticality(on):
     st = ep.PollState()
-    ep.select_due([_res(1, "uat")], "standard", 300, 0.0, state_obj=st)
-    due, _ = ep.select_due([_res(1, "uat")], "low", 900, 100.0, state_obj=st)
+    ep.select_due([_res(1, "nonprod")], "standard", 300, 0.0, state_obj=st)
+    due, _ = ep.select_due([_res(1, "nonprod")], "low", 900, 100.0, state_obj=st)
     assert due, "another tier has its own clock"
 
 
 def test_describe_and_unmatched_resource_types_do_not_break(on):
-    rs = [{"id": 1, "resource_type": None, "env_resolved": "uat"}, {"id": 2}]
+    rs = [{"id": 1, "resource_type": None, "env_resolved": "nonprod"}, {"id": 2}]
     due, _ = ep.select_due(rs, "standard", 300, 0.0, state_obj=ep.PollState())
     assert len(due) == 2
 
@@ -414,7 +445,7 @@ ACCOUNT = {"id": 1, "account_name": "t", "default_region": "ap-south-1"}
 def _fleet():
     out = []
     i = 0
-    for env in ("prod", "uat", "dev", None, "unknown", "ignore"):
+    for env in ("prod", "nonprod", "dev", None, "unknown", "ignore"):      # "dev": a legacy stored value
         for rt in ("ec2", "rds", "ebs"):
             i += 1
             out.append({"id": i, "resource_id": f"{rt}-{i}", "resource_type": rt,
@@ -488,7 +519,7 @@ def test_runner_flag_off_and_flag_on_agree_for_prod_like_resources(monkeypatch):
                 assert c[3] == 0 and not (set(c[4]) - prod_like)
 
 
-def test_runner_flag_on_slows_uat_and_dev_only(monkeypatch):
+def test_runner_flag_on_slows_nonprod_only(monkeypatch):
     per_tick, fleet = _run_ticks(monkeypatch, "standard", 12, flag=True)
     by_env = {}
     for r in fleet:
@@ -501,11 +532,11 @@ def test_runner_flag_on_slows_uat_and_dev_only(monkeypatch):
     n = lambda env: len(by_env[env])                                  # noqa: E731
     assert counts["prod"] == 12 * n("prod")
     assert counts[None] == 12 * n(None) and counts["unknown"] == 12 * n("unknown") and counts["ignore"] == 12 * n("ignore")
-    assert counts["uat"] < 12 * n("uat") * 0.5                       # about one in three
-    assert counts["dev"] < 12 * n("dev") * 0.25                      # about one in twelve (+ first tick)
+    assert counts["nonprod"] < 12 * n("nonprod") * 0.25              # about one in twelve (+ first tick)
+    assert counts["dev"] < 12 * n("dev") * 0.25                      # legacy value: same tier
 
 
-def test_runner_critical_tier_flag_on_never_slows_uat_and_slows_dev(monkeypatch):
+def test_runner_critical_tier_flag_on_slows_nonprod_to_ten_minutes(monkeypatch):
     per_tick, fleet = _run_ticks(monkeypatch, "critical", 10, flag=True)
     by_env = {}
     for r in fleet:
@@ -515,9 +546,11 @@ def test_runner_critical_tier_flag_on_never_slows_uat_and_slows_dev(monkeypatch)
         got = {i for c in tick if c[0] == "core" for i in c[4]}
         for env, ids in by_env.items():
             totals[env] += len(got & ids)
-    assert totals["uat"] == 10 * len(by_env["uat"])                  # P1-class on UAT: unchanged
     assert totals["prod"] == 10 * len(by_env["prod"])
-    assert totals["dev"] < 10 * len(by_env["dev"])                   # dev critical: 10 min, not 2
+    assert totals["nonprod"] < 10 * len(by_env["nonprod"])           # nonprod critical: 10 min, not 2
+    assert totals["dev"] < 10 * len(by_env["dev"])                   # legacy value: same tier
+    for env in (None, "unknown", "ignore"):
+        assert totals[env] == 10 * len(by_env[env])                  # unplaced: never slowed
 
 
 def test_slowed_group_gets_extra_lookback_and_prod_group_does_not(monkeypatch):
@@ -574,41 +607,32 @@ def _load_extended():
     return load_module("app/collector/metrics/extended.py")
 
 
-def test_extended_groups_are_unchanged_for_prod_and_split_for_uat(on):
+def test_extended_groups_are_unchanged_for_prod_and_split_for_nonprod(on):
     ext = _load_extended()
     st = ext.env_polling.state()
     st.clear()
-    # id 3: 3 % 3 == 0 so it has no load-spreading head start (see env_polling.stagger_seconds)
     rs = [{"id": 1, "resource_type": "sqs", "env_resolved": "prod"},
-          {"id": 3, "resource_type": "sqs", "env_resolved": "uat"}]
+          {"id": 3, "resource_type": "sqs", "env_resolved": "nonprod"}]
     groups = ext._extended_env_groups(rs, "standard", now=1000.0)
     flat = {r["id"]: extra for extra, rr in groups for r in rr}
-    assert flat == {1: 0, 3: 10}
+    assert flat == {1: 0, 3: 55}                                      # (3600 - 300) s of extra look-back
     groups = ext._extended_env_groups(rs, "standard", now=1300.0)
-    assert {r["id"] for _e, rr in groups for r in rr} == {1}          # uat skipped on the next tick
+    assert {r["id"] for _e, rr in groups for r in rr} == {1}          # nonprod skipped on the next tick
 
 
-def test_extended_hourly_tier_dev_is_not_slower_than_hourly(on):
+def test_extended_hourly_tier_nonprod_is_not_slower_than_hourly(on):
     ext = _load_extended()
     ext.env_polling.state().clear()
-    rs = [{"id": 3, "resource_type": "kms", "env_resolved": "dev"}]
+    rs = [{"id": 3, "resource_type": "kms", "env_resolved": "nonprod"}]
     for k in range(3):
         groups = ext._extended_env_groups(rs, "extended", now=1000.0 + 3600 * k)
         assert [r["id"] for _e, rr in groups for r in rr] == [3]
 
 
-def test_extended_uat_hourly_tier_every_three_hours(on):
-    ext = _load_extended()
-    ext.env_polling.state().clear()
-    rs = [{"id": 4, "resource_type": "kms", "env_resolved": "uat"}]
-    due = [bool(ext._extended_env_groups(rs, "extended", now=1000.0 + 3600 * k)) for k in range(12)]
-    assert sum(due) in (4, 5)
-
-
 def test_extended_wafv2_never_slowed(on):
     ext = _load_extended()
     ext.env_polling.state().clear()
-    rs = [{"id": 5, "resource_type": "wafv2", "env_resolved": "dev"}]
+    rs = [{"id": 5, "resource_type": "wafv2", "env_resolved": "nonprod"}]
     for k in range(5):
         assert ext._extended_env_groups(rs, "standard", now=1000.0 + 300 * k)
 
@@ -657,22 +681,23 @@ def test_sql_builder_matches_python_extra_minutes_for_every_metric_key(on, monke
         if prov != "aws" or secs >= 86400:
             continue
         crit = (rt, name) in p1
-        u = ep.extra_window_minutes("uat", secs, crit, rt)
-        d = ep.extra_window_minutes("dev", secs, crit, rt)
-        expected.add((u, d))
-    for u, d in expected:
-        if u or d:
-            assert f"WHEN 'uat' THEN {u} WHEN 'dev' THEN {d}" in sql, (u, d)
+        expected.add(ep.extra_window_minutes("nonprod", secs, crit, rt))
+    assert any(expected)
+    for extra in expected:
+        if extra:
+            # stored 'uat' / 'dev' rows (before the two-environment migration) count as NON-PROD in the SQL
+            assert (f"CASE WHEN r.env_resolved IN ('nonprod', 'uat', 'dev') THEN {extra} ELSE 0 END" in sql), extra
+    assert "'unknown'" not in sql and "'ignore'" not in sql          # unplaced is never given extra window
 
 
 def test_stale_window_covers_the_slowed_gap(on):
-    """For every UAT / DEV slowed metric the staleness limit is at least one effective interval
+    """For every NON-PROD slowed metric the staleness limit is at least one effective interval
     plus the provider publication delay, i.e. a resource polled on schedule is never 'stale'."""
     for (prov, rt, name), secs in pm.metric_interval_overrides().items():
         if prov != "aws" or secs >= 86400 or rt == "wafv2":
             continue
         crit = (rt, name) in pm.p1_metric_keys()
-        for env in ("uat", "dev"):
+        for env in ("nonprod", "uat", "dev"):
             eff = ep.effective_interval(env, secs, crit, rt)
             if eff is None:
                 continue
@@ -697,59 +722,61 @@ def _row(env, rtype, metric, provider="aws"):
 
 def test_evaluator_hooks_are_inert_with_flag_off():
     ev = _load_evaluator()
-    for env in ("uat", "dev", "prod", None):
+    for env in ("nonprod", "uat", "dev", "prod", None):
         assert ev._env_poll_row_info(_row(env, "ec2", "cpuutilization")) == (True, 1)
 
 
-def test_evaluator_uat_standard_metric_needs_three_times_the_cycles(on):
+def test_evaluator_nonprod_standard_metric_needs_twelve_cycles_when_evaluated(on, monkeypatch):
     ev = _load_evaluator()
-    assert ev._env_poll_row_info(_row("uat", "ec2", "cpuutilization")) == (True, 3)
-    assert ev._env_poll_row_info(_row("uat", "ebs", "volumereadops")) == (True, 3)
+    monkeypatch.setenv("POLL_NONPROD_EVAL_CRITICAL_ONLY", "false")
+    assert ev._env_poll_row_info(_row("nonprod", "ec2", "cpuutilization")) == (True, 12)
+    assert ev._env_poll_row_info(_row("nonprod", "ebs", "volumereadops")) == (True, 4)
+    assert ev._env_poll_row_info(_row("uat", "ec2", "cpuutilization")) == (True, 12)    # legacy value
 
 
-def test_evaluator_uat_p1_metric_is_unchanged(on):
+def test_evaluator_nonprod_p1_metric_is_slowed_to_ten_minutes(on):
     ev = _load_evaluator()
-    assert ev._env_poll_row_info(_row("uat", "rds", "cpuutilization")) == (True, 1)
-    assert ev._env_poll_row_info(_row("uat", "elb", "errors5xx")) == (True, 1)
+    for env in ("nonprod", "uat", "dev"):
+        assert ev._env_poll_row_info(_row(env, "rds", "cpuutilization")) == (True, 2), env
 
 
 def test_evaluator_prod_like_never_scaled_or_skipped(on):
     ev = _load_evaluator()
-    for env in ("prod", "unknown", "ignore", None):
+    for env in ("prod", "unknown", "ignore", None, "weird-label"):
         for rtype, metric in sorted(pm.p1_metric_keys()) + [("ec2", "cpuutilization"), ("ec2", "mem_used_percent")]:
             assert ev._env_poll_row_info(_row(env, rtype, metric)) == (True, 1)
 
 
-def test_evaluator_dev_skips_non_critical_and_keeps_critical(on):
+def test_evaluator_nonprod_skips_non_critical_and_keeps_critical(on):
     ev = _load_evaluator()
-    assert ev._env_poll_row_info(_row("dev", "ec2", "cpuutilization"))[0] is False
-    assert ev._env_poll_row_info(_row("dev", "rds", "cpuutilization")) == (True, 2)
+    assert ev._env_poll_row_info(_row("nonprod", "ec2", "cpuutilization"))[0] is False
+    assert ev._env_poll_row_info(_row("nonprod", "rds", "cpuutilization")) == (True, 2)
 
 
-def test_evaluator_dev_still_evaluates_daily_metrics(on):
-    """A DEV certificate-expiry (or S3 storage) metric is polled once a day and never slowed, so its alert is
-    still evaluated: found on PROD (alert on a DEV ACM cert) before ENV_POLLING_ENABLED was turned on."""
+def test_evaluator_nonprod_still_evaluates_daily_metrics(on):
+    """A NON-PROD certificate-expiry (or S3 storage) metric is polled once a day and never slowed, so its alert is
+    still evaluated: found on PROD (alert on a NON-PROD ACM cert) before ENV_POLLING_ENABLED was turned on."""
     ev = _load_evaluator()
-    assert ev._env_poll_row_info(_row("dev", "certificatemanager", "daystoexpiry")) == (True, 1)
-    assert ev._env_poll_row_info(_row("dev", "s3", "bucketsizebytes"))[0] is True
-    assert ev._env_poll_row_info(_row("uat", "certificatemanager", "daystoexpiry")) == (True, 1)
-    # the same DEV non-critical rule still applies to every sub-daily metric
-    assert ev._env_poll_row_info(_row("dev", "ec2", "cpuutilization"))[0] is False
-    assert ev._env_poll_row_info(_row("dev", "ebs", "volumereadops"))[0] is False
+    assert ev._env_poll_row_info(_row("nonprod", "certificatemanager", "daystoexpiry")) == (True, 1)
+    assert ev._env_poll_row_info(_row("nonprod", "s3", "bucketsizebytes"))[0] is True
+    assert ev._env_poll_row_info(_row("uat", "certificatemanager", "daystoexpiry")) == (True, 1)      # legacy value
+    # the same NON-PROD non-critical rule still applies to every sub-daily metric
+    assert ev._env_poll_row_info(_row("nonprod", "ec2", "cpuutilization"))[0] is False
+    assert ev._env_poll_row_info(_row("nonprod", "ebs", "volumereadops"))[0] is False
 
 
 def test_evaluate_for_alerts_base_interval_argument(on, monkeypatch):
-    assert ep.evaluate_for_alerts("dev", False, "ec2", base_interval=86400) is True
-    assert ep.evaluate_for_alerts("dev", False, "ec2", base_interval=3600) is False
-    assert ep.evaluate_for_alerts("dev", False, "ec2", base_interval=None) is False      # unknown base: old answer
-    assert ep.evaluate_for_alerts("dev", False, "ec2", force_enabled=False, base_interval=300) is True
+    assert ep.evaluate_for_alerts("nonprod", False, "ec2", base_interval=86400) is True
+    assert ep.evaluate_for_alerts("nonprod", False, "ec2", base_interval=3600) is False
+    assert ep.evaluate_for_alerts("nonprod", False, "ec2", base_interval=None) is False      # unknown base: old answer
+    assert ep.evaluate_for_alerts("nonprod", False, "ec2", force_enabled=False, base_interval=300) is True
 
 
 def test_evaluator_ignores_non_aws_and_describe_metrics(on):
     ev = _load_evaluator()
-    assert ev._env_poll_row_info(_row("dev", "vm", "cpu", provider="azure")) == (True, 1)
+    assert ev._env_poll_row_info(_row("nonprod", "vm", "cpu", provider="azure")) == (True, 1)
     assert ev._env_poll_row_info(_row("uat", "ec2", "statuscheckfailed")) == (True, 1)
-    assert ev._env_poll_row_info(_row("dev", "ec2", "statuscheckfailed")) == (True, 1)
+    assert ev._env_poll_row_info(_row("nonprod", "ec2", "statuscheckfailed")) == (True, 1)
 
 
 # ── metric_meta (the UI label) ──────────────────────────────────────────
@@ -762,30 +789,32 @@ def test_meta_poll_view_is_empty_for_prod_and_with_flag_off(on):
     mm = _load_meta()
     for env in ("prod", "unknown", None, "ignore"):
         assert mm._env_poll_view(env, "ec2", "cpuutilization", 300) == {}
-    assert mm._env_poll_view("uat", "rds", "cpuutilization", 120) == {}     # P1 on uat: unchanged
-    assert mm._env_poll_view("uat", "ec2", "statuscheckfailed", 60) == {}   # free Describe metric
+        assert mm._env_poll_view(env, "rds", "cpuutilization", 120) == {}
+    assert mm._env_poll_view("nonprod", "ec2", "statuscheckfailed", 60) == {}   # free Describe metric
 
 
-def test_meta_poll_view_for_uat_and_dev(on):
+def test_meta_poll_view_for_nonprod(on):
     mm = _load_meta()
-    v = mm._env_poll_view("uat", "ec2", "cpuutilization", 300)
-    assert v["poll_seconds"] == 900 and v["poll_label"] == "15 min" and v["poll_base_label"] == "5 min"
-    assert v["poll_slowed"] and v["poll_env"] == "uat" and v["last_collected_ts"] is None
-    assert v["stale_after_seconds"] == (20 + 10) * 60
-    d = mm._env_poll_view("dev", "ec2", "cpuutilization", 300)
-    assert d["poll_label"] == "1 hr" and d["poll_env"] == "dev"
+    v = mm._env_poll_view("nonprod", "ec2", "cpuutilization", 300)
+    assert v["poll_seconds"] == 3600 and v["poll_label"] == "1 hr" and v["poll_base_label"] == "5 min"
+    assert v["poll_slowed"] and v["poll_env"] == "nonprod" and v["last_collected_ts"] is None
+    assert v["stale_after_seconds"] == (20 + 55) * 60
+    d = mm._env_poll_view("dev", "ec2", "cpuutilization", 300)          # legacy stored value: reported as nonprod
+    assert d["poll_label"] == "1 hr" and d["poll_env"] == "nonprod"
+    c = mm._env_poll_view("nonprod", "rds", "cpuutilization", 120)      # critical class: 10 min
+    assert c["poll_seconds"] == 600 and c["poll_label"] == "10 min"
 
 
 def test_meta_poll_view_not_collected(on, monkeypatch):
-    monkeypatch.setenv("POLL_DEV_NONCRITICAL_MODE", "off")
+    monkeypatch.setenv("POLL_NONPROD_NONCRITICAL_MODE", "off")
     mm = _load_meta()
-    v = mm._env_poll_view("dev", "ec2", "cpuutilization", 300)
+    v = mm._env_poll_view("nonprod", "ec2", "cpuutilization", 300)
     assert v["poll_not_collected"] is True and v["poll_label"] is None and v["poll_seconds"] is None
 
 
 def test_meta_poll_view_flag_off_is_empty():
     mm = _load_meta()
-    assert mm._env_poll_view("uat", "ec2", "cpuutilization", 300) == {}
+    assert mm._env_poll_view("nonprod", "ec2", "cpuutilization", 300) == {}
 
 
 # ── frontend label ──────────────────────────────────────────────────────

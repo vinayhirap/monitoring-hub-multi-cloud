@@ -3,13 +3,21 @@
 Status: built, tested, deployed to DEV and PROD with the flag OFF. Section 5 is a modelled illustration;
 section 6 holds the real PROD numbers (taken 2026-10-17) and the decision.
 
+> **Two-environment model.** The app now has only PROD and NON-PROD (migration `123_two_environment_model.sql`).
+> Sections 1 to 4 describe the current policy. Sections 5 and 6 were produced under the old prod/uat/dev model
+> (uat slowed x3, dev hourly) and are kept as dated, historical numbers: with `POLL_UAT_MULTIPLIER` removed, former UAT
+> resources follow the hourly NON-PROD cadence, so the saving is larger than shown. Re-run
+> `scripts/polling_plan_report.py` after migrating to refresh them. Behaviour change for former UAT/SIT resources: see
+> `docs/ENV_POLLING_ROLLOUT.md`.
+
 ## 1. What changes (flag `ENV_POLLING_ENABLED`, default off)
 
 | Environment | Critical-class metrics (the P1 set) | Everything else |
 |---|---|---|
-| prod, unknown, ignore, unclassified | unchanged | unchanged |
-| uat | unchanged (2 min) | base interval x `POLL_UAT_MULTIPLIER` (default 3) |
-| dev | every `POLL_DEV_CRITICAL_INTERVAL_SECONDS` (default 600) | every `POLL_DEV_INTERVAL_SECONDS` (default 3600), or not collected at all with `POLL_DEV_NONCRITICAL_MODE=off` |
+| PROD, and anything unplaced (fail-safe) | unchanged | unchanged |
+| NON-PROD (dev, test, SIT, UAT, QA, staging, preprod, sandbox) | at least every `POLL_NONPROD_CRITICAL_INTERVAL_SECONDS` (default 600) | at least every `POLL_NONPROD_INTERVAL_SECONDS` (default 3600), or not collected at all with `POLL_NONPROD_NONCRITICAL_MODE=off` |
+
+The `POLL_DEV_*` names are accepted as fallbacks for the `POLL_NONPROD_*` names; `POLL_UAT_MULTIPLIER` no longer exists.
 
 Never slowed whatever the environment: wafv2, any metric whose base interval is 24 h or more, the free Describe-API
 metrics (EC2 status check, ELB healthy hosts), and non-AWS providers.
@@ -22,7 +30,7 @@ interval later), and the alert engine is told so (section 4).
 
 ## 2. Formula
 
-For one group (a resource type in a region, on one tier, in one environment class):
+For one group (a resource type in a region, on one tier, in one environment: PROD or NON-PROD):
 
 ```
 collections/day = 86400 / effective_interval
@@ -33,8 +41,8 @@ calls/day   = calls/collection   x collections/day
 metrics/day = metrics/collection x collections/day
 ```
 
-`effective_interval` is `base x 3` for uat non-critical, `max(base, 3600)` for dev non-critical, and so on
-(section 1). Prod-like groups keep `base`. `scripts/polling_plan_report.py` evaluates exactly this by running the
+`effective_interval` is `max(base, 3600)` for NON-PROD non-critical, `max(base, 600)` for NON-PROD critical-class
+(section 1). PROD groups keep `base`. `scripts/polling_plan_report.py` evaluates exactly this by running the
 real selection and the real query builders with the CloudWatch call replaced by a recorder (so it cannot drift
 from the collectors) and splitting groups the way the collector does (one request group per look-back).
 
@@ -60,25 +68,26 @@ count is that of the whole group, shared out to the environments by billed metri
 All of this is behind the same flag and does nothing for prod-like resources.
 
 - **Evaluation window and staleness limit** (`alert_rules.eval_window_sql`, `stale_minutes_sql`) grow by
-  `(effective - base)` minutes for that resource's environment and metric. A UAT EC2 CPU alert (polled every 15 min)
-  goes stale after 30 min instead of 20, so it does not show "no data" between polls; a real outage still does.
-- **Required cycles** (`alert_evaluator._evaluate_row`) are multiplied by the slow-down (UAT standard: x3). The
-  evaluator re-reads the cached last value every 5 minutes; without this, one slowed reading would count as three
-  cycles and open an alert from a single datapoint. This is also the longer "alert for" duration for UAT. Resolving
+  `(effective - base)` minutes for that resource's environment and metric. A NON-PROD EC2 CPU alert (polled hourly)
+  stays current for the longer interval, so it does not show "no data" between polls; a real outage still does.
+- **Required cycles** (`alert_evaluator._evaluate_row`) are multiplied by the slow-down (an hourly NON-PROD metric: x12 of the 5-minute cycle). The
+  evaluator re-reads the cached last value every 5 minutes; without this, one slowed reading would count as several
+  cycles and open an alert from a single datapoint. This is also the longer "alert for" duration for NON-PROD. Resolving
   needs the same multiple of healthy cycles.
-- **DEV** evaluates critical-class metrics only (`POLL_DEV_EVAL_CRITICAL_ONLY`, default true). An alert already open
-  on a DEV non-critical metric stops being refreshed, turns stale, and is closed by the existing 72 h no-data expiry.
-- **UAT critical-class metrics are not slowed.** UAT CRITICAL is P2 in the 4b matrix, so the P1-set metrics
-  (RDS CPU/connections/memory, ALB 5xx/requests) keep prod cadence on UAT. Their detection latency does not change.
+- **NON-PROD** evaluates critical-class metrics only (`POLL_NONPROD_EVAL_CRITICAL_ONLY`, default true; formerly Dev only). An alert already open
+  on a NON-PROD non-critical metric stops being refreshed, turns stale, and is closed by the existing 72 h no-data expiry.
+- **NON-PROD critical-class metrics are slowed only to 10 minutes.** NON-PROD CRITICAL is P3 in the 4b matrix, so the
+  P1-set metrics (RDS CPU/connections/memory, ALB 5xx/requests) are collected at least every 10 minutes
+  (`POLL_NONPROD_CRITICAL_INTERVAL_SECONDS`), never slower. Former UAT used to keep prod cadence for these; it no longer does.
 - **Baselines** (`metric_baseline`, STL): history density is unchanged because the window is widened. One exception:
   a Sum metric with no datapoints stores a single zero for the newest bucket only, so a slowed, idle Sum metric has
   gaps in history instead of zeros between polls. Dynamic baselines read non-zero history, so this is cosmetic on charts.
 
-## 5. Illustrative result (MODELLED, not measured)
+## 5. Illustrative result (MODELLED, not measured; old three-label model)
 
 Fleet shaped like the 2026-10-13 prod snapshot (310 resources: 40 EC2, 70 EBS, 45 S3, 102 log groups, 15 KMS,
 11 event rules, 5 ACM, 3 RDS, 3 ELB, 8 Lambda, 6 SQS, 2 NAT) with the extended metrics that are on by default,
-labels assigned at random in the stated shares (uat:dev = 2:1), defaults for all other settings.
+labels assigned at random in the stated shares (old model: uat:dev = 2:1; under the two-environment model all of these are NON-PROD and take the hourly cadence), defaults for all other settings.
 
 | Non-prod share of resources | Billed metrics/day, off -> on | Saved | GetMetricData requests/day, off -> on |
 |---|---|---|---|
@@ -88,8 +97,8 @@ labels assigned at random in the stated shares (uat:dev = 2:1), defaults for all
 | 40% | 123,299 -> 91,003 | 26.2% | 6,150 -> 7,534 |
 | 60% | 123,299 -> 78,427 | 36.4% | 6,150 -> 6,398 |
 
-At 30% non-prod: 123,299 -> 99,883 billed metrics/day with DEV non-critical slowed to hourly, 97,915 with
-`POLL_DEV_NONCRITICAL_MODE=off` (a further 1.6 points: the daily and hourly tiers are already cheap).
+At 30% non-prod: 123,299 -> 99,883 billed metrics/day with dev non-critical slowed to hourly, 97,915 with
+`POLL_NONPROD_NONCRITICAL_MODE=off` (a further 1.6 points: the daily and hourly tiers are already cheap).
 
 The saving is almost entirely the 5-minute tier (EC2/EBS/Lambda/SQS), because that is where the billed metrics are.
 
@@ -124,7 +133,7 @@ mysql ... -e "SELECT JSON_UNQUOTE(detail->'$.tier') t, SUM(detail->'$.calls') ca
 (Run it in the standard mysql wrapper.) Compare `units` per tier with the report's flag-off column. A large gap
 means the CWAgent assumption or the extended selection differs from reality; send both and the model is corrected.
 
-### PROD result (2026-10-17, flag off)
+### PROD result (2026-10-17, flag off; old model)
 
 Calibration, measured `metric_api_usage` over 24 h versus the report's flag-off column:
 
@@ -133,13 +142,14 @@ Calibration, measured `metric_api_usage` over 24 h versus the report's flag-off 
 | measured (critical 10,800, standard 50,688, low 19,095, extended 744, slow_extended 366) | 81,693 | 7,365 |
 | model, flag off | 77,110 (6% under) | 6,037 (a floor) |
 
-Fleet by environment (334 resources): prod 89, dev 26, uat 10, unknown/unclassified 209. **Every uat and dev label
+Fleet by environment (334 resources, old labels): prod 89, dev 26, uat 10, unknown/unclassified 209 (under the two-environment
+model: NON-PROD 36, PROD 298 including the 209 unplaced). **Every uat and dev label
 comes from a name or an attached parent; none from the account default**, so scenarios A and B are identical.
-The 209 unknown resources are never slowed. Only 22 of them (12 EBS, 10 EC2) are on the 5-minute tier.
+The 209 unplaced resources are PROD and never slowed. Only 22 of them (12 EBS, 10 EC2) are on the 5-minute tier.
 
 | Scenario | Billed metrics/day off -> on | Saved | Requests/day off -> on |
 |---|---|---|---|
-| A. labels as stored | 77,110 -> 65,158 | 15.5% (dev 85.8%, uat 44.4%, prod-like 0%) | 6,037 -> 7,476 (+24%) |
+| A. labels as stored (old model: uat x3) | 77,110 -> 65,158 | 15.5% (dev 85.8%, uat 44.4%, prod-like 0%) | 6,037 -> 7,476 (+24%) |
 | B. defaults cleared (lower bound) | 77,110 -> 65,158 | 15.5% | 6,037 -> 7,476 |
 
 Per 30 days: 2,313,300 -> 1,954,740 modelled billed metrics, a saving of about 358,560.
@@ -149,15 +159,15 @@ If a free monthly allowance applies to GetMetricData the saving is smaller still
 
 ### Decision
 
-Not enabled. About $4 a month does not justify slower UAT alerting (3x breach cycles), DEV non-critical metrics
+Not enabled (decision taken under the old model; revisit with regenerated two-environment numbers). About $4 a month did not justify slower alerting on non-prod resources, non-critical NON-PROD metrics
 no longer evaluated, and 24% more requests. The flag stays off; the code is tested and costs nothing while off.
-Revisit if the fleet or the non-prod share grows (section 5 sensitivity), or after classifying the 22 unknown
+Revisit if the fleet or the non-prod share grows (section 5 sensitivity), or after classifying the 22 unplaced
 EC2/EBS resources. To find the real CloudWatch spend, group the bill by usage type in Cost Explorer and compare the
 `APS1-CW:GMD-Metrics` line with custom metrics (CWAgent), logs ingestion and dashboards.
 
 ## 7. Not built
 
-DEV off-hours quiet. It needs an account time zone and a configurable window. Proposal: `aws_accounts.timezone`
+NON-PROD off-hours quiet. It needs an account time zone and a configurable window. Proposal: `aws_accounts.timezone`
 (IANA name) and `aws_accounts.dev_quiet_start` / `dev_quiet_end` (local `HH:MM`), read in `env_polling.effective_interval`
-for DEV only, behind its own flag `ENV_POLLING_DEV_QUIET_ENABLED`, with the window treated as "not due" and the first
+for NON-PROD only, behind its own flag `ENV_POLLING_DEV_QUIET_ENABLED`, with the window treated as "not due" and the first
 poll after it widening the look-back like any other slowed poll. It would need migration 092.

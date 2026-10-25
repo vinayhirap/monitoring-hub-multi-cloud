@@ -195,7 +195,7 @@
    "provider": "gcp",
    "resource_type": "compute_instance",
    "tags": {
-    "environment": "dev",
+    "environment": "nonprod",
     "_gcp_numeric_id": "123"
    },
    "age_hours": 20

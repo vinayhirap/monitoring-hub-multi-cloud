@@ -3,7 +3,8 @@
 Backfill resources.env_resolved / env_source / env_reason (phase 4a, migration 083).
 
 DRY-RUN BY DEFAULT: it classifies every live resource, prints how many land in each
-source (manual / tag / name / account / unknown) and each environment, how many rows
+source (manual / tag / name / related / account / unknown) and each environment (prod / nonprod; a resource
+nobody has placed is prod with source 'unknown'), how many rows
 would change, and writes nothing. Re-run with --apply to write.
 
 Safe to re-run: only rows whose stored classification differs are written, so a second
@@ -55,7 +56,7 @@ def main(argv=None):
     print(f"by source            : {_fmt(rep['by_source'])}")
     print(f"by environment       : {_fmt(rep['by_env'])}")
     print(f"rows that change     : {rep['changed']}  (by source: {_fmt(rep['changed_by_source'])})")
-    print(f"newly unknown        : {rep['newly_unknown']}  -> these appear in the Needs-classification queue")
+    print(f"newly unplaced       : {rep['newly_unknown']}  -> PROD (fail-safe) with env_source='unknown'; they appear in the Needs-classification queue")
     if args.apply:
         print(f"rows written         : {rep['applied']}")
     else:

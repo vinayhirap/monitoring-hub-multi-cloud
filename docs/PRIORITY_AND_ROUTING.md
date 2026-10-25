@@ -7,16 +7,17 @@ described at the bottom and is not built yet.
 
 | Environment | Critical alert | Warning / info alert |
 |---|---|---|
-| prod | P1 | P2 |
-| uat | P2 | P3 |
-| dev | P3 | P4 |
+| PROD (`prod`) | P1 | P2 |
+| NON-PROD (`nonprod`) | P3 | P4 |
 
-* An environment that is not prod, uat or dev (unknown, "ignore", or a free-text label) is ranked like prod, so an
-  unclassified resource never gets a weaker priority.
+* There are exactly two environments. Dev, test, SIT, UAT, QA, staging, preprod and sandbox are all NON-PROD. Former
+  UAT resources, which used to rank P2/P3, now rank P3/P4 like every other NON-PROD resource.
+* Anything that cannot be placed (no tag, unrecognised name or label, NULL) is PROD, so an unclassified resource never
+  gets a weaker priority. It stays in the "Needs classification" queue until a person confirms it.
 * A resource tagged `Criticality=critical` moves up one level, never above P1.
 * The environment is the one CloudOps resolved for the resource (override > tag > name > account default) when
   `ENV_AWARE_CLASSIFICATION` is on, otherwise the label already stored on the alert.
-* Priority is recomputed for every open alert each evaluation cycle, so marking a resource Prod/UAT/Dev in
+* Priority is recomputed for every open alert each evaluation cycle, so marking a resource PROD or NON-PROD in
   Environments moves its open alerts on the next cycle. Resolved alerts keep their last value.
 
 ## Flag

@@ -1,6 +1,6 @@
 # Cloud Resource Tagging Standard
 
-Version 1.0 - applies to AWS, Azure and GCP resources monitored by CloudOps / Monitoring Hub.
+Version 2.0 (two-environment model) - applies to AWS, Azure and GCP resources monitored by CloudOps / Monitoring Hub.
 
 ## 1. Why this exists
 
@@ -14,10 +14,10 @@ Monitoring Hub resolves a resource's environment in this order and records which
 
 1. Manual choice saved by a user in the Environments page
 2. The `Environment` tag
-3. A whole-word environment token in the resource name (`prod`, `uat`, `dev`, ...)
+3. A whole-word environment token in the resource name (`prod`, `nonprod`, `dev`, `uat`, ...)
 4. The resource it is attached to (an EBS volume follows its EC2 instance)
 5. The account-level default
-6. Unknown - alerted at prod strength and listed under "Needs classification"
+6. Unplaced - treated as PROD (fail-safe, alerted at prod strength) and listed under "Needs classification"
 
 ## 2. Mandatory tags
 
@@ -26,7 +26,7 @@ Do not use the `aws:` prefix (reserved by AWS).
 
 | Key | Allowed values | Meaning |
 |---|---|---|
-| `Environment` | `prod`, `uat`, `dev` (exactly these three) | Deployment tier. Drives alert severity, priority and polling. |
+| `Environment` | `prod`, `nonprod` (exactly these two) | Deployment tier (displayed PROD / NON-PROD). Drives alert severity, priority and polling. |
 | `Application` | lowercase application slug, e.g. `u4rad-orthanc` | What the resource belongs to. |
 | `Owner` | team slug or distribution list, e.g. `platform-team` | Who is accountable. A team, never a person. |
 | `CostCenter` | the organisation's cost-centre code | Chargeback. |
@@ -42,7 +42,7 @@ Environments page asks for these four and ignores the rest:
 | Tag | Used by CloudOps for |
 |---|---|
 | `Environment` | alert strength, polling and "Needs classification" (required) |
-| `Criticality` | reserved for the phase 4b priority bump |
+| `Criticality` | priority bump: `critical` raises the alert priority one level (never above P1) |
 | `Owner` | who answers for the resource |
 | `Application` | what the resource belongs to |
 
@@ -51,27 +51,47 @@ it does not report them as missing; keep them wherever finance or security requi
 
 ## 3. Environment catalogue
 
-One key, three values. Variants are expressed with a second tag, not with new values, so every
-tool sees the same tiers.
+One key, two values. Variants are expressed with a second tag, not with new values, so every
+tool sees the same two tiers.
 
 | Environment | Tag | Includes | Alerting posture |
 |---|---|---|---|
-| Production | `Environment=prod` | live traffic, production DR / standby | full strength, shortest alert delay |
-| UAT | `Environment=uat` | UAT, pre-prod, staging, QA | reduced polling, longer alert delay |
-| Development | `Environment=dev` | development, test, sandbox, PoC | lowest polling, critical-class metrics only |
+| PROD | `Environment=prod` | live traffic, production DR / standby | full strength: warning stays WARNING, critical P1 / other P2, normal polling |
+| NON-PROD | `Environment=nonprod` | development, test, SIT, UAT, QA, staging, pre-prod, sandbox, PoC | warning-level breach is INFO, critical P3 / other P4, slower polling (when enabled), critical-class metrics evaluated first |
 
-Variant tag (optional): `EnvironmentRole` = `primary`, `dr`, `staging`, `qa`, `test`, `sandbox`.
+Variant tag (optional): `EnvironmentRole` = `primary`, `dr`, `uat`, `sit`, `staging`, `qa`, `test`, `sandbox`.
 A disaster-recovery copy of production is `Environment=prod` + `EnvironmentRole=dr`. It is production
 for alerting purposes.
 
 Monitoring Hub also understands these aliases so older estates keep working, but new resources
-should use only the standard values: `production`/`prd` (prod); `preprod`, `stage`, `staging`, `stg`, `qa`
-(uat); `development`, `test`, `testing`, `sandbox` (dev). Alias keys read: `Environment`, `Env`, `Stage`,
+should use only the standard values `prod` and `nonprod`. Accepted aliases: `production`/`prd` (prod);
+`nonprod`-style spellings (`non-prod`, `non_prod`, `nonproduction`, `nonprd`), `dev`, `development`, `test`, `testing`,
+`sit`, `uat`, `qa`, `qas`, `stage`, `staging`, `stg`, `preprod`, `preproduction`, `sandbox` (nonprod). Case, spaces, `-`, `_`
+and a trailing number are ignored, so `Non-Prod`, `UAT-1` and `dev2` all resolve. Alias keys read: `Environment`, `Env`, `Stage`,
 `DeploymentEnvironment`, `AppEnv`, `EnvType`. Key case is ignored, so `environment` and `Environment`
 are the same key to Monitoring Hub.
 
-`Criticality=critical` is reserved for the priority bump planned in Monitoring Hub phase 4b
-(a critical-tagged resource is raised one priority level). It is not read for alerting yet.
+`Criticality=critical` raises the alert priority of that resource one level (never above P1), in either
+environment. It does not change alert severity.
+
+### Two-environment model
+
+CloudOps knows exactly two environments: **PROD** (stored `prod`) and **NON-PROD** (stored `nonprod`). Everything
+else that used to be a tier (dev, test, SIT, UAT, QA, staging, preprod, sandbox) is NON-PROD.
+
+- **Fail-safe.** Anything that cannot be placed (no tag, no recognisable name, an unknown free-text label, NULL, an
+  old pre-migration value) is treated as **PROD**. An unclassified resource is therefore never alerted, ranked or
+  polled more weakly than production. It also stays in the "Needs classification" queue (`env_source = 'unknown'`)
+  until a person confirms it. The API rejects a value it cannot place instead of guessing.
+- **Migration 123** (`db/migrations/123_two_environment_model.sql`) converts stored data: `dev`, `test`, `sit`, `uat`,
+  `qa`, `staging`, `preprod`, `sandbox` and their variants become `nonprod`; `prod`/`production`, `unknown`, `ignore` and
+  unrecognised values become `prod`. Resources that were unknown or ignore keep `env_source = 'unknown'`. Every
+  changed row is copied to `env_migration_123_backup`; the migration is idempotent and
+  `db/migrations/123_two_environment_model_rollback.sql` restores the old values.
+- **Behaviour change for former UAT / SIT resources.** They were a middle tier (priority P2/P3, polling x3). They now
+  follow the NON-PROD policy: INFO at warning level, priority P3/P4, NON-PROD polling. If one is production-like, tag it
+  `Environment=prod`.
+- **Retag.** Existing `Environment=uat` / `dev` tags keep working as aliases, but retag to `nonprod` when convenient.
 
 ## 4. Resource naming convention
 
@@ -79,13 +99,14 @@ Names are the fallback when a tag is missing, so they must be unambiguous.
 
     <org>-<application>-<env>-<role>-<nn>        e.g.  u4rad-orthanc-prod-db-01
 
-- The environment is one lowercase, hyphen-delimited word: `prod`, `uat` or `dev`.
+- The environment is one lowercase, hyphen-delimited word: `prod` for production; for anything else use `nonprod`
+  or the specific word (`dev`, `test`, `uat`, `sit`, `qa`, `stg`), all of which are NON-PROD.
 - Exactly one environment word per name. Never `test-prod`, `uat-test-env` or `prod-to-dev-sync`;
-  such names cannot be classified and land in "Needs classification".
+  such names cannot be classified and land in "Needs classification" (and are treated as PROD until placed).
 - Do not glue the word into another (`prodapi`, `devbox`); it will not match, deliberately, so that
   words like `product` and `latest` are never mistaken for an environment.
 - A copy that is not production gets the target environment in its name: restore a production
-  volume into test as `u4rad-orthanc-dev-db-01-restore`, not `test-u4rad-prod-orthanc`.
+  volume into test as `u4rad-orthanc-nonprod-db-01-restore`, not `test-u4rad-prod-orthanc`.
 
 ## 5. Notation per cloud
 
@@ -102,7 +123,7 @@ them on the resource; verify this per provider before relying on the tag step fo
 
 Child resources should not rely on inheritance; tag them at creation.
 
-- **Terraform (AWS):** set `default_tags` on the provider so every resource gets the standard tags.
+- **Terraform (AWS):** set `default_tags` on the provider so every resource gets the standard tags (`Environment = "nonprod"` for every non-production stack).
 
       provider "aws" {
         default_tags {
@@ -125,13 +146,13 @@ Child resources should not rely on inheritance; tag them at creation.
 
 ## 7. Enforcement (AWS)
 
-1. **AWS Organizations tag policy** so `Environment` can only be `prod`, `uat` or `dev`, spelled exactly:
+1. **AWS Organizations tag policy** so `Environment` can only be `prod` or `nonprod`, spelled exactly:
 
        {
          "tags": {
            "Environment": {
              "tag_key":   { "@@assign": "Environment" },
-             "tag_value": { "@@assign": ["prod", "uat", "dev"] },
+             "tag_value": { "@@assign": ["prod", "nonprod"] },
              "enforced_for": { "@@assign": ["ec2:instance", "ec2:volume", "rds:db"] }
            }
          }
@@ -147,11 +168,11 @@ Child resources should not rely on inheritance; tag them at creation.
 
 ## 8. Rollout for an existing estate
 
-1. Tag production first (`Environment=prod`), then UAT, then development.
+1. Tag production first (`Environment=prod`), then everything else `Environment=nonprod`.
 2. Open Environments in CloudOps. "Needs classification" shows what is still unknown.
 3. Fix at the source (tag or rename) wherever possible. Use the manual mark only for resources you
    cannot tag.
-4. Treat every unknown resource as a defect: it is alerted like production until classified. Target:
+4. Treat every unknown resource as a defect: it is treated as PROD (alerted like production) until classified. Target:
    an onboarded account has no unknown resources within five working days.
 5. Review the "Decided by" column monthly. The goal is that nearly every resource is decided by
    `Tag`, not `Name`, `Account default` or `Attached resource`.

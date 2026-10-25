@@ -11,6 +11,7 @@ import logging
 import re
 from fastapi import APIRouter, Body, HTTPException, Depends, Query
 from app.db import get_connection
+from app.env_tiers import recognized_tier
 from app.auth.permissions import require_permission
 from app.auth.authorization import get_accessible_account_ids
 from app.collector.synthetic import (
@@ -62,9 +63,10 @@ def _validate_common(payload: dict) -> dict:
         out["expected_keyword"] = kw or None
     if "environment" in payload:
         env = payload.get("environment")
-        if not isinstance(env, str) or not env.strip() or len(env) > 50:
-            raise HTTPException(status_code=400, detail="environment must be a non-empty string of at most 50 characters")
-        out["environment"] = env.strip()
+        tier = recognized_tier(env) if isinstance(env, str) and len(env) <= 50 else None
+        if tier is None:
+            raise HTTPException(status_code=400, detail="environment must be prod or nonprod")
+        out["environment"] = tier
     if "name" in payload:
         name = (payload.get("name") or "").strip() if isinstance(payload.get("name"), str) else ""
         if not name or len(name) > 255:

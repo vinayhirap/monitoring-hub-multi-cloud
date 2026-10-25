@@ -79,8 +79,8 @@ export function ActivityPanel({ activity, tz }) {
     <Panel title="Alert activity, last 24 hours" subtitle="Alerts triggered per hour (top) and resolved per hour (bottom)"
       actions={<span className="dash-legend">
         <span title="A critical line was crossed. Act now."><i className="lg-crit" />Critical</span>
-        <span title="A warning line was crossed on a Production (or not yet placed) resource."><i className="lg-warn" />Warning</span>
-        <span title="A warning-level breach on a UAT or Dev resource: a heads-up, not a page."><i className="lg-info" />Info</span>
+        <span title="A warning line was crossed on a PROD (or not yet placed) resource."><i className="lg-warn" />Warning</span>
+        <span title="A warning-level breach on a NON-PROD resource: a heads-up, not a page."><i className="lg-info" />Info</span>
         <span title="Alerts that recovered and closed (shown below the axis)."><i className="lg-ok" />Resolved</span>
       </span>}
       footer={<>Triggered {windows.new1h} · 1h, {windows.new6h} · 6h, {windows.new24h} · 24h &nbsp;|&nbsp; Resolved {windows.res1h} · 1h, {windows.res6h} · 6h, {windows.res24h} · 24h

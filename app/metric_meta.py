@@ -88,7 +88,7 @@ def tier_last_completed():
 
 
 def _env_poll_view(env, rtype, db_name, base_seconds):
-    """Phase 4c: the REAL polling cadence of one metric for a UAT / DEV resource (ENV_POLLING_ENABLED).
+    """Phase 4c: the REAL polling cadence of one metric for a NON-PROD resource (ENV_POLLING_ENABLED).
     Returns the entry fields that differ from the prod answer, or {} when nothing changes -- so a prod,
     unknown or unclassified resource, and every response while the flag is off, is exactly what it was."""
     try:

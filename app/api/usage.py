@@ -188,9 +188,9 @@ def env_polling_state():
     on = ep.enabled()
     requested, classification = ep.requested(), ep.classification_enabled()
     if on:
-        note = ("ON: UAT non-critical metrics are polled at a multiple of their base interval and Dev non-critical "
-                "metrics hourly (critical-class metrics are slowed less or not at all). Prod, unknown and ignore "
-                "are unchanged, so paid calls fall only for UAT and Dev resources.")
+        note = ("ON: NON-PROD resources are polled less often (non-critical metrics hourly, critical-class metrics "
+                "every 10 minutes by default). PROD, and any resource not yet placed in an environment, is "
+                "unchanged, so paid calls fall only for NON-PROD resources.")
     elif requested and not classification:
         note = ("ENV_POLLING_ENABLED is set but ENV_AWARE_CLASSIFICATION is off, so it has no effect: every "
                 "resource is polled at its base interval.")

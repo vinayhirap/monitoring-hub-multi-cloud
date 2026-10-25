@@ -4,8 +4,8 @@ tests/test_alert_lifecycle_integration.py). The scratch schema needs the fixture
 
   * the script writes NOTHING (row counts of every table it reads are unchanged, no lock left behind)
   * series check: judges collection age per environment against the interval the flag state promises,
-    and reports a UAT resource still polled every 5 min as FASTER-than-expected when the flag is expected ON
-  * alert check: DEV non-critical open alerts are FALSE_STALE, UAT limit findings follow the real SQL builders
+    and reports a NON-PROD resource still polled every 5 min as FASTER-than-expected when the flag is expected ON
+  * alert check: NON-PROD non-critical open alerts are FALSE_STALE, limit findings follow the real SQL builders
   * unknown check: lists the unclassified EC2/EBS (and an EBS whose parent is unknown) with what to fix
   * --account-id with bound parameters works (the % in the alert-window SQL must be escaped)
 """
@@ -46,8 +46,9 @@ def _run(*args, flags=None):
     env = dict(os.environ, DB_HOST=os.getenv("MH_TEST_DB_HOST", "127.0.0.1"),
                DB_PORT=os.getenv("MH_TEST_DB_PORT", "3306"), DB_USER=os.getenv("MH_TEST_DB_USER", "mh"),
                DB_PASSWORD=os.getenv("MH_TEST_DB_PASSWORD", "mh"), DB_NAME=os.getenv("MH_TEST_DB_NAME", "mh_test"))
-    for v in ("ENV_POLLING_ENABLED", "ENV_AWARE_CLASSIFICATION", "POLL_UAT_MULTIPLIER", "POLL_DEV_INTERVAL_SECONDS",
-              "POLL_DEV_CRITICAL_INTERVAL_SECONDS", "POLL_DEV_NONCRITICAL_MODE", "POLL_DEV_EVAL_CRITICAL_ONLY"):
+    for v in ("ENV_POLLING_ENABLED", "ENV_AWARE_CLASSIFICATION", "POLL_DEV_INTERVAL_SECONDS", "POLL_DEV_CRITICAL_INTERVAL_SECONDS", "POLL_DEV_NONCRITICAL_MODE",
+              "POLL_DEV_EVAL_CRITICAL_ONLY", "POLL_NONPROD_INTERVAL_SECONDS", "POLL_NONPROD_CRITICAL_INTERVAL_SECONDS",
+              "POLL_NONPROD_NONCRITICAL_MODE", "POLL_NONPROD_EVAL_CRITICAL_ONLY"):
         env.pop(v, None)
     env.update(flags or {})
     return subprocess.run([sys.executable, "scripts/env_polling_verify.py", *args], cwd=ROOT, env=env,
@@ -68,14 +69,14 @@ ON = {"ENV_AWARE_CLASSIFICATION": "true", "ENV_POLLING_ENABLED": "true"}
 OFF = {"ENV_AWARE_CLASSIFICATION": "true"}
 
 
-def _fleet(db, uat_age_min):
-    """6 prod and 8 uat EC2, each with a cpu reading `age` minutes old (metric_timestamp is the write time)."""
+def _fleet(db, np_age_min):
+    """6 prod and 8 non-prod EC2, each with a cpu reading `age` minutes old (metric_timestamp is the write time)."""
     for i in range(6):
         pk = _res(db, f"i-prod{i}", "ec2", "prod")
         db.metric(pk, "cpuutilization", 10, age_min=1 + i % 4)
     for i in range(8):
-        pk = _res(db, f"i-uat{i}", "ec2", "uat")
-        db.metric(pk, "cpuutilization", 10, age_min=uat_age_min[i])
+        pk = _res(db, f"i-np{i}", "ec2", "nonprod")
+        db.metric(pk, "cpuutilization", 10, age_min=np_age_min[i])
 
 
 def _json(p):
@@ -98,41 +99,42 @@ def test_script_writes_nothing(db):
     assert _counts(db) == before
 
 
-def test_series_ok_when_uat_is_polled_every_15_minutes(db):
-    _fleet(db, [2, 5, 9, 12, 3, 7, 11, 14])                   # all <= 15 min, some well past 5 min
+def test_series_ok_when_nonprod_is_polled_every_hour(db):
+    _fleet(db, [2, 25, 9, 45, 55, 7, 31, 60])                 # all <= 60 min, some well past 5 min
     rep = _json(_run("--json", "--uptime-min", "600", "--only", "series", flags=ON))
     assert _verdicts(rep, "prod")[300] == "OK"
-    assert _verdicts(rep, "uat")[300] == "OK"
-    uat = next(g for g in rep["series"]["groups"] if g["env"] == "uat" and g["base_s"] == 300)
-    assert uat["expected_s"] == 900
+    assert _verdicts(rep, "nonprod")[300] == "OK"
+    np_ = next(g for g in rep["series"]["groups"] if g["env"] == "nonprod" and g["base_s"] == 300)
+    assert np_["expected_s"] == 3600
+    assert {g["env"] for g in rep["series"]["groups"]} <= {"prod", "nonprod", "unclassified"}
 
 
-def test_series_catches_uat_still_polled_every_5_minutes_after_turn_on(db):
+def test_series_catches_nonprod_still_polled_every_5_minutes_after_turn_on(db):
     _fleet(db, [1, 2, 3, 4, 1, 2, 3, 4])                      # nothing older than 4 min: the flag is not working
     rep = _json(_run("--json", "--uptime-min", "600", "--only", "series", flags=ON))
-    assert _verdicts(rep, "uat")[300] == "FASTER"
+    assert _verdicts(rep, "nonprod")[300] == "FASTER"
     assert _run("--uptime-min", "600", "--only", "series", flags=ON).returncode == 1
 
 
 def test_series_catches_a_slowdown_while_the_flag_is_expected_off(db):
     _fleet(db, [2, 9, 14, 12, 3, 7, 11, 14])                  # 14 min old on a 5-min tier
     rep = _json(_run("--json", "--only", "series", "--expect", "off", flags=OFF))
-    assert _verdicts(rep, "uat")[300] == "SLOWER"
+    assert _verdicts(rep, "nonprod")[300] == "SLOWER"
 
 
 def test_series_does_not_claim_faster_without_the_restart_age(db):
     _fleet(db, [1, 2, 3, 4, 1, 2, 3, 4])
     rep = _json(_run("--json", "--only", "series", flags=ON))
-    assert _verdicts(rep, "uat")[300] == "UNPROVEN"
+    assert _verdicts(rep, "nonprod")[300] == "UNPROVEN"
 
 
 def _open_alert(db, rid, metric, env_pk_age_min=5):
     db.alert(1, rid, metric, sev="WARNING", status="active", seen_min_ago=env_pk_age_min, triggered_min_ago=60)
 
 
-def test_alert_findings_dev_non_critical_is_false_stale(db):
-    _res(db, "i-dev1", "ec2", "dev")
-    _res(db, "db-dev1", "rds", "dev")
+def test_alert_findings_nonprod_non_critical_is_false_stale(db):
+    _res(db, "i-dev1", "ec2", "nonprod")
+    _res(db, "db-dev1", "rds", "nonprod")
     _open_alert(db, "i-dev1", "cpuutilization")
     _open_alert(db, "db-dev1", "cpuutilization")
     rep = _json(_run("--json", "--only", "alerts", flags=ON))
@@ -144,17 +146,17 @@ def test_alert_findings_dev_non_critical_is_false_stale(db):
     assert ("i-dev1", "FALSE_STALE") in {(f["resource_id"], f["kind"]) for f in off["alerts"]["findings"]}
 
 
-def test_dev_certificate_expiry_alert_is_not_false_stale(db):
-    """PROD 2026-10-22: alert on a DEV ACM certificate (daily, never slowed) must stay evaluated with the flag ON."""
-    _res(db, "arn:aws:acm:ap-south-1:1:certificate/abc", "certificatemanager", "dev", name="test.example.com")
+def test_nonprod_certificate_expiry_alert_is_not_false_stale(db):
+    """PROD 2026-10-22: alert on a NON-PROD ACM certificate (daily, never slowed) must stay evaluated with the flag ON."""
+    _res(db, "arn:aws:acm:ap-south-1:1:certificate/abc", "certificatemanager", "nonprod", name="test.example.com")
     _open_alert(db, "arn:aws:acm:ap-south-1:1:certificate/abc", "daystoexpiry")
     rep = _json(_run("--json", "--only", "alerts", flags=ON))
     assert not [f for f in rep["alerts"]["findings"] if f["kind"] == "FALSE_STALE"], rep["alerts"]
 
 
 def test_alert_findings_use_the_real_window_sql_and_bound_account(db):
-    _res(db, "i-uat1", "ec2", "uat")
-    _open_alert(db, "i-uat1", "cpuutilization")
+    _res(db, "db-np1", "rds", "nonprod")                        # critical class: evaluated, polled every 10 min
+    _open_alert(db, "db-np1", "cpuutilization")
     for args in ([], ["--account-id", "1"]):
         p = _run("--json", "--only", "alerts", *args, flags=ON)
         assert p.returncode in (0, 1) and "Traceback" not in p.stderr, p.stderr
@@ -164,10 +166,11 @@ def test_alert_findings_use_the_real_window_sql_and_bound_account(db):
 
 
 def test_unknown_list_and_csv(db, tmp_path):
-    _res(db, "i-unk1", "ec2", None, name="payroll-batch-09", source="unknown")
-    _res(db, "i-unk2", "ec2", "unknown", name="DevOps-Jenkins", source="unknown")
-    parent = _res(db, "i-unk3", "ec2", None, name="app-server", source="unknown")
-    vol = _res(db, "vol-1", "ebs", None, name="vol-1", tags={"parent_ec2": "i-unk3"}, source="unknown")
+    # unplaced resources are PROD (fail-safe) and wait in the queue with env_source='unknown'
+    _res(db, "i-unk1", "ec2", "prod", name="payroll-batch-09", source="unknown")
+    _res(db, "i-unk2", "ec2", "prod", name="DevOps-Jenkins", source="unknown")
+    parent = _res(db, "i-unk3", "ec2", "prod", name="app-server", source="unknown")
+    vol = _res(db, "vol-1", "ebs", "prod", name="vol-1", tags={"parent_ec2": "i-unk3"}, source="unknown")
     _res(db, "i-prod1", "ec2", "prod", name="web-prod-1")
     try:
         db.x("INSERT INTO resource_relationships (source_resource_id, target_resource_id, relationship_type) "
@@ -179,7 +182,7 @@ def test_unknown_list_and_csv(db, tmp_path):
     ids = {r["resource_id"] for r in rep["unknown_5min"]}
     assert ids == {"i-unk1", "i-unk2", "i-unk3", "vol-1"} and "i-prod1" not in ids
     for r in rep["unknown_5min"]:
-        assert r["needs"] and r["if_uat_every_s"] == 900 and r["if_dev_every_s"] == 3600
+        assert r["needs"] and r["if_nonprod_every_s"] == 3600
     rows = list(csv.DictReader(open(csv_path)))
     assert {r["resource_id"] for r in rows} == ids
 

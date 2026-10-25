@@ -31,28 +31,28 @@ def test_flag_off_is_the_old_behaviour_untagged_means_prod_warning(db, monkeypat
     assert a["severity"] == "WARNING" and a["environment"] == "prod"
 
 
-def test_flag_on_dev_named_resource_warning_is_info_and_labelled_dev(db, monkeypatch):
+def test_flag_on_dev_named_resource_warning_is_info_and_labelled_nonprod(db, monkeypatch):
     monkeypatch.setenv("ENV_AWARE_CLASSIFICATION", "true")
     _setup(db, "dev-box", 80)
     run_eval()
     a = _alert(db, "dev-box")
-    assert a["severity"] == "INFO" and a["environment"] == "dev"
+    assert a["severity"] == "INFO" and a["environment"] == "nonprod"
 
 
-def test_flag_on_unknown_is_prod_strength_but_not_labelled_prod(db, monkeypatch):
+def test_flag_on_unplaced_is_prod_strength_and_prod(db, monkeypatch):
     monkeypatch.setenv("ENV_AWARE_CLASSIFICATION", "true")
     _setup(db, "i-0abc", 80)
     run_eval()
     a = _alert(db, "i-0abc")
-    assert a["severity"] == "WARNING" and a["environment"] == "unknown"
+    assert a["severity"] == "WARNING" and a["environment"] == "prod"
 
 
-def test_flag_on_critical_stays_critical_in_dev(db, monkeypatch):
+def test_flag_on_critical_stays_critical_in_nonprod(db, monkeypatch):
     monkeypatch.setenv("ENV_AWARE_CLASSIFICATION", "true")
     _setup(db, "dev-box", 95)
     run_eval()
     a = _alert(db, "dev-box")
-    assert a["severity"] == "CRITICAL" and a["environment"] == "dev"
+    assert a["severity"] == "CRITICAL" and a["environment"] == "nonprod"
 
 
 def test_flag_on_persisted_classification_wins_over_live_resolution(db, monkeypatch):
@@ -64,10 +64,11 @@ def test_flag_on_persisted_classification_wins_over_live_resolution(db, monkeypa
     assert a["severity"] == "WARNING" and a["environment"] == "prod"
 
 
-def test_flag_on_ignored_resource_is_still_alerted_like_prod(db, monkeypatch):
+def test_flag_on_unrecognised_legacy_env_value_is_prod(db, monkeypatch):
+    # 'ignore' no longer exists; an unrecognised stored value normalises to PROD (fail-safe).
     monkeypatch.setenv("ENV_AWARE_CLASSIFICATION", "true")
     r = _setup(db, "i-0abc", 80)
     db.x("UPDATE resources SET env_resolved='ignore', env_source='manual' WHERE id=%s", (r,))
     run_eval()
     a = _alert(db, "i-0abc")
-    assert a["severity"] == "WARNING" and a["environment"] == "unknown"
+    assert a["severity"] == "WARNING" and a["environment"] == "prod"

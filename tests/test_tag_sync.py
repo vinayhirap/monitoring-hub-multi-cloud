@@ -83,7 +83,7 @@ def test_env_sync_resolution_ignores_synced_tags_unless_the_feed_flag_is_on(monk
     assert mod.resolve_row(r).source == "unknown"                  # nothing about alerting changed
     monkeypatch.setenv("TAG_SYNC_FEED_ENVIRONMENT", "true")
     res = mod.resolve_row(r)
-    assert (res.env, res.source) == ("dev", "tag")
+    assert (res.env, res.source) == ("nonprod", "tag")
 
 
 def test_env_sync_synced_value_is_used_only_for_synced_types():

@@ -41,7 +41,7 @@ def accounts():
         table(["Field", "Meaning"], [
             ["Account Name", "Display name (required)."],
             ["Alias / Alias Tag", "Short alias shown in lists."],
-            ["Environment", "Account-level default environment (prod, uat, dev). Used when nothing more specific places a resource."],
+            ["Environment", "Account-level default environment (PROD or NON-PROD). Used when nothing more specific places a resource."],
             ["Owner Team", "Team accountable for the account."],
             ["Description", "Free text."],
         ]),
@@ -111,20 +111,19 @@ def accounts_admin():
 
 def environments():
     return section("environments-tagging", "Environments and tagging", "Configuration", "viewer", "environments.view", [
-        p("Every resource has an environment: prod, uat or dev. It drives alert severity, priority (P1-P4) and, when "
+        p("Every resource is either PROD or NON-PROD (dev, test, SIT, UAT, QA, staging and the like are all NON-PROD). It drives alert severity, priority (P1-P4) and, when "
           "environment polling is on, how often non-critical metrics are collected."),
         h("How the environment is decided"),
         p("In this order; the winning step is shown as 'Decided by' on the Environments page:"),
         ul(["Manual choice saved on the Environments page.",
             "The Environment tag (aliases Env, Stage, DeploymentEnvironment, AppEnv, EnvType; key case ignored).",
-            "A whole-word environment token in the resource name (prod, uat, dev). 'product' or 'prodapi' do not match on purpose.",
+            "A whole-word environment token in the resource name (prod, nonprod, dev, uat, sit ...). 'product' or 'prodapi' do not match on purpose.",
             "The resource it is attached to (an EBS volume follows its EC2 instance).",
             "The account's default environment.",
-            "Unknown: alerted at prod strength and listed under Needs classification."], ordered=True),
+            "Nothing matches: treated as PROD (fail-safe) and listed under Needs classification until someone confirms it."], ordered=True),
         table(["Value", "Standard tag", "Also understood"], [
-            ["Production", "prod", "production, prd"],
-            ["UAT", "uat", "preprod, stage, staging, stg, qa"],
-            ["Development", "dev", "development, test, testing, sandbox"],
+            ["PROD", "prod", "production, prd"],
+            ["NON-PROD", "nonprod", "non-prod, dev, development, test, testing, sit, uat, qa, preprod, stage, staging, stg, sandbox"],
         ]),
         h("Tags CloudOps reads"),
         table(["Tag", "Used for"], [
@@ -168,8 +167,8 @@ def priority():
         p("Priority says who is told first. It comes from the environment and the severity together and does not change "
           "how often data is collected."),
         table(["Environment", "Critical alert", "Warning or info alert"],
-              [["Prod", "P1", "P2"], ["UAT", "P2", "P3"], ["Dev", "P3", "P4"]]),
-        ul(["An environment that is not prod, uat or dev (unknown, ignore, free text) is ranked like prod.",
+              [["PROD", "P1", "P2"], ["NON-PROD", "P3", "P4"]]),
+        ul(["An environment that is not recognised (unknown, free text, a value saved before the two-environment model) is ranked like PROD.",
             "A resource tagged Criticality=critical goes up one level, never above P1.",
             "Priority is recomputed for every open alert each cycle; resolved alerts keep their last value."]),
         p("Switch: PRIORITY_ENABLED (default off). Off: no priority is stored or shown. On: P-chips, the Firing by priority strip "
@@ -214,13 +213,12 @@ def metrics_polling():
         h("Environment polling (ENV_POLLING_ENABLED)"),
         p("Needs ENV_AWARE_CLASSIFICATION on as well. Off: every resource is polled at its base interval. On:"),
         table(["Environment", "Critical-class metric", "Everything else"], [
-            ["prod, unknown, ignore", "unchanged", "unchanged"],
-            ["uat", "unchanged", "base interval x 3 (POLL_UAT_MULTIPLIER)"],
-            ["dev", "at least 10 min", "at least 60 min, or not collected (POLL_DEV_NONCRITICAL_MODE=off)"],
+            ["PROD (and anything unplaced)", "unchanged", "unchanged"],
+            ["NON-PROD", "at least 10 min", "at least 60 min, or not collected (POLL_NONPROD_NONCRITICAL_MODE=off)"],
         ]),
         ul(["Slowing never goes below the base interval; the poll that does run looks back further, so charts keep the same number of points and are only later.",
             "Never slowed: metrics whose base interval is 24 h or more, WAFv2, and the free Describe-API metrics.",
-            "Critical-class means the set evaluated every 2 minutes. On dev only critical-class metrics are evaluated for alerts by default."]),
+            "Critical-class means the set evaluated every 2 minutes. On NON-PROD only critical-class metrics are evaluated for alerts by default."]),
         h("WAF fast polling (off by default)"),
         p("WAF_FAST_POLLING_ENABLED moves key WAFv2 metrics from daily to 5-minute polling at 1-minute resolution; "
           "WAF_PER_RULE_ENABLED adds per-rule blocked/counted series. Both read once per process: restart after a change."),
@@ -235,11 +233,10 @@ def polling_admin():
         table(["Setting", "Default", "Range", "Effect"], [
             ["ENV_AWARE_CLASSIFICATION", "off", "true/false", "Required for environment polling and priority from resolved environment"],
             ["ENV_POLLING_ENABLED", "off", "true/false", "Environment-based polling (needs the flag above)"],
-            ["POLL_UAT_MULTIPLIER", str(ep.DEFAULT_UAT_MULTIPLIER), f"1-{ep.MAX_MULTIPLIER}", "UAT non-critical interval multiplier"],
-            ["POLL_DEV_INTERVAL_SECONDS", str(ep.DEFAULT_DEV_INTERVAL_SECONDS), f"{ep.MIN_INTERVAL_SECONDS}-{ep.MAX_INTERVAL_SECONDS}", "Dev non-critical interval"],
-            ["POLL_DEV_CRITICAL_INTERVAL_SECONDS", str(ep.DEFAULT_DEV_CRITICAL_INTERVAL_SECONDS), f"{ep.MIN_INTERVAL_SECONDS}-{ep.MAX_INTERVAL_SECONDS}", "Dev critical-class interval"],
-            ["POLL_DEV_NONCRITICAL_MODE", ep.DEFAULT_DEV_NONCRITICAL_MODE, "slow | off", "slow polls dev non-critical hourly; off stops collecting"],
-            ["POLL_DEV_EVAL_CRITICAL_ONLY", "true", "true/false", "Dev: evaluate only critical-class metrics"],
+            ["POLL_NONPROD_INTERVAL_SECONDS", str(ep.DEFAULT_NONPROD_INTERVAL_SECONDS), f"{ep.MIN_INTERVAL_SECONDS}-{ep.MAX_INTERVAL_SECONDS}", "NON-PROD non-critical interval"],
+            ["POLL_NONPROD_CRITICAL_INTERVAL_SECONDS", str(ep.DEFAULT_NONPROD_CRITICAL_INTERVAL_SECONDS), f"{ep.MIN_INTERVAL_SECONDS}-{ep.MAX_INTERVAL_SECONDS}", "NON-PROD critical-class interval"],
+            ["POLL_NONPROD_NONCRITICAL_MODE", ep.DEFAULT_NONPROD_NONCRITICAL_MODE, "slow | off", "slow polls NON-PROD non-critical hourly; off stops collecting"],
+            ["POLL_NONPROD_EVAL_CRITICAL_ONLY", "true", "true/false", "NON-PROD: evaluate only critical-class metrics"],
             ["WAF_FAST_POLLING_ENABLED / WAF_PER_RULE_ENABLED", "off", "true/false", "See Metrics and polling"],
             ["PRIORITY_ENABLED / PRIORITY_ROUTING_ENABLED", "off", "true/false", "See Priority"],
         ]),
@@ -280,7 +277,7 @@ def alerts():
           "does not raise a false alarm; it closes after the same number of healthy readings."),
         link("Colours, priority table and polling groups: Alerts page, 'How to read alerts'", "/alerts"),
         h("Severity"),
-        ul(["Critical (red), Warning (amber), Info (blue), Resolved (green). Info is the warning-level breach on a UAT or Dev resource.",
+        ul(["Critical (red), Warning (amber), Info (blue), Resolved (green). Info is the warning-level breach on a NON-PROD resource.",
             "If a resource shows Info but should be Production, set its Environment on the Environments page."]),
         h("Lifecycle"),
         ul(["Active: firing. Acknowledged: someone has taken it (still open). Resolved: back inside its limits, or resolved by hand.",
@@ -294,7 +291,7 @@ def alerts():
         ul(["Several consecutive breaches before opening.",
             "Anomaly-only placeholder thresholds and minimum absolute floors (see Thresholds).",
             "Maintenance windows silence alerts during planned work.",
-            "Info instead of Warning on UAT and Dev."]),
+            "Info instead of Warning on NON-PROD."]),
         h("Other tools on an alert"),
         ul(["Explain and RCA report (alerts.view), console link into the cloud console."]),
         note("Troubleshooting: no alert although a metric looks bad. Check the metric is enabled for the account, the "

@@ -105,15 +105,15 @@ def test_migrations_can_be_run_twice(gov_db):
 
 def test_sync_persists_warnings_and_never_changes_the_environment(gov_db):
     sync, _ = _wire()
-    gov_db.resource(1, "ec2", "i-1", name="web-prod-01", tags={"Environment": "dev"})          # tag dev, name prod
+    gov_db.resource(1, "ec2", "i-1", name="web-prod-01", tags={"Environment": "dev"})          # tag nonprod, name prod
     gov_db.resource(1, "ec2", "i-2", name="orders-prd-2", tags={"Environment": "prod"})        # agrees
-    gov_db.resource(1, "ec2", "i-3", name="x-dev-3")
-    gov_db.x("UPDATE resources SET env_override='uat' WHERE resource_id='i-3'")               # manual vs name
+    gov_db.resource(1, "ec2", "i-3", name="x-prod-3")
+    gov_db.x("UPDATE resources SET env_override='nonprod' WHERE resource_id='i-3'")               # manual vs name
     rep = sync.sync_resource_environments()
     a, b, c = _row(gov_db, "i-1"), _row(gov_db, "i-2"), _row(gov_db, "i-3")
-    assert (a["env"], a["src"]) == ("dev", "tag") and a["warn"].startswith("tag_vs_name:")      # the TAG still decides
+    assert (a["env"], a["src"]) == ("nonprod", "tag") and a["warn"].startswith("tag_vs_name:")      # the TAG still decides
     assert b["warn"] is None
-    assert (c["env"], c["src"]) == ("uat", "manual") and c["warn"].startswith("manual_vs_name:")
+    assert (c["env"], c["src"]) == ("nonprod", "manual") and c["warn"].startswith("manual_vs_name:")
     assert rep["warnings"] == 2 and rep["warning_applied"] == 2
 
 
@@ -136,7 +136,7 @@ def test_prod_instance_with_a_dev_volume_is_flagged_on_the_volume_and_the_volume
     _edge(gov_db, "i-1", "vol-1"); _edge(gov_db, "i-1", "vol-2")
     sync.sync_resource_environments()
     v1, v2, inst = _row(gov_db, "vol-1"), _row(gov_db, "vol-2"), _row(gov_db, "i-1")
-    assert (v1["env"], v1["src"]) == ("dev", "name") and v1["warn"].startswith("volume_vs_instance:")
+    assert (v1["env"], v1["src"]) == ("nonprod", "name") and v1["warn"].startswith("volume_vs_instance:")
     assert (v2["env"], v2["src"]) == ("prod", "related") and v2["warn"] is None
     assert inst["warn"] is None
 
@@ -183,40 +183,40 @@ def test_preview_writes_nothing_and_matches_what_the_write_then_does(gov_db):
     before = _fingerprint(gov_db)
     audit_before = gov_db.one("SELECT COUNT(*) AS n FROM audit_logs")["n"]
 
-    prev = gov.preview_default(1, "uat")
+    prev = gov.preview_default(1, "nonprod")
     assert _fingerprint(gov_db) == before                                        # nothing written
     assert gov_db.one("SELECT default_env FROM aws_accounts WHERE id=1")["default_env"] is None
     assert gov_db.one("SELECT COUNT(*) AS n FROM audit_logs")["n"] == audit_before
-    assert prev["new_default"] == "uat" and prev["current_default"] is None
-    assert prev["environment_changes"] == 5                                      # five unknown rows become uat by account
-    assert prev["by_env"] == {"prod": 2, "uat": 5} and prev["by_source"]["account"] == 5
-    assert {(m["from"], m["to"]): m["count"] for m in prev["moves"]}[("unknown", "uat")] == 5
+    assert prev["new_default"] == "nonprod" and prev["current_default"] is None
+    assert prev["environment_changes"] == 5                                      # five unplaced rows become nonprod by account
+    assert prev["by_env"] == {"prod": 2, "nonprod": 5} and prev["by_source"]["account"] == 5
+    assert {(m["from"], m["to"]): m["count"] for m in prev["moves"]}[("prod", "nonprod")] == 5
 
     audit = []
     api = _api(gov, audit=audit)
-    out = api.set_account_default(1, request=None, payload={"env": "uat"}, current_user=USER)
+    out = api.set_account_default(1, request=None, payload={"env": "nonprod"}, current_user=USER)
     assert out["reclassified"] == prev["rows_rewritten"] == 5                    # the figure the dialog showed is the figure written
     after = {r["env_resolved"] for r in gov_db.q("SELECT env_resolved FROM resources WHERE aws_account_id=1")}
-    assert after == {"prod", "uat"}
+    assert after == {"prod", "nonprod"}
     assert audit and audit[0][1] == "Account default environment changed"        # the write still audits
 
 
 def test_preview_of_the_current_default_changes_nothing(gov_db):
     sync, gov = _wire()
     _seed_default_scenario(gov_db)
-    gov_db.x("UPDATE aws_accounts SET default_env='dev' WHERE id=1")
+    gov_db.x("UPDATE aws_accounts SET default_env='nonprod' WHERE id=1")
     sync.sync_resource_environments()
-    prev = gov.preview_default(1, "dev")
+    prev = gov.preview_default(1, "nonprod")
     assert prev["unchanged"] is True and prev["rows_rewritten"] == 0 and prev["environment_changes"] == 0
 
 
-def test_preview_clearing_the_default_returns_resources_to_unknown(gov_db):
+def test_preview_clearing_the_default_returns_resources_to_unplaced_prod(gov_db):
     sync, gov = _wire()
     _seed_default_scenario(gov_db)
-    gov_db.x("UPDATE aws_accounts SET default_env='dev' WHERE id=1")
+    gov_db.x("UPDATE aws_accounts SET default_env='nonprod' WHERE id=1")
     sync.sync_resource_environments()
     prev = gov.preview_default(1, None)
-    assert prev["environment_changes"] == 5 and {(m["from"], m["to"]) for m in prev["moves"]} == {("dev", "unknown")}
+    assert prev["environment_changes"] == 5 and {(m["from"], m["to"]) for m in prev["moves"]} == {("nonprod", "prod")}
 
 
 def test_preview_scopes_alert_impact_to_the_account_and_to_the_flag(gov_db, monkeypatch):
@@ -231,12 +231,12 @@ def test_preview_scopes_alert_impact_to_the_account_and_to_the_flag(gov_db, monk
              "VALUES (1,'i-4','CPUUtilization','WARNING',90,80,'RESOLVED',%s,%s)", (now, now))
 
     monkeypatch.delenv("ENV_AWARE_CLASSIFICATION", raising=False)
-    off = gov.preview_default(1, "dev")["alerts"]
+    off = gov.preview_default(1, "nonprod")["alerts"]
     assert off["flag_on"] is False and off["open_alerts_affected"] == 0
 
     monkeypatch.setenv("ENV_AWARE_CLASSIFICATION", "true")
     monkeypatch.setenv("PRIORITY_ENABLED", "true")
-    on = gov.preview_default(1, "dev")["alerts"]
+    on = gov.preview_default(1, "nonprod")["alerts"]
     assert on["flag_on"] and on["priority_on"]
     assert on["warning_to_info"] == 1                                            # i-2 only: the other account and the resolved alert are out
     shifts = {(s["from"], s["to"]): s["count"] for s in on["priority_shifts"]}
@@ -300,13 +300,13 @@ def test_accepting_a_suggestion_uses_the_audited_classify_path_and_the_history_s
     assert (_row(gov_db, "i-u")["env"], _row(gov_db, "i-u")["src"]) == ("prod", "manual")
     actor, action, kw = audit[0]
     assert action == "Environment classification changed" and kw["payload"]["via"] == "suggestion"
-    assert kw["payload"]["previous"][str(pk)] == ["unknown", "unknown"]
+    assert kw["payload"]["previous"][str(pk)] == ["prod", "unknown"]
     # the same payload, stored as audit_logs would store it, drives the history
     gov_db.x("INSERT INTO audit_logs (actor, action, payload) VALUES (%s,%s,%s)", (actor, action, json.dumps(kw["payload"])))
     h = gov.resource_history(pk, None)
     ev = h["events"][0]
     assert ev["kind"] == "classified" and ev["actor"] == "vinay" and ev["to_env"] == "prod"
-    assert (ev["from_env"], ev["from_source"], ev["via"]) == ("unknown", "unknown", "suggestion")
+    assert (ev["from_env"], ev["from_source"], ev["via"]) == ("prod", "unknown", "suggestion")
     assert h["current"]["override_by"] == "vinay" and h["current"]["env"] == "prod"
 
 

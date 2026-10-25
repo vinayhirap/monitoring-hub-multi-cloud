@@ -16,37 +16,33 @@ Resolution order, first match wins:
     5. account  the account's admin-set default (aws_accounts.default_env)
     6. unknown  nothing matched
 
-Canonical results: "prod", "uat" (uat / pre-prod / stage / staging / qa),
-"dev" (dev / development / test / sandbox), "unknown", and "ignore" (manual
-only: a user dismissed the resource from the Needs-classification queue).
+There are exactly two environments (app/env_tiers.py): "prod" and "nonprod" (displayed PROD / NON-PROD).
+NON-PROD is everything that is not production: dev, test, sit, uat, qa, staging, pre-prod, sandbox, non-prod.
 
-UNKNOWN IS NOT DEV AND NOT SILENT. The old evaluator defaulted a resource with
-no Environment tag to "prod". That label was wrong but it failed SAFE (nothing
-was suppressed). The replacement keeps the safe half: unknown and ignore are
-"prod-like" (is_prod_like), so an unclassified resource is still alerted at
-prod strength, but it is no longer LABELLED prod and it shows up in the
-Needs-classification queue for a human to settle.
+A resolution is always one of those two. HOW SURE WE ARE is carried separately, in `source`:
+manual / tag / name / related / account, or "unknown" when no evidence was found.
+
+UNKNOWN IS NOT SILENT AND NOT WEAKER. A resource nothing can place resolves to PROD (the fail-safe: it is alerted
+at production strength, ranked P1/P2 and polled at full cadence) with source "unknown", and it waits in the
+Needs-classification queue until a person confirms or changes it. There is no third "unknown" environment.
 
 NAME MATCHING. A name is split into tokens on every non-alphanumeric character
 and on camelCase boundaries; a token matches only if it equals a keyword after
-trailing digits are dropped ("prod01" and "dev2" match, "product",
-"reproduce", "contest" and "latest" do not). "pre-prod" is recognised as a
-phrase BEFORE tokenising, otherwise its "prod" half would read as production;
-"non-prod" / "nonprod" is deliberately ignored (it does not say which
-non-production tier it is). Tokens that point at two different tiers
-("prod-to-dev-sync") are not guessed at: the result is "unknown" with the
-conflict recorded in the reason. "DevOps" (also DevSecOps / SecDevOps) is a discipline, not the dev tier, and is
-ignored like "non-prod".
+trailing digits are dropped ("prod01", "dev2" and "sit1" match, "product",
+"reproduce", "contest", "latest" and "site" do not). "pre-prod" and "non-prod" are recognised as phrases BEFORE
+tokenising, otherwise their "prod" half would read as production. Tokens that point at both environments
+("prod-to-dev-sync") are not guessed at: the result is PROD with source "unknown" and the conflict recorded in the
+reason. "DevOps" (also DevSecOps / SecDevOps) is a discipline, not an environment, and is ignored.
 """
 import json
 import os
 import re
 from collections import namedtuple
 
-PROD, UAT, DEV, UNKNOWN, IGNORE = "prod", "uat", "dev", "unknown", "ignore"
+from app.env_tiers import (PROD, NONPROD, TIERS, PROD_WORDS, NONPROD_WORDS, recognized_tier,  # noqa: F401
+                           to_tier, is_nonprod)
 
-TIERS = (PROD, UAT, DEV)
-MANUAL_CHOICES = (PROD, UAT, DEV, IGNORE)          # what a user may save
+MANUAL_CHOICES = TIERS                               # what a user may save (plus "clear" in the API)
 SOURCES = ("manual", "tag", "name", "related", "account", "unknown")
 # A parent only lends its environment when that rests on evidence about the parent itself.
 # Account defaults, unknowns and other inherited values are never passed down the chain.
@@ -61,17 +57,11 @@ TAG_KEYS = (
     "appenv", "env_type", "environment_type", "envtype",
 )
 
-_PROD_WORDS = {"prod", "production", "prd"}
-_UAT_WORDS = {"uat", "preprod", "preproduction", "stage", "staging", "stg", "qa", "qas"}
-_DEV_WORDS = {"dev", "development", "test", "testing", "sandbox"}
-
 _WORD_TIER = {}
-for _w in _PROD_WORDS:
+for _w in PROD_WORDS:
     _WORD_TIER[_w] = PROD
-for _w in _UAT_WORDS:
-    _WORD_TIER[_w] = UAT
-for _w in _DEV_WORDS:
-    _WORD_TIER[_w] = DEV
+for _w in NONPROD_WORDS:
+    _WORD_TIER[_w] = NONPROD
 
 _SEP = r"[\s_\-./:]*"
 _PRE_PROD = re.compile(r"(?<![a-z0-9])pre" + _SEP + r"prod(?:uction)?(?![a-z])", re.I)
@@ -95,9 +85,9 @@ def flag_enabled():
 
 
 def is_prod_like(env):
-    """True for prod AND for everything we could not classify. Unknown must
-    never be alerted more weakly than prod."""
-    return env not in (UAT, DEV)
+    """True for PROD AND for anything we could not classify (None, '', legacy 'unknown' / 'ignore', junk).
+    Unplaced must never be alerted more weakly than prod. Legacy stored values 'uat' / 'dev' count as NON-PROD."""
+    return not is_nonprod(env)
 
 
 def normalize_tier(value):
@@ -114,12 +104,12 @@ def _scan(text):
     tiers, words = [], []
 
     def _take_phrase(m):
-        tiers.append(UAT)
+        tiers.append(NONPROD)
         words.append(m.group(0).strip().lower())
         return " "
 
     s = _PRE_PROD.sub(_take_phrase, s)
-    s = _NON_PROD.sub(" ", s)
+    s = _NON_PROD.sub(_take_phrase, s)
     s = _CAMEL_2.sub(" ", _CAMEL_1.sub(" ", s))
     s = _DEVOPS.sub(" ", s)          # after the camelCase split, so "DevOpsRunner" -> "Dev Ops Runner" is seen
     for tok in _NON_ALNUM.split(s):
@@ -175,7 +165,7 @@ def _from_name(name, resource_id):
                               _clip(f"{label} token '{words[0]}' in '{text}'"))
         conflict = conflict or _clip(f"conflicting {label} tokens {sorted(set(words))} in '{text}'")
     if conflict:
-        return Resolution(UNKNOWN, "unknown", conflict)
+        return Resolution(PROD, "unknown", conflict)
     return None
 
 
@@ -188,7 +178,7 @@ def _from_related(related):
     envs = sorted({r.env for r, _ in usable})
     if len(envs) > 1:
         detail = ", ".join(f"{label}={r.env}" for r, label in usable)
-        return Resolution(UNKNOWN, "unknown", _clip(f"attached resources disagree: {detail}"))
+        return Resolution(PROD, "unknown", _clip(f"attached resources disagree: {detail}"))
     r, label = usable[0]
     return Resolution(r.env, "related", _clip(f"attached to {label} ({r.env}, by {r.source})"))
 
@@ -197,7 +187,10 @@ def resolve_environment(*, override=None, tags=None, name=None, resource_id=None
                         account_default=None, related=None):
     """Resolve one resource. See the module docstring for the order."""
     if override:
+        # a value stored before the two-environment model still means something: uat / dev -> nonprod, and the old
+        # "ignore" (stop asking, still alerted like prod) is a manual PROD
         o = str(override).strip().lower()
+        o = recognized_tier(o) or (PROD if o == "ignore" else None)
         if o in MANUAL_CHOICES:
             return Resolution(o, "manual", "set by a user")
 
@@ -205,11 +198,11 @@ def resolve_environment(*, override=None, tags=None, name=None, resource_id=None
     if hit:
         return hit
 
-    # A name that contradicts itself comes back as UNKNOWN. It may still be settled by the
+    # A name that contradicts itself comes back with source "unknown". It may still be settled by the
     # resource it is attached to (a person or a tag decided that), but it must never fall
     # through to the account default and pass for a confident answer.
     hit = _from_name(name, resource_id)
-    if hit and hit.env != UNKNOWN:
+    if hit and hit.source != "unknown":
         return hit
     name_conflict = hit
 
@@ -220,18 +213,16 @@ def resolve_environment(*, override=None, tags=None, name=None, resource_id=None
         return name_conflict
 
     if account_default:
-        d = str(account_default).strip().lower()
+        d = recognized_tier(account_default)
         if d in TIERS:
             return Resolution(d, "account", "account default")
 
-    return Resolution(UNKNOWN, "unknown", "no override, tag, name token or account default")
+    return Resolution(PROD, "unknown", "no override, tag, name token or account default (treated as PROD until placed)")
 
 
 def severity_for(env, is_critical):
     """The evaluator's severity rule, environment-aware: CRITICAL stays
-    CRITICAL; a warning-level breach is WARNING for prod-like resources (prod,
-    unknown, ignore) and INFO for uat / dev -- the same prod-vs-rest split the
-    evaluator has always had, with unknown now on the prod side explicitly."""
+    CRITICAL; a warning-level breach is WARNING on PROD (and on anything unplaced) and INFO on NON-PROD."""
     if is_critical:
         return "CRITICAL"
     return "WARNING" if is_prod_like(env) else "INFO"
@@ -357,9 +348,10 @@ def tags_known(resource_type, tags, synced=None, provider=None):
 def tag_state(resource_type, tags, synced=None, provider=None):
     """ok | nonstandard | invalid | missing | not_checked.
 
-    ok          Environment tag, exactly the standard key and one of prod / uat / dev
+    ok          Environment tag, exactly the standard key and exactly prod or nonprod
                 (GCP labels cannot hold capitals, so there the key is `environment`)
-    nonstandard understood but not to the standard (Env=Production, environment=prod, ...)
+    nonstandard understood but not to the standard (Env=Production, Environment=dev / uat / sit / non-prod, ...).
+                Alerting already treats these correctly; only the tag spelling is off the standard.
     invalid     an environment-style tag is present but its value means nothing / is ambiguous
     missing     no environment-style tag at all
     not_checked the stored tags are not this resource's own AWS tags (cannot say)
@@ -376,7 +368,7 @@ def tag_state(resource_type, tags, synced=None, provider=None):
 
 
 def tag_environment(tags):
-    """The environment the resource's own tag says (prod / uat / dev), or None."""
+    """The environment the resource's own tag says (prod / nonprod), or None."""
     hit = _from_tags(tags)
     return hit.env if hit else None
 
@@ -399,11 +391,11 @@ WARNING_KINDS = ("manual_vs_tag", "tag_vs_name", "manual_vs_name", "volume_vs_in
 def name_environment(name, resource_id=None):
     """The tier the NAME (then the ID) says, or None when it says nothing or contradicts itself."""
     hit = _from_name(name, resource_id)
-    return hit.env if hit and hit.env in TIERS else None
+    return hit.env if hit and hit.source == "name" else None
 
 
 def _tier_word(env):
-    return {PROD: "prod", UAT: "uat", DEV: "dev"}.get(env, str(env))
+    return {PROD: "prod", NONPROD: "non-prod"}.get(env, str(env))
 
 
 def detect_warning(*, env, source, override=None, tags=None, name=None, resource_id=None,
@@ -420,7 +412,7 @@ def detect_warning(*, env, source, override=None, tags=None, name=None, resource
     with no second piece of evidence never produce a warning.
     """
     o = str(override).strip().lower() if override else None
-    manual = o if o in TIERS else None
+    manual = recognized_tier(o) if o else None
     tag_env = tag_environment(tags)
     name_env = name_environment(name, resource_id)
     # An attached volume is stored WITH ITS INSTANCE'S tags (see tags_known): say whose tag it is.
@@ -434,7 +426,7 @@ def detect_warning(*, env, source, override=None, tags=None, name=None, resource
         return "tag_vs_name", _clip(f"tag_vs_name: the {own_tag} says {_tier_word(tag_env)} but the name says {_tier_word(name_env)}")
     if manual and name_env and manual != name_env:
         return "manual_vs_name", _clip(f"manual_vs_name: placed as {_tier_word(manual)} here but the name says {_tier_word(name_env)}")
-    if env in TIERS and source != "related":
+    if env in TIERS and source not in ("related", "unknown"):
         for res, label in (attached or ()):
             if res.env in TIERS and res.source in RELATED_PARENT_SOURCES and res.env != env:
                 return "volume_vs_instance", _clip(

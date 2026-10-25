@@ -5,13 +5,14 @@ Priority answers "who gets woken up first", and is worked out from two things th
 the resource's environment and the alert's severity.
 
                  critical   not critical (warning / info)
-    prod            P1            P2
-    uat             P2            P3
-    dev             P3            P4
+    PROD            P1            P2
+    NON-PROD        P3            P4
 
-* An environment that is not prod, uat or dev (unknown, "ignore", or a free-text label such as "staging") is
-  ranked like prod: an unclassified resource is never given a weaker priority than a production one.
-* A resource tagged Criticality=critical goes up one level (never above P1).
+* Only NON-PROD (dev, test, sit, uat, qa, staging ...) is ranked lower. Anything else -- PROD, a resource nobody has
+  placed yet, a legacy or free-text label -- is ranked like PROD: an unclassified resource is never given a weaker
+  priority than a production one.
+* A resource tagged Criticality=critical goes up one level (never above P1), so an important NON-PROD system can be
+  lifted to P2 / P3 by tagging it.
 
 Flags (both default off):
     PRIORITY_ENABLED          compute and store the label. Changes no severity, escalation or notification.
@@ -24,12 +25,13 @@ it is given.
 import json
 import os
 
+from app.env_tiers import PROD, NONPROD, to_tier
+
 P1, P2, P3, P4 = 1, 2, 3, 4
 PRIORITIES = (P1, P2, P3, P4)
 
 # (critical, not critical) per tier
-_TABLE = {"prod": (P1, P2), "uat": (P2, P3), "dev": (P3, P4)}
-_PROD_LIKE = "prod"
+_TABLE = {PROD: (P1, P2), NONPROD: (P3, P4)}
 
 _TRUE = ("true", "1", "yes")
 
@@ -44,13 +46,8 @@ def routing_enabled():
 
 
 def tier_for(environment):
-    """Any environment label -> prod | uat | dev. Everything unrecognised is prod-like on purpose."""
-    env = str(environment or "").strip().lower()
-    if env in ("uat",):
-        return "uat"
-    if env in ("dev", "development"):
-        return "dev"
-    return _PROD_LIKE
+    """Any environment label -> prod | nonprod. Everything unrecognised is prod on purpose."""
+    return to_tier(environment)
 
 
 def is_critical_resource(tags):
