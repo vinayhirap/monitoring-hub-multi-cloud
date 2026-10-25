@@ -4,7 +4,7 @@
 .ha-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .ha-hint { font-size: 12px; line-height: 1.45; color: var(--ink-3); margin: 2px 0 0; }
 .ha-seen { display: flex; flex-direction: column; line-height: 1.25; }
-.ha-rowactions { display: inline-flex; gap: 6px; }
+.ha-rowactions { display: inline-flex; flex-wrap: nowrap; gap: 6px; }
 .ha-acct { display: inline-flex; }
 
 .ha-notice, .ha-info-box, .ha-error-box { display: flex; align-items: center; gap: 12px; padding: 8px 12px; margin-bottom: var(--gap);
@@ -113,3 +113,10 @@
   .ha-manual { flex-direction: column; }
   .ha-dialog { padding: 16px; }
 }
+
+/* Narrow / split windows: a button's text never wraps out of its box. The hosts table keeps each cell on one line and
+   scrolls sideways inside its panel instead of squeezing (the panel itself clips overflow). */
+.ha-page .ui-btn { white-space: nowrap; flex: 0 0 auto; }
+.ha-page .ui-panel-body-flush { overflow-x: auto; }
+.ha-page .ui-panel-body-flush .ui-table { min-width: 880px; }
+.ha-page .ui-panel-body-flush .ui-table td { white-space: nowrap; }
