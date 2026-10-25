@@ -97,7 +97,8 @@
 .ha-pick-startup { margin: 0; }
 .ha-pick-none { padding: 18px 14px; margin: 0; text-align: center; }
 .ha-pick + .ha-hint { padding: 8px 14px 10px; margin: 0; }
-.ha-manual { display: flex; gap: 8px; }
+.ha-manual { display: flex; gap: 8px; align-items: center; }
+.ha-manual .ui-btn { flex: 0 0 auto; white-space: nowrap; }
 .ha-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
 .ha-chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 6px 4px 10px; font-size: 12px; color: var(--ink-1);
   background: var(--brand-bg); border: 1px solid var(--brand-line); border-radius: 999px; }
