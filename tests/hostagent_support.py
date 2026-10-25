@@ -26,7 +26,7 @@ class MiniDb:
         self.keys, self.hosts, self.tokens = {}, {}, {}
         self.resources, self.metrics, self.history = {}, [], []      # read-only fixtures for GET /{id}/metrics
         self.services = {}                                           # (host_agent_id, service_name) -> row (migration 123)
-        self.inventory = {}                                          # (host_agent_id, service_name) -> row (migration 126)
+        self.inventory = {}                                          # (host_agent_id, service_name) -> row (migration 131)
         self._seq = {"k": 0, "h": 0, "t": 0}
         self.sql_log = []
         self.lock = threading.Lock()

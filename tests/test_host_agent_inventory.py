@@ -1,5 +1,5 @@
 # tests/test_host_agent_inventory.py
-"""Host agent service inventory (migration 126): payload validation (pure), the ingest write (newest scan wins, complete
+"""Host agent service inventory (migration 131): payload validation (pure), the ingest write (newest scan wins, complete
 snapshot replaces, empty means no news), and GET /api/host-agents/{id}/service-inventory (scoping, plumbing flag, watched
 flag, typo detection)."""
 import time

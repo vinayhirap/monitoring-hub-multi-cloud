@@ -805,7 +805,7 @@ def test_runner_preference_errors_fall_back_to_the_paid_fetch(monkeypatch):
     assert runner._host_agent_skip_mem(rs) is rs
 
 
-# ── service inventory (migration 126) ────────────────────────────────────
+# ── service inventory (migration 131) ────────────────────────────────────
 
 def _inv_item(name="nginx", state="running", startup="enabled", description="web"):
     return {"name": name, "state": state, "startup": startup, "description": description}

@@ -1,4 +1,4 @@
--- db/migrations/126_host_agent_service_inventory.sql
+-- db/migrations/131_host_agent_service_inventory.sql
 --
 -- Host agent: the list of services that EXIST on a host, so Configure -> "Add service" can offer a real picker instead of
 -- blind free text (a typo such as "nginxS" was accepted and then reported "unknown" forever).
