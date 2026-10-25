@@ -142,6 +142,21 @@ func (c *Collector) winServices(ctx context.Context, names []string) []payload.S
 	}, true)
 }
 
+// scState maps the numeric STATE code of `sc query` (locale independent) to the contract state: 4 running, 1 stopped,
+// anything else (start/stop pending, paused, unparsable) unknown. Shared by the watch-list and the inventory parsers so the
+// two can never disagree about a service.
+func scState(code string) string {
+	switch n, err := strconv.Atoi(code); {
+	case err != nil:
+		return "unknown"
+	case n == 4:
+		return "running"
+	case n == 1:
+		return "stopped"
+	}
+	return "unknown"
+}
+
 // parseScQuery returns lower-cased service name -> running|stopped|unknown.
 func parseScQuery(out string) map[string]string {
 	res := map[string]string{}
@@ -160,17 +175,7 @@ func parseScQuery(out string) map[string]string {
 			if len(f) == 0 {
 				continue
 			}
-			code, err := strconv.Atoi(f[0])
-			state := "unknown"
-			if err == nil {
-				switch code {
-				case 4:
-					state = "running"
-				case 1:
-					state = "stopped"
-				}
-			}
-			res[cur] = state
+			res[cur] = scState(f[0])
 			cur = ""
 		}
 	}

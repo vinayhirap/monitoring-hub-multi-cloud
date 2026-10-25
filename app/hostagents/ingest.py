@@ -81,6 +81,17 @@ SQL_UPSERT_SERVICES = (
     "state = IF(VALUES(observed_at) >= observed_at, VALUES(state), state), "
     "observed_at = GREATEST(observed_at, VALUES(observed_at))"
 )
+# Inventory = every service that exists on the host (picker data). A snapshot is the COMPLETE set, so rows older than the
+# newest scan are deleted; an older payload can neither overwrite a newer row nor delete anything newer.
+SQL_UPSERT_INVENTORY = (
+    "INSERT INTO host_agent_service_inventory (host_agent_id, service_name, state, startup, description, scanned_at) "
+    "VALUES (%s, %s, %s, %s, %s, %s) "
+    "ON DUPLICATE KEY UPDATE "
+    "state = IF(VALUES(scanned_at) >= scanned_at, VALUES(state), state), "
+    "startup = IF(VALUES(scanned_at) >= scanned_at, VALUES(startup), startup), "
+    "description = IF(VALUES(scanned_at) >= scanned_at, VALUES(description), description), "
+    "scanned_at = GREATEST(scanned_at, VALUES(scanned_at))"
+)
 SERVICE_CLAMP_PAST_SECONDS = 24 * 3600
 SERVICE_CLAMP_FUTURE_SECONDS = 10 * 60
 SQL_UPSERT_METRICS = (
@@ -232,6 +243,7 @@ def _transact(conn, agent, clean):
         if not samples:                                   # HEARTBEAT: one UPDATE (plus the services write when it carries any)
             cur.execute(SQL_HEARTBEAT, (seq, seq, version, agent_id))
             _write_services(cur, agent, clean)
+            _write_inventory(cur, agent, clean)
         else:
             cur.execute(SQL_CLAIM_SEQ, (seq, version, agent_id, seq))
             if cur.rowcount == 0:                         # duplicate (or revoked meanwhile): alive, but write nothing
@@ -240,6 +252,7 @@ def _transact(conn, agent, clean):
                 rid, rtype, events = _resolve_resource(cur, agent, clean)
                 _write_samples(cur, rid, samples)
                 _write_services(cur, agent, clean)
+                _write_inventory(cur, agent, clean)
                 out.update(resource_db_id=rid, resource_type=rtype, events=events,
                            fed=sorted({s[0] for s in samples}))
 
@@ -365,6 +378,20 @@ def _write_services(cur, agent, clean):
                 + ", ".join(["%s"] * len(names)) + ")", (agent_id, *names))
 
 
+def _write_inventory(cur, agent, clean):
+    """Replace the host's service inventory with this snapshot. Absent or empty (every report except one in ~30 minutes, and
+    a snapshot the agent could not take) does nothing: an empty list is "no news", never "no services exist"."""
+    inventory = clean.get("inventory") or []
+    if not inventory:
+        return
+    agent_id = agent["host_agent_id"]
+    scanned = _service_observed_at(clean.get("sent_at"))
+    rows = sorted(((agent_id, name, state, startup, desc, scanned) for name, state, startup, desc in inventory),
+                  key=lambda r: r[1])                     # same lock order on every call (fewer deadlocks)
+    cur.executemany(SQL_UPSERT_INVENTORY, rows)
+    cur.execute("DELETE FROM host_agent_service_inventory WHERE host_agent_id = %s AND scanned_at < %s", (agent_id, scanned))
+
+
 # ── after commit (best effort, never fails the request) ──────────────────
 
 def _after_commit(agent, clean, result, request):
@@ -379,6 +406,13 @@ def _after_commit(agent, clean, result, request):
         return
     if result.get("resource_type") == "ec2":
         _register_mounts(agent["aws_account_id"], clean)
+    if result.get("resource_type"):
+        try:                                              # every host metric selectable + tunable in Settings
+            from app.hostagents import catalog
+            catalog.ensure_host_metrics_registered(agent["aws_account_id"], result["resource_type"],
+                                                   [s[0] for s in clean["samples"]])
+        except Exception as e:
+            logger.warning("host agent catalog registration failed: %s", e)
     prefer.mark_feed(rid, result.get("fed", []))
 
 

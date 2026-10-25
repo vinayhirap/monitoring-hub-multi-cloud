@@ -56,14 +56,19 @@ type Options struct {
 type Settings struct {
 	WatchServices      []string
 	DiskExcludeFstypes []string
+	// WithInventory asks for a scan of every service that exists on the host (one extra service-manager call). The runner
+	// sets it on the first pass and then about every 30 minutes; otherwise the watch-list path stays the only cost.
+	WithInventory bool
 }
 
 // Result is one collection pass.
 type Result struct {
 	Metrics  []payload.Metric
 	Services []payload.Service
-	BootTime int64
-	Errs     []error // non-fatal, per-collector
+	// Inventory is nil unless WithInventory was set AND the scan worked; nil means "no news", never "no services".
+	Inventory []payload.InventoryItem
+	BootTime  int64
+	Errs      []error // non-fatal, per-collector
 }
 
 // Collector holds the previous counter samples needed for rates. It is not
@@ -144,6 +149,10 @@ func (c *Collector) Collect(ctx context.Context, s Settings) Result {
 		fail(c.procCount(add))
 		fail(c.uptime(add))
 		r.Services = c.services(ctx, s.WatchServices)
+	}
+
+	if s.WithInventory {
+		r.Inventory = c.inventory(ctx)
 	}
 
 	sort.SliceStable(r.Metrics, func(i, j int) bool { return r.Metrics[i].Name < r.Metrics[j].Name })

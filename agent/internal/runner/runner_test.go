@@ -146,6 +146,7 @@ type rig struct {
 	settings []collect.Settings
 	smu      sync.Mutex
 	ticks    int
+	inv      func(n int) []payload.InventoryItem // optional: what the fake collector's inventory scan returns on call n
 	r        *Runner
 	cancel   context.CancelFunc
 	done     chan error
@@ -182,6 +183,9 @@ func newRig(t *testing.T, hub *fakeHub, dir string, bo *sender.Backoff) *rig {
 			}}
 			for _, w := range s.WatchServices {
 				res.Services = append(res.Services, payload.Service{Name: w, State: "running"})
+			}
+			if s.WithInventory && g.inv != nil {
+				res.Inventory = g.inv(n)
 			}
 			return res
 		},
@@ -588,5 +592,57 @@ func TestNullInstanceIDWhenUnknown(t *testing.T) {
 	b, _ := json.Marshal(g.r.build(collect.Result{}, time.Unix(5, 0))[0])
 	if !strings.Contains(string(b), `"instance_id":null`) {
 		t.Errorf("want explicit null: %s", b)
+	}
+}
+
+func TestInventoryIsRequestedUntilItSucceedsThenOnlyOnTheFirstReport(t *testing.T) {
+	hub := newHub(t)
+	g := newRig(t, hub, "", nil)
+	g.inv = func(n int) []payload.InventoryItem {
+		if n == 1 {
+			return nil // first scan failed: must be retried on the very next tick, not 30 minutes later
+		}
+		return []payload.InventoryItem{{Name: "nginx", State: "running", Startup: "enabled"}}
+	}
+	g.start()
+	waitFor(t, "5 payloads", func() bool { return hub.nReceived() >= 5 })
+	g.stop()
+
+	g.smu.Lock()
+	defer g.smu.Unlock()
+	if !g.settings[0].WithInventory || !g.settings[1].WithInventory {
+		t.Error("inventory must be requested on the first pass and again after a failed scan")
+	}
+	for i, s := range g.settings[2:] {
+		if s.WithInventory {
+			t.Errorf("pass %d re-requested the inventory inside the %v window", i+3, inventoryEvery)
+		}
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	withInv := 0
+	for _, p := range hub.received {
+		if len(p.ServiceInventory) > 0 {
+			withInv++
+		}
+	}
+	if withInv != 1 {
+		t.Errorf("exactly one report should carry the inventory, got %d", withInv)
+	}
+}
+
+func TestBuildPutsTheInventoryOnTheFirstPayloadOnlyAndOmitsItOtherwise(t *testing.T) {
+	hub := newHub(t)
+	g := newRig(t, hub, "", nil)
+	g.r.cfg.MaxBatchMetrics = 2
+	ms := []payload.Metric{{Name: "a", Ts: 1}, {Name: "b", Ts: 1}, {Name: "c", Ts: 1}}
+	inv := []payload.InventoryItem{{Name: "nginx", State: "running"}}
+	ps := g.r.build(collect.Result{Metrics: ms, Inventory: inv}, time.Unix(5, 0))
+	if len(ps) != 2 || len(ps[0].ServiceInventory) != 1 || ps[1].ServiceInventory != nil {
+		t.Fatalf("inventory belongs on the first payload only: %+v", ps)
+	}
+	b, _ := json.Marshal(g.r.build(collect.Result{Metrics: ms[:1]}, time.Unix(5, 0))[0])
+	if strings.Contains(string(b), "service_inventory") {
+		t.Errorf("no scan => the field must be omitted, not null or []: %s", b)
 	}
 }

@@ -14,6 +14,8 @@ matrix.
                                                     (feeds the same chart card as the EC2 page)
   GET    /api/host-agents/{id}/services             hostagents.view, scoped the same way; watched services with their latest
                                                     state, plus the host's current config (what Configure edits)
+  GET    /api/host-agents/{id}/service-inventory    hostagents.view, scoped the same way; every service that EXISTS on the
+                                                    host (latest agent snapshot) so Configure can offer a real picker
   POST   /api/host-agents/enrollment-keys           hostagents.manage
   GET    /api/host-agents/enrollment-keys           hostagents.manage (never returns a key)
   DELETE /api/host-agents/enrollment-keys/{id}      hostagents.manage
@@ -545,6 +547,64 @@ def host_agent_services(host_id: int, current_user: dict = Depends(require_permi
         "interval_seconds": cfg.get("interval_seconds"), "watch_services": list(cfg.get("watch_services") or []),
         **out,
     }
+
+
+SQL_HOST_FOR_INVENTORY = (
+    "SELECT id, aws_account_id, hostname, status, os, agent_version, config_json FROM host_agents WHERE id = %s")
+SQL_INVENTORY = ("SELECT service_name, state, startup, description, scanned_at FROM host_agent_service_inventory "
+                 "WHERE host_agent_id = %s ORDER BY service_name")
+# Unit-file / label classes that are OS plumbing rather than something a person installed or enabled. Hidden by default in
+# the picker ("major" services), one toggle away, and always selectable.
+_PLUMBING_STARTUP = ("static", "indirect", "generated", "transient", "system")
+
+
+def _inventory_view(rows, watch, now: datetime) -> dict:
+    """Pure. Inventory rows + the configured watch list -> picker data. `major` marks the services a person would expect to
+    see first (anything not OS plumbing); `watched` marks names already on the watch list. Names on the watch list that the
+    last scan did not find are returned as `missing_watched`, so the UI can flag a typo instead of hiding it."""
+    watched = set(watch or [])
+    items, names, scanned = [], set(), None
+    for r in rows:
+        startup = (r.get("startup") or "").lower()
+        names.add(r["service_name"])
+        if r.get("scanned_at") and (scanned is None or r["scanned_at"] > scanned):
+            scanned = r["scanned_at"]
+        items.append({"name": r["service_name"], "state": r["state"], "startup": r.get("startup") or "",
+                      "description": r.get("description") or "",
+                      "major": startup not in _PLUMBING_STARTUP, "watched": r["service_name"] in watched})
+    return {
+        "items": items, "total": len(items),
+        "scanned_at": _iso(scanned),
+        "scan_age_seconds": max(0, int((now - scanned).total_seconds())) if scanned else None,
+        "missing_watched": [n for n in (watch or []) if n not in names] if items else [],
+    }
+
+
+@router.get("/{host_id}/service-inventory")
+def host_agent_service_inventory(host_id: int, current_user: dict = Depends(require_permission("hostagents.view"))):
+    """Every service the agent found on the host at its last scan (first report after start, then about every 30 minutes).
+    DB read only. An empty `items` list means no scan has arrived yet (agent too old, or just enrolled), not that the host
+    has no services; `agent_version` and `os` are returned so the UI can say which."""
+    accessible = get_accessible_account_ids(current_user)
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(SQL_HOST_FOR_INVENTORY, (host_id,))
+            host = cur.fetchone()
+            if not host or not _in_scope(accessible, host["aws_account_id"]):
+                raise HTTPException(status_code=404, detail="Host agent not found")
+            cur.execute(SQL_INVENTORY, (host_id,))
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+    cfg = _effective_config(host["config_json"])
+    watch = list(cfg.get("watch_services") or [])
+    return {"host_agent_id": host["id"], "hostname": host["hostname"], "status": host["status"],
+            "os": host.get("os"), "agent_version": host.get("agent_version"), "watch_services": watch,
+            **_inventory_view(rows, watch, _utcnow())}
 
 
 # ── enrollment keys ──────────────────────────────────────────────────────────

@@ -244,6 +244,23 @@ DEFAULT_THRESHOLDS = {
     'WriteThrottleEvents': (1, 5, '>'),
     'cluster_failed_node_count': (1, 3, '>'),
     'cluster_node_count': (1000000, 5000000, '>'),
+    # Host agent (app/hostagents/catalog.py). Same convention as the rows above: a real starting line where one is universal,
+    # the blank placeholder (anomaly-only, see PLACEHOLDER_THRESHOLD) for throughput, which has no universal limit.
+    # Load averages are per-run-queue, so the right line depends on the core count; 4 / 8 is conservative for a small
+    # (2-4 vCPU) server and is meant to be edited in Settings.
+    'host_cpu_percent': (85, 95, '>'),
+    'host_load1': (4, 8, '>'),
+    'host_load5': (4, 8, '>'),
+    'host_load15': (4, 8, '>'),
+    'host_mem_available_bytes': (524288000, 209715200, '<'),   # 500 MB / 200 MB left
+    'host_swap_used_percent': (50, 80, '>'),
+    'host_disk_inodes_used_percent': (80, 90, '>'),
+    'host_disk_read_bytes_per_s': (1000000, 5000000, '>'),
+    'host_disk_write_bytes_per_s': (1000000, 5000000, '>'),
+    'host_net_rx_bytes_per_s': (1000000, 5000000, '>'),
+    'host_net_tx_bytes_per_s': (1000000, 5000000, '>'),
+    'host_proc_count': (600, 1000, '>'),
+    'host_uptime_seconds': (300, 60, '<'),                      # a reboot in the last 5 min / last minute
 }
 
 # PLACEHOLDER thresholds (2026-09-20 alerts audit)

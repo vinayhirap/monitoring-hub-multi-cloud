@@ -26,6 +26,7 @@ class MiniDb:
         self.keys, self.hosts, self.tokens = {}, {}, {}
         self.resources, self.metrics, self.history = {}, [], []      # read-only fixtures for GET /{id}/metrics
         self.services = {}                                           # (host_agent_id, service_name) -> row (migration 123)
+        self.inventory = {}                                          # (host_agent_id, service_name) -> row (migration 126)
         self._seq = {"k": 0, "h": 0, "t": 0}
         self.sql_log = []
         self.lock = threading.Lock()
@@ -154,6 +155,12 @@ class MiniCursor:
         elif q.startswith("SELECT id, aws_account_id, hostname, status, config_version, config_json FROM host_agents WHERE id"):
             h = db.hosts.get(p[0])
             self._rows = [{c: h[c] for c in ("id", "aws_account_id", "hostname", "status", "config_version", "config_json")}] if h else []
+        elif q.startswith("SELECT id, aws_account_id, hostname, status, os, agent_version, config_json FROM host_agents WHERE id"):
+            h = db.hosts.get(p[0])
+            self._rows = [{c: h[c] for c in ("id", "aws_account_id", "hostname", "status", "os", "agent_version", "config_json")}] if h else []
+        elif q.startswith("SELECT service_name, state, startup, description, scanned_at FROM host_agent_service_inventory WHERE host_agent_id"):
+            self._rows = [{"service_name": n, **{c: v[c] for c in ("state", "startup", "description", "scanned_at")}}
+                          for (hid, n), v in sorted(db.inventory.items(), key=lambda kv: kv[0][1]) if hid == p[0]]
         elif q.startswith("UPDATE host_agents SET config_json"):
             h = db.hosts[p[1]]
             h["config_json"], h["config_version"] = p[0], h["config_version"] + 1

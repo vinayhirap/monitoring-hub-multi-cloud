@@ -20,6 +20,15 @@ type Service struct {
 	State string `json:"state"` // running | stopped | failed | unknown
 }
 
+// InventoryItem is one service that EXISTS on the host (not just a watched one): the hub stores the latest snapshot so the
+// UI can offer a picker. Name is exactly what can be put in watch_services. Startup and Description are optional hints.
+type InventoryItem struct {
+	Name        string `json:"name"`
+	State       string `json:"state"`                 // running | stopped | failed | unknown
+	Startup     string `json:"startup,omitempty"`     // systemd unit-file state (enabled, disabled, static, ...) or "system" on macOS
+	Description string `json:"description,omitempty"` // systemd Description / Windows display name
+}
+
 type Host struct {
 	Hostname   string  `json:"hostname"`
 	InstanceID *string `json:"instance_id"`
@@ -37,6 +46,9 @@ type Payload struct {
 	Host          Host      `json:"host"`
 	Metrics       []Metric  `json:"metrics"`
 	Services      []Service `json:"services"`
+	// ServiceInventory is sent on the first report after start and then about every 30 minutes, never on every report.
+	// Absent (omitted) means "no news"; the hub never reads an absent list as "no services exist".
+	ServiceInventory []InventoryItem `json:"service_inventory,omitempty"`
 }
 
 // ServerConfig is the hub-controlled configuration.

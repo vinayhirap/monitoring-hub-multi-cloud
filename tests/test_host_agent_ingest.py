@@ -154,6 +154,10 @@ def _env(auth=lambda token: dict(AGENT), rate=None, enabled=True, monkeypatch=No
     pkg.__path__ = [os.path.join(REPO_ROOT, "app", "hostagents")]
     for n in [n for n in sys.modules if n.startswith("app.hostagents.") and n != "app.hostagents.auth"]:
         del sys.modules[n]
+    # Catalog registration opens its own connection after the commit; recorded here (tests/test_host_agent_catalog.py covers it).
+    e.catalog_calls = []
+    install_stub("app.hostagents.catalog",
+                 ensure_host_metrics_registered=lambda *a, **k: e.catalog_calls.append(a) or True)
     e.ingest = importlib.import_module("app.hostagents.ingest")
     e.ingest._REGISTERED.clear()
     app = FastAPI()
@@ -799,3 +803,81 @@ def test_runner_preference_errors_fall_back_to_the_paid_fetch(monkeypatch):
     monkeypatch.setattr(prefer, "drop_resources_with_fed_metric", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     rs = [{"id": 1, "resource_id": "i-1"}]
     assert runner._host_agent_skip_mem(rs) is rs
+
+
+# ── service inventory (migration 126) ────────────────────────────────────
+
+def _inv_item(name="nginx", state="running", startup="enabled", description="web"):
+    return {"name": name, "state": state, "startup": startup, "description": description}
+
+
+def test_inventory_is_written_in_the_same_transaction_and_replaces_older_scans():
+    e = _env()
+    body = _payload(metrics=[_m("cpu_percent", 10)])
+    body["service_inventory"] = [_inv_item("nginx"), _inv_item("cron", "stopped", "disabled")]
+    r = _post(e, body)
+    assert r.status_code == 200 and r.json()["accepted"] == 1 and r.json()["rejected"] == 0
+    assert e.db.connections == 1 and e.db.commits == 1
+    sql, rows = [x for x in e.db.many if x[0] == e.ingest.SQL_UPSERT_INVENTORY][0]
+    assert [r_[1] for r_ in rows] == ["cron", "nginx"]                         # lock order = name order
+    deletes = [x for x in e.db.executed if x[0].startswith("DELETE FROM host_agent_service_inventory")]
+    assert len(deletes) == 1 and "scanned_at < %s" in deletes[0][0]            # complete snapshot: older rows go
+
+
+def test_heartbeat_with_an_inventory_stores_it_too():
+    e = _env()
+    body = _payload()
+    body["service_inventory"] = [_inv_item()]
+    assert _post(e, body).status_code == 200
+    assert any(s == e.ingest.SQL_UPSERT_INVENTORY for s, _ in e.db.many)
+
+
+def test_report_without_inventory_touches_no_inventory_table():
+    e = _env()
+    assert _post(e, _payload(metrics=[_m("cpu_percent", 10)])).status_code == 200
+    assert not any("host_agent_service_inventory" in s for s, _ in e.db.many)
+    assert not any("host_agent_service_inventory" in s for s, _ in e.db.executed)
+
+
+def test_an_empty_inventory_means_no_news_and_deletes_nothing():
+    e = _env()
+    body = _payload(metrics=[_m("cpu_percent", 10)])
+    body["service_inventory"] = []
+    assert _post(e, body).status_code == 200
+    assert not any("host_agent_service_inventory" in s for s, _ in e.db.executed)
+
+
+def test_a_duplicate_seq_writes_no_inventory():
+    e = _env()
+    e.db.duplicate = True
+    body = _payload(metrics=[_m("cpu_percent", 10)])
+    body["service_inventory"] = [_inv_item()]
+    assert _post(e, body).status_code == 200
+    assert not any(s == e.ingest.SQL_UPSERT_INVENTORY for s, _ in e.db.many)
+
+
+def test_inventory_upsert_sql_is_newest_scan_wins():
+    sql = _env().ingest.SQL_UPSERT_INVENTORY
+    for col in ("state", "startup", "description"):
+        assert f"{col} = IF(VALUES(scanned_at) >= scanned_at, VALUES({col}), {col})" in sql
+    assert "scanned_at = GREATEST(scanned_at, VALUES(scanned_at))" in sql
+    # scanned_at is assigned LAST (assignments run left to right), so the comparisons above read the OLD value
+    assert sql.index("scanned_at = GREATEST") > sql.index("description = IF")
+
+
+def test_catalog_registration_runs_after_commit_with_the_resource_type_and_series_names():
+    e = _env()
+    e.db.ec2["i-abc"] = 55
+    body = _payload(metrics=[_m("cpu_percent", 10), _m("net_rx_bytes_per_s", 5, {"iface": "ens5"})], instance_id="i-abc")
+    assert _post(e, body).status_code == 200
+    (acct, rtype, names), = e.catalog_calls
+    assert rtype == "ec2" and "host_net_rx_bytes_per_s__ens5" in names and "host_cpu_percent" in names
+
+
+def test_a_catalog_failure_never_fails_the_ingest(monkeypatch):
+    e = _env()
+    def boom(*a, **k):
+        raise RuntimeError("catalog exploded")
+    sys.modules["app.hostagents.catalog"].ensure_host_metrics_registered = boom
+    r = _post(e, _payload(metrics=[_m("cpu_percent", 10)]))
+    assert r.status_code == 200 and r.json()["accepted"] == 1

@@ -27,6 +27,11 @@ MAX_LABEL_VALUE_LEN = 255
 MAX_SERIES_PER_METRIC = 32         # distinct mounts / interfaces accepted per metric name per payload
 MAX_SERVICES = 200
 MAX_SERVICE_NAME_LEN = 100
+MAX_INVENTORY = 1000               # services that exist on the host (picker data); extras are dropped, never an error
+MAX_INVENTORY_STARTUP_LEN = 24
+MAX_INVENTORY_DESC_LEN = 160
+# The syntax the PATCH config endpoint enforces on a watched name; an inventory name outside it could never be picked.
+INVENTORY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:\-]*$")
 FUTURE_SKEW_SECONDS = 10 * 60
 MAX_AGE_SECONDS = 24 * 3600
 SERVICE_STATES = ("running", "stopped", "failed", "unknown")
@@ -144,6 +149,30 @@ def _is_number(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def clean_inventory(raw):
+    """Optional `service_inventory` -> [(name, state, startup, description)], de-duplicated by name (first wins), capped at
+    MAX_INVENTORY. Never raises and never rejects the payload: it is picker data riding on a metrics report, so a malformed
+    or oversized list is dropped entry by entry rather than costing the agent its samples. Pure."""
+    if not isinstance(raw, list):
+        return []
+    seen, out = set(), []
+    for item in raw:
+        if len(out) >= MAX_INVENTORY:
+            break
+        if not isinstance(item, dict):
+            continue
+        name, state = item.get("name"), item.get("state")
+        if (not isinstance(name, str) or len(name) > MAX_SERVICE_NAME_LEN or not INVENTORY_NAME_RE.match(name)
+                or state not in SERVICE_STATES or name in seen):
+            continue
+        startup, desc = item.get("startup"), item.get("description")
+        startup = startup.strip()[:MAX_INVENTORY_STARTUP_LEN] if isinstance(startup, str) else ""
+        desc = " ".join(desc.split())[:MAX_INVENTORY_DESC_LEN] if isinstance(desc, str) else ""
+        seen.add(name)
+        out.append((name, state, startup, desc))
+    return out
+
+
 def validate_payload(body, *, max_batch_metrics: int, now: float = None):
     """Validate a decoded ingest body.
 
@@ -248,10 +277,12 @@ def validate_payload(body, *, max_batch_metrics: int, now: float = None):
             continue
         clean_services.append((s["name"], s["state"]))
 
+    inventory = clean_inventory(body.get("service_inventory"))
+
     return {
         "agent_version": agent_version, "config_version": config_version, "seq": seq, "sent_at": sent_at,
         "host": {"hostname": hostname, "instance_id": instance_id, "os": host.get("os"), "arch": host.get("arch")},
-        "samples": samples, "services": clean_services,
+        "samples": samples, "services": clean_services, "inventory": inventory,
     }, rejected
 
 

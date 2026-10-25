@@ -73,6 +73,10 @@ type Runner struct {
 	seqWarned  bool
 	errLogged  map[string]time.Time
 
+	// Service inventory (every service that exists on the host) is sent on the first pass and then every inventoryEvery,
+	// not on every report; lastInv is when the hub last received one from this process.
+	lastInv time.Time
+
 	mu         sync.Mutex // guards cfg/cfgVersion for Interval()/Config() readers
 	cfg        payload.ServerConfig
 	cfgVersion int
@@ -175,12 +179,20 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 }
 
+// inventoryEvery is how often the service inventory is refreshed. It changes rarely and costs two service-manager calls,
+// so it rides on one report in ~30 instead of every minute.
+const inventoryEvery = 30 * time.Minute
+
 func (r *Runner) tick(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return nil
 	}
 	cfg, _ := r.Config()
-	res := r.col(ctx, collect.Settings{WatchServices: cfg.WatchServices, DiskExcludeFstypes: cfg.DiskExcludeFstypes})
+	wantInv := r.lastInv.IsZero() || time.Since(r.lastInv) >= inventoryEvery
+	res := r.col(ctx, collect.Settings{WatchServices: cfg.WatchServices, DiskExcludeFstypes: cfg.DiskExcludeFstypes, WithInventory: wantInv})
+	if wantInv && res.Inventory != nil {
+		r.lastInv = time.Now() // a failed scan (nil) is retried on the next tick rather than waiting another half hour
+	}
 	for _, e := range res.Errs {
 		r.logCollectErr(e)
 	}
@@ -224,7 +236,7 @@ func (r *Runner) build(res collect.Result, now time.Time) []payload.Payload {
 	}
 	base := payload.Payload{
 		Schema: payload.SchemaVersion, AgentVersion: r.o.Version, ConfigVersion: ver, SentAt: now.Unix(),
-		Host: payload.Host{Hostname: r.o.Identity.Hostname, InstanceID: iid, OS: "linux", Arch: runtime.GOARCH, BootTime: res.BootTime},
+		Host: payload.Host{Hostname: r.o.Identity.Hostname, InstanceID: iid, OS: runtime.GOOS, Arch: runtime.GOARCH, BootTime: res.BootTime},
 	}
 	metrics := res.Metrics
 	if metrics == nil {
@@ -246,6 +258,7 @@ func (r *Runner) build(res collect.Result, now time.Time) []payload.Payload {
 		p.Services = []payload.Service{}
 		if i == 0 {
 			p.Services = services
+			p.ServiceInventory = res.Inventory // nil (omitted) on every report except the periodic scan
 		}
 		out = append(out, p)
 	}
