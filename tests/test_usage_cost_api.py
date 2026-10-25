@@ -515,7 +515,17 @@ def test_explorer_reads_azure_and_gcp_rows_through_an_adapter(usage):
     r = usage.build_explorer(rows, _date(2026, 10, 18), _date(2026, 10, 24), group_by="usage_type", names={"sub-1": "Azure Prod"},
                              now=EX_NOW, cloudops_only=True, adapter=cc.explorer_adapter("azure"))
     assert r["totals"]["billed_usd"] == 0.27 and r["excluded"]["usd"] == 9.0         # ingestion is not CloudOps's: footnote only
-    assert [g["label"] for g in r["groups"]] == ["Metric Queries"] and r["groups"][0]["regions"] == ["IN South"]
+    assert [g["label"] for g in r["groups"]] == ["Metric Queries \u00b7 IN South"] and r["groups"][0]["regions"] == ["IN South"]
     assert r["totals"]["metrics_requested"] == 27000 and r["totals"]["unit"] == "1K"
     assert r["totals"]["usd_per_unit"] == round(0.27 / 27000, 8)
     assert r["options"]["regions"] == ["IN South"] and r["reconciliation"]["ok"]
+
+
+def test_usage_type_groups_in_different_regions_get_different_labels(usage):
+    rows = [("111", "APS3-CW:GMD-Metrics", "2026-10-20", 0.4, 1, 40000, "Metrics"),
+            ("111", "APS5-CW:GMD-Metrics", "2026-10-20", 0.01, 1, 1000, "Metrics"),
+            ("111", "CW:GMD-Metrics", "2026-10-20", 0.02, 1, 2000, "Metrics")]
+    r = usage.build_explorer(rows, _date(2026, 10, 18), _date(2026, 10, 24), group_by="usage_type", now=EX_NOW, cloudops_only=True)
+    labels = [g["label"] for g in r["groups"]]
+    assert len(labels) == len(set(labels)) == 3
+    assert labels[0] == "GetMetricData (metrics requested) \u00b7 ap-south-1" and "GetMetricData (metrics requested) \u00b7 us-east-1" in labels

@@ -575,7 +575,7 @@ def build_explorer(rows, start, end, granularity="daily", group_by="category", a
         if group_by == "account":
             return names.get(k) or f"AWS account {k}"
         if group_by == "usage_type":
-            return classify_usage_type(k)
+            return f"{classify_usage_type(k)} \u00b7 {usage_region(k)}"      # one charge per region: name it, or they look identical
         return k
 
     out_groups = []

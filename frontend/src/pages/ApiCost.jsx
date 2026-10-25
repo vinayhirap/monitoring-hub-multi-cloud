@@ -387,7 +387,7 @@ function CostExplorer() {
                 <tbody>
                   {d.groups.map(g => (
                     <tr key={g.key}>
-                      <td className="ac-sticky" title={g.key}>{g.label}{d.group_by === "usage_type" && <span className="ac-dim"> · {g.regions.join(", ")} · {g.key}</span>}</td>
+                      <td className="ac-sticky" title={g.key}>{g.label}{d.group_by === "usage_type" && isAws && <span className="ac-dim"> · {g.key}</span>}</td>
                       <td className="ac-num">{usd(g.total)}</td>
                       <td className="ac-num">{g.share_pct}%</td>
                       <td className="ac-num">{g.quantity != null ? n(Math.round(g.quantity)) : "–"}</td>
