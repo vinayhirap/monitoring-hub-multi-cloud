@@ -89,7 +89,7 @@ function nextStep(r, view, canManage) {
     return `Add the ${r.provider === "gcp" ? "label" : "tag"} environment = ${r.env || "prod or nonprod"} in the ${PROVIDER_LABEL[r.provider]} console. The script covers AWS only.`;
   }
   if (view === "tagging") {
-    if (!ENV_LONG[r.env]) {
+    if (!ENV_LONG[r.env] || r.source === "unknown") {   // unplaced rows read as PROD (fail-safe) but have no decision yet
       return canManage ? "Mark an environment first (buttons above the table), then add the tag in AWS."
         : "Ask someone with edit access to mark its environment, then add the tag in AWS.";
     }
@@ -463,7 +463,7 @@ export default function Environments() {
           <dt>Environment</dt>
           <dd>Which of the two environments a resource belongs to: PROD (live) or NON-PROD (everything else: dev, test, SIT, UAT, QA, staging).</dd>
           <dt>Not placed</dt>
-          <dd>CloudOps could not tell the tier from a tag, the name or what the resource is attached to. It is alerted as if it were Prod until someone places it.</dd>
+          <dd>CloudOps could not tell the tier from a tag, the name or what the resource is attached to. It is alerted as if it were PROD until someone places it.</dd>
           <dt>Environment tag</dt>
           <dd>A label named Environment, with the value prod or nonprod, on the resource in AWS. It is the most reliable source, and other teams can see it too.</dd>
           <dt>Tags CloudOps uses</dt>
@@ -485,7 +485,7 @@ export default function Environments() {
           {onboarding.map(a => (
             <div key={a.account_id}>
               <strong>{a.needs_classification}</strong> resource(s) in <strong>{a.account_name}</strong>, onboarded recently, need an
-              environment. Until you place them they are alerted as if they were Prod.{" "}
+              environment. Until you place them they are alerted as if they were PROD.{" "}
               <button className="env-link" onClick={() => { setFilter("account_id", String(a.account_id)); switchView("needs_classification"); }}>Place them</button>
             </div>
           ))}
@@ -502,7 +502,7 @@ export default function Environments() {
                 : <>All {totalResources} resources have an environment.</>}
             </div>
             <div className="env-chips">
-              {ENVS.map(k => <span key={k} className={`env-chip env-${k}`}>{ENV_LABEL[k]} {byEnv[k] || 0}</span>)}
+              {ENVS.map(k => <span key={k} className={`env-chip env-${k}`}>{ENV_LABEL[k]} {k === "prod" ? Math.max((byEnv.prod || 0) - needs, 0) : (byEnv[k] || 0)}</span>)}
               <span className="env-chip env-unknown">Not placed {needs}</span>
             </div>
             {needs > 0 && <button className="env-link" onClick={() => switchView("needs_classification")}>Place them</button>}
@@ -558,8 +558,8 @@ export default function Environments() {
                 <div className="env-account-name">{a.account_name} <CloudBadge provider={a.provider} /></div>
                 <div className="env-account-meta">{a.total} resources, {a.needs_classification} not placed</div>
                 <div className="env-chips">
-                  {ENVS.filter(k => a.by_env?.[k]).map(k => (
-                    <span key={k} className={`env-chip env-${k}`}>{ENV_LABEL[k]} {a.by_env[k]}</span>
+                  {ENVS.filter(k => (k === "prod" ? (a.by_env?.prod || 0) - a.needs_classification : a.by_env?.[k]) > 0).map(k => (
+                    <span key={k} className={`env-chip env-${k}`}>{ENV_LABEL[k]} {k === "prod" ? a.by_env.prod - a.needs_classification : a.by_env[k]}</span>
                   ))}
                 </div>
                 <label className="env-field">
@@ -594,7 +594,7 @@ export default function Environments() {
       {view === "needs_classification" && (
         <div className="env-lead">
           These resources have no Environment tag and nothing in their name says which tier they are. They are alerted
-          as if they were Prod until you place them. Placing a resource here changes CloudOps only, not AWS.
+          as if they were PROD until you place them. Placing a resource here changes CloudOps only, not AWS.
         </div>
       )}
 
