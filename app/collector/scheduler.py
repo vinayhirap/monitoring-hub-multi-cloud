@@ -675,6 +675,14 @@ def run_loop(leader_event=None):
                 except Exception as e:
                     logger.error(f"Host agent watchdog error: {e}")
 
+                _require_leader(leader_event)
+                # Cost-jump alert (DB reads only, throttled to every 10 min inside; no-op unless COST_JUMP_ALERT_ENABLED=true).
+                try:
+                    from app.collector.cost_jump_alert import run_cost_jump_check
+                    run_cost_jump_check()
+                except Exception as e:
+                    logger.error(f"Cost-jump alert error: {e}")
+
             _require_leader(leader_event)
             # ── Standard tier (5 min) ─────────────────────────────
             if time.time() >= _standard_due_at(last_standard):

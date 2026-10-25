@@ -138,7 +138,7 @@ def test_frontend_helper_matches_python():
 def test_system_metrics_unchanged():
     from app import alert_rules
     assert alert_rules.SYSTEM_METRICS == ("multivariate_anomaly", "synthetic_uptime", "synthetic_cert_expiry",
-                                          "host_agent_heartbeat")  # host_agent_heartbeat: Phase D watchdog
+                                          "host_agent_heartbeat", "cloud_cost_jump")  # host_agent_heartbeat: Phase D watchdog; cloud_cost_jump: cost-jump alert
 
 
 # ── RCA report wording (uses the generated UNITS + format_metric_value) ──
