@@ -31,7 +31,7 @@ const NAV_ITEMS = [
   // Overview
   { group: "Overview", to: "/overview", label: "Overview", icon: OverviewIcon, roles: ["admin","editor","viewer"] },
   // Infrastructure (the per-account/region tree is injected live from the accounts index)
-  { group: "Infrastructure", to: "/onboarding", label: "Account Onboarding", icon: OnboardIcon, roles: ["admin","editor"] },
+  { group: "Infrastructure", to: "/onboarding", label: "Account Onboarding", icon: OnboardIcon, roles: ["admin","editor"], perm: "accounts.onboard" },
   { group: "Infrastructure", to: "/environments", label: "Environments", icon: EnvironmentsIcon, roles: ["admin","editor","viewer"], perm: "environments.view", envBadge: true },
   { group: "Infrastructure", to: "/host-agents", label: "Host Agents", icon: HostAgentsIcon, roles: ["admin","editor","viewer"], perm: "hostagents.view" },
   // Monitoring
@@ -47,7 +47,7 @@ const NAV_ITEMS = [
   { group: "Intelligence", to: "/search", label: "Smart Search", icon: SearchNavIcon, roles: ["admin","editor","viewer"], perm: "search.query" },
   // Reports
   { group: "Reports", to: "/reports",    label: "Reports",    icon: ReportsIcon,    roles: ["admin","editor","viewer"], perm: "reports.view", feature: "reports" },
-  { group: "Reports", to: "/compliance", label: "Compliance", icon: ComplianceIcon, roles: ["admin","editor","viewer"] },
+  { group: "Reports", to: "/compliance", label: "Compliance", icon: ComplianceIcon, roles: ["admin","editor","viewer"], perm: "environments.view" },
   // Administration
   { group: "Administration", to: "/access", label: "Access Control", icon: UsersIcon, roles: ["admin","editor","viewer"], perm: "users.view" },
   { group: "Administration", to: "/settings",   label: "Settings",            icon: SettingsIcon, roles: ["admin","editor"] },

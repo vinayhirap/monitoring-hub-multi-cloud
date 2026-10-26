@@ -21,7 +21,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from app import cost_jump_settings as cjs
 from app.audit import write_audit
-from app.auth.authorization import get_accessible_account_ids
+from app.auth.authorization import get_accessible_account_ids, require_org_wide
 from app.auth.permissions import require_permission
 from app.db import get_connection
 
@@ -195,6 +195,7 @@ def _write(request, current_user, scope_keys, values, label, audit_extra):
 @router.put("/cost-alert-settings/all-accounts")
 def put_all_accounts(request: Request, payload: dict = Body(...),
                      current_user: dict = Depends(require_permission("usage.manage"))):
+    require_org_wide(current_user, "The all-accounts setting")
     try:
         values = cjs.validate(payload)
     except ValueError as e:
@@ -237,6 +238,8 @@ def send_test_email(request: Request, payload: dict = Body(default={}),
                     current_user: dict = Depends(require_permission("usage.manage"))):
     """Sends one test email to the recipients an alert for this account (or, with no account, the all-accounts list) would reach."""
     account_id = (payload or {}).get("account_id")
+    if account_id is None:
+        require_org_wide(current_user, "The all-accounts recipient list")
     conn = get_connection()
     cur = conn.cursor(dictionary=True)
     try:

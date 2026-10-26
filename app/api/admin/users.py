@@ -378,6 +378,9 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
     }
 
 
+_ROLE_RANK = {"viewer": 0, "editor": 1, "admin": 2}
+
+
 @router.patch("/{user_id}/role")
 def update_role(user_id: int, payload: dict = Body(...), current_user: dict = Depends(require_permission("roles.manage"))):
     # Role changes stay admin-only by design: an editor's authority is
@@ -400,6 +403,15 @@ def update_role(user_id: int, payload: dict = Body(...), current_user: dict = De
         if not user:
             cursor.close()
             raise HTTPException(status_code=404, detail="User not found")
+
+        # SECURITY: roles.manage may be delegated, but a non-admin may never hand out
+        # a role above their own or change the role of someone above them (otherwise
+        # a delegated holder could mint an admin, or demote one).
+        if current_user["role"] != "admin":
+            mine = _ROLE_RANK.get(current_user["role"], 0)
+            if _ROLE_RANK.get(new_role, 0) > mine or _ROLE_RANK.get(user["role"], 0) > mine:
+                cursor.close()
+                raise HTTPException(status_code=403, detail="You cannot assign or change a role above your own")
 
         # SECURITY: last-admin protection. Nothing previously stopped an
         # admin from demoting the only other admin (or themselves being

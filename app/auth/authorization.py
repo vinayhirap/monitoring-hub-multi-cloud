@@ -572,3 +572,13 @@ def serialize_scope(user: dict):
         }
         for g in scope
     ]
+
+
+def require_org_wide(user: dict, what: str = "This") -> None:
+    """403 unless the caller's effective scope is every account (admins, or an
+    unrestricted grant). For endpoints whose data is NOT filtered per account
+    (billing totals, org-wide settings): a scoped user holding the permission must
+    not read or change what covers accounts outside their scope. Fails closed."""
+    if get_accessible_account_ids(user) is not None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail=f"{what} covers every account, so it needs organisation-wide access")

@@ -34,6 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.deps import get_current_user
 from app.auth.permissions import require_permission
+from app.auth.authorization import require_org_wide
 from app.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -426,6 +427,7 @@ def _estimate_aws_usd(rows, days, now):
 
 @router.get("/actual-cost")
 def actual_cost(days: int = Query(7), current_user: dict = Depends(require_permission("usage.manage"))):
+    require_org_wide(current_user, "Billed cost")
     if days not in ALLOWED_DAYS:
         raise HTTPException(status_code=400, detail=f"days must be one of {list(ALLOWED_DAYS)}")
     from app.aws import cost_explorer
@@ -677,6 +679,7 @@ def cost_explorer_report(start: str = Query(None), end: str = Query(None), granu
                          categories: str = Query(""), scope: str = Query("onboarded"), cloudops_only: bool = Query(True),
                          provider: str = Query("aws"),
                          current_user: dict = Depends(require_permission("usage.manage"))):
+    require_org_wide(current_user, "Billed cost")
     from app.aws import cost_explorer
     from app import cloud_cost
     if granularity not in GRANULARITIES or group_by not in GROUP_BYS or scope not in SCOPES or provider not in PROVIDER_NAMES:
@@ -769,6 +772,7 @@ def cost_explorer_report(start: str = Query(None), end: str = Query(None), granu
 
 @router.post("/actual-cost/refresh")
 def actual_cost_refresh(current_user: dict = Depends(require_permission("usage.manage"))):
+    require_org_wide(current_user, "Billed cost")
     """Ask AWS now (Cost Explorer bills every request). At most one refresh per account per hour."""
     from app.aws import cost_explorer
     if not cost_explorer.enabled():
@@ -951,6 +955,7 @@ def build_monthly_totals(reports, today, names=None):
 
 @router.get("/monthly-totals")
 def monthly_totals(current_user: dict = Depends(require_permission("usage.manage"))):
+    require_org_wide(current_user, "Billed cost")
     now = time.time()
     today = datetime.fromtimestamp(now, tz=timezone.utc).date()
     last_end = _month_start(today).fromordinal(_month_start(today).toordinal() - 1)

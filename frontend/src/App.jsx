@@ -93,9 +93,10 @@ function RequireAuth({ children }) {
 const ROUTE_ACCESS = {
   "overview":            { roles: ["admin","editor","viewer"] },
   "alerts":              { roles: ["admin","editor","viewer"] },
-  "onboarding":          { roles: ["admin","editor"] },
+  "onboarding":          { roles: ["admin","editor"],          perm: "accounts.onboard" },
   "access":              { roles: ["admin","editor","viewer"], perm: "users.view" },
-  "compliance":          { roles: ["admin","editor","viewer"] },
+  "compliance":          { roles: ["admin","editor","viewer"], perm: "environments.view" },
+  "op-events":           { roles: ["admin","editor","viewer"], perm: "operations.view" },
   "escalation-policies": { roles: ["admin","editor","viewer"], perm: "escalation.view" },
   "environments":        { roles: ["admin","editor","viewer"], perm: "environments.view" },
   "host-agents":         { roles: ["admin","editor","viewer"], perm: "hostagents.view" },
@@ -146,7 +147,7 @@ function AppRoutes() {
         {/* Old URLs (bookmarks, emails, docs) keep working */}
         <Route path="users"                     element={<Navigate to="/access/users" replace />} />
         <Route path="compliance"                element={<RequireAccess path="compliance"><Compliance /></RequireAccess>} />
-        <Route path="op-events"                 element={<OpEvents />} />
+        <Route path="op-events"                 element={<RequireAccess path="op-events"><OpEvents /></RequireAccess>} />
         <Route path="escalation-policies"       element={<RequireAccess path="escalation-policies"><EscalationPolicies /></RequireAccess>} />
         <Route path="environments"              element={<RequireAccess path="environments"><Environments /></RequireAccess>} />
         <Route path="host-agents"               element={<RequireAccess path="host-agents"><HostAgents /></RequireAccess>} />

@@ -127,7 +127,7 @@ def api(monkeypatch):
     stub("app.db", get_connection=lambda: None)
     stub("app.audit", write_audit=lambda *a, **k: None)
     stub("app.auth.permissions", require_permission=lambda code: (lambda: None))
-    stub("app.auth.authorization", get_accessible_account_ids=lambda u: None)
+    stub("app.auth.authorization", get_accessible_account_ids=lambda u: None, require_org_wide=lambda u, what="This": None)
     return load_module("app/api/cost_alert_settings.py")
 
 

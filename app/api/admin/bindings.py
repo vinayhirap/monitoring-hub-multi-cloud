@@ -215,6 +215,26 @@ def create_binding(payload: dict = Body(...), current_user: dict = Depends(requi
     return {"status": "created", "id": binding_id}
 
 
+def _assert_may_touch_binding(conn, current_user: dict, role_key: str, scope_id) -> None:
+    """PATCH / DELETE of a binding must clear the same escalation gate as creating
+    it. Without this a delegated rbac.binding.manage holder could push out the expiry
+    of, or revoke, an admin-rank binding at a scope they do not themselves hold."""
+    if current_user["role"] == "admin":
+        return
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT * FROM rbac_scopes WHERE id = %s", (scope_id,))
+        scope_row = cur.fetchone()
+    finally:
+        cur.close()
+    if not scope_row or not rbac.can_grant(current_user, role_key, rbac._scope_from_row(scope_row)):
+        raise HTTPException(
+            status_code=403,
+            detail=(f"You do not hold '{role_key}' (or higher) at a scope that covers this binding -- "
+                    f"you cannot change access you could not grant."),
+        )
+
+
 @router.patch("/bindings/{binding_id}")
 def update_binding(binding_id: int, payload: dict = Body(...),
                    current_user: dict = Depends(require_permission("rbac.binding.manage"))):
@@ -232,6 +252,7 @@ def update_binding(binding_id: int, payload: dict = Body(...),
         if not row:
             cursor.close()
             raise HTTPException(status_code=404, detail="Binding not found")
+        _assert_may_touch_binding(conn, current_user, row["role_key"], row["scope_id"])
         sets, params = [], []
         if "expires_at" in payload:
             sets.append("expires_at = %s")
@@ -272,6 +293,7 @@ def revoke_binding(binding_id: int, current_user: dict = Depends(require_permiss
         if not row:
             cursor.close()
             raise HTTPException(status_code=404, detail="Binding not found")
+        _assert_may_touch_binding(conn, current_user, row["role_key"], row["scope_id"])
 
         cursor2 = conn.cursor()
         cursor2.execute("DELETE FROM role_bindings WHERE id = %s", (binding_id,))
@@ -420,6 +442,11 @@ def delete_override(override_id: int, current_user: dict = Depends(require_permi
         if not row:
             cursor.close()
             raise HTTPException(status_code=404, detail="Override not found")
+        # A deny is a restriction. A delegated rbac.override.manage holder may lift
+        # only the ones they placed themselves, never one an administrator set.
+        if current_user["role"] != "admin" and row.get("granted_by") != current_user["id"]:
+            cursor.close()
+            raise HTTPException(status_code=403, detail="Only an administrator can remove an override someone else created")
         cursor2 = conn.cursor()
         cursor2.execute("DELETE FROM permission_overrides WHERE id = %s", (override_id,))
         conn.commit()
