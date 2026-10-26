@@ -84,6 +84,7 @@ OVERRIDES = {
     # names the app generates itself (not in any catalogue)
     "multivariate_anomaly": "Multivariate Anomaly",
     "synthetic_uptime": "Synthetic Check Availability",
+    "cloud_cost_jump": "Daily Cost Jump",
     "synthetic_cert_expiry": "TLS Certificate Expiry",
 }
 

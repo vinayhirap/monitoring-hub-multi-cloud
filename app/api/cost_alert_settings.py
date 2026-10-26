@@ -6,6 +6,10 @@ Cost-jump alert settings, for the Cloud cost page. Everything needs usage.manage
   PUT  /api/usage/cost-alert-settings/all-accounts       {enabled?, threshold_pct?, min_increase_usd?}   null = back to the environment/default
   PUT  /api/usage/cost-alert-settings/accounts           {account_ids: [id, ...] | "all", enabled?, threshold_pct?, min_increase_usd?}
                                                          null = inherit the all-accounts value ("all" with every field null clears every override)
+  POST /api/usage/cost-alert-settings/test-email         {account_id?}  sends a test to the recipients that account would be told (null = all-accounts ones)
+
+Recipients (notify_user_ids, notify_emails) are accepted by both PUTs. They are ADDITIVE: an account is told at its own plus the
+all-accounts recipients. A chosen user must be active and have an email on file; anyone else is reached by typing the address.
 
 Only accounts the caller may see (get_accessible_account_ids) can be read or changed. Every change is written to the audit
 log. The settings are read by the collector every check (app/collector/cost_jump_alert.py), so a change takes effect within
@@ -26,6 +30,7 @@ router = APIRouter(prefix="/api/usage", tags=["Usage"])
 
 MAX_TARGETS = 500
 METRIC = "cloud_cost_jump"
+RECIPIENTS_MIGRATION_NOTE = "Run the pending migrations (migrate.py apply --all-pending): 133 adds the alert recipients columns."
 MIGRATION_NOTE = "Run the pending migrations (migrate.py apply --all-pending): 132 adds the cost alert settings table."
 
 
@@ -36,8 +41,9 @@ def _iso(v):
     return s if v.tzinfo else s + "Z"
 
 
-def build_view(settings, accounts, open_alert_accounts):
-    """Everything the settings panel shows. Pure. accounts: [{id, account_name, provider}] the caller may see."""
+def build_view(settings, accounts, open_alert_accounts, users=(), smtp_configured=False):
+    """Everything the settings panel shows. Pure. accounts: [{id, account_name, provider}] the caller may see;
+    users: active CloudOps users [{id, username, email}] to pick recipients from."""
     glob = settings.get("global") or {}
     res = cjs.resolve(settings, None)
     env = cjs.env_defaults()
@@ -46,22 +52,30 @@ def build_view(settings, accounts, open_alert_accounts):
         own = (settings.get("accounts") or {}).get(a["id"]) or {}
         r = cjs.resolve(settings, a["id"])
         rows.append({"id": a["id"], "name": a["account_name"], "provider": a["provider"],
-                     "set": {f: own.get(f) for f in cjs.FIELDS},
+                     "set": {f: own.get(f) for f in cjs.FIELDS + cjs.RECIPIENT_FIELDS},
+                     "recipient_count": len(set(cjs.recipients(settings, a["id"])[0])) + len(cjs.recipients(settings, a["id"])[1]),
                      "effective": {f: r[f][0] for f in cjs.FIELDS}, "source": {f: r[f][1] for f in cjs.FIELDS},
-                     "has_override": any(own.get(f) is not None for f in cjs.FIELDS),
+                     "has_override": any(own.get(f) is not None for f in cjs.FIELDS) or bool(own.get("notify_user_ids") or own.get("notify_emails")),
                      "open_alert": a["id"] in open_alert_accounts,
                      "updated_by": own.get("updated_by"), "updated_at": _iso(own.get("updated_at"))})
-    return {"all_accounts": {"set": {f: glob.get(f) for f in cjs.FIELDS},
+    return {"all_accounts": {"set": {f: glob.get(f) for f in cjs.FIELDS + cjs.RECIPIENT_FIELDS},
                              "effective": {f: res[f][0] for f in cjs.FIELDS}, "source": {f: res[f][1] for f in cjs.FIELDS},
                              "updated_by": glob.get("updated_by"), "updated_at": _iso(glob.get("updated_at"))},
             "defaults": {"environment": {f: {"value": v, "source": s} for f, (v, s) in env.items()}, "builtin": cjs.BUILTIN},
             "limits": {f: list(v) for f, v in cjs.LIMITS.items()},
             "accounts": rows, "table_missing": bool(settings.get("table_missing")),
+            "recipients_missing": bool(settings.get("recipients_missing")), "smtp_configured": bool(smtp_configured),
+            "users": [{"id": u["id"], "username": u["username"], "email": (u.get("email") or "").strip() or None,
+                       "has_email": bool((u.get("email") or "").strip())} for u in users],
+            "limits_recipients": {"users": cjs.MAX_RECIPIENT_USERS, "emails": cjs.MAX_RECIPIENT_EMAILS},
             "notes": ["A change takes effect within about ten minutes, with no restart.",
                       "The alert compares the latest settled day of billed cost (two days behind) with the average of the 7 days before it, "
                       "so it is 2 to 3 days behind the spend.",
                       "Each field falls back: the account's own value, then the all-accounts value, then the server environment, then the built-in default.",
-                      "Switching an account off resolves its open alert."]}
+                      "Switching an account off resolves its open alert.",
+                      "Recipients are added together: an account's alert goes to its own recipients plus the all-accounts recipients, "
+                      "on top of any notification channel set to receive warnings.",
+                      "An email is sent when an alert opens, not when it resolves."]}
 
 
 def plan_targets(requested, visible_ids):
@@ -97,7 +111,35 @@ def _read(cursor, current_user):
     except Exception:
         logger.exception("cost-alert-settings: could not read open alerts")
         open_ids = set()
-    return build_view(settings, accounts, open_ids), accounts
+    users = []
+    try:
+        cursor.execute("SELECT id, username, email FROM users WHERE COALESCE(active, 1) = 1 ORDER BY username")
+        users = cursor.fetchall()
+    except Exception:
+        logger.exception("cost-alert-settings: could not list users")
+    smtp = False
+    try:
+        from app.email import mailer
+        smtp = mailer.is_configured()
+    except Exception:
+        logger.exception("cost-alert-settings: could not check SMTP")
+    return build_view(settings, accounts, open_ids, users, smtp), accounts
+
+
+def _check_users(cursor, ids):
+    """Every chosen user must exist, be active and have an email on file. Plain messages that say what to do instead."""
+    cursor.execute(f"SELECT id, username, email, COALESCE(active, 1) AS active FROM users WHERE id IN ({', '.join(['%s'] * len(ids))})",
+                   tuple(ids))
+    found = {r["id"]: r for r in cursor.fetchall()}
+    for uid in ids:
+        u = found.get(uid)
+        if not u:
+            raise HTTPException(status_code=400, detail=f"User {uid} does not exist.")
+        if not u["active"]:
+            raise HTTPException(status_code=400, detail=f"User '{u['username']}' is inactive.")
+        if not (u["email"] or "").strip():
+            raise HTTPException(status_code=400, detail=f"User '{u['username']}' has no email on file. Add an email to the user, "
+                                                        f"or type the address in directly.")
 
 
 def _describe(values):
@@ -126,8 +168,13 @@ def _write(request, current_user, scope_keys, values, label, audit_extra):
         before = cjs.load(cur)
         if before.get("table_missing"):
             raise HTTPException(status_code=409, detail=MIGRATION_NOTE)
+        supported = not before.get("recipients_missing")
+        if not supported and any(f in values for f in cjs.RECIPIENT_FIELDS):
+            raise HTTPException(status_code=409, detail=RECIPIENTS_MIGRATION_NOTE)
+        if values.get("notify_user_ids"):
+            _check_users(cur, values["notify_user_ids"])
         for key in scope_keys:
-            cjs.save(cur, key, values, current_user["username"])
+            cjs.save(cur, key, values, current_user["username"], recipients_supported=supported)
         conn.commit()
         view, _ = _read(cur, current_user)
     except HTTPException:
@@ -183,3 +230,35 @@ def put_accounts(request: Request, payload: dict = Body(...),
     names = {a["id"]: a["account_name"] for a in visible}
     label = (f"{len(targets)} accounts" if len(targets) > 1 else f"Account {names.get(targets[0], targets[0])}")
     return _write(request, current_user, targets, values, label, {"scope": "accounts", "account_ids": targets})
+
+
+@router.post("/cost-alert-settings/test-email")
+def send_test_email(request: Request, payload: dict = Body(default={}),
+                    current_user: dict = Depends(require_permission("usage.manage"))):
+    """Sends one test email to the recipients an alert for this account (or, with no account, the all-accounts list) would reach."""
+    account_id = (payload or {}).get("account_id")
+    conn = get_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        settings = cjs.load(cur)
+        _, visible = _read(cur, current_user)
+    except Exception:
+        logger.exception("cost-alert-settings: test email could not read settings")
+        raise HTTPException(status_code=500, detail="Could not read the cost alert settings")
+    finally:
+        cur.close()
+        conn.close()
+    if account_id is not None:
+        if isinstance(account_id, bool) or not isinstance(account_id, int) or account_id not in {a["id"] for a in visible}:
+            raise HTTPException(status_code=400, detail="Unknown or not accessible account.")
+    users, emails = cjs.recipients(settings, account_id)
+    if not users and not emails:
+        raise HTTPException(status_code=400, detail="No recipients are set. Choose users or type addresses, save, then send the test.")
+    from app.collector.cost_jump_alert import send_to_recipients
+    message = {"headline": "[CloudOps] Test: cost-jump alert recipients",
+               "text": "This is a test from CloudOps. If you can read it, you will receive an email when the cost-jump alert opens."}
+    result = send_to_recipients(message, users, emails, event="test")
+    write_audit(current_user["username"], "Cost alert test email sent", role=str(current_user.get("role", "")).upper(),
+                payload={"detail": f"sent {len(result['sent'])}, failed {len(result['failed'])}, skipped {len(result['skipped'])}",
+                         "account_id": account_id}, request=request)
+    return result

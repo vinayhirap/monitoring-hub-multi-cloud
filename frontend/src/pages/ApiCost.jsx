@@ -3,7 +3,7 @@
 // (GET /api/usage/cost-explorer, Cost Explorer), by day/month, account, region and usage type. Nothing is estimated or
 // forecast, and charges CloudOps does not cause (agents, alarms, logs) are not shown, only footnoted as a total.
 // Everyone else (usage.view) keeps the CloudOps metering view (list-price estimate of its own reads). Plain SVG/CSS only.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "../api/api";
 import { PageHeader, KpiCard, KpiStrip, Panel, SegmentedControl, EmptyState, Skeleton } from "../components/ui";
 import { useAuth } from "../auth/AuthContext";
@@ -500,53 +500,6 @@ function Metering() {
   );
 }
 
-// ───────────────────────── This month and last month (billed, no forecast) ─────────────────────────
-function MonthlyTotals() {
-  const [d, setD] = useState(null);
-  const [err, setErr] = useState(null);
-  useEffect(() => {
-    let live = true;
-    apiFetch("/api/usage/monthly-totals").then(r => { if (live) setD(r); }).catch(e => { if (live) setErr(e); });
-    return () => { live = false; };
-  }, []);
-  if (err) return <Panel title="This month and last month"><p className="ac-dim">Could not be loaded. Try again in a moment.</p></Panel>;
-  if (!d) return <Panel title="This month and last month"><Skeleton h={64} /></Panel>;
-  const avail = d.providers.filter(p => p.available);
-  if (avail.length === 0) return null;                    // nothing billed or switched on yet: the page below already explains why
-  const same = d.same_period_last_month_usd;
-  return (
-    <Panel title="This month and last month" subtitle="What the cloud has billed for CloudOps's own metric calls, by UTC calendar month. No forecast.">
-      <KpiStrip>
-        <KpiCard label={`This month so far (${d.this_month.label})`} value={usd(d.this_month.usd)}
-                 sub={`last ${d.this_month.provisional_days} days are provisional and can still grow`} />
-        <KpiCard label={`Last month (${d.last_month.label})`} value={usd(d.last_month.usd)}
-                 sub={d.last_month.partial_coverage ? "understated: billing history starts mid-month for one cloud" : "complete"}
-                 tone={d.last_month.partial_coverage ? "warn" : undefined} />
-        <KpiCard label="Last month, same days" value={same == null ? "n/a" : usd(same)}
-                 sub={same == null ? "no billed days yet this month" : "for comparing like with like"} />
-      </KpiStrip>
-      {avail.length > 1 && (
-        <div className="ac-tablewrap">
-          <table className="ac-table">
-            <thead><tr><th className="ac-sticky">Cloud</th><th>This month so far</th><th>Last month</th><th>Last month, same days</th></tr></thead>
-            <tbody>
-              {avail.map(p => (
-                <tr key={p.provider}>
-                  <td className="ac-sticky">{p.name}</td>
-                  <td className="ac-num">{usd(p.this_month_usd)}</td>
-                  <td className="ac-num">{usd(p.last_month_usd)}{p.last_month_partial ? "*" : ""}</td>
-                  <td className="ac-num">{p.same_period_last_month_usd == null ? "–" : usd(p.same_period_last_month_usd)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <ul className="ac-list">{d.notes.map((t, i) => <li key={i}>{t}</li>)}</ul>
-    </Panel>
-  );
-}
-
 // ───────────────────────── Cost by polling tier (estimate) ─────────────────────────
 function TierCost() {
   const [days, setDays] = useState(7);
@@ -601,19 +554,50 @@ const SRC_TEXT = { account: "this account", "all accounts": "all-accounts settin
 const onoff = v => (v === true ? "on" : v === false ? "off" : "inherit");
 const fromOnoff = v => (v === "on" ? true : v === "off" ? false : null);
 const numOrNull = v => (String(v).trim() === "" ? null : Number(v));
+const emailList = t => [...new Set(String(t || "").split(/[,;\s]+/).map(x => x.trim().toLowerCase()).filter(Boolean))];
+const idsOrNull = a => (a && a.length ? [...a].sort((x, y) => x - y) : null);
+const mailsOrNull = t => { const l = emailList(t); return l.length ? l : null; };
+const toDraft = o => ({ enabled: onoff(o.enabled), threshold_pct: o.threshold_pct ?? "", min_increase_usd: o.min_increase_usd ?? "",
+                        notify_user_ids: o.notify_user_ids || [], notify_emails: (o.notify_emails || []).join(", ") });
+const toBody = x => ({ enabled: fromOnoff(x.enabled), threshold_pct: numOrNull(x.threshold_pct), min_increase_usd: numOrNull(x.min_increase_usd),
+                       notify_user_ids: idsOrNull(x.notify_user_ids), notify_emails: mailsOrNull(x.notify_emails) });
+const same = (a, b) => JSON.stringify(toBody(a)) === JSON.stringify(toBody(b));
+
+function Recipients({ users, ids, emails, onIds, onEmails, who }) {
+  const toggle = id => onIds(ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]);
+  return (
+    <div className="ac-recips">
+      <fieldset style={{ border: 0, padding: 0, margin: "0 0 8px" }}>
+        <legend className="ac-dim">Users to email ({who}), using the email on their profile</legend>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 18px" }}>
+          {users.length === 0 && <span className="ac-dim">No users found.</span>}
+          {users.map(u => (
+            <label key={u.id} title={u.has_email ? u.email : "No email on file: add one to the user, or type the address below"}>
+              <input type="checkbox" checked={ids.includes(u.id)} disabled={!u.has_email && !ids.includes(u.id)} onChange={() => toggle(u.id)} />{" "}
+              {u.username} <span className="ac-dim">{u.has_email ? u.email : "(no email on file)"}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      <label className="ac-field"><span>Other email addresses (separate with commas or new lines)</span>
+        <textarea rows={2} style={{ width: "100%", maxWidth: 560 }} value={emails} onChange={e => onEmails(e.target.value)} placeholder="name@company.com, team@company.com" /></label>
+    </div>
+  );
+}
 
 function CostAlertSettings() {
   const [d, setD] = useState(null);
   const [err, setErr] = useState(null);
   const [draft, setDraft] = useState({});
   const [gDraft, setGDraft] = useState(null);
+  const [open, setOpen] = useState({});
   const [busy, setBusy] = useState(null);
   const [msg, setMsg] = useState(null);
 
   const adopt = r => {
     setD(r);
-    setGDraft({ enabled: onoff(r.all_accounts.set.enabled), threshold_pct: r.all_accounts.set.threshold_pct ?? "", min_increase_usd: r.all_accounts.set.min_increase_usd ?? "" });
-    setDraft(Object.fromEntries(r.accounts.map(a => [a.id, { enabled: onoff(a.set.enabled), threshold_pct: a.set.threshold_pct ?? "", min_increase_usd: a.set.min_increase_usd ?? "" }])));
+    setGDraft(toDraft(r.all_accounts.set));
+    setDraft(Object.fromEntries(r.accounts.map(a => [a.id, toDraft(a.set)])));
   };
   useEffect(() => {
     let live = true;
@@ -628,18 +612,30 @@ function CostAlertSettings() {
       adopt(r); setMsg({ ok: true, text: ok });
     } catch (e) { setMsg({ ok: false, text: e?.detail || e?.message || "Could not save." }); } finally { setBusy(null); }
   };
-  const body = x => ({ enabled: fromOnoff(x.enabled), threshold_pct: numOrNull(x.threshold_pct), min_increase_usd: numOrNull(x.min_increase_usd) });
+  const test = async (accountId) => {
+    setBusy("test"); setMsg(null);
+    try {
+      const r = await apiFetch("/api/usage/cost-alert-settings/test-email", { method: "POST", body: JSON.stringify({ account_id: accountId ?? null }) });
+      const bits = [];
+      if (r.sent.length) bits.push(`Test sent to ${r.sent.join(", ")}.`);
+      if (r.failed.length) bits.push(`Could not send to ${r.failed.map(f => `${f[0]} (${f[1]})`).join("; ")}.`);
+      if (r.skipped.length) bits.push(`Skipped ${r.skipped.map(f => `${f[0]} (${f[1]})`).join("; ")}.`);
+      setMsg({ ok: r.sent.length > 0 && r.failed.length === 0, text: bits.join(" ") || "Nothing was sent." });
+    } catch (e) { setMsg({ ok: false, text: e?.detail || e?.message || "Could not send the test." }); } finally { setBusy(null); }
+  };
 
   if (err) return <Panel title="Cost-jump alert"><p className="ac-dim">Could not be loaded{err.status === 403 ? ": you do not have access." : ". Try again in a moment."}</p></Panel>;
   if (!d || !gDraft) return <Panel title="Cost-jump alert"><Skeleton h={90} /></Panel>;
   const g = d.all_accounts;
   const lim = d.limits;
-  const dirty = (a) => { const x = draft[a.id]; return x && (x.enabled !== onoff(a.set.enabled) || String(x.threshold_pct) !== String(a.set.threshold_pct ?? "") || String(x.min_increase_usd) !== String(a.set.min_increase_usd ?? "")); };
+  const gHas = (g.set.notify_user_ids || []).length + (g.set.notify_emails || []).length > 0;
   const setRow = (id, k, v) => setDraft(p => ({ ...p, [id]: { ...p[id], [k]: v } }));
 
   return (
     <Panel title="Cost-jump alert" subtitle="Raise a warning when an account's billed CloudOps cost is more than a set percentage above its 7-day average">
       {d.table_missing && <div className="ac-warn" role="alert">Settings cannot be saved yet: run the pending migrations (migrate.py apply --all-pending), number 132.</div>}
+      {!d.table_missing && d.recipients_missing && <div className="ac-warn" role="alert">Recipients cannot be saved yet: run the pending migrations (migrate.py apply --all-pending), number 133.</div>}
+      {!d.smtp_configured && <div className="ac-warn" role="alert">Email is not set up on this server (SMTP_HOST is not set), so no email can be sent yet. The alert still shows on the Alerts page and in the bell.</div>}
       {msg && <p className={msg.ok ? "ac-dim" : "ac-p"} role="status">{msg.text}</p>}
 
       <h3 className="ac-h">All accounts</h3>
@@ -654,7 +650,12 @@ function CostAlertSettings() {
         <label className="ac-field"><span>Minimum rise per day (USD)</span>
           <input type="number" min={lim.min_increase_usd[0]} step="0.01" placeholder={String(d.defaults.environment.min_increase_usd.value)}
                  value={gDraft.min_increase_usd} onChange={e => setGDraft({ ...gDraft, min_increase_usd: e.target.value })} /></label>
-        <button className="ac-btn" disabled={busy === "g" || d.table_missing} onClick={() => put("g", "/api/usage/cost-alert-settings/all-accounts", body(gDraft), "Saved for all accounts.")}>{busy === "g" ? "Saving..." : "Save for all accounts"}</button>
+      </div>
+      <Recipients users={d.users} ids={gDraft.notify_user_ids} emails={gDraft.notify_emails} who="all accounts"
+                  onIds={v => setGDraft({ ...gDraft, notify_user_ids: v })} onEmails={v => setGDraft({ ...gDraft, notify_emails: v })} />
+      <div className="ac-actions">
+        <button className="ac-btn" disabled={busy === "g" || d.table_missing || same(gDraft, toDraft(g.set))} onClick={() => put("g", "/api/usage/cost-alert-settings/all-accounts", toBody(gDraft), "Saved for all accounts.")}>{busy === "g" ? "Saving..." : "Save for all accounts"}</button>{" "}
+        <button className="ac-btn" disabled={busy === "test" || !gHas || !same(gDraft, toDraft(g.set))} title={!gHas ? "Save at least one recipient first" : "Emails the saved recipients"} onClick={() => test(null)}>{busy === "test" ? "Sending..." : "Send test email"}</button>
       </div>
       <p className="ac-dim">
         In effect: {g.effective.enabled ? "ON" : "OFF"}, {g.effective.threshold_pct}% above average, at least {usd(g.effective.min_increase_usd)} a day
@@ -663,29 +664,42 @@ function CostAlertSettings() {
       </p>
 
       <h3 className="ac-h">Per account</h3>
-      <p className="ac-dim">Leave a field empty to use the all-accounts value. "Inherit" in the first column means the same.</p>
+      <p className="ac-dim">Leave a field empty to use the all-accounts value. Recipients added here are told in addition to the all-accounts recipients.</p>
       {d.accounts.length === 0 ? <EmptyState title="No accounts" body="Add an account to set its alert." /> : (
         <div className="ac-tablewrap">
           <table className="ac-table">
-            <thead><tr><th className="ac-sticky">Account</th><th>Cloud</th><th>Alert</th><th>% above average</th><th>Min rise / day (USD)</th><th>In effect</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th className="ac-sticky">Account</th><th>Cloud</th><th>Alert</th><th>% above average</th><th>Min rise / day (USD)</th><th>Also email</th><th>In effect</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {d.accounts.map(a => {
-                const x = draft[a.id] || {};
+                const x = draft[a.id] || toDraft({});
+                const dirty = !same(x, toDraft(a.set));
+                const own = (a.set.notify_user_ids || []).length + (a.set.notify_emails || []).length;
                 return (
-                  <tr key={a.id}>
-                    <td className="ac-sticky" title={`account ${a.id}`}>{a.name}</td>
-                    <td>{CLOUD[a.provider] || a.provider}</td>
-                    <td><select aria-label={`Alert for ${a.name}`} value={x.enabled} onChange={e => setRow(a.id, "enabled", e.target.value)}>
-                      <option value="inherit">Inherit</option><option value="on">On</option><option value="off">Off</option></select></td>
-                    <td><input aria-label={`Percent for ${a.name}`} type="number" min={lim.threshold_pct[0]} max={lim.threshold_pct[1]} step="1" style={{ width: 80 }}
-                               placeholder={String(g.effective.threshold_pct)} value={x.threshold_pct} onChange={e => setRow(a.id, "threshold_pct", e.target.value)} /></td>
-                    <td><input aria-label={`Minimum rise for ${a.name}`} type="number" min={lim.min_increase_usd[0]} step="0.01" style={{ width: 90 }}
-                               placeholder={String(g.effective.min_increase_usd)} value={x.min_increase_usd} onChange={e => setRow(a.id, "min_increase_usd", e.target.value)} /></td>
-                    <td className="ac-dim">{a.effective.enabled ? "ON" : "OFF"} · {a.effective.threshold_pct}% · {usd(a.effective.min_increase_usd)}{a.has_override ? " (own)" : ""}</td>
-                    <td>{a.open_alert ? <strong>Alert open</strong> : <span className="ac-dim">{a.effective.enabled ? "watching" : "off"}</span>}</td>
-                    <td><button className="ac-btn" disabled={!dirty(a) || busy === a.id || d.table_missing}
-                                onClick={() => put(a.id, "/api/usage/cost-alert-settings/accounts", { account_ids: [a.id], ...body(x) }, `Saved for ${a.name}.`)}>{busy === a.id ? "Saving..." : "Save"}</button></td>
-                  </tr>
+                  <Fragment key={a.id}>
+                    <tr>
+                      <td className="ac-sticky" title={`account ${a.id}`}>{a.name}</td>
+                      <td>{CLOUD[a.provider] || a.provider}</td>
+                      <td><select aria-label={`Alert for ${a.name}`} value={x.enabled} onChange={e => setRow(a.id, "enabled", e.target.value)}>
+                        <option value="inherit">Inherit</option><option value="on">On</option><option value="off">Off</option></select></td>
+                      <td><input aria-label={`Percent for ${a.name}`} type="number" min={lim.threshold_pct[0]} max={lim.threshold_pct[1]} step="1" style={{ width: 80 }}
+                                 placeholder={String(g.effective.threshold_pct)} value={x.threshold_pct} onChange={e => setRow(a.id, "threshold_pct", e.target.value)} /></td>
+                      <td><input aria-label={`Minimum rise for ${a.name}`} type="number" min={lim.min_increase_usd[0]} step="0.01" style={{ width: 90 }}
+                                 placeholder={String(g.effective.min_increase_usd)} value={x.min_increase_usd} onChange={e => setRow(a.id, "min_increase_usd", e.target.value)} /></td>
+                      <td><button className="ac-btn" aria-expanded={!!open[a.id]} onClick={() => setOpen(p => ({ ...p, [a.id]: !p[a.id] }))}>{own ? `${own} added` : "Add"}{open[a.id] ? " ▴" : " ▾"}</button>
+                        <span className="ac-dim"> {a.recipient_count} in total</span></td>
+                      <td className="ac-dim">{a.effective.enabled ? "ON" : "OFF"} · {a.effective.threshold_pct}% · {usd(a.effective.min_increase_usd)}{a.has_override ? " (own)" : ""}</td>
+                      <td>{a.open_alert ? <strong>Alert open</strong> : <span className="ac-dim">{a.effective.enabled ? "watching" : "off"}</span>}</td>
+                      <td><button className="ac-btn" disabled={!dirty || busy === a.id || d.table_missing}
+                                  onClick={() => put(a.id, "/api/usage/cost-alert-settings/accounts", { account_ids: [a.id], ...toBody(x) }, `Saved for ${a.name}.`)}>{busy === a.id ? "Saving..." : "Save"}</button></td>
+                    </tr>
+                    {open[a.id] && (
+                      <tr><td colSpan={9}>
+                        <Recipients users={d.users} ids={x.notify_user_ids} emails={x.notify_emails} who={a.name}
+                                    onIds={v => setRow(a.id, "notify_user_ids", v)} onEmails={v => setRow(a.id, "notify_emails", v)} />
+                        <button className="ac-btn" disabled={busy === "test" || a.recipient_count === 0 || dirty} title={dirty ? "Save first" : "Emails everyone this account's alert would reach"} onClick={() => test(a.id)}>Send test email for {a.name}</button>
+                      </td></tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -694,7 +708,7 @@ function CostAlertSettings() {
       )}
       <div className="ac-actions" style={{ marginTop: 10 }}>
         <button className="ac-btn" disabled={busy === "reset" || d.table_missing || !d.accounts.some(a => a.has_override)}
-                onClick={() => { if (window.confirm("Clear every per-account setting so all accounts use the all-accounts values?")) put("reset", "/api/usage/cost-alert-settings/accounts", { account_ids: "all", enabled: null, threshold_pct: null, min_increase_usd: null }, "Cleared every per-account setting."); }}>
+                onClick={() => { if (window.confirm("Clear every per-account setting and recipient so all accounts use the all-accounts values?")) put("reset", "/api/usage/cost-alert-settings/accounts", { account_ids: "all", enabled: null, threshold_pct: null, min_increase_usd: null, ...(d.recipients_missing ? {} : { notify_user_ids: null, notify_emails: null }) }, "Cleared every per-account setting."); }}>
           {busy === "reset" ? "Clearing..." : "Clear all per-account settings"}</button>
       </div>
       <ul className="ac-list ac-dim">{d.notes.map((t, i) => <li key={i}>{t}</li>)}</ul>
@@ -712,7 +726,7 @@ export default function ApiCost() {
         title="Cloud cost"
         subtitle={isAdmin ? "What CloudOps's own metric polling actually costs in the cloud, as billed" : "How many paid metric reads CloudOps made, from the usage it measured itself"}
       />
-      {isAdmin ? <><MonthlyTotals /><CostExplorer /><TierCost /><CostAlertSettings /></> : <Metering />}
+      {isAdmin ? <><CostExplorer /><TierCost /><CostAlertSettings /></> : <Metering />}
     </div>
   );
 }

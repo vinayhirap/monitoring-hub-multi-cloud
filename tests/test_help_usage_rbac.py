@@ -321,12 +321,13 @@ def test_nothing_under_help_or_usage_is_open_or_state_changing_except_the_cost_r
     rows = [r for r in matrix if r["path"].startswith(("/api/help", "/api/usage"))]
     assert rows and all(r["level"] == "permission" for r in rows)
     # The deliberate exceptions, all admin-only (usage.manage): the manual Cost Explorer refresh (it spends $0.01 per request)
-    # and the two cost-jump alert settings writes.
+    # and the cost-jump alert settings writes and its test email.
     mutating = sorted((r["path"], r["methods"], r["permissions"]) for r in rows if r["mutating"])
     assert mutating == [
         ("/api/usage/actual-cost/refresh", ["POST"], ["usage.manage", "usage.view"]),
         ("/api/usage/cost-alert-settings/accounts", ["PUT"], ["usage.manage", "usage.view"]),
-        ("/api/usage/cost-alert-settings/all-accounts", ["PUT"], ["usage.manage", "usage.view"])]
+        ("/api/usage/cost-alert-settings/all-accounts", ["PUT"], ["usage.manage", "usage.view"]),
+        ("/api/usage/cost-alert-settings/test-email", ["POST"], ["usage.manage", "usage.view"])]
 
 
 def test_every_code_those_routes_name_is_seeded(matrix):

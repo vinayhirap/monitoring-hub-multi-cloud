@@ -56,6 +56,7 @@ LABELS = {
     'challengerequests': 'Challenge Requests',
     'clientconnections': 'Client Connections',
     'clients/connected': 'Connected Clients',
+    'cloud_cost_jump': 'Daily Cost Jump',
     'cluster_failed_node_count': 'Cluster Failed Node Count',
     'cluster_node_count': 'Cluster Node Count',
     'clusterindexwritesblocked': 'Cluster Index Writes Blocked',

@@ -107,7 +107,7 @@ def test_load_splits_all_accounts_from_per_account_and_tolerates_a_missing_table
     assert st["global"]["enabled"] is True and st["global"]["threshold_pct"] == 35.0
     assert st["accounts"][7]["enabled"] is False and st["accounts"][7]["min_increase_usd"] == 2.0 and st["table_missing"] is False
     missing = cjs.load(Cur(fail="1146 (42S02): Table 'x.cost_jump_settings' doesn't exist"))
-    assert missing == {"global": {}, "accounts": {}, "table_missing": True}
+    assert missing == {"global": {}, "accounts": {}, "table_missing": True, "recipients_missing": True}
     with pytest.raises(Exception):
         cjs.load(Cur(fail="connection lost"))                                # anything else is a real error, not hidden
 
@@ -159,5 +159,104 @@ def test_view_shows_set_and_effective_values_and_where_each_comes_from(api):
 def test_the_settings_routes_all_require_usage_manage():
     import os
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app", "api", "cost_alert_settings.py")).read()
-    assert src.count('Depends(require_permission("usage.manage"))') == 3
-    assert src.count("@router.") == 3
+    assert src.count('Depends(require_permission("usage.manage"))') == 4
+    assert src.count("@router.") == 4
+
+
+# ── recipients ──────────────────────────────────────────────────────────────────
+def test_recipient_validation_cleans_dedupes_and_lowercases():
+    v = cjs.validate({"notify_user_ids": [5, 3, 5], "notify_emails": " Ops@Corp.com, ops@corp.com ;lead@corp.com\nx@y.io "})
+    assert v == {"notify_user_ids": [3, 5], "notify_emails": ["ops@corp.com", "lead@corp.com", "x@y.io"]}
+    assert cjs.validate({"notify_user_ids": [], "notify_emails": ""}) == {"notify_user_ids": None, "notify_emails": None}
+    assert cjs.validate({"notify_emails": ["a@b.co"]}) == {"notify_emails": ["a@b.co"]}
+
+
+@pytest.mark.parametrize("bad", [
+    {"notify_user_ids": ["3"]}, {"notify_user_ids": [True]}, {"notify_user_ids": [0]}, {"notify_user_ids": "3"},
+    {"notify_user_ids": list(range(1, 60))}, {"notify_emails": "not-an-email"}, {"notify_emails": ["a@b.co", "bad"]},
+    {"notify_emails": ["a@b.co\r\nBcc: evil@x.io"]}, {"notify_emails": [f"u{i}@corp.com" for i in range(25)]}, {"notify_emails": [5]},
+])
+def test_bad_recipients_are_rejected(bad):
+    with pytest.raises(ValueError):
+        cjs.validate(bad)
+
+
+def test_recipients_are_added_together_not_inherited():
+    st = {"global": {"notify_user_ids": [1], "notify_emails": ["all@corp.com"]},
+          "accounts": {7: {"notify_user_ids": [2], "notify_emails": ["acct@corp.com", "ALL@corp.com"]}}}
+    assert cjs.recipients(st, 7) == ([1, 2], ["all@corp.com", "acct@corp.com"])
+    assert cjs.recipients(st, 8) == ([1], ["all@corp.com"])                  # an account with no row still gets the all-accounts ones
+    assert cjs.recipients({}, 7) == ([], [])
+
+
+def test_recipients_are_stored_as_json_and_text_and_clearing_one_field_keeps_the_row():
+    c = Cur()
+    cjs.save(c, 7, {"notify_user_ids": [3, 5], "notify_emails": ["a@b.co", "c@d.io"]}, "v")
+    assert c.log[0][1] == (7, "[3, 5]", "a@b.co, c@d.io", "v")
+    c2 = Cur()
+    cjs.save(c2, 7, {"enabled": None}, "v")
+    delete_sql = [s for s, _ in c2.log if s.startswith("DELETE")][0]
+    assert "notify_user_ids IS NULL" in delete_sql and "notify_emails IS NULL" in delete_sql     # recipients keep the row alive
+
+
+def test_before_migration_133_nothing_references_the_recipient_columns():
+    c = Cur()
+    cjs.save(c, 7, {"enabled": None}, "v", recipients_supported=False)
+    assert not any("notify_" in s for s, _ in c.log)
+    with pytest.raises(ValueError):
+        cjs.save(Cur(), 7, {"notify_emails": ["a@b.co"]}, "v", recipients_supported=False)
+
+
+class FallbackCur(Cur):
+    """Database still on migration 132: the first SELECT (with recipient columns) fails with 1054, the older one works."""
+    def __init__(self):
+        super().__init__([{"scope_key": 0, "enabled": 1, "threshold_pct": None, "min_increase_usd": None, "updated_by": "a", "updated_at": None}])
+
+    def execute(self, sql, params=()):
+        if "notify_user_ids" in sql:
+            raise Exception("1054 (42S22): Unknown column 'notify_user_ids' in 'field list'")
+        super().execute(sql, params)
+
+
+def test_load_works_before_migration_133_and_says_so():
+    st = cjs.load(FallbackCur())
+    assert st["recipients_missing"] is True and st["global"]["enabled"] is True and st["global"]["notify_emails"] == []
+
+
+def test_load_reads_recipient_columns_when_present():
+    st = cjs.load(Cur([{"scope_key": 0, "enabled": None, "threshold_pct": None, "min_increase_usd": None,
+                        "notify_user_ids": "[2, 9]", "notify_emails": "a@b.co, c@d.io", "updated_by": "a", "updated_at": None}]))
+    assert st["global"]["notify_user_ids"] == [2, 9] and st["global"]["notify_emails"] == ["a@b.co", "c@d.io"]
+    assert st["recipients_missing"] is False
+    bad = cjs.load(Cur([{"scope_key": 0, "notify_user_ids": "{broken", "notify_emails": None, "updated_by": None, "updated_at": None}]))
+    assert bad["global"]["notify_user_ids"] == []                            # a corrupt value never breaks the alert run
+
+
+def test_view_lists_users_marks_those_without_email_and_counts_recipients(api):
+    st = {"global": {"notify_user_ids": [1], "notify_emails": ["all@corp.com"]},
+          "accounts": {7: {"notify_user_ids": [], "notify_emails": ["a@corp.com"]}}, "table_missing": False, "recipients_missing": False}
+    users = [{"id": 1, "username": "asha", "email": "asha@corp.com"}, {"id": 2, "username": "ravi", "email": None}]
+    v = api.build_view(st, [{"id": 7, "account_name": "Prod", "provider": "aws"}, {"id": 8, "account_name": "Dev", "provider": "aws"}], set(), users, True)
+    assert [(u["username"], u["has_email"]) for u in v["users"]] == [("asha", True), ("ravi", False)]
+    a7, a8 = v["accounts"]
+    assert a7["recipient_count"] == 3 and a8["recipient_count"] == 2 and a7["has_override"] is True and a8["has_override"] is False
+    assert v["smtp_configured"] is True and v["all_accounts"]["set"]["notify_emails"] == ["all@corp.com"]
+
+
+def test_choosing_a_user_without_email_is_refused_with_the_way_out(api):
+    from fastapi import HTTPException
+
+    class C:
+        def __init__(self, rows): self.rows = rows
+        def execute(self, sql, params=()): pass
+        def fetchall(self): return self.rows
+
+    api._check_users(C([{"id": 1, "username": "asha", "email": "asha@corp.com", "active": 1}]), [1])
+    for rows, text in (([{"id": 1, "username": "ravi", "email": "", "active": 1}], "no email on file"),
+                       ([{"id": 1, "username": "ravi", "email": "r@c.com", "active": 0}], "inactive"), ([], "does not exist")):
+        with pytest.raises(HTTPException) as e:
+            api._check_users(C(rows), [1])
+        assert text in e.value.detail
+    with pytest.raises(HTTPException) as e:
+        api._check_users(C([{"id": 1, "username": "ravi", "email": " ", "active": 1}]), [1])
+    assert "type the address in directly" in e.value.detail

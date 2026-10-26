@@ -25,6 +25,10 @@ LIFECYCLE (same rules as host_agent_watchdog.py, through the existing alert pipe
     so correlation, priority, escalation, the status page, maintenance silences and notifications all work unchanged.
   * Back inside the limit on the latest settled day -> auto-resolved with reason 'recovered'.
   * Data missing or too short -> the alert is left alone and simply goes stale on its own (no fresh reading is the truth).
+  * WHO IS TOLD when an alert opens: the Alerts page, bell and pop-up for everyone who can see the account; every matching
+    notification channel (Settings > Notifications; a channel must be set to receive WARNING, the default is CRITICAL
+    only); and this alert's own recipients (the Cloud cost page): chosen CloudOps users with an email, plus typed
+    addresses, all-accounts recipients plus the account's own. Nothing is sent for resolves, silenced alerts or refreshes.
   * The check reads only the database (no cloud call, no cost). It runs at most every CHECK_EVERY_SECONDS from the
     scheduler's critical tick rather than once a day on a clock, because an open alert needs its last_seen_at refreshed
     inside the alert-staleness window; re-checking does not re-notify, a notification goes out only when an alert opens.
@@ -161,7 +165,79 @@ def _resolve(cursor, alert_id, reason):
     return cursor.rowcount
 
 
-def _notify(alert_id, rid, account_id, account_name, usd, limit, detail):
+def _alert_dict(alert_id, rid, account_id, account_name, usd, limit, detail):
+    return {"id": alert_id, "severity": "WARNING", "metric_name": METRIC, "resource_id": rid, "account_name": account_name,
+            "aws_account_id": account_id, "value": usd, "threshold": limit, "silenced": False, "priority": None, "detail": detail}
+
+
+def send_to_recipients(message, user_ids, emails, alert_id=None, event="opened"):
+    """Email message ({headline, text}) to chosen CloudOps users (their current address) and typed addresses.
+    Returns {"sent": [address], "failed": [[address, why]], "skipped": [[user, why]]}. Never raises. One notification_log row per try."""
+    out = {"sent": [], "failed": [], "skipped": []}
+    try:
+        targets, seen = [], set()
+        if user_ids:
+            conn = get_connection()
+            try:
+                cur = conn.cursor(dictionary=True)
+                cur.execute(f"SELECT id, username, email, COALESCE(active, 1) AS active FROM users WHERE id IN ({', '.join(['%s'] * len(user_ids))})",
+                            tuple(user_ids))
+                found = {r["id"]: r for r in cur.fetchall()}
+            finally:
+                conn.close()
+            for uid in user_ids:
+                u = found.get(uid)
+                if not u:
+                    out["skipped"].append([f"user {uid}", "no longer exists"])
+                elif not u["active"]:
+                    out["skipped"].append([u["username"], "user is inactive"])
+                elif not (u["email"] or "").strip():
+                    out["skipped"].append([u["username"], "no email on file"])
+                else:
+                    targets.append(u["email"].strip())
+        targets += list(emails or [])
+        addrs = []
+        for a in targets:
+            if a.lower() not in seen:
+                seen.add(a.lower())
+                addrs.append(a)
+        if addrs:
+            from app.email import mailer
+            configured = mailer.is_configured()
+            for addr in addrs:
+                if not configured:
+                    out["failed"].append([addr, "SMTP is not configured (SMTP_HOST unset)"])
+                elif mailer.send_email(addr, message["headline"], message["text"]):
+                    out["sent"].append(addr)
+                else:
+                    out["failed"].append([addr, "could not be sent, see the server log"])
+        _log_recipients(out, alert_id, event)
+    except Exception:
+        logger.warning("[cost-jump] sending to recipients failed", exc_info=True)
+    return out
+
+
+def _log_recipients(result, alert_id, event):
+    rows = [(a, "sent", None) for a in result["sent"]] + [(a, "failed", why) for a, why in result["failed"]] \
+        + [(u, "skipped", why) for u, why in result["skipped"]]
+    if not rows:
+        return
+    try:
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            for who, status, why in rows:
+                cur.execute("INSERT INTO notification_log (channel_id, channel_name, alert_id, event, status, detail) "
+                            "VALUES (NULL, %s, %s, %s, %s, %s)",
+                            ("Cost alert recipients", alert_id, event, status, (f"{who}: {why}" if why else who)[:500]))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("[cost-jump] could not record recipient deliveries", exc_info=True)
+
+
+def _notify(alert_id, rid, account_id, account_name, usd, limit, detail, recips=((), ())):
     """After commit; each step independent and never raises (same fan-out as the host-agent watchdog)."""
     try:
         from app.ws.publisher import publish_alert
@@ -169,13 +245,19 @@ def _notify(alert_id, rid, account_id, account_name, usd, limit, detail):
                       account_id=account_id, account_name=account_name, region=None, priority=None)
     except Exception:
         logger.warning("[cost-jump] publish_alert failed", exc_info=True)
+    alert = _alert_dict(alert_id, rid, account_id, account_name, usd, limit, detail)
     try:
         from app.notifications.sender import notify_alert_event
-        notify_alert_event("opened", {"id": alert_id, "severity": "WARNING", "metric_name": METRIC, "resource_id": rid,
-                                      "account_name": account_name, "aws_account_id": account_id, "value": usd,
-                                      "threshold": limit, "silenced": False, "priority": None, "detail": detail})
+        notify_alert_event("opened", alert)
     except Exception:
         logger.warning("[cost-jump] notify_alert_event failed", exc_info=True)
+    users, emails = recips
+    if users or emails:
+        try:
+            from app.notifications.sender import build_message
+            send_to_recipients(build_message("opened", alert), users, emails, alert_id=alert_id)
+        except Exception:
+            logger.warning("[cost-jump] recipient email failed", exc_info=True)
 
 
 # ── entry point ──────────────────────────────────────────────────────────────────────
@@ -254,7 +336,8 @@ def run_cost_jump_check(force=False, today=None) -> dict:
                               1 if silence else 0, silence))
                         stats["opened"] += 1
                         if not silence:
-                            opened.append((cursor.lastrowid, rid, pk, acct["name"], r["usd"], r["limit"], detail))
+                            opened.append((cursor.lastrowid, rid, pk, acct["name"], r["usd"], r["limit"], detail,
+                                           cost_jump_settings.recipients(settings, pk)))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -262,8 +345,8 @@ def run_cost_jump_check(force=False, today=None) -> dict:
     finally:
         cursor.close()
         conn.close()
-    for alert_id, rid, pk, name, usd, limit, detail in opened:
-        _notify(alert_id, rid, pk, name or "", usd, limit, detail)
+    for alert_id, rid, pk, name, usd, limit, detail, recips in opened:
+        _notify(alert_id, rid, pk, name or "", usd, limit, detail, recips)
     if stats["opened"] or stats["resolved"] or stats["switched_off"]:
         logger.info(f"[cost-jump] {stats}")
     return stats

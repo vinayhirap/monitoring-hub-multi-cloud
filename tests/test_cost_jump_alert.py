@@ -235,3 +235,101 @@ def test_before_migration_132_the_environment_still_decides(cj, monkeypatch):
     assert run(cj, monkeypatch, series(50.0), settings=None)[0]["skipped"] == "disabled"
     monkeypatch.setenv("COST_JUMP_ALERT_ENABLED", "true")
     assert run(cj, monkeypatch, series(50.0), settings=None)[0]["opened"] == 1
+
+
+# ── who is emailed ──────────────────────────────────────────────────────────────
+class MailCur(FakeCur):
+    def __init__(self, users):
+        super().__init__([], None, [])
+        self.users = users
+
+    def execute(self, sql, params=()):
+        self.log.append((" ".join(sql.split()), params))
+        self._rows = self.users if "FROM users" in sql else []
+
+
+@pytest.fixture
+def mail(cj, monkeypatch):
+    import sys
+    import types
+    sent = []
+    cfg = {"on": True, "fail": set()}
+    m = types.ModuleType("app.email.mailer")
+    m.is_configured = lambda: cfg["on"]
+    m.send_email = lambda to, subject, body: (sent.append((to, subject)) or to not in cfg["fail"])
+    pkg = types.ModuleType("app.email")
+    pkg.mailer = m
+    monkeypatch.setitem(sys.modules, "app.email", pkg)
+    monkeypatch.setitem(sys.modules, "app.email.mailer", m)
+    return sent, cfg
+
+
+def with_users(cj, monkeypatch, users):
+    cur = MailCur(users)
+    conn = FakeConn(cur)
+    monkeypatch.setattr(cj, "get_connection", lambda: conn)
+    return cur
+
+
+MSG = {"headline": "H", "text": "T"}
+U = lambda i, name, email, active=1: {"id": i, "username": name, "email": email, "active": active}
+
+
+def test_users_are_emailed_at_their_current_address_and_typed_addresses_too(cj, monkeypatch, mail):
+    sent, cfg = mail
+    with_users(cj, monkeypatch, [U(3, "asha", "asha@corp.com"), U(5, "ravi", "ravi@corp.com")])
+    r = cj.send_to_recipients(MSG, [3, 5], ["ops@corp.com"], alert_id=9)
+    assert [s[0] for s in sent] == ["asha@corp.com", "ravi@corp.com", "ops@corp.com"]
+    assert r["sent"] == ["asha@corp.com", "ravi@corp.com", "ops@corp.com"] and r["failed"] == [] and r["skipped"] == []
+
+
+def test_a_user_with_no_email_or_inactive_or_gone_is_skipped_with_a_reason(cj, monkeypatch, mail):
+    sent, cfg = mail
+    with_users(cj, monkeypatch, [U(3, "asha", ""), U(5, "ravi", "ravi@corp.com", active=0)])
+    r = cj.send_to_recipients(MSG, [3, 5, 8], ["ops@corp.com"])
+    assert sent == [("ops@corp.com", "H")]
+    assert {tuple(x) for x in r["skipped"]} == {("asha", "no email on file"), ("ravi", "user is inactive"), ("user 8", "no longer exists")}
+
+
+def test_the_same_address_is_never_emailed_twice(cj, monkeypatch, mail):
+    sent, cfg = mail
+    with_users(cj, monkeypatch, [U(3, "asha", "Asha@Corp.com")])
+    cj.send_to_recipients(MSG, [3], ["asha@corp.com", "ASHA@corp.com"])
+    assert len(sent) == 1
+
+
+def test_unconfigured_smtp_fails_every_address_with_a_clear_reason_and_sends_nothing(cj, monkeypatch, mail):
+    sent, cfg = mail
+    cfg["on"] = False
+    with_users(cj, monkeypatch, [])
+    r = cj.send_to_recipients(MSG, [], ["ops@corp.com"])
+    assert sent == [] and r["sent"] == [] and "SMTP is not configured" in r["failed"][0][1]
+
+
+def test_one_bad_address_does_not_stop_the_others_and_every_try_is_logged(cj, monkeypatch, mail):
+    sent, cfg = mail
+    cfg["fail"] = {"bad@corp.com"}
+    cur = with_users(cj, monkeypatch, [])
+    r = cj.send_to_recipients(MSG, [], ["bad@corp.com", "ok@corp.com"], alert_id=9)
+    assert r["sent"] == ["ok@corp.com"] and r["failed"][0][0] == "bad@corp.com"
+    logged = cur.sqls("INSERT INTO notification_log")
+    assert sorted(p[3] for p in logged) == ["failed", "sent"] and all(p[0] == "Cost alert recipients" for p in logged)
+
+
+def test_nothing_chosen_sends_nothing(cj, monkeypatch, mail):
+    sent, cfg = mail
+    with_users(cj, monkeypatch, [])
+    assert cj.send_to_recipients(MSG, [], []) == {"sent": [], "failed": [], "skipped": []} and sent == []
+
+
+def test_an_opened_alert_carries_its_all_accounts_plus_own_recipients(cj, monkeypatch):
+    st = [srow(0, enabled=1), srow(5)]
+    st[0].update(notify_user_ids="[1]", notify_emails="all@corp.com")
+    st[1].update(notify_user_ids="[2]", notify_emails="acct@corp.com")
+    cur = FakeCur(cost_rows(series(50.0)), None, st)
+    conn = FakeConn(cur)
+    monkeypatch.setattr(cj, "get_connection", lambda: conn)
+    sent = []
+    monkeypatch.setattr(cj, "_notify", lambda *a: sent.append(a))
+    cj.run_cost_jump_check(force=True, today=TODAY)
+    assert sent[0][-1] == ([1, 2], ["all@corp.com", "acct@corp.com"])
