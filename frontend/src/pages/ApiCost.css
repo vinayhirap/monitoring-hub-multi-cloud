@@ -105,3 +105,56 @@
 .ac-legbtn.is-off { opacity: .4; text-decoration: line-through; }
 .ac-dimmed { opacity: .55; transition: opacity .15s; }
 .ac-foot { margin-top: var(--space-4); line-height: 1.5; }
+
+/* ── Cost-jump alert: settings table and recipients ─────────────────────────────────── */
+.ac-settings td { vertical-align: middle; }
+.ac-settings td select, .ac-settings td input[type="number"] {
+  padding: 6px 8px; border-radius: var(--radius); border: 1px solid var(--border-md); background: var(--bg-elevated);
+  color: var(--text-primary); font-size: 13px; min-height: 32px;
+}
+.ac-row-default td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.ac-row-default td.ac-sticky { background: var(--bg-elevated); }
+.ac-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; border: 1px solid var(--border-md); }
+.ac-pill.is-open { border-color: rgba(245, 158, 11, .6); background: rgba(245, 158, 11, .12); color: var(--text-primary); }
+.ac-note-ok { margin: 0 0 10px; font-size: 13px; color: var(--ok-fg, #16a34a); }
+.ac-field-err { margin: 6px 0 0; font-size: 12.5px; color: var(--crit-fg, #dc2626); }
+.ac-btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.ac-scope-grid { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--space-4); align-items: start; }
+.ac-scope-list { display: grid; gap: 4px; max-height: 420px; overflow-y: auto; padding-right: 4px; }
+.ac-scope-btn {
+  display: grid; gap: 1px; text-align: left; padding: 8px 12px; border-radius: var(--radius); cursor: pointer;
+  border: 1px solid transparent; background: transparent; color: var(--text-primary); font-size: 13px;
+}
+.ac-scope-btn:hover { background: var(--bg-elevated); }
+.ac-scope-btn.is-on { background: var(--bg-elevated); border-color: var(--accent); }
+.ac-scope-name { font-weight: 600; overflow-wrap: anywhere; }
+.ac-scope-n { font-size: 11.5px; color: var(--text-muted); }
+.ac-scope-edit { min-width: 0; max-width: 720px; }
+.ac-lbl { display: block; margin: 14px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); }
+.ac-inherit { margin: 8px 0 0; padding: 8px 10px; border: 1px dashed var(--border-md); border-radius: var(--radius); }
+.ac-pick { position: relative; display: grid; gap: 8px; }
+.ac-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 26px; }
+.ac-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border-radius: 999px; font-size: 12.5px;
+  border: 1px solid var(--border-md); background: var(--bg-elevated); color: var(--text-primary);
+}
+.ac-chip.is-muted { padding-right: 10px; color: var(--text-muted); border-style: dashed; }
+.ac-chip strong { font-weight: 600; }
+.ac-chip-sub { color: var(--text-muted); font-size: 11.5px; }
+.ac-chip-x { border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 6px; border-radius: 999px; }
+.ac-chip-x:hover { color: var(--text-primary); background: var(--border); }
+.ac-input {
+  width: 100%; padding: 7px 10px; border-radius: var(--radius); border: 1px solid var(--border-md); background: var(--bg-elevated);
+  color: var(--text-primary); font-size: 13px; min-height: 34px;
+}
+.ac-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ac-input[aria-invalid="true"] { border-color: var(--crit-fg, #dc2626); }
+.ac-pick-menu {
+  position: absolute; left: 0; right: 0; top: 100%; z-index: 5; margin: 4px 0 0; padding: 4px; list-style: none; max-height: 260px; overflow-y: auto;
+  border: 1px solid var(--border-md); border-radius: var(--radius); background: var(--bg-elevated); box-shadow: 0 8px 24px rgba(0,0,0,.35);
+}
+.ac-pick-opt { display: grid; gap: 1px; padding: 7px 10px; border-radius: var(--radius); cursor: pointer; font-size: 13px; color: var(--text-primary); }
+.ac-pick-opt:hover { background: var(--border); }
+.ac-pick-opt.is-off { opacity: .55; cursor: not-allowed; }
+.ac-pick-empty { padding: 8px 10px; font-size: 12.5px; color: var(--text-muted); }
+@media (max-width: 860px) { .ac-scope-grid { grid-template-columns: 1fr; } .ac-scope-list { grid-auto-flow: column; grid-auto-columns: minmax(150px, 1fr); max-height: none; overflow-x: auto; } }

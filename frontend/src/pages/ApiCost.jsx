@@ -549,55 +549,111 @@ function TierCost() {
 }
 
 
-// ───────────────────────── Cost-jump alert settings (usage.manage) ─────────────────────────
+// ───────────────────────── Cost-jump alert: settings table + recipients (usage.manage) ─────────────────────────
 const SRC_TEXT = { account: "this account", "all accounts": "all-accounts setting", environment: "server environment", default: "built-in default" };
+const EMAIL_RE = /^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/;
 const onoff = v => (v === true ? "on" : v === false ? "off" : "inherit");
 const fromOnoff = v => (v === "on" ? true : v === "off" ? false : null);
 const numOrNull = v => (String(v).trim() === "" ? null : Number(v));
 const emailList = t => [...new Set(String(t || "").split(/[,;\s]+/).map(x => x.trim().toLowerCase()).filter(Boolean))];
-const idsOrNull = a => (a && a.length ? [...a].sort((x, y) => x - y) : null);
-const mailsOrNull = t => { const l = emailList(t); return l.length ? l : null; };
-const toDraft = o => ({ enabled: onoff(o.enabled), threshold_pct: o.threshold_pct ?? "", min_increase_usd: o.min_increase_usd ?? "",
-                        notify_user_ids: o.notify_user_ids || [], notify_emails: (o.notify_emails || []).join(", ") });
-const toBody = x => ({ enabled: fromOnoff(x.enabled), threshold_pct: numOrNull(x.threshold_pct), min_increase_usd: numOrNull(x.min_increase_usd),
-                       notify_user_ids: idsOrNull(x.notify_user_ids), notify_emails: mailsOrNull(x.notify_emails) });
-const same = (a, b) => JSON.stringify(toBody(a)) === JSON.stringify(toBody(b));
+const sDraftOf = o => ({ enabled: onoff(o.enabled), threshold_pct: o.threshold_pct ?? "", min_increase_usd: o.min_increase_usd ?? "" });
+const sBody = x => ({ enabled: fromOnoff(x.enabled), threshold_pct: numOrNull(x.threshold_pct), min_increase_usd: numOrNull(x.min_increase_usd) });
+const rDraftOf = o => ({ ids: [...(o.notify_user_ids || [])].sort((x, y) => x - y), emails: [...(o.notify_emails || [])] });
+const rBody = x => ({ notify_user_ids: x.ids.length ? x.ids : null, notify_emails: x.emails.length ? x.emails : null });
+const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-function Recipients({ users, ids, emails, onIds, onEmails, who }) {
-  const toggle = id => onIds(ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]);
+function Chip({ children, onRemove, label, muted }) {
   return (
-    <div className="ac-recips">
-      <fieldset style={{ border: 0, padding: 0, margin: "0 0 8px" }}>
-        <legend className="ac-dim">Users to email ({who}), using the email on their profile</legend>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 18px" }}>
-          {users.length === 0 && <span className="ac-dim">No users found.</span>}
-          {users.map(u => (
-            <label key={u.id} title={u.has_email ? u.email : "No email on file: add one to the user, or type the address below"}>
-              <input type="checkbox" checked={ids.includes(u.id)} disabled={!u.has_email && !ids.includes(u.id)} onChange={() => toggle(u.id)} />{" "}
-              {u.username} <span className="ac-dim">{u.has_email ? u.email : "(no email on file)"}</span>
-            </label>
+    <span className={`ac-chip${muted ? " is-muted" : ""}`}>
+      {children}
+      {onRemove && <button type="button" className="ac-chip-x" aria-label={`Remove ${label}`} onClick={onRemove}>×</button>}
+    </span>
+  );
+}
+
+function PeoplePicker({ users, value, onChange, id }) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const byId = Object.fromEntries(users.map(u => [u.id, u]));
+  const needle = q.trim().toLowerCase();
+  const matches = users.filter(u => !value.includes(u.id) && `${u.username} ${u.email || ""}`.toLowerCase().includes(needle));
+  const add = u => { if (!u.has_email) return; onChange([...value, u.id].sort((x, y) => x - y)); setQ(""); };
+  return (
+    <div className="ac-pick">
+      <div className="ac-chips">
+        {value.length === 0 && <span className="ac-dim" style={{ margin: 0 }}>No users selected</span>}
+        {value.map(uid => {
+          const u = byId[uid];
+          return (
+            <Chip key={uid} label={u ? u.username : `user ${uid}`} onRemove={() => onChange(value.filter(x => x !== uid))}>
+              {u ? <><strong>{u.username}</strong>{u.email && u.email !== u.username ? <span className="ac-chip-sub">{u.email}</span> : null}</> : `User ${uid} (unavailable)`}
+            </Chip>
+          );
+        })}
+      </div>
+      <input type="text" className="ac-input" role="combobox" aria-expanded={open} aria-controls={`${id}-list`} aria-label="Search users to add"
+             placeholder="Search users by name or email to add..." value={q} autoComplete="off"
+             onChange={e => { setQ(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}
+             onKeyDown={e => { if (e.key === "Escape") setOpen(false); if (e.key === "Enter") { e.preventDefault(); const first = matches.find(u => u.has_email); if (first) add(first); } }} />
+      {open && (
+        <ul id={`${id}-list`} role="listbox" className="ac-pick-menu">
+          {matches.length === 0 && <li className="ac-pick-empty">{users.length === 0 ? "No users found" : "No matching users"}</li>}
+          {matches.map(u => (
+            <li key={u.id} role="option" aria-selected="false" aria-disabled={!u.has_email} className={`ac-pick-opt${u.has_email ? "" : " is-off"}`}
+                onMouseDown={e => { e.preventDefault(); add(u); }}>
+              <span>{u.username}</span>
+              <span className="ac-chip-sub">{u.has_email ? (u.email !== u.username ? u.email : "") : "No email on file: add one to the user, or enter the address instead"}</span>
+            </li>
           ))}
-        </div>
-      </fieldset>
-      <label className="ac-field"><span>Other email addresses (separate with commas or new lines)</span>
-        <textarea rows={2} style={{ width: "100%", maxWidth: 560 }} value={emails} onChange={e => onEmails(e.target.value)} placeholder="name@company.com, team@company.com" /></label>
+        </ul>
+      )}
     </div>
   );
 }
 
-function CostAlertSettings() {
+function EmailChips({ value, onChange }) {
+  const [t, setT] = useState("");
+  const [bad, setBad] = useState(null);
+  const commit = raw => {
+    const parts = emailList(raw);
+    if (!parts.length) { setT(""); setBad(null); return; }
+    const wrong = parts.find(x => !EMAIL_RE.test(x));
+    if (wrong) { setBad(`"${wrong}" is not a valid email address.`); return; }
+    setBad(null); onChange([...new Set([...value, ...parts])]); setT("");
+  };
+  return (
+    <div className="ac-pick">
+      <div className="ac-chips">
+        {value.length === 0 && <span className="ac-dim" style={{ margin: 0 }}>No addresses added</span>}
+        {value.map(a => <Chip key={a} label={a} onRemove={() => onChange(value.filter(x => x !== a))}>{a}</Chip>)}
+      </div>
+      <input type="text" className="ac-input" aria-label="Add an email address" placeholder="name@company.com, then press Enter" value={t} autoComplete="off"
+             aria-invalid={!!bad} onChange={e => { setT(e.target.value); if (bad) setBad(null); }} onBlur={() => t.trim() && commit(t)}
+             onKeyDown={e => {
+               if (e.key === "Enter" || e.key === "," || e.key === ";") { e.preventDefault(); commit(t); }
+               else if (e.key === "Backspace" && !t && value.length) onChange(value.slice(0, -1));
+             }} />
+      {bad && <p className="ac-field-err" role="alert">{bad}</p>}
+    </div>
+  );
+}
+
+function CostAlert() {
   const [d, setD] = useState(null);
   const [err, setErr] = useState(null);
-  const [draft, setDraft] = useState({});
-  const [gDraft, setGDraft] = useState(null);
-  const [open, setOpen] = useState({});
+  const [sDraft, setSDraft] = useState({});          // {all | accountId: {enabled, threshold_pct, min_increase_usd}}
+  const [rDraft, setRDraft] = useState({});          // {all | accountId: {ids, emails}}
+  const [scope, setScope] = useState("all");
   const [busy, setBusy] = useState(null);
-  const [msg, setMsg] = useState(null);
+  const [sMsg, setSMsg] = useState(null);
+  const [rMsg, setRMsg] = useState(null);
 
-  const adopt = r => {
+  const adopt = (r, keep) => {
     setD(r);
-    setGDraft(toDraft(r.all_accounts.set));
-    setDraft(Object.fromEntries(r.accounts.map(a => [a.id, toDraft(a.set)])));
+    const s = { all: sDraftOf(r.all_accounts.set), ...Object.fromEntries(r.accounts.map(a => [a.id, sDraftOf(a.set)])) };
+    const q = { all: rDraftOf(r.all_accounts.set), ...Object.fromEntries(r.accounts.map(a => [a.id, rDraftOf(a.set)])) };
+    setSDraft(p => (keep ? { ...s, ...Object.fromEntries(Object.entries(p).filter(([k]) => k in s && !keep.s.includes(k))) } : s));
+    setRDraft(p => (keep ? { ...q, ...Object.fromEntries(Object.entries(p).filter(([k]) => k in q && !keep.r.includes(k))) } : q));
   };
   useEffect(() => {
     let live = true;
@@ -605,114 +661,139 @@ function CostAlertSettings() {
     return () => { live = false; };
   }, []);
 
-  const put = async (key, path, body, ok) => {
+  const put = async (key, path, body, setMsg, ok, saved) => {
     setBusy(key); setMsg(null);
     try {
       const r = await apiFetch(path, { method: "PUT", body: JSON.stringify(body) });
-      adopt(r); setMsg({ ok: true, text: ok });
+      adopt(r, saved); setMsg({ ok: true, text: ok });
     } catch (e) { setMsg({ ok: false, text: e?.detail || e?.message || "Could not save." }); } finally { setBusy(null); }
   };
-  const test = async (accountId) => {
-    setBusy("test"); setMsg(null);
+  const saveSettings = k => put(`s${k}`, k === "all" ? "/api/usage/cost-alert-settings/all-accounts" : "/api/usage/cost-alert-settings/accounts",
+    k === "all" ? sBody(sDraft[k]) : { account_ids: [k], ...sBody(sDraft[k]) }, setSMsg,
+    k === "all" ? "Saved for all accounts." : `Saved for ${d.accounts.find(a => a.id === k)?.name}.`, { s: [String(k)], r: [] });
+  const saveRecipients = k => put(`r${k}`, k === "all" ? "/api/usage/cost-alert-settings/all-accounts" : "/api/usage/cost-alert-settings/accounts",
+    k === "all" ? rBody(rDraft[k]) : { account_ids: [k], ...rBody(rDraft[k]) }, setRMsg,
+    k === "all" ? "Recipients saved for all accounts." : `Recipients saved for ${d.accounts.find(a => a.id === k)?.name}.`, { s: [], r: [String(k)] });
+  const test = async k => {
+    setBusy("test"); setRMsg(null);
     try {
-      const r = await apiFetch("/api/usage/cost-alert-settings/test-email", { method: "POST", body: JSON.stringify({ account_id: accountId ?? null }) });
+      const r = await apiFetch("/api/usage/cost-alert-settings/test-email", { method: "POST", body: JSON.stringify({ account_id: k === "all" ? null : k }) });
       const bits = [];
       if (r.sent.length) bits.push(`Test sent to ${r.sent.join(", ")}.`);
       if (r.failed.length) bits.push(`Could not send to ${r.failed.map(f => `${f[0]} (${f[1]})`).join("; ")}.`);
       if (r.skipped.length) bits.push(`Skipped ${r.skipped.map(f => `${f[0]} (${f[1]})`).join("; ")}.`);
-      setMsg({ ok: r.sent.length > 0 && r.failed.length === 0, text: bits.join(" ") || "Nothing was sent." });
-    } catch (e) { setMsg({ ok: false, text: e?.detail || e?.message || "Could not send the test." }); } finally { setBusy(null); }
+      setRMsg({ ok: r.sent.length > 0 && r.failed.length === 0, text: bits.join(" ") || "Nothing was sent." });
+    } catch (e) { setRMsg({ ok: false, text: e?.detail || e?.message || "Could not send the test." }); } finally { setBusy(null); }
   };
 
   if (err) return <Panel title="Cost-jump alert"><p className="ac-dim">Could not be loaded{err.status === 403 ? ": you do not have access." : ". Try again in a moment."}</p></Panel>;
-  if (!d || !gDraft) return <Panel title="Cost-jump alert"><Skeleton h={90} /></Panel>;
+  if (!d) return <Panel title="Cost-jump alert"><Skeleton h={90} /></Panel>;
   const g = d.all_accounts;
   const lim = d.limits;
-  const gHas = (g.set.notify_user_ids || []).length + (g.set.notify_emails || []).length > 0;
-  const setRow = (id, k, v) => setDraft(p => ({ ...p, [id]: { ...p[id], [k]: v } }));
+  const setS = (k, f, v) => setSDraft(p => ({ ...p, [k]: { ...p[k], [f]: v } }));
+  const sDirty = k => !sameJson(sBody(sDraft[k] || sDraftOf({})), sBody(sDraftOf(k === "all" ? g.set : d.accounts.find(a => a.id === k)?.set || {})));
+
+  const rowsAll = [{ k: "all", name: "All accounts", sub: "Default for every account without its own setting", cloud: "", eff: g.effective, src: g.source, own: true, open: false }]
+    .concat(d.accounts.map(a => ({ k: a.id, name: a.name, sub: `Account ${a.id}`, cloud: CLOUD[a.provider] || a.provider, eff: a.effective, src: a.source, own: a.has_override, open: a.open_alert })));
+
+  // recipients
+  const rScopes = [{ k: "all", name: "All accounts", n: (g.set.notify_user_ids || []).length + (g.set.notify_emails || []).length }]
+    .concat(d.accounts.map(a => ({ k: a.id, name: a.name, n: ((a.set.notify_user_ids || []).length + (a.set.notify_emails || []).length) })));
+  const cur = rDraft[scope] || { ids: [], emails: [] };
+  const saved = scope === "all" ? g.set : d.accounts.find(a => a.id === scope)?.set || {};
+  const rDirty = !sameJson(rBody(cur), rBody(rDraftOf(saved)));
+  const savedCount = (saved.notify_user_ids || []).length + (saved.notify_emails || []).length;
+  const inherited = scope === "all" ? null : rDraftOf(g.set);
+  const scopeName = scope === "all" ? "All accounts" : d.accounts.find(a => a.id === scope)?.name;
+  const usersById = Object.fromEntries(d.users.map(u => [u.id, u]));
 
   return (
-    <Panel title="Cost-jump alert" subtitle="Raise a warning when an account's billed CloudOps cost is more than a set percentage above its 7-day average">
-      {d.table_missing && <div className="ac-warn" role="alert">Settings cannot be saved yet: run the pending migrations (migrate.py apply --all-pending), number 132.</div>}
-      {!d.table_missing && d.recipients_missing && <div className="ac-warn" role="alert">Recipients cannot be saved yet: run the pending migrations (migrate.py apply --all-pending), number 133.</div>}
-      {!d.smtp_configured && <div className="ac-warn" role="alert">Email is not set up on this server (SMTP_HOST is not set), so no email can be sent yet. The alert still shows on the Alerts page and in the bell.</div>}
-      {msg && <p className={msg.ok ? "ac-dim" : "ac-p"} role="status">{msg.text}</p>}
-
-      <h3 className="ac-h">All accounts</h3>
-      <div className="ac-bar" role="group" aria-label="All accounts settings">
-        <label className="ac-field"><span>Alert</span>
-          <select value={gDraft.enabled} onChange={e => setGDraft({ ...gDraft, enabled: e.target.value })}>
-            <option value="inherit">Use server default ({d.defaults.environment.enabled.value ? "on" : "off"})</option><option value="on">On</option><option value="off">Off</option>
-          </select></label>
-        <label className="ac-field"><span>Percent above average</span>
-          <input type="number" min={lim.threshold_pct[0]} max={lim.threshold_pct[1]} step="1" placeholder={String(d.defaults.environment.threshold_pct.value)}
-                 value={gDraft.threshold_pct} onChange={e => setGDraft({ ...gDraft, threshold_pct: e.target.value })} /></label>
-        <label className="ac-field"><span>Minimum rise per day (USD)</span>
-          <input type="number" min={lim.min_increase_usd[0]} step="0.01" placeholder={String(d.defaults.environment.min_increase_usd.value)}
-                 value={gDraft.min_increase_usd} onChange={e => setGDraft({ ...gDraft, min_increase_usd: e.target.value })} /></label>
-      </div>
-      <Recipients users={d.users} ids={gDraft.notify_user_ids} emails={gDraft.notify_emails} who="all accounts"
-                  onIds={v => setGDraft({ ...gDraft, notify_user_ids: v })} onEmails={v => setGDraft({ ...gDraft, notify_emails: v })} />
-      <div className="ac-actions">
-        <button className="ac-btn" disabled={busy === "g" || d.table_missing || same(gDraft, toDraft(g.set))} onClick={() => put("g", "/api/usage/cost-alert-settings/all-accounts", toBody(gDraft), "Saved for all accounts.")}>{busy === "g" ? "Saving..." : "Save for all accounts"}</button>{" "}
-        <button className="ac-btn" disabled={busy === "test" || !gHas || !same(gDraft, toDraft(g.set))} title={!gHas ? "Save at least one recipient first" : "Emails the saved recipients"} onClick={() => test(null)}>{busy === "test" ? "Sending..." : "Send test email"}</button>
-      </div>
-      <p className="ac-dim">
-        In effect: {g.effective.enabled ? "ON" : "OFF"}, {g.effective.threshold_pct}% above average, at least {usd(g.effective.min_increase_usd)} a day
-        ({SRC_TEXT[g.source.enabled]}{g.source.threshold_pct !== g.source.enabled || g.source.min_increase_usd !== g.source.enabled ? ", mixed sources" : ""}).
-        Applies to every account that has no setting of its own below.{g.updated_by ? ` Last changed by ${g.updated_by}.` : ""}
-      </p>
-
-      <h3 className="ac-h">Per account</h3>
-      <p className="ac-dim">Leave a field empty to use the all-accounts value. Recipients added here are told in addition to the all-accounts recipients.</p>
-      {d.accounts.length === 0 ? <EmptyState title="No accounts" body="Add an account to set its alert." /> : (
+    <>
+      <Panel title="Cost-jump alert" subtitle="Warn when an account's billed CloudOps cost is more than a set percentage above its 7-day average. One alert per account.">
+        {d.table_missing && <div className="ac-warn" role="alert">Settings cannot be saved yet: run the pending migrations (migrate.py apply --all-pending), number 132.</div>}
+        {sMsg && <p className={sMsg.ok ? "ac-note-ok" : "ac-field-err"} role="status">{sMsg.text}</p>}
         <div className="ac-tablewrap">
-          <table className="ac-table">
-            <thead><tr><th className="ac-sticky">Account</th><th>Cloud</th><th>Alert</th><th>% above average</th><th>Min rise / day (USD)</th><th>Also email</th><th>In effect</th><th>Status</th><th></th></tr></thead>
+          <table className="ac-table ac-settings">
+            <thead><tr><th className="ac-sticky">Account</th><th>Cloud</th><th>Alert</th><th>% above average</th><th>Min rise per day (USD)</th><th>In effect</th><th>Status</th><th></th></tr></thead>
             <tbody>
-              {d.accounts.map(a => {
-                const x = draft[a.id] || toDraft({});
-                const dirty = !same(x, toDraft(a.set));
-                const own = (a.set.notify_user_ids || []).length + (a.set.notify_emails || []).length;
+              {rowsAll.map(r => {
+                const x = sDraft[r.k] || sDraftOf({});
+                const dirty = sDirty(r.k);
+                const def = r.k === "all";
                 return (
-                  <Fragment key={a.id}>
-                    <tr>
-                      <td className="ac-sticky" title={`account ${a.id}`}>{a.name}</td>
-                      <td>{CLOUD[a.provider] || a.provider}</td>
-                      <td><select aria-label={`Alert for ${a.name}`} value={x.enabled} onChange={e => setRow(a.id, "enabled", e.target.value)}>
-                        <option value="inherit">Inherit</option><option value="on">On</option><option value="off">Off</option></select></td>
-                      <td><input aria-label={`Percent for ${a.name}`} type="number" min={lim.threshold_pct[0]} max={lim.threshold_pct[1]} step="1" style={{ width: 80 }}
-                                 placeholder={String(g.effective.threshold_pct)} value={x.threshold_pct} onChange={e => setRow(a.id, "threshold_pct", e.target.value)} /></td>
-                      <td><input aria-label={`Minimum rise for ${a.name}`} type="number" min={lim.min_increase_usd[0]} step="0.01" style={{ width: 90 }}
-                                 placeholder={String(g.effective.min_increase_usd)} value={x.min_increase_usd} onChange={e => setRow(a.id, "min_increase_usd", e.target.value)} /></td>
-                      <td><button className="ac-btn" aria-expanded={!!open[a.id]} onClick={() => setOpen(p => ({ ...p, [a.id]: !p[a.id] }))}>{own ? `${own} added` : "Add"}{open[a.id] ? " ▴" : " ▾"}</button>
-                        <span className="ac-dim"> {a.recipient_count} in total</span></td>
-                      <td className="ac-dim">{a.effective.enabled ? "ON" : "OFF"} · {a.effective.threshold_pct}% · {usd(a.effective.min_increase_usd)}{a.has_override ? " (own)" : ""}</td>
-                      <td>{a.open_alert ? <strong>Alert open</strong> : <span className="ac-dim">{a.effective.enabled ? "watching" : "off"}</span>}</td>
-                      <td><button className="ac-btn" disabled={!dirty || busy === a.id || d.table_missing}
-                                  onClick={() => put(a.id, "/api/usage/cost-alert-settings/accounts", { account_ids: [a.id], ...toBody(x) }, `Saved for ${a.name}.`)}>{busy === a.id ? "Saving..." : "Save"}</button></td>
-                    </tr>
-                    {open[a.id] && (
-                      <tr><td colSpan={9}>
-                        <Recipients users={d.users} ids={x.notify_user_ids} emails={x.notify_emails} who={a.name}
-                                    onIds={v => setRow(a.id, "notify_user_ids", v)} onEmails={v => setRow(a.id, "notify_emails", v)} />
-                        <button className="ac-btn" disabled={busy === "test" || a.recipient_count === 0 || dirty} title={dirty ? "Save first" : "Emails everyone this account's alert would reach"} onClick={() => test(a.id)}>Send test email for {a.name}</button>
-                      </td></tr>
-                    )}
-                  </Fragment>
+                  <tr key={r.k} className={def ? "ac-row-default" : undefined}>
+                    <td className="ac-sticky"><strong>{r.name}</strong><div className="ac-dim" style={{ margin: 0 }}>{r.sub}</div></td>
+                    <td>{r.cloud || "–"}</td>
+                    <td><select aria-label={`Alert for ${r.name}`} value={x.enabled} onChange={e => setS(r.k, "enabled", e.target.value)}>
+                      <option value="inherit">{def ? `Server default (${d.defaults.environment.enabled.value ? "on" : "off"})` : "Same as all accounts"}</option><option value="on">On</option><option value="off">Off</option></select></td>
+                    <td><input aria-label={`Percent above average for ${r.name}`} type="number" min={lim.threshold_pct[0]} max={lim.threshold_pct[1]} step="1" style={{ width: 84 }}
+                               placeholder={String(def ? d.defaults.environment.threshold_pct.value : g.effective.threshold_pct)} value={x.threshold_pct} onChange={e => setS(r.k, "threshold_pct", e.target.value)} /></td>
+                    <td><input aria-label={`Minimum rise for ${r.name}`} type="number" min={lim.min_increase_usd[0]} step="0.01" style={{ width: 96 }}
+                               placeholder={String(def ? d.defaults.environment.min_increase_usd.value : g.effective.min_increase_usd)} value={x.min_increase_usd} onChange={e => setS(r.k, "min_increase_usd", e.target.value)} /></td>
+                    <td className="ac-dim" style={{ margin: 0 }}>{r.eff.enabled ? "On" : "Off"} · {r.eff.threshold_pct}% · {usd(r.eff.min_increase_usd)}{!def && r.own ? " · own" : ""}</td>
+                    <td>{def ? <span className="ac-dim" style={{ margin: 0 }}>–</span> : r.open ? <span className="ac-pill is-open">Alert open</span> : <span className="ac-dim" style={{ margin: 0 }}>{r.eff.enabled ? "Watching" : "Off"}</span>}</td>
+                    <td><button className="ac-btn" disabled={!dirty || busy === `s${r.k}` || d.table_missing} onClick={() => saveSettings(r.k)}>{busy === `s${r.k}` ? "Saving..." : "Save"}</button></td>
+                  </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
-      )}
-      <div className="ac-actions" style={{ marginTop: 10 }}>
-        <button className="ac-btn" disabled={busy === "reset" || d.table_missing || !d.accounts.some(a => a.has_override)}
-                onClick={() => { if (window.confirm("Clear every per-account setting and recipient so all accounts use the all-accounts values?")) put("reset", "/api/usage/cost-alert-settings/accounts", { account_ids: "all", enabled: null, threshold_pct: null, min_increase_usd: null, ...(d.recipients_missing ? {} : { notify_user_ids: null, notify_emails: null }) }, "Cleared every per-account setting."); }}>
-          {busy === "reset" ? "Clearing..." : "Clear all per-account settings"}</button>
-      </div>
-      <ul className="ac-list ac-dim">{d.notes.map((t, i) => <li key={i}>{t}</li>)}</ul>
-    </Panel>
+        <div className="ac-actions" style={{ marginTop: 10 }}>
+          <button className="ac-btn" disabled={busy === "sreset" || d.table_missing || !d.accounts.some(a => ["enabled", "threshold_pct", "min_increase_usd"].some(f => a.set[f] !== null && a.set[f] !== undefined))}
+                  onClick={() => { if (window.confirm("Clear every per-account alert setting so all accounts use the all-accounts values? Recipients are not changed.")) put("sreset", "/api/usage/cost-alert-settings/accounts", { account_ids: "all", enabled: null, threshold_pct: null, min_increase_usd: null }, setSMsg, "Cleared every per-account alert setting.", { s: Object.keys(sDraft), r: [] }); }}>
+            {busy === "sreset" ? "Clearing..." : "Reset all accounts to the default"}</button>
+        </div>
+        <details className="ac-fold">
+          <summary>How it works</summary>
+          <ul className="ac-list ac-dim">
+            <li>The alert compares the latest settled day of billed cost (two days behind) with the average of the 7 days before it, so it is 2 to 3 days behind the spend.</li>
+            <li>Each field uses the account's own value, else the all-accounts value, else the server environment, else the built-in default.</li>
+            <li>A change takes effect within about ten minutes, with no restart. Switching an account off resolves its open alert.</li>
+          </ul>
+        </details>
+      </Panel>
+
+      <Panel title="Alert recipients" subtitle="Who is emailed when the cost-jump alert opens, chosen per account. The Alerts page, the bell and your notification channels are not affected.">
+        {!d.recipients_missing ? null : <div className="ac-warn" role="alert">Recipients cannot be saved yet: run the pending migrations (migrate.py apply --all-pending), number 133.</div>}
+        {!d.smtp_configured && <div className="ac-warn" role="alert"><strong>Email is not set up on this server.</strong> SMTP_HOST is not set, so recipients cannot receive email yet. You can still choose them now; the alert keeps showing on the Alerts page and in the bell.</div>}
+        <div className="ac-scope-grid">
+          <nav className="ac-scope-list" aria-label="Choose whose recipients to edit">
+            {rScopes.map(sc => (
+              <button key={sc.k} type="button" className={`ac-scope-btn${scope === sc.k ? " is-on" : ""}`} aria-current={scope === sc.k ? "true" : undefined} onClick={() => { setScope(sc.k); setRMsg(null); }}>
+                <span className="ac-scope-name">{sc.name}</span>
+                <span className="ac-scope-n">{sc.n ? `${sc.n} recipient${sc.n === 1 ? "" : "s"}` : "none"}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="ac-scope-edit">
+            <h3 className="ac-h" style={{ marginTop: 0 }}>{scopeName}</h3>
+            <p className="ac-dim" style={{ marginTop: 0 }}>
+              {scope === "all" ? "These recipients are told about every account's alert." : "These recipients are told about this account's alert only, in addition to the all-accounts recipients."}
+            </p>
+            {inherited && (inherited.ids.length + inherited.emails.length > 0) && (
+              <div className="ac-inherit"><span className="ac-dim" style={{ margin: 0 }}>Also receives, from All accounts:</span>
+                <div className="ac-chips">
+                  {inherited.ids.map(uid => <Chip key={`u${uid}`} muted>{usersById[uid]?.username || `User ${uid}`}</Chip>)}
+                  {inherited.emails.map(a => <Chip key={a} muted>{a}</Chip>)}
+                </div></div>
+            )}
+            <label className="ac-lbl" htmlFor="ac-people">People</label>
+            <PeoplePicker id="ac-people" users={d.users} value={cur.ids} onChange={ids => setRDraft(p => ({ ...p, [scope]: { ...cur, ids } }))} />
+            <label className="ac-lbl">Other email addresses</label>
+            <EmailChips value={cur.emails} onChange={emails => setRDraft(p => ({ ...p, [scope]: { ...cur, emails } }))} />
+            {rMsg && <p className={rMsg.ok ? "ac-note-ok" : "ac-field-err"} role="status">{rMsg.text}</p>}
+            <div className="ac-actions" style={{ marginTop: 12 }}>
+              <button className="ac-btn ac-btn-primary" disabled={!rDirty || busy === `r${scope}` || d.recipients_missing || d.table_missing} onClick={() => saveRecipients(scope)}>{busy === `r${scope}` ? "Saving..." : "Save recipients"}</button>
+              <button className="ac-btn" disabled={!rDirty} onClick={() => setRDraft(p => ({ ...p, [scope]: rDraftOf(saved) }))}>Discard changes</button>
+              <button className="ac-btn" disabled={busy === "test" || rDirty || (savedCount === 0 && !(inherited && inherited.ids.length + inherited.emails.length))}
+                      title={rDirty ? "Save your changes first" : "Sends a test to everyone this scope would reach"} onClick={() => test(scope)}>{busy === "test" ? "Sending..." : "Send test email"}</button>
+            </div>
+            <p className="ac-dim">Users are emailed at the address on their profile when the alert opens. Only users with an email on file can be chosen; anyone else can be added as an address.</p>
+          </div>
+        </div>
+      </Panel>
+    </>
   );
 }
 
@@ -726,7 +807,7 @@ export default function ApiCost() {
         title="Cloud cost"
         subtitle={isAdmin ? "What CloudOps's own metric polling actually costs in the cloud, as billed" : "How many paid metric reads CloudOps made, from the usage it measured itself"}
       />
-      {isAdmin ? <><CostExplorer /><TierCost /><CostAlertSettings /></> : <Metering />}
+      {isAdmin ? <><CostExplorer /><TierCost /><CostAlert /></> : <Metering />}
     </div>
   );
 }
