@@ -16,7 +16,7 @@ Anything not confirmed in code is a block with "unverified": true (see unverifie
 """
 from functools import lru_cache
 
-from . import concepts, features, host_agents
+from . import concepts, extras, features, host_agents
 from .services import service_sections, directory_section
 
 AUDIENCE_RANK = {"viewer": 1, "editor": 2, "admin": 3}
@@ -39,7 +39,7 @@ COVERAGE = {
     "Synthetic checks": "synthetic-checks",
     "WAF / Shield / GuardDuty": "waf-shield-guardduty",
     "Security findings": "security-findings",
-    "Host agents (install on a server)": "host-agents",
+    "Host agents (install, add services, readings in Settings)": "host-agents",
     "Topology": "topology",
     "Reports": "reports",
     "Compliance (audit trail)": "compliance-audit",
@@ -49,8 +49,13 @@ COVERAGE = {
     "Settings": "settings",
     "Access control and RBAC": "access-control",
     "RBAC administration": "rbac-administration",
-    "Cloud API cost": "cloud-api-cost",
-    "Actual AWS charge (Cost Explorer)": "cloud-actual-cost",
+    "Cloud Cost page (metering, cost by polling tier)": "cloud-api-cost",
+    "Billed cost: AWS, Azure, GCP": "cloud-actual-cost",
+    "Cost-jump alert": "cost-jump-alert",
+    "Signing in, password reset, SSO": "signin-security",
+    "Explain, RCA report, AI assistance, anomaly detection": "explain-rca-ai",
+    "Deployment events (CI/CD webhook), Operational Events": "deploy-events",
+    "Server settings (.env) reference": "server-settings",
     "Glossary": "glossary",
     "FAQ": "faq",
     "Services (every cataloged service, 3 clouds)": "svc-* and services-directory",
@@ -60,12 +65,12 @@ COVERAGE = {
 @lru_cache(maxsize=1)
 def all_sections():
     static = [
-        concepts.overview(), concepts.accounts(), concepts.accounts_admin(), concepts.environments(),
+        concepts.overview(), extras.signin(), concepts.accounts(), concepts.accounts_admin(), concepts.environments(),
         concepts.priority(), concepts.metrics_polling(), concepts.thresholds(), concepts.alerts(),
-        features.incidents(), features.escalation(), features.notifications(), features.status_page(),
+        features.incidents(), features.escalation(), features.notifications(), extras.cost_jump_alert(), features.status_page(),
         features.slos(), features.synthetic(), features.maintenance(), features.waf(), features.security(),
-        features.topology(), host_agents.host_agents(), features.search(), features.reports(), features.audit(), features.settings(),
-        features.access(), features.rbac_admin(), concepts.polling_admin(), concepts.api_cost(), concepts.api_actual_cost(),
+        features.topology(), host_agents.host_agents(), features.search(), extras.explain_ai(), features.reports(), features.audit(), features.settings(),
+        features.access(), features.rbac_admin(), concepts.polling_admin(), extras.server_settings(), extras.deploy_events(), concepts.api_cost(), concepts.api_actual_cost(),
     ]
     tail = [features.glossary(), features.faq()]
     return static + [directory_section()] + list(service_sections()) + tail

@@ -122,18 +122,37 @@ def host_agents():
 
         h("Changing or removing a server (administrators)"),
         ul([
-            "Configure (in the server's panel) changes how often it reports (15 to 300 seconds) and which services to "
-            "watch. It shows the current values; only what you change is saved. Shorter intervals give finer charts but "
-            "store more data. It takes effect on the server's next report.",
+            "Add service (in the server's panel or the hosts table) chooses which services to watch. See Choosing services to watch below.",
+            "Edit list changes how often the server reports (15 to 300 seconds) and lets you remove watched services. It shows the "
+            "current values; only what you change is saved. Shorter intervals give finer charts but store more data. It takes effect "
+            "on the server's next report.",
             "Watched services appear in the server's Services panel with their state (Running, Stopped, Failed or Unknown), "
             "how long they have been in it and when the agent last reported. These are the states from the last report, "
             "not live values, and a name that has not reported yet is listed as waiting. Failed or stopped services do "
-            "not raise alerts.",
+            "not raise alerts. At most 100 services can be watched per host.",
             "Revoke host cuts the server off at once: its next report is refused and it shows as Revoked. This does not "
             "uninstall anything on the server itself.",
             "Enrollment keys (button at the top) lists every key with its use count, expiry and status "
             "(active, exhausted, expired or revoked). Revoke a key you no longer need, because a valid key can still "
             "register a server, even one that was revoked before.",
+            "Housekeeping: revoked tokens, and enrollment keys that are revoked, expired or used up, are deleted automatically after "
+            "HOST_AGENT_CREDENTIAL_RETENTION_DAYS (default 90, never less than 30, 0 turns it off). Servers in the list and the audit "
+            "trail are kept.",
+        ]),
+
+        h("Choosing services to watch (administrators)"),
+        p("Add service shows the services that really exist on the server, so you pick instead of typing and a misspelled name "
+          "can no longer be watched by mistake."),
+        ul([
+            "The agent lists the services its operating system knows about (systemd units on Linux, Windows services, launchd labels on "
+            "macOS) on its first report after it starts and then about every 30 minutes. This needs agent 0.2.2 or newer; an older agent, "
+            "or one that has only just enrolled, shows an empty list until its first scan arrives.",
+            "Search narrows the list. Services you installed or enabled come first; Show OS-internal services reveals the operating "
+            "system's own plumbing, which is hidden by default and its count is shown.",
+            "Tick one or many services, then press Add. Services already watched are shown as watched and cannot be ticked again.",
+            "Not in the list? Type the name under 'Not in the list? Type the name' and press Add name. A name the last scan did not list "
+            "is accepted with a warning: it is watched anyway and shows Unknown until the agent can find it.",
+            "The scan is a snapshot, not live: a service installed a minute ago may not be listed yet.",
         ]),
         p("To fully remove an agent from a Linux server, revoke it in the hub first, then run this on the server:"),
         code("sudo systemctl disable --now cloudops-agent\n"
@@ -152,14 +171,38 @@ def host_agents():
             "be impaired. For servers the hub cannot match to a cloud instance, it says the two cannot be told apart.",
             "Maintenance windows silence these alerts like any other.",
         ]),
-        p("Memory and disk readings use the normal thresholds of the same names. The default thresholds for the other "
-          "host agent readings (processor, swap, inodes) ship switched off and apply only to servers the hub could not "
-          "match to a cloud instance, so an administrator has to turn them on for an account. A server attached to a "
-          "cloud instance can alert only on memory and disk, through that instance's own thresholds.",
-          unverified=True),
+        p("Memory and disk readings use the normal thresholds of the same names. Every other reading is registered in Settings too "
+          "(see Host agent readings in Settings below)."),
         link("Alerts", "#alerts"),
         link("Thresholds", "#thresholds"),
         link("Maintenance windows", "#maintenance-windows"),
+
+        h("Host agent readings in Settings (administrators)"),
+        p("The first time an agent in an account delivers readings, CloudOps adds all 13 host readings to the metric catalog and creates a "
+          "threshold for each. They then appear under the service Host Agent in Settings, Metrics to Monitor and Metric Thresholds, "
+          "like any EC2 or CloudWatch agent metric, and each disk or network interface gets its own entry the first time it reports."),
+        ul([
+            "Every new threshold starts switched off: installing an agent never starts alerting by itself. Turn a threshold on in "
+            "Settings, Metric Thresholds, and edit the lines to suit the server.",
+            "Readings are filed under the resource type they were stored under: a server matched to a cloud instance uses that "
+            "instance's type, so its thresholds sit next to the instance's own; a server the hub could not match uses the type host.",
+            "A threshold you have already edited is never overwritten.",
+        ]),
+        table(["Reading", "Starting warning / critical", "Alerts when"], [
+            ["Processor busy %", "85 / 95", "above"],
+            ["Load average (1, 5, 15 min)", "4 / 8 (suits a small 2 to 4 core server: edit it)", "above"],
+            ["Memory available", "500 MB / 200 MB left", "below"],
+            ["Swap used %", "50 / 80", "above"],
+            ["Disk files-used % (inodes)", "80 / 90", "above"],
+            ["Number of processes", "600 / 1000", "above"],
+            ["Time since last restart", "300 s / 60 s (a reboot in the last 5 minutes / minute)", "below"],
+            ["Disk read / write speed, network in / out speed", "no universal limit: anomaly-only placeholder", "sustained spike"],
+        ]),
+        note("Memory used % and disk used % are not in this table: they reuse the existing CloudWatch agent names and thresholds."),
+        h("Saving CloudWatch charges (administrators)"),
+        p("With HOST_AGENT_PREFER_OVER_CWAGENT on (it also needs HOST_AGENT_ENABLED), CloudOps skips the paid CloudWatch agent query for "
+          "memory and disk readings that a live host agent already supplies. If the agent goes quiet, the CloudWatch read resumes on the "
+          "next cycle and back-fills the gap. If the shared cache is unavailable nothing is skipped, so data is never lost."),
 
         h("Is it safe?"),
         ul([

@@ -65,9 +65,10 @@ def test_admin_sections_are_permission_gated():
         if s["audience"] == "admin":
             assert s["requires"] is not None, s["id"]
     by_id = {s["id"]: s for s in SECTIONS}
-    for sid in ("cloud-api-cost", "polling-config", "accounts-credentials", "rbac-administration", "notifications"):
+    for sid in ("cloud-actual-cost", "cost-jump-alert", "polling-config", "server-settings", "deploy-events",
+                "accounts-credentials", "rbac-administration", "notifications"):
         assert by_id[sid]["audience"] == "admin"
-    assert by_id["cloud-api-cost"]["requires"] == "system.admin"
+    assert by_id["cloud-api-cost"]["requires"] == "usage.view"      # open to editors; admin-only panels are separate sections
 
 
 def test_get_sections_never_returns_section_user_lacks():
@@ -287,3 +288,73 @@ def test_host_agents_guide_is_tied_to_the_code():
     # every reading named in the guide exists in the ingest metric map
     from app.hostagents.metric_map import METRICS
     assert len(METRICS) == 15
+
+
+def test_cloud_cost_sections_match_the_page_permissions():
+    """The Cloud Cost page is open to usage.view (editor, admin); the billed-cost panel and the cost-jump alert need usage.manage."""
+    by_id = {s["id"]: s for s in SECTIONS}
+    assert by_id["cloud-api-cost"]["requires"] == "usage.view"
+    for sid in ("cloud-actual-cost", "cost-jump-alert"):
+        assert by_id[sid]["requires"] == "usage.manage", sid
+    layout = _source("frontend/src/components/Layout.jsx")
+    assert 'label: "Cloud Cost"' in layout and 'perm: "usage.view"' in layout
+    api = _source("app/api/usage.py")
+    assert 'require_permission("usage.manage")' in api
+
+
+def test_platform_sections_are_tied_to_the_code():
+    from app import cost_jump_settings as cjs
+    from app.hostagents import settings as ha
+    jump = _section_text("cost-jump-alert")
+    assert f"{cjs.MAX_RECIPIENT_USERS}" in jump and f"{cjs.MAX_RECIPIENT_EMAILS}" in jump
+    assert "30" in jump and "0.1" in jump                      # built-in percent and noise floor
+    alert = _source("app/collector/cost_jump_alert.py")
+    assert 'METRIC = "cloud_cost_jump"' in alert and "MIN_BASELINE_DAYS = 5" in alert and "WINDOW_DAYS = 7" in alert
+    assert "PROVISIONAL_DAYS = 2" in alert
+    # sign-in numbers
+    limiter = _source("app/auth/rate_limit.py")
+    assert '"LOGIN_RATE_LIMIT_PER_IP", 20' in limiter and '"LOGIN_RATE_LIMIT_PER_USERNAME", 10' in limiter
+    assert '"FORGOT_PASSWORD_RATE_LIMIT_PER_IP", 5' in limiter
+    assert "RESET_TOKEN_TTL_MINUTES = 30" in _source("app/api/auth.py")
+    assert "COOKIE_MAX_AGE_SECONDS = 12 * 60 * 60" in _source("app/auth/deps.py")
+    # explain / RCA / deploy webhook
+    assert "DEPLOY_LOOKBACK_MINUTES = 45" in _source("app/collector/rca.py")
+    assert "45 minutes" in _section_text("explain-rca-ai") and "45 minutes" in _section_text("deploy-events")
+    assert "_DEFAULT_WAIT_SECONDS = 8" in _source("app/llm/rca_report.py")
+    assert 'WEBHOOK_RATE_LIMIT = 60' in _source("app/api/webhooks.py")
+    assert 'alias="X-Webhook-Token"' in _source("app/api/webhooks.py")
+    assert 'os.getenv("ANOMALY_ENABLED", "true")' in _source("app/collector/multivariate_anomaly.py")
+    assert 'os.getenv("LLM_SUMMARY_ENABLED", "false")' in _source("app/llm/summarizer.py")
+    # settings reference
+    ref = _section_text("server-settings")
+    assert str(ha.stale_seconds()) in ref and str(ha.ingest_rate_per_min()) in ref
+    assert "DEFAULT_HOST_AGENT_CREDENTIAL_RETENTION_DAYS = 90" in _source("app/collector/retention.py")
+    assert "DEFAULT_HOST_AGENT_CREDENTIAL_RETENTION_DAYS" in _source("app/collector/retention.py")
+
+
+def test_host_agent_readings_in_settings_match_the_defaults():
+    from app.threshold_defaults import DEFAULT_THRESHOLDS
+    import ast
+    text = _section_text("host-agents")
+    tree = ast.parse(_source("app/hostagents/catalog.py"))      # parsed, not imported: the module opens a database pool
+    catalog = next(n.value for n in tree.body if isinstance(n, ast.Assign) and n.targets[0].id == "CATALOG")
+    assert len(catalog.keys) == 13 and "all 13 host readings" in text
+    for name, shown in (("host_cpu_percent", "85 / 95"), ("host_swap_used_percent", "50 / 80"),
+                        ("host_disk_inodes_used_percent", "80 / 90"), ("host_proc_count", "600 / 1000"),
+                        ("host_load1", "4 / 8")):
+        w, c, _cmp = DEFAULT_THRESHOLDS[name]
+        assert shown == f"{w:g} / {c:g}", name
+        assert shown in text, name
+    assert DEFAULT_THRESHOLDS["host_mem_available_bytes"][:2] == (524288000, 209715200)
+    assert DEFAULT_THRESHOLDS["host_uptime_seconds"][:2] == (300, 60)
+    assert "Add service" in text and "OS-internal" in text
+
+
+def test_alert_tabs_documented_match_the_api():
+    import re as _re
+    tabs = _re.search(r"_TABS = \(([^)]*)\)", _source("app/api/alerts.py")).group(1)
+    names = {t.strip().strip('"') for t in tabs.split(",")}
+    assert names == {"all", "active", "stale", "critical", "attention", "tuning", "acknowledged", "resolved", "suppressed"}
+    text = _section_text("alerts")
+    for label in ("Active", "Critical", "Needs Attention", "Auto-tuning", "Stale", "Acknowledged", "Muted / Maint.", "Resolved", "All"):
+        assert label in text, label

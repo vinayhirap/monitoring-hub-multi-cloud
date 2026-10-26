@@ -7,19 +7,36 @@ from .blocks import h, p, ul, table, note, code, link, section, fmt_interval
 def overview():
     return section("overview", "Overview", "Getting started", "viewer", None, [
         p("CloudOps (Monitoring Hub) watches AWS, Azure and GCP accounts: it discovers resources, collects metrics on a "
-          "schedule, raises alerts when a metric crosses a threshold, and groups, routes and reports on them."),
+          "schedule, raises alerts when a metric crosses a threshold, and groups, routes and reports on them. Servers can "
+          "also report about themselves through a host agent."),
         h("What is in the sidebar"),
         table(["Group", "Pages", "Who sees it"], [
             ["Overview", "Overview", "every signed-in user"],
-            ["Infrastructure", "Account Onboarding (admin, editor), Environments (environments.view), and a live account / region tree", "per permission"],
+            ["Infrastructure", "Account Onboarding (admin, editor), Environments (environments.view), Host Agents (hostagents.view), and a live account / region tree", "per permission"],
             ["Monitoring", "SLOs (slo.view), Synthetic Checks (synthetic.view), Security Findings (security.view), Maintenance Windows (maintenance.view)", "per permission"],
             ["Alerts & Incidents", "Alerts, Escalation Policies (escalation.view), Status Page (admin, editor with status_page.manage)", "per permission"],
             ["Intelligence", "Smart Search (search.query)", "per permission"],
             ["Reports", "Reports (reports.view, when the reports feature is on), Compliance (the audit trail)", "per permission"],
-            ["Administration", "Access Control (users.view), Settings (admin, editor)", "per permission"],
+            ["Administration", "Access Control (users.view), Settings (admin, editor), Cloud Cost (usage.view; admin, editor)", "per permission"],
+            ["Help", "This Help Center (help.view)", "every signed-in user"],
         ]),
         note("A page you cannot open is hidden from the sidebar and redirects to Overview. The server enforces the same "
              "permission on every API call, so hiding is a convenience, never the protection."),
+        h("What the Overview page shows"),
+        ul(["Alert activity for the last 24 hours: alerts triggered per hour above the axis and resolved per hour below it, split by severity.",
+            "Recent changes: triggered and resolved alerts, incidents and system events from the last 24 hours.",
+            "Where it is happening: firing alerts by region and service. Click a cell to open that service.",
+            "Top problematic resources: ranked by critical alerts, then warnings, then how long they have been firing.",
+            "Active incidents: alerts the platform correlated into one problem (needs incident access).",
+            "Anomalies and forecasts: model-derived signals (multivariate anomalies and linear-trend capacity forecasts), "
+            "labelled so they are never mistaken for measurements.",
+            "Coverage and data freshness: when each account and region last reported, and what is monitored.",
+            "A health ring: services counted as healthy, warning or critical."]),
+        h("Tools in the top bar"),
+        ul(["Search and jump (Ctrl K): open the command palette to jump to a page or an account.",
+            "Notification bell: the number of open alerts; new alerts also pop up while you are signed in.",
+            "Time zone selector: show times in IST or UTC across the app.",
+            "Live indicator: updates arrive by push, so lists refresh without reloading."]),
         h("Pages reached from an account"),
         ul(["Account page: the account's resources and health.",
             "Services: every service type the account has, then one page per service (for example EC2, RDS, WAF).",
@@ -29,7 +46,9 @@ def overview():
         h("Where to go next"),
         ul(["New here: read Accounts and onboarding, then Environments and tagging.",
             "Daily use: Alerts, then Thresholds and Metrics and polling.",
-            "Why did I get paged: Priority and routing, Alerts, Notifications."]),
+            "Why did I get paged: Priority and routing, Alerts, Notifications.",
+            "Monitoring a server from the inside: Host agents.",
+            "What does monitoring cost: Cloud Cost page."]),
     ], "What CloudOps is and how the pages fit together")
 
 
@@ -240,6 +259,7 @@ def polling_admin():
             ["WAF_FAST_POLLING_ENABLED / WAF_PER_RULE_ENABLED", "off", "true/false", "See Metrics and polling"],
             ["PRIORITY_ENABLED / PRIORITY_ROUTING_ENABLED", "off", "true/false", "See Priority"],
         ]),
+        link("Settings for host agents, cost, sign-in and AI", "#server-settings"),
         note("Measure paid-call volume on the PROD server only; DEV intentionally makes no paid cloud calls."),
     ], "Environment variables that change polling")
 
@@ -284,6 +304,20 @@ def alerts():
             "Acknowledge, Resolve, Mute and Unmute, and Mark false positive need operations.execute; a group of alerts can be acknowledged at once.",
             "Mute lasts 1 minute to 7 days (default 30 minutes).",
             "Clearing alerts (alerts.clear) deletes records and is an admin-level action."]),
+        h("Tabs on the Alerts page"),
+        table(["Tab", "Lists"], [
+            ["Active", "Alerts that are firing"],
+            ["Critical", "Firing alerts of Critical severity"],
+            ["Needs Attention", "Firing alerts on a resource whose health score is below 70"],
+            ["Auto-tuning", "Firing alerts the system sees flapping (opening and closing repeatedly): candidates for a better threshold"],
+            ["Stale", "Alerts whose metric has stopped reporting, so their state cannot be confirmed"],
+            ["Acknowledged", "Alerts someone has taken"],
+            ["Muted / Maint.", "Alerts silenced by a mute or a maintenance window"],
+            ["Resolved", "Alerts that closed"],
+            ["All", "Everything"],
+        ]),
+        p("Each tab shows a count that always equals the number of rows in it, and you can search, filter by account and (when priorities are on) by P-level. "
+          "The page updates by push when alerts change."),
         h("When they are checked"),
         p("The evaluator runs every 5 minutes. Critical-class metrics are also evaluated on every 2-minute tick. "
           "Alert windows and staleness follow each metric's own polling interval (see Metrics and polling)."),
@@ -300,47 +334,101 @@ def alerts():
 
 
 def api_cost():
-    return section("cloud-api-cost", "Cloud API cost: free and paid", "Administration", "admin", "system.admin", [
-        p("Only metric reads cost money. The cost class of every metric is on its per-service page."),
+    return section("cloud-api-cost", "Cloud Cost page", "Administration", "editor", "usage.view", [
+        p("Cloud Cost (sidebar, Administration) shows what CloudOps itself spends on the clouds it monitors. Only metric "
+          "reads cost money; everything else CloudOps calls is free. What you see depends on your permission:"),
+        table(["You hold", "You see"], [
+            ["usage.view (editor, admin)", "Metering: how many paid metric reads CloudOps made, counted by CloudOps itself, for 24 hours, 7 days or 30 days."],
+            ["usage.manage (admin)", "The billed cost the cloud itself reports, the cost by polling tier, and the cost-jump alert settings. See Billed cost and Cost-jump alert."],
+        ]),
+        h("Which calls cost money"),
         table(["Call", "Class"], [
             ["Describe* / List* resource APIs, Resource Groups Tagging, STS, CloudTrail LookupEvents", "Free; polled freely"],
             ["CloudWatch GetMetricData", "Paid per metric requested"],
             ["CloudWatch ListMetrics, GetMetricStatistics", "Paid (per request / per metric); counted separately, with no estimated price"],
             ["Azure Monitor", "Per 1,000 calls after 1M free per subscription per month"],
             ["GCP ListTimeSeries", "Per series after 1M free per billing account per month"],
+            ["Host agent reports", "None: the agent calls CloudOps, not the cloud"],
         ]),
+        h("Metering view"),
+        ul(["Three figures at the top: CloudOps reads at list-price estimate, metric read calls (all clouds, including free tag sync) and the last usage flush, "
+            "with how many hours of the range had one. A warning shows when no flush has arrived for a while, because then the newest numbers are too low.",
+            "One panel per cloud with its units, calls and list-price estimate, a bar per polling tier, and how much of one free allowance has been used "
+            "(Azure and GCP). Free allowances are ignored in the price, so for those clouds it is a ceiling, not the invoice.",
+            "Not metered yet: paid reads that no counter covers, so the totals exclude them.",
+            "Free and paid: which calls cost nothing and which are paid.",
+            "Environment polling is ON / OFF: whether NON-PROD resources are polled less often (see Metrics and polling).",
+            "How to read these numbers: notes on what the figures include, and the time of the newest flush."]),
         p("Measured usage: once an hour each process writes one operational event per provider and tier "
-          "(event type metric_api_usage) with calls, units and a list-price ceiling that ignores free tiers. "
-          "Read the totals from those events on PROD."),
+          "(event type metric_api_usage) with calls, units and a list-price ceiling, and counters are also written when the "
+          "service stops cleanly. A server that makes no paid cloud calls, such as DEV, shows nothing."),
+        h("Cost by polling tier (admins)"),
+        ul(["A table of every tier that made reads: Critical (2 min), Standard (5 min), Low (15 min), Extended (hourly), Daily, "
+            "Tag sync, Pages opened by users and Metric discovery, with units, calls and the share of the total.",
+            "Pages opened by users and Metric discovery are reads that people trigger, not scheduled polling.",
+            "Where to cut: plain suggestions built from the numbers. The largest polling tier, with the arithmetic saving of polling it "
+            "half as often (calls scale with 1 / interval, so this is not a forecast of the bill); the share caused by people; and a "
+            "reminder when environment polling is off.",
+            "It is a list-price estimate of CloudOps's own metered reads, not the invoice. Rows with no stored rate are counted as unpriced, not as zero."]),
         note("This guide states no prices: confirm them on the cloud bill."),
-    ], "Which calls cost money and how usage is measured")
+    ], "Metering, free vs paid calls, cost by polling tier")
 
 
 def api_actual_cost():
-    return section("cloud-actual-cost", "Actual AWS charge (Cost Explorer)", "Administration", "admin", "usage.manage", [
-        p("The Cloud API cost page estimates cost from CloudOps's own counters. The Actual AWS charge panel on the same "
-          "page shows what AWS really billed for the CloudWatch service, so the estimate can be checked. Only admins "
-          "(permission usage.manage) can see this panel or refresh it."),
+    return section("cloud-actual-cost", "Billed cost: AWS, Azure and GCP", "Administration", "admin", "usage.manage", [
+        p("The top panel of Cloud Cost, 'CloudOps polling cost, billed by' AWS, Azure or GCP, shows what the cloud really "
+          "billed for CloudOps's own metric reads, so the estimate on the same page can be checked. Only admins "
+          "(usage.manage) see it or can refresh it. It works like the cost explorer of the cloud console."),
+        h("What counts as CloudOps cost"),
+        table(["Cloud", "Source", "Counted as CloudOps"], [
+            ["AWS", "Cost Explorer (ce:GetCostAndUsage)", "CloudWatch GetMetricData, in the regions an account is onboarded in"],
+            ["Azure", "Cost Management Query API, actual cost, daily, Azure Monitor", "The metric API call meter"],
+            ["GCP", "BigQuery billing export, Cloud Monitoring, credits netted off", "The Monitoring API request SKU"],
+        ]),
+        p("Other charges in the same service (custom metrics, alarms, logs, ingestion, calls made by agents) are not shown in the "
+          "chart; the footnote totals them as 'Not shown' so a wrong match shows up instead of hiding."),
         h("What it needs"),
-        ul(["One read-only IAM action on each monitored AWS role: ce:GetCostAndUsage. It cannot change anything. "
-            "The policy and the steps are in docs/AWS_ACTUAL_COST.md (deploy/iam/monitoring-hub-cost-read.json).",
-            "Cost Explorer enabled in the AWS account (first data can take up to a day).",
-            "ACTUAL_COST_ENABLED=1 on the PROD server. Leave it off on DEV: DEV does not poll metrics."]),
-        h("What it costs"),
-        p("AWS bills every Cost Explorer request. CloudOps asks at most once a day per account and never on page load. "
-          "The Refresh now button is limited to once an hour per account. The panel shows how many requests were made."),
+        ul(["ACTUAL_COST_ENABLED=1 on the PROD server, and at least one active account of that cloud. Leave it off on DEV: DEV does not poll metrics.",
+            "AWS: the read-only IAM action ce:GetCostAndUsage on each monitored role (policy and steps in docs/AWS_ACTUAL_COST.md, "
+            "deploy/iam/monitoring-hub-cost-read.json) and Cost Explorer enabled in the account (first data can take up to a day).",
+            "Azure: the role Cost Management Reader on the subscription, for the service principal CloudOps already uses. "
+            "A subscription billed in a local currency without USD columns is refused with a message instead of showing wrong numbers.",
+            "GCP: there is no cost API, so turn on Billing, Billing export, Standard usage cost to BigQuery (it only covers days after it is switched on) "
+            "and set GCP_BILLING_EXPORT_TABLE=project.dataset.table. The service account needs roles/bigquery.jobUser on a project "
+            "(GCP_BILLING_JOB_PROJECT if it should not be the account's own project) and roles/bigquery.dataViewer on the export dataset.",
+            "If a vendor renames its meter and the page shows zero CloudOps cost next to a non-zero Not shown total, set "
+            "AZURE_CLOUDOPS_METER_REGEX or GCP_CLOUDOPS_SKU_REGEX to the real name. Details: docs/CLOUD_COST_AZURE_GCP.md."]),
+        p("The Azure and GCP readers follow the vendors' documentation and were not confirmed against a live account when written. "
+          "The first refresh reports its outcome per account on the page: send that message if it is not 'up to date'.", unverified=True),
+        h("What asking costs"),
+        p("AWS bills every Cost Explorer request. Azure asks are free. GCP asks run a BigQuery job billed by bytes scanned (the first TiB "
+          "each month is free at Google). CloudOps reads at most once a day per account, never on page load: the first read pulls 90 days, "
+          "later reads 14 days. Refresh now is limited to once an hour per account. The footer shows how many requests were made and what checking cost."),
+        h("Using the report"),
+        table(["Control", "What it does"], [
+            ["Cloud", "AWS / Azure / GCP switch; appears when more than one cloud has an onboarded account"],
+            ["Date range", "7 days, 30 days, 90 days, This month, Last month or a Custom from / to"],
+            ["Granularity", "Daily or Monthly columns"],
+            ["Group by", "Account, Region or Usage type (the usage-type label names the region, so three GetMetricData lines are told apart)"],
+            ["Account, Region", "Filter popovers with search (when there are more than 6), Select all and Clear; chosen filters show as chips you can remove"],
+            ["Legend", "Click a series to hide or show it in the chart"],
+            ["Download CSV", "The table as shown, with provisional days marked"],
+            ["Refresh now", "Reads the latest figures from the cloud now (once an hour per account)"],
+        ]),
+        p("The table lists each group with its total, share, and (AWS) the number of metrics CloudOps requested, then one column per day or month."),
         h("Reading it"),
         table(["Status", "Meaning"], [
             ["up to date", "The last read worked."],
-            ["permission missing", "The role lacks ce:GetCostAndUsage. Attach the policy, then Refresh now."],
+            ["permission missing", "AWS: ce:GetCostAndUsage on the role. Azure: Cost Management Reader. GCP: BigQuery access to the billing export. Fix it, then Refresh now."],
             ["Cost Explorer not enabled", "Enable Cost Explorer in that AWS account."],
-            ["could not read", "AWS returned another error; the message is shown."],
+            ["not set up yet", "The cloud's reader is not configured (for GCP, the export table)."],
+            ["could not read", "The cloud returned another error; the message is shown."],
         ]),
-        ul(["AWS lags real usage by up to about 48 hours, so the newest day is partial and lower than the estimate. "
+        ul(["The cloud lags real usage by up to about 48 hours, so today and yesterday are provisional (marked with an asterisk) and lower than the estimate. "
             "Compare the two only for complete days.",
-            "The actual figure covers everything CloudWatch bills (alarms, custom metrics, logs, API requests), not only "
-            "CloudOps's reads. The usage-type list shows how much is GetMetricData.",
-            "A member account shows only its own charges; a management (payer) account's role shows every linked account."]),
-        note("Troubleshooting: AccessDenied with the policy attached usually means the account setting \"IAM user and role "
+            "Tax (for example GST) is billed separately and is not included.",
+            "'Not shown' in the footnote means charges in regions where no account of that cloud is onboarded, or other monitoring charges CloudOps does not create.",
+            "A member AWS account shows only its own charges; a management (payer) account's role shows every linked account."]),
+        note("Troubleshooting: AccessDenied with the policy attached usually means the AWS account setting \"IAM user and role "
              "access to Billing information\" is off. Only the account root user can change it."),
-    ], "What AWS really billed for CloudWatch, and how to turn it on")
+    ], "What the cloud really billed for CloudOps's metric reads, and how to turn it on")
