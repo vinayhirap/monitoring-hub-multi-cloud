@@ -60,3 +60,46 @@ test("filterLibrary and expiryState and fmtSize", () => {
   assert.equal(expiryState("2027-10-10T00:00:00Z", now).state, "ok"); assert.equal(expiryState(null, now).state, "unknown");
   assert.equal(fmtSize(500), "500 B"); assert.equal(fmtSize(2048), "2 KB"); assert.equal(fmtSize(3 * 1048576), "3.0 MB");
 });
+
+import { TEMPLATES, contentFor, periodMode, reportScopeId, describeRequest as describe2, COST_CONTENT, HOST_CONTENT, ENVIRONMENT_CONTENT, SECURITY_CONTENT, SLO_CONTENT } from "../reportPlan.js";
+
+test("cost template is admin-only; section templates need their section's permission", () => {
+  assert.ok(!templatesFor(false).some(t => t.id === "cost"));
+  assert.ok(templatesFor(true).some(t => t.id === "cost"));
+  const only = new Set(["security.view"]);
+  const ids = templatesFor(false, c => only.has(c)).map(t => t.id);
+  assert.ok(ids.includes("security") && !ids.includes("host") && !ids.includes("slo") && !ids.includes("environment") && !ids.includes("synthetic"));
+  assert.ok(ids.includes("weekly") && ids.includes("incident"));
+});
+test("every template has its own content list", () => {
+  const by = Object.fromEntries(TEMPLATES.map(t => [t.id, contentFor(t)]));
+  assert.equal(by.cost, COST_CONTENT); assert.equal(by.host, HOST_CONTENT); assert.equal(by.environment, ENVIRONMENT_CONTENT);
+  assert.equal(by.security, SECURITY_CONTENT); assert.equal(by.slo, SLO_CONTENT);
+  assert.notEqual(by.weekly, by.cost);
+});
+test("scope ids are built the way the server parses them", () => {
+  assert.equal(reportScopeId({ scopeType: "COST" }), "all");
+  assert.equal(reportScopeId({ scopeType: "COST", scopeId: "azure" }), "azure");
+  assert.equal(reportScopeId({ scopeType: "HOST", accountId: "3" }), "3");
+  assert.equal(reportScopeId({ scopeType: "HOST", accountId: "3", itemId: "7" }), "3:7");
+  assert.equal(reportScopeId({ scopeType: "SLO", accountId: "3", itemId: "9" }), "3:9");
+  assert.equal(reportScopeId({ scopeType: "ENVIRONMENT", accountId: "3", itemId: "9" }), "3");   // whole account only
+  assert.equal(reportScopeId({ scopeType: "SECURITY", accountId: "3" }), "3");
+});
+test("period modes", () => {
+  assert.equal(periodMode("SLO"), "none"); assert.equal(periodMode("ENVIRONMENT"), "trend");
+  for (const t of ["COST", "HOST", "SECURITY", "ACCOUNT", "SYNTHETIC"]) assert.equal(periodMode(t), "period");
+});
+test("validateRequest for the section reports", () => {
+  assert.match(validateRequest({ scopeType: "COST", reportType: "MONTHLY", isAdmin: false }), /admin/i);
+  assert.equal(validateRequest({ scopeType: "COST", reportType: "MONTHLY", isAdmin: true }), null);
+  assert.equal(validateRequest({ scopeType: "COST", reportType: "MONTHLY", isAdmin: true, scopeId: "gcp" }), null);
+  assert.match(validateRequest({ scopeType: "COST", reportType: "MONTHLY", isAdmin: true, scopeId: "oracle" }), /AWS/);
+  for (const t of ["HOST", "ENVIRONMENT", "SECURITY", "SLO"]) assert.match(validateRequest({ scopeType: t, reportType: "MONTHLY", accountId: "" }), /account/i);
+  assert.equal(validateRequest({ scopeType: "HOST", reportType: "MONTHLY", accountId: "2" }), null);
+  // an as-of-now report ignores a bad custom range
+  assert.equal(validateRequest({ scopeType: "SLO", reportType: "CUSTOM", accountId: "2", start: "", end: "" }), null);
+});
+test("as-of-now requests are described as such", () => {
+  assert.match(describe2({ template: { label: "SLO report" }, reportType: "MONTHLY", scopeLabel: "SLOs in Prod", window: null, asOf: true }), /as of now/);
+});

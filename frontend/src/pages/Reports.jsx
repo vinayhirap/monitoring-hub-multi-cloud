@@ -8,14 +8,15 @@ import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useTimezone } from "../contexts/TimezoneContext";
 import {
-  getLiveAccounts, getSyntheticChecks, generateReport, getReportJobStatus, listReports, reportDownloadUrl, emailReport,
+  getLiveAccounts, getSyntheticChecks, getSlos, generateReport, getReportJobStatus, listReports, reportDownloadUrl, emailReport,
   listReportScopeResources, listReportScopeIncidents,
 } from "../api/api";
+import { listHostAgents } from "../api/hostAgents";
 import { getCached, setCached } from "../utils/dataCache";
 import { DownloadIcon } from "../components/icons";
 import { PageHeader, Panel, Badge, StatusBeacon, SegmentedControl, FilterBar, DataTable, EmptyState } from "../components/ui";
 import {
-  contentFor, PERIODS, templatesFor, quickRanges, periodWindow, validateRequest, jobIsTerminal, trackJob, updateJob,
+  contentFor, PERIODS, TEMPLATES, templatesFor, COST_SCOPES, periodMode, PERIOD_NOTES, reportScopeId, quickRanges, periodWindow, validateRequest, jobIsTerminal, trackJob, updateJob,
   describeRequest, filterLibrary, expiryState, fmtSize,
 } from "../utils/reportPlan";
 import "./Reports.css";
@@ -31,21 +32,25 @@ export default function Reports() {
   const { ianaName } = useTimezone();
   const isAdmin = (user?.role || "").toLowerCase() === "admin";
   const canGenerate = hasPermission("reports.generate");
-  const templates = useMemo(() => templatesFor(isAdmin), [isAdmin]);
+  const templates = useMemo(() => templatesFor(isAdmin, hasPermission), [isAdmin, hasPermission]);
 
   const [qs] = useSearchParams();
+  const presetId = qs.get("template");                       // deep link from a section page: ?template=synthetic|cost|host|environment|security|slo
+  const preset = TEMPLATES.find(t => t.id === presetId) || null;
   const [accounts, setAccounts] = useState([]);
-  const [tplId, setTplId] = useState(() => (qs.get("template") === "synthetic" ? "synthetic" : "weekly"));
+  const [tplId, setTplId] = useState(() => (preset ? preset.id : "weekly"));
   const tpl = templates.find(t => t.id === tplId) || templates[0];
-  const [reportType, setReportType] = useState(() => (qs.get("template") === "synthetic" ? "MONTHLY" : "WEEKLY"));
-  const [accountId, setAccountId] = useState(() => (qs.get("template") === "synthetic" ? (qs.get("account") || "") : ""));
-  const [scopeId, setScopeId] = useState("");
+  const [reportType, setReportType] = useState(() => (preset ? preset.reportType : "WEEKLY"));
+  const [accountId, setAccountId] = useState(() => (preset ? (qs.get("account") || "") : ""));
+  const [scopeId, setScopeId] = useState(() => (preset?.scopeType === "COST" ? (qs.get("cloud") || "all") : ""));
   const [manualId, setManualId] = useState(false);
   const [resources, setResources] = useState([]);
   const [incidents, setIncidents] = useState([]);
   const [synthChecks, setSynthChecks] = useState([]);
-  const [checkId, setCheckId] = useState("");              // "" = every check in the account
-  const presetCheck = useRef(qs.get("template") === "synthetic" ? (qs.get("check") || "") : "");
+  const [hosts, setHosts] = useState([]);
+  const [slos, setSlos] = useState([]);
+  const [checkId, setCheckId] = useState("");              // item picked inside an account (check, host or SLO); "" = the whole account
+  const presetCheck = useRef(preset ? (qs.get("check") || qs.get("host") || qs.get("slo") || "") : "");
   const [pStart, setPStart] = useState("");
   const [pEnd, setPEnd] = useState("");
   const [error, setError] = useState("");
@@ -65,7 +70,7 @@ export default function Reports() {
 
   // Pick a template: sets the real parameters it stands for
   const pickTemplate = t => {
-    setTplId(t.id); setReportType(t.reportType); setScopeId(""); setManualId(false); setError(""); setNotice("");
+    setTplId(t.id); setReportType(t.reportType); setScopeId(t.scopeType === "COST" ? "all" : ""); setCheckId(""); setManualId(false); setError(""); setNotice("");
     if (t.reportType === "CUSTOM" && !pStart) { const r = quickRanges()[1]; setPStart(r.start); setPEnd(r.end); }
   };
 
@@ -82,7 +87,9 @@ export default function Reports() {
   useEffect(() => {
     setScopeId(""); setManualId(false);
     setCheckId(presetCheck.current); presetCheck.current = "";
-    if (!accountId) { setResources([]); setIncidents([]); setSynthChecks([]); return; }
+    if (!accountId) { setResources([]); setIncidents([]); setSynthChecks([]); setHosts([]); setSlos([]); return; }
+    if (scopeType === "HOST") listHostAgents().then(r => setHosts((Array.isArray(r) ? r : []).filter(h => String(h.aws_account_id) === String(accountId)))).catch(() => setHosts([]));
+    if (scopeType === "SLO") getSlos().then(r => setSlos((Array.isArray(r) ? r : []).filter(x => String(x.aws_account_id) === String(accountId)))).catch(() => setSlos([]));
     if (scopeType === "SYNTHETIC") getSyntheticChecks().then(r => setSynthChecks((Array.isArray(r) ? r : []).filter(c => String(c.aws_account_id) === String(accountId)))).catch(() => setSynthChecks([]));
     if (scopeType === "RESOURCE") listReportScopeResources(accountId).then(r => setResources(Array.isArray(r) ? r : [])).catch(() => setResources([]));
     if (scopeType === "INCIDENT") listReportScopeIncidents(accountId).then(r => setIncidents(Array.isArray(r) ? r : [])).catch(() => setIncidents([]));
@@ -91,12 +98,19 @@ export default function Reports() {
   const win = periodWindow({ reportType, start: pStart, end: pEnd });
   const scopeLabel = scopeType === "CLIENT" ? (scopeId ? `Client: ${scopeId} (all accounts)` : "")
     : scopeType === "ACCOUNT" ? (acctLabel ? `Account ${acctLabel}` : "")
+    : scopeType === "COST" ? `Cloud cost: ${COST_SCOPES.find(c => c.key === (scopeId || "all"))?.label || "all clouds"}`
+    : scopeType === "HOST" ? (acctLabel ? `Host agents: ${checkId ? (hosts.find(h => String(h.id) === String(checkId))?.hostname || `host ${checkId}`) : "all hosts"} in ${acctLabel}` : "")
+    : scopeType === "SLO" ? (acctLabel ? `SLOs: ${checkId ? (slos.find(x => String(x.id) === String(checkId))?.name || `SLO ${checkId}`) : "all SLOs"} in ${acctLabel}` : "")
+    : scopeType === "ENVIRONMENT" ? (acctLabel ? `Environments and tags in ${acctLabel}` : "")
+    : scopeType === "SECURITY" ? (acctLabel ? `Security findings in ${acctLabel}` : "")
     : scopeType === "SYNTHETIC" ? (acctLabel ? `Synthetic checks: ${checkId ? (synthChecks.find(c => String(c.id) === String(checkId))?.name || `check ${checkId}`) : "all checks"} in ${acctLabel}` : "")
     : scopeType === "RESOURCE" ? (scopeId ? `Resource ${resources.find(r => r.resource_id === scopeId)?.name || scopeId}${acctLabel ? ` in ${acctLabel}` : ""}` : "")
     : (scopeId ? `Incident #${scopeId}${acctLabel ? ` in ${acctLabel}` : ""}` : "");
-  const syntheticScopeId = checkId ? `${accountId}:${checkId}` : String(accountId || "");
-  const problem = validateRequest({ scopeType, reportType, accountId, scopeId: scopeType === "ACCOUNT" ? accountId : scopeType === "SYNTHETIC" ? syntheticScopeId : scopeId, start: pStart, end: pEnd, isAdmin });
-  const summary = describeRequest({ template: tpl, reportType, scopeLabel, window: win, tz: ianaName });
+  const sectionScopeId = reportScopeId({ scopeType, accountId, itemId: checkId, scopeId });
+  const mode = periodMode(scopeType);
+  const effectiveType = mode === "none" ? "MONTHLY" : reportType;       // an as-of-now report ignores the period; send a fixed one
+  const problem = validateRequest({ scopeType, reportType: effectiveType, accountId, scopeId: ["ACCOUNT", "SYNTHETIC", "HOST", "SLO", "ENVIRONMENT", "SECURITY", "COST"].includes(scopeType) ? sectionScopeId : scopeId, start: pStart, end: pEnd, isAdmin });
+  const summary = describeRequest({ template: tpl, reportType: effectiveType, scopeLabel, window: mode === "none" ? null : win, tz: ianaName, asOf: mode === "none" });
 
   // Poll every non-terminal tracked job; one self-scheduling loop for all of them
   const live = jobs.filter(j => !jobIsTerminal(j.status)).map(j => j.job_id).join(",");
@@ -127,9 +141,9 @@ export default function Reports() {
     setSubmitting(true);
     try {
       const resp = await generateReport({
-        reportType, scopeType, scopeId: scopeType === "ACCOUNT" ? accountId : scopeType === "SYNTHETIC" ? syntheticScopeId : scopeId.trim(),
-        accountId: scopeType === "CLIENT" ? null : (accountId || null),
-        periodStart: reportType === "CUSTOM" ? pStart : undefined, periodEnd: reportType === "CUSTOM" ? pEnd : undefined,
+        reportType: effectiveType, scopeType, scopeId: ["ACCOUNT", "SYNTHETIC", "HOST", "SLO", "ENVIRONMENT", "SECURITY", "COST"].includes(scopeType) ? sectionScopeId : scopeId.trim(),
+        accountId: scopeType === "CLIENT" || scopeType === "COST" ? null : (accountId || null),
+        periodStart: effectiveType === "CUSTOM" ? pStart : undefined, periodEnd: effectiveType === "CUSTOM" ? pEnd : undefined,
       });
       setJobs(l => trackJob(l, { job_id: resp.job_id, status: resp.status || "QUEUED", label: summary, requestedAt: Date.now() }));
       setNotice("Queued. It will appear in the library when it is ready.");
@@ -175,7 +189,7 @@ export default function Reports() {
 
   return (
     <div className="reports-page">
-      <PageHeader title="Reports" subtitle="Generate stakeholder-ready alert and incident reports from real monitoring data. Stored in S3 and retained for one year." />
+      <PageHeader title="Reports" subtitle="Generate stakeholder-ready PDF reports from real monitoring data: alerts and incidents, synthetic checks, cloud cost, host agents, environments, security findings and SLOs. Stored in S3 and retained for one year." />
 
       {canGenerate && (
         <Panel title="1 · Choose a template" subtitle="A template presets the report type and scope; the contents are listed in step 3">
@@ -191,11 +205,30 @@ export default function Reports() {
       {canGenerate && (
         <Panel title="2 · Scope and period">
           <div className="rp-form">
-            {scopeType !== "CLIENT" && (
+            {scopeType !== "CLIENT" && scopeType !== "COST" && (
               <label className="rp-f"><span>Account</span>
                 <select value={accountId} onChange={e => setAccountId(e.target.value)} data-testid="rp-account">
                   <option value="">Select an account</option>
                   {accountOptions.map(a => <option key={a.id} value={a.id}>{a.account_name ? `${a.account_name}${a.region ? ` · ${a.region}` : ""} (${a.account_id})` : a.account_id}</option>)}
+                </select></label>)}
+            {scopeType === "COST" && (
+              <label className="rp-f"><span>Cloud</span>
+                <select value={scopeId || "all"} onChange={e => setScopeId(e.target.value)} data-testid="rp-cloud">
+                  {COST_SCOPES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                </select>
+                <small>Spans every account, so only an admin can generate it.</small></label>)}
+            {scopeType === "HOST" && (
+              <label className="rp-f"><span>Host</span>
+                <select value={checkId} onChange={e => setCheckId(e.target.value)} disabled={!accountId} data-testid="rp-host">
+                  <option value="">{accountId ? `All hosts in this account (${hosts.length})` : "Select an account first"}</option>
+                  {hosts.map(h => <option key={h.id} value={h.id}>{h.hostname}{h.state ? ` (${h.state})` : ""}</option>)}
+                </select>
+                <small>Leave on all hosts for one combined report, or pick one host.</small></label>)}
+            {scopeType === "SLO" && (
+              <label className="rp-f"><span>SLO</span>
+                <select value={checkId} onChange={e => setCheckId(e.target.value)} disabled={!accountId} data-testid="rp-slo">
+                  <option value="">{accountId ? `All SLOs in this account (${slos.length})` : "Select an account first"}</option>
+                  {slos.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
                 </select></label>)}
             {scopeType === "CLIENT" && (
               <label className="rp-f"><span>Client or stakeholder name</span>
@@ -224,15 +257,18 @@ export default function Reports() {
                     {incidents.map(i => <option key={i.id} value={i.id}>#{i.id} [{i.severity}/{i.status}] {i.title}</option>)}
                   </select>}
                 {accountId && <button type="button" className="rp-link" onClick={() => { setManualId(v => !v); setScopeId(""); }}>{manualId ? "Pick from list" : "Not listed? Enter an id"}</button>}</label>)}
+            {mode === "none" ? <p className="rp-dim" data-testid="rp-period-note">{PERIOD_NOTES.none}</p> : (<>
             <div className="rp-f"><span>Period</span>
               <SegmentedControl label="Period" value={reportType} onChange={k => { setReportType(k); if (k === "CUSTOM" && !pStart) { const r = quickRanges()[1]; setPStart(r.start); setPEnd(r.end); } }} options={PERIODS.map(p => ({ key: p.key, label: p.label }))} />
             </div>
+            {mode === "trend" && <p className="rp-dim" data-testid="rp-period-note">{PERIOD_NOTES.trend}</p>}
             {reportType === "CUSTOM" && (
               <div className="rp-custom">
                 <div className="rp-chips">{quickRanges().map(r => <button key={r.key} type="button" className="rp-chip" onClick={() => { setPStart(r.start); setPEnd(r.end); }}>{r.label}</button>)}</div>
                 <label className="rp-f"><span>From (UTC)</span><input type="datetime-local" value={pStart ? pStart.slice(0, 16) : ""} onChange={e => setPStart(e.target.value ? `${e.target.value}:00+00:00` : "")} /></label>
                 <label className="rp-f"><span>To (UTC)</span><input type="datetime-local" value={pEnd ? pEnd.slice(0, 16) : ""} onChange={e => setPEnd(e.target.value ? `${e.target.value}:00+00:00` : "")} /></label>
               </div>)}
+            </>)}
           </div>
         </Panel>
       )}
