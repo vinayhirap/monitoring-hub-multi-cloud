@@ -96,7 +96,7 @@ def explain_ai():
             "For an incident a probable cause is ranked when the incident is created (see Incidents).",
             "Needs alerts.view."]),
         h("RCA report"),
-        ul(["Download a root cause analysis report for any alert, on its own or inside an incident, as Markdown or as PDF.",
+        ul(["Use the RCA report (PDF) button on an alert, in the Alerts list or in the alert's investigation panel. The same report is available as Markdown from the API (the rca-report endpoint with format=md).",
             "The timeline, resource details, severity and duration come only from stored data. The Executive Summary and Recommendations "
             "can be written by the AI model; if it is off or fails, the same facts are shown as plain bullet points. A report is always produced.",
             "The AI text is generated in the background. A download waits a few seconds (LLM_RCA_WAIT_SECONDS, default 8) and otherwise returns "

@@ -291,7 +291,7 @@ def glossary():
             ["Billed cost", "What the cloud actually charged for CloudOps's metric reads, as opposed to the estimate from CloudOps's own counters."],
             ["Provisional day", "A day of billing data that the cloud has not finished reporting (today and yesterday)."],
             ["Cost-jump alert", "A warning when CloudOps's billed cost is well above its 7-day average."],
-            ["RCA report", "A downloadable root cause analysis for an alert, as Markdown or PDF."],
+            ["RCA report", "A downloadable root cause analysis for an alert (PDF button; Markdown through the API)."],
             ["Flapping", "An alert that opens and closes repeatedly; listed under the Auto-tuning tab."],
         ]),
     ], "Terms used in CloudOps")
