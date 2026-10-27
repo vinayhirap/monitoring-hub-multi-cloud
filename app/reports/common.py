@@ -112,7 +112,7 @@ def open_report(*, title, label, report_type, period_start, period_end, generate
 
 
 def finish(pdf, label, now, generated_by):
-    kit.footnote(pdf, f"Generated automatically by AurionPro CloudOps for {label} on {fmt_stamp(now)} (requested by "
+    kit.footnote(pdf, f"Generated automatically by Aurionpro CloudOps for {label} on {fmt_stamp(now)} (requested by "
                       f"{generated_by}). Verify before external distribution.")
     return bytes(pdf.output())
 

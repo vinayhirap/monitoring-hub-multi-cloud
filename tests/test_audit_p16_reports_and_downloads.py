@@ -200,7 +200,7 @@ def test_weekly_pdf_reads_like_a_report_not_a_dump(eng, tmp_path):
     text_ws = re.sub(r"\s+", " ", text)                       # pdftotext -layout pads columns with runs of spaces
     for needle in ("Weekly Operations Report", "ALERTS RAISED", "OPEN NOW", "Executive Summary", "OVERVIEW", "Alerts per Day",
                    "Most Affected Resources", "Top Alert Sources", "Most Significant Alerts", "Resolution and Current Status",
-                   "Target 4xx Errors", "CONFIDENTIAL | AurionPro CloudOps | U4RAD", "Incident #565"):
+                   "Target 4xx Errors", "CONFIDENTIAL | Aurionpro CloudOps | U4RAD", "Incident #565"):
         assert needle in text_ws, needle
     for gone in ("httpcode_target_4xx_count", "arn:aws", "resource(s)", " -- ", "Incident Timeline / Alerts"):
         assert gone not in text, gone

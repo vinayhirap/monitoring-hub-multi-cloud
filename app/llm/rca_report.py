@@ -674,6 +674,6 @@ def render_markdown(report: dict) -> str:
     source = "AI-written" if report.get("narrative_source") == "llm" else "rule-based"
     lines += [
         "",
-        f"*Generated automatically by AurionPro CloudOps ({source} summary). Verify before external distribution.*",
+        f"*Generated automatically by Aurionpro CloudOps ({source} summary). Verify before external distribution.*",
     ]
     return "\n".join(lines)

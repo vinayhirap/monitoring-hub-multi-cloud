@@ -392,7 +392,7 @@ def render_synthetic_pdf(*, report_type, scope_id, scope_label, period_start, pe
             kit.bullet(pdf, r)
     else:
         kit.bullet(pdf, "Nothing needs attention. Checks are healthy, certificates are outside their renewal window and every check has contacts.")
-    kit.footnote(pdf, f"Generated automatically by AurionPro CloudOps for {label} on {_fmt_stamp(now)} (requested by "
+    kit.footnote(pdf, f"Generated automatically by Aurionpro CloudOps for {label} on {_fmt_stamp(now)} (requested by "
                       f"{generated_by}). Verify before external distribution.")
     return bytes(pdf.output())
 

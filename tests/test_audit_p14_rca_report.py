@@ -176,7 +176,7 @@ def test_timeline_is_formatted_and_the_closing_note_says_which_summary_it_is(rr)
                                   {"time": "2026-10-04 16:20:00", "event": "Acknowledged by tejas"}])
     md = rr.render_markdown(_report(rr, facts))
     assert "- **04 Oct 2026, 16:13:45 UTC** \u2014 Alert opened: X" in md and "Acknowledged by tejas" in md
-    assert md.rstrip().endswith("*Generated automatically by AurionPro CloudOps (rule-based summary). Verify before external distribution.*")
+    assert md.rstrip().endswith("*Generated automatically by Aurionpro CloudOps (rule-based summary). Verify before external distribution.*")
     assert "AI-written summary)" in rr.render_markdown(_report(rr, source="llm"))
     assert md.count("verify before external distribution") + md.count("Verify before external distribution") == 1
 
@@ -237,7 +237,7 @@ def test_pdf_carries_document_properties_and_the_alert_reference(rr):
     pdfm = _pdf_module()
     out = pdfm.render_pdf(rr.render_markdown(_report(rr)), "Volume Read Operations above its limit", severity="WARNING",
                           status="Active", kpis=rr.report_kpis(_report(rr)), alert_ref="Alert #9467")
-    assert b"AurionPro CloudOps" in out and b"RCA Report - Volume Read Operations above its limit" in out
+    assert b"Aurionpro CloudOps" in out and b"RCA Report - Volume Read Operations above its limit" in out
 
 
 def test_pdf_text_has_the_new_content_if_pdftotext_is_available(rr, tmp_path):

@@ -116,6 +116,6 @@ def render_pdf(markdown_text: str, title: str, severity: str = None, *, subtitle
                 kit.plain_paragraph(pdf, line)
 
     if not generated_footnote_seen:
-        kit.footnote(pdf, f"Generated automatically by AurionPro CloudOps on {now:%d %b %Y, %H:%M UTC}. "
+        kit.footnote(pdf, f"Generated automatically by Aurionpro CloudOps on {now:%d %b %Y, %H:%M UTC}. "
                           f"Verify before external distribution.")
     return bytes(pdf.output())

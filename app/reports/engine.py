@@ -622,6 +622,6 @@ def render_report_pdf(*, report_type: str, scope_type: str, scope_id: str,
     else:
         kit.bullet(pdf, "Nothing remains open.")
 
-    kit.footnote(pdf, f"Generated automatically by AurionPro CloudOps for {label} on {_fmt_stamp(now)} (requested by "
+    kit.footnote(pdf, f"Generated automatically by Aurionpro CloudOps for {label} on {_fmt_stamp(now)} (requested by "
                       f"{generated_by}). Verify before external distribution.")
     return bytes(pdf.output())
