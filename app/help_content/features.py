@@ -159,12 +159,42 @@ def topology():
 
 def reports():
     return section("reports", "Reports", "Reports", "viewer", "reports.view", [
-        p("Generate PDF operations reports for an account, or for a client across all its accounts, then download or email them. "
-          "The page appears only when the reports feature is on for the installation."),
-        table(["Report type", "Title"], [["WEEKLY", "Weekly Operations Report"], ["MONTHLY", "Monthly Operations Review"],
-                                          ["QUARTERLY", "Quarterly Operations Review"], ["CUSTOM", "Operations Report"]]),
-        ul(["Permissions: reports.view (list), reports.generate, reports.download, reports.email.",
-            "A client-scope report is titled Client Report / Client Review.",
+        p("Generate PDF reports, then download or email them. Every report is built from live monitoring data, stored for one "
+          "year, and limited to the accounts you can access. The page appears only when the reports feature is on for the installation."),
+        h("Choose a template"),
+        table(["Template", "Scope", "Who can generate it", "What it contains"], [
+            ["Weekly, Monthly, Quarterly, Custom", "One account", "reports.generate",
+             "Alert totals, the most severe alerts, incident narratives with cause and resolution."],
+            ["Incident report", "One incident", "reports.generate", "That incident with its cause and resolution or current status."],
+            ["Resource report", "One resource", "reports.generate", "The alert history of that resource."],
+            ["Client report", "Every account", "Admin only", "The same content across all accounts, titled with the client name."],
+            ["Synthetic checks", "One account or one check", "reports.generate and synthetic.view",
+             "Availability, outages, response time and TLS certificates."],
+            ["Cloud cost", "All clouds or one cloud", "Admin only",
+             "Billed cost of CloudOps's own paid metric calls per cloud, account and day; this month against last month; estimate by polling tier."],
+            ["Host agents", "One account or one host", "reports.generate and hostagents.view",
+             "Online state, heartbeat gaps, CPU / memory / disk use, services not running, host alerts."],
+            ["Environments and tags", "One account", "reports.generate and environments.view",
+             "PROD / NON-PROD placement, tag compliance by resource type, resources missing essential tags, compliance trend."],
+            ["Security findings", "One account", "reports.generate and security.view",
+             "Open findings by severity, type and age; findings first seen and fixed in the period; time to fix."],
+            ["SLOs", "One account or one SLO", "reports.generate and slo.view",
+             "Target, uptime and error budget used for each SLO: met, at risk or breached."],
+        ]),
+        h("What the period means"),
+        ul(["Weekly, Monthly, Quarterly and Custom set the date range. Custom allows up to 400 days.",
+            "Cost, Host agents, Security and the alert-based reports use the period for their figures. Host resource use covers at most the last 30 days, "
+            "because metric history is kept 30 days; the report says so when the period is longer.",
+            "Environments and SLOs describe the state at the moment you generate them (the cover says 'As of'). For Environments the period only sets the "
+            "range of the compliance trend; for SLOs it changes nothing, because each SLO is measured over its own rolling window.",
+            "Billed cost lags real usage by about 48 hours, so the last two days of a cost report are provisional. Tax is not included. "
+            "The polling-tier estimate is a list-price estimate for the last 30 days, not the invoice, and appears only when the period ends now."]),
+        h("Limits and requirements"),
+        ul(["Permissions: reports.view (list), reports.generate, reports.download, reports.email. A section report also needs the permission of the "
+            "section it reads, as shown in the table.",
+            "Cost reports and client reports have no single account, so only an admin can generate or download them.",
+            "Host agent reports need the host agent feature switched on for the installation (HOST_AGENT_ENABLED).",
+            "A security report names resources (for example bucket names). Treat it as confidential before forwarding it.",
             "Email needs SMTP configured on the server; without it the page says an admin must set it up."]),
     ], "Generate, download and email PDF reports")
 

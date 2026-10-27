@@ -129,6 +129,9 @@ def run_job(job_id: int) -> None:
                 report_type=job["report_type"], scope_id=job["scope_id"], scope_label=scope_label,
                 period_start=job["period_start"], period_end=job["period_end"],
                 data=data, generated_by=job["requested_by"])
+        elif job["scope_type"] in ("COST", "HOST", "ENVIRONMENT", "SECURITY", "SLO"):
+            from app.reports import registry            # section reports: see app/reports/registry.py
+            pdf_bytes, scope_label = registry.build(job)
         else:
             data = gather_report_data(
                 job["scope_type"], job["scope_id"], job["account_id"],

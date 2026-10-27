@@ -446,9 +446,13 @@ def data_table(pdf, columns, rows, *, row_h=6.4, zebra=True):
 
 # ── chart ────────────────────────────────────────────────────────────────────
 
-def bar_chart(pdf, labels, values, *, height=44, caption=None):
+def bar_chart(pdf, labels, values, *, height=44, caption=None, value_fmt=None):
     """Native vector bar chart WITH a y-scale, a value above every bar and a date under every bar. (The previous chart
-    had no numbers at all: just unlabeled bars and two end dates.)"""
+    had no numbers at all: just unlabeled bars and two end dates.)
+    value_fmt: optional callable value -> text for the scale and the per-bar numbers (default: whole numbers, e.g. for
+    counts). A cost chart passes a currency formatter so a 35-cent day is not drawn as "0"."""
+    grid_fmt = value_fmt or (lambda v: f"{int(round(v)):,}")
+    bar_fmt = value_fmt or (lambda v: f"{int(v):,}")
     ensure_room(pdf, height + 16)
     x0, y0 = MARGIN, pdf.get_y()
     w = pdf.w - 2 * MARGIN
@@ -467,7 +471,7 @@ def bar_chart(pdf, labels, values, *, height=44, caption=None):
         pdf.line(x0 + pad_l, gy, x0 + w - pad_r, gy)
         pdf.set_text_color(*MUTED)
         pdf.set_xy(x0 + 1, gy - 1.8)
-        pdf.cell(pad_l - 3, 3.6, f"{int(round(max_v * frac)):,}", align="R")
+        pdf.cell(pad_l - 3, 3.6, grid_fmt(max_v * frac), align="R")
     slot = plot_w / n if n else plot_w
     bar_w = max(slot * 0.62, 1.2)
     for i, v in enumerate(values):
@@ -480,7 +484,7 @@ def bar_chart(pdf, labels, values, *, height=44, caption=None):
             pdf.set_font("Helvetica", "B", 7)
             pdf.set_text_color(*INK)
             pdf.set_xy(bx - 3, by - 4)
-            pdf.cell(bar_w + 6, 3.5, f"{int(v):,}", align="C")
+            pdf.cell(bar_w + 6, 3.5, bar_fmt(v), align="C")
     pdf.set_font("Helvetica", "", 7)
     pdf.set_text_color(*MUTED)
     step = max(1, n // 10)

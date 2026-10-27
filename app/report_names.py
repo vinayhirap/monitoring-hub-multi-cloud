@@ -30,6 +30,7 @@ def _day(value) -> str:
         return slug(str(value or ""), 10)
 
 
+_SECTION_KINDS = {"COST": "Cost", "HOST": "Host-Agents", "ENVIRONMENT": "Environments", "SECURITY": "Security", "SLO": "SLO"}
 _TYPE_WORDS = {"WEEKLY": "Weekly", "MONTHLY": "Monthly", "QUARTERLY": "Quarterly", "CUSTOM": "Custom"}
 
 
@@ -40,6 +41,8 @@ def periodic_report_filename(report: dict) -> str:
         kind = "Incident"
     elif scope == "RESOURCE":
         kind = "Resource"
+    elif scope in _SECTION_KINDS:
+        kind = _SECTION_KINDS[scope]
     elif scope == "SYNTHETIC":
         kind = "Synthetic-" + _TYPE_WORDS.get((report.get("report_type") or "").upper(), "Report")
     else:

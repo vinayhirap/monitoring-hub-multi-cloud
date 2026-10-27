@@ -66,7 +66,11 @@ def _require_enabled():
 router = APIRouter(prefix="/api/reports", tags=["Reports"], dependencies=[Depends(_require_enabled)])
 
 _VALID_REPORT_TYPES = {"WEEKLY", "MONTHLY", "QUARTERLY", "CUSTOM"}
-_VALID_SCOPE_TYPES = {"ACCOUNT", "RESOURCE", "INCIDENT", "CLIENT", "SYNTHETIC"}
+# Section reports (see app/reports/registry.py, which is the source of truth; tests/test_section_reports.py checks these agree).
+# registry is imported lazily, like synthetic_report, so this module loads without the report builders.
+_SECTION_SCOPES = {"COST", "HOST", "ENVIRONMENT", "SECURITY", "SLO"}
+_SECTION_NEEDS_ACCOUNT = {"HOST", "ENVIRONMENT", "SECURITY", "SLO"}
+_VALID_SCOPE_TYPES = {"ACCOUNT", "RESOURCE", "INCIDENT", "CLIENT", "SYNTHETIC", "COST", "HOST", "ENVIRONMENT", "SECURITY", "SLO"}
 
 
 def _require_account_access(account_id: int | None, user: dict) -> None:
@@ -159,7 +163,7 @@ def generate_report(
         raise HTTPException(status_code=400, detail=f"report_type must be one of {sorted(_VALID_REPORT_TYPES)}")
     if scope_type not in _VALID_SCOPE_TYPES:
         raise HTTPException(status_code=400, detail=f"scope_type must be one of {sorted(_VALID_SCOPE_TYPES)}")
-    if scope_type in ("INCIDENT", "RESOURCE", "ACCOUNT", "SYNTHETIC") and not account_id:
+    if (scope_type in ("INCIDENT", "RESOURCE", "ACCOUNT", "SYNTHETIC") or scope_type in _SECTION_NEEDS_ACCOUNT) and not account_id:
         raise HTTPException(status_code=400, detail=f"account_id is required for scope_type={scope_type} "
                                                       "-- a resource/incident id is only unique within one "
                                                       "account, not globally (see db/migrations/048_add_account_scoping_to_alerts.sql). "
@@ -182,9 +186,14 @@ def generate_report(
     # boundary stay admin-only regardless of scope.
     if scope_type == "CLIENT" and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="CLIENT-scoped reports span multiple accounts and are admin-only")
+    if scope_type == "COST":
+        account_id = None            # organisation-wide: never tied to one account (see registry.validate)
     _require_account_access(account_id, current_user)
     if scope_type == "SYNTHETIC":
         _validate_synthetic_scope(scope_id, account_id, current_user)
+    if scope_type in _SECTION_SCOPES:
+        from app.reports import registry
+        account_id = registry.validate(scope_type, scope_id, account_id, current_user)
 
     start, end = _resolve_period(report_type, period_start, period_end)
 
