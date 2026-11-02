@@ -145,12 +145,19 @@ def deliver(channel: dict, message: dict) -> None:
         from app.email import mailer
         if not mailer.is_configured():
             raise RuntimeError("SMTP is not configured (SMTP_HOST unset)")
-        ok_count = 0
+        ok_count, last_err = 0, ""
+        send_ex = getattr(mailer, "send_email_ex", None)     # absent only in test stubs
         for addr in parse_addresses(target):
-            if mailer.send_email(addr, message["headline"], message["text"]):
+            if send_ex:
+                ok, err = send_ex(addr, message["headline"], message["text"])
+            else:
+                ok, err = mailer.send_email(addr, message["headline"], message["text"]), ""
+            if ok:
                 ok_count += 1
+            elif err:
+                last_err = err
         if not ok_count:
-            raise RuntimeError("no email could be sent - check the server log")
+            raise RuntimeError(last_err or "no email could be sent - check the server log")
     elif ctype == "slack":
         _post_json(target, {"text": message["text"]})
     elif ctype == "teams":
