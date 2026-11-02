@@ -23,6 +23,8 @@
 .slo-field { display: flex; flex-direction: column; gap: 6px; min-width: 150px; }
 .slo-field-narrow { min-width: 100px; max-width: 120px; }
 .slo-field-wide { min-width: 220px; flex: 1; }
+.slo-field-measure { min-width: 170px; }          /* "Resource alerts" / "Synthetic check" must not be clipped */
+.slo-field select { text-overflow: ellipsis; }
 .slo-field label {
   font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
   color: var(--text-muted); font-family: var(--font-mono);

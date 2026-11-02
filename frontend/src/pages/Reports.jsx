@@ -154,7 +154,9 @@ export default function Reports() {
     const to = (emailTo[id] || "").trim();
     if (!to) return;
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) { setLibNotice({ kind: "err", text: `"${to}" is not a valid email address.` }); return; }
-    try { await emailReport(id, to); setLibNotice({ kind: "ok", text: `Report #${id} emailed to ${to}.` }); setEmailTo(m => ({ ...m, [id]: "" })); refreshLibrary(); }
+    const r = library?.find(x => x.id === id);
+    const what = r ? `${r.report_type[0] + r.report_type.slice(1).toLowerCase()} report${r.scope_label ? ` for ${r.scope_label}` : ""} (${fmtD(r.period_start)} – ${fmtD(r.period_end)})` : "Report";
+    try { await emailReport(id, to); setLibNotice({ kind: "ok", text: `${what} sent to ${to}.` }); setEmailTo(m => ({ ...m, [id]: "" })); refreshLibrary(); }
     catch (e) { setLibNotice({ kind: "err", text: /501/.test(e.message || "") ? "Email delivery isn't set up yet: an admin must configure SMTP on the server." : "Email failed. Check the address and try again." }); }
   }
 
@@ -279,7 +281,7 @@ export default function Reports() {
             <div>
               <div className="rp-sum" data-testid="rp-summary">{summary}</div>
               <ul className="rp-incl" aria-label="What the report contains">{contentFor(tpl).map(c => <li key={c}>{c}</li>)}</ul>
-              <p className="rp-dim">Only data from accounts you can access is included. Delivery by email needs SMTP to be set up on the server; scheduled reports are not available yet.</p>
+              <p className="rp-dim">Only data from accounts you can access is included. Finished reports can be emailed from the library below; scheduled reports are not available yet.</p>
             </div>
             <div className="rp-go">
               <button type="button" className="c-btn-primary" onClick={handleGenerate} disabled={submitting || !!problem} data-testid="rp-generate">{submitting ? "Queuing…" : "Generate report"}</button>

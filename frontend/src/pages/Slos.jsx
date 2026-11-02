@@ -101,7 +101,7 @@ export default function Slos() {
           <input aria-label="Name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                  placeholder="Payment API uptime" required />
         </div>
-        <div className="slo-field slo-field-narrow">
+        <div className="slo-field slo-field-measure">
           <label>Measure via</label>
           <select aria-label="Measure via" value={form.mode} onChange={e => setForm(f => ({ ...f, mode: e.target.value }))}>
             <option value="synthetic">Synthetic check</option>

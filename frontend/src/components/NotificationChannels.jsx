@@ -3,6 +3,8 @@
 // edit leaves the stored URL untouched unless a new one is typed.
 import { useCallback, useEffect, useState } from "react";
 import "./NotificationChannels.css";
+import { useTimezone } from "../contexts/TimezoneContext";
+import { formatStamp, zoneLabel } from "../utils/timeFormat";
 import { Panel, Badge, ConfirmDialog, EmptyState } from "./ui";
 import {
   getNotificationChannels, createNotificationChannel, updateNotificationChannel,
@@ -16,9 +18,11 @@ const TYPES = [
   { key: "email",   label: "Email",   hint: "One or more addresses, comma-separated" },
 ];
 const BLANK = { id: null, name: "", type: "slack", target: "", min_severity: "CRITICAL", opened: true, escalated: true, enabled: true };
-const when = s => { try { return new Date(s).toLocaleString(); } catch { return s || ""; } };
 
 export default function NotificationChannels() {
+  const { ianaName } = useTimezone();
+  // created_at is a zone-less UTC string: the old toLocaleString() read it as local time (6:03 AM for a 11:33 IST mail).
+  const when = s => formatStamp(s, ianaName, zoneLabel(ianaName), s || "");
   const [rows, setRows] = useState(null);
   const [log, setLog] = useState([]);
   const [form, setForm] = useState(null);       // null = closed

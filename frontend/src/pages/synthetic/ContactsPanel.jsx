@@ -48,15 +48,28 @@ export default function ContactsPanel({ check, onClose, onChanged }) {
     setDraft(""); setMsg(null);
   };
 
+  // A typed-but-not-added address used to be dropped while Save still said "Saved.". Add it, or say why not.
+  const withDraft = () => {
+    const email = draft.trim();
+    if (!email) return rows;
+    if (!EMAIL.test(email)) { setMsg({ kind: "err", text: `"${email}" is not a valid email address. Fix it or clear the box, then save.` }); return null; }
+    if (rows.some(r => (r.email || "").toLowerCase() === email.toLowerCase())) return rows;
+    return [...rows, { email, label: "", notify_outage: true, notify_cert: true }];
+  };
+
   const save = async () => {
-    setBusy(true); setMsg(null);
+    setMsg(null);
+    const list = withDraft();
+    if (!list) return;
+    setBusy(true);
     try {
       if (isHttps) {
         const body = custom ? { cert_warn_days: Number(warn), cert_crit_days: Number(crit) } : { cert_warn_days: null, cert_crit_days: null };
         await updateSyntheticCheck(check.id, body);
       }
-      await setSyntheticContacts(check.id, rows.map(r => ({ email: r.email, label: r.label || null, notify_outage: !!r.notify_outage, notify_cert: !!r.notify_cert })));
-      setMsg({ kind: "ok", text: "Saved." });
+      await setSyntheticContacts(check.id, list.map(r => ({ email: r.email, label: r.label || null, notify_outage: !!r.notify_outage, notify_cert: !!r.notify_cert })));
+      setRows(list); setDraft("");
+      setMsg({ kind: "ok", text: `Saved. ${list.length} contact${list.length === 1 ? "" : "s"} will be emailed.` });
       onChanged();
     } catch (e) { setMsg({ kind: "err", text: errText(e) }); } finally { setBusy(false); }
   };
