@@ -435,6 +435,12 @@ def email_report(
     """
     if not _EMAIL_RE.match(to_addr):
         raise HTTPException(status_code=400, detail="to_addr is not a valid email address")
+    # Optional recipient policy: REPORT_EMAIL_ALLOWED_DOMAINS=aurionpro.com,partner.com limits where a report may be
+    # sent (empty/unset = any address, the previous behaviour). Closes the "any editor can mail a report anywhere" path.
+    allowed = [d.strip().lower().lstrip("@") for d in (os.getenv("REPORT_EMAIL_ALLOWED_DOMAINS") or "").split(",") if d.strip()]
+    if allowed and to_addr.rsplit("@", 1)[-1].lower() not in allowed:
+        raise HTTPException(status_code=400,
+                            detail="Reports can only be emailed to: " + ", ".join("@" + d for d in allowed))
     if not mailer.is_configured():
         raise HTTPException(
             status_code=501,

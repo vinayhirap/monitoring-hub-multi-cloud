@@ -250,7 +250,14 @@ def _notify_admins(subject: str, body: str) -> None:
         logger.warning(f"integrity_check: {subject} -- no admin users have an email on file, no email sent")
         return
 
-    sent = sum(1 for to_addr in recipients if mailer.send_email(to_addr, subject, body))
+    html = None
+    try:
+        from app.email import templates
+        mail = templates.from_plain(subject, body, accent="CRITICAL", eyebrow="Platform health")
+        body, html = mail["text"], mail["html"]
+    except Exception:
+        logger.warning("integrity_check: could not build the HTML email; sending plain text", exc_info=True)
+    sent = sum(1 for to_addr in recipients if mailer.send_email(to_addr, subject, body, html, "Alerts"))
     logger.info(f"integrity_check: {subject} -- emailed {sent}/{len(recipients)} admin(s)")
 
 

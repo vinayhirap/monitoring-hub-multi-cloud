@@ -256,3 +256,10 @@ def install_polling_modules():
     sys.modules["app.collector.api_usage"] = au
     install_stub("app.collector", polling_model=pm, api_usage=au)
     return pm, au
+
+
+def install_real_templates():
+    """Tests that stub app.email / app.email.mailer replace the package, so `from app.email import templates` (used by every
+    mail-sending caller) would fail. This installs the REAL renderer under the stubbed package: it is pure (no I/O)."""
+    mod = load_module("app/email/templates.py")
+    return install_stub("app.email.templates", **{k: v for k, v in vars(mod).items() if not k.startswith("__")})

@@ -94,9 +94,11 @@ def _fmt(v):
 
 
 def build_message(event: str, a: dict) -> dict:
+    """{"headline", "text", "html", "subject", "alert"}. headline/text are the plain-text form (Slack, Teams, webhook
+    and the text part of an email); subject/html are the email form (app/email/templates.py)."""
     title = {"opened": "Alert opened", "escalated": "Alert escalated"}.get(event, "Alert")
     sev = a.get("severity", "")
-    # Priority (P1-P4) leads the headline so it is the first thing read in an email subject or a Slack line.
+    # Priority (P1-P4) leads the headline so it is the first thing read in a Slack line.
     # Absent when PRIORITY_ENABLED is off, in which case the message is exactly what it was.
     prio = a.get("priority") if a.get("priority") in (1, 2, 3, 4) else None
     prio_tag = f"P{prio} " if prio else ""
@@ -112,8 +114,9 @@ def build_message(event: str, a: dict) -> dict:
     if a.get("detail"):
         lines.append(str(a["detail"]))
     url = _app_url()
+    aid = a.get("id")
     if url:
-        lines.append(f"Open: {url}/alerts")
+        lines.append(f"Open: {url}/alerts" + (f"?alert={aid}" if isinstance(aid, int) and aid > 0 else ""))
     payload = {
         "id": a.get("id"), "severity": sev, "metric": a.get("metric_name"),
         "resource_id": a.get("resource_id"), "account": a.get("account_name"),
@@ -121,7 +124,15 @@ def build_message(event: str, a: dict) -> dict:
     }
     if prio:
         payload["priority"] = f"P{prio}"
-    return {"headline": headline, "text": "\n".join(lines), "alert": payload}
+    msg = {"headline": headline, "text": "\n".join(lines), "alert": payload}
+    try:
+        from app.email import templates
+        mail = templates.alert_email(event, a, url)
+        msg["subject"], msg["html"] = mail["subject"], mail["html"]
+        msg["email_text"] = mail["text"]
+    except Exception:
+        logger.warning("[notify] could not build the HTML email; the plain text is used", exc_info=True)
+    return msg
 
 
 # ── transport ────────────────────────────────────────────────────────
@@ -147,11 +158,14 @@ def deliver(channel: dict, message: dict) -> None:
             raise RuntimeError("SMTP is not configured (SMTP_HOST unset)")
         ok_count, last_err = 0, ""
         send_ex = getattr(mailer, "send_email_ex", None)     # absent only in test stubs
+        subject = message.get("subject") or message["headline"]
+        body = message.get("email_text") or message["text"]
+        html = message.get("html")
         for addr in parse_addresses(target):
             if send_ex:
-                ok, err = send_ex(addr, message["headline"], message["text"])
+                ok, err = send_ex(addr, subject, body, html, "Alerts")
             else:
-                ok, err = mailer.send_email(addr, message["headline"], message["text"]), ""
+                ok, err = mailer.send_email(addr, subject, body), ""
             if ok:
                 ok_count += 1
             elif err:
@@ -237,4 +251,10 @@ def send_test(channel: dict) -> None:
                                    "value": 1, "threshold": 0})
     msg["headline"] = "[CloudOps] Test notification"
     msg["text"] = "This is a test message from CloudOps. If you can read it, this channel works."
+    try:
+        from app.email import templates
+        mail = templates.test_notification_email(_app_url(), channel.get("name") or "")
+        msg["subject"], msg["html"], msg["email_text"] = mail["subject"], mail["html"], mail["text"]
+    except Exception:
+        msg.pop("html", None), msg.pop("subject", None), msg.pop("email_text", None)
     deliver(channel, msg)

@@ -10,7 +10,7 @@ sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
 import app          # noqa: F401
 import app.auth     # noqa: F401
 
-from tests.conftest import load_module, install_stub
+from tests.conftest import load_module, install_stub, install_real_templates
 
 
 class RecCursor:
@@ -132,7 +132,7 @@ def _escalation(rows, members, scope_by_user, notify_raises=False, sent=None):
                  get_accessible_account_ids=lambda u: scope_by_user[u["id"]])
     install_stub("app.collector.op_log", log_event=lambda *a, **k: events.append("op_event"))
 
-    def send(to, subject, body):
+    def send(to, subject, body, *a, **k):
         if notify_raises:
             raise RuntimeError("smtp down")
         events.append(f"email:{to}")
@@ -140,6 +140,7 @@ def _escalation(rows, members, scope_by_user, notify_raises=False, sent=None):
         return True
     install_stub("app.email.mailer", is_configured=lambda: True, get_public_app_url=lambda: "https://x",
                  send_email=send)
+    install_real_templates()
     return load_module("app/collector/escalation.py"), log, events
 
 

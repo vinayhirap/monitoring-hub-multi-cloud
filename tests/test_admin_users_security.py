@@ -22,7 +22,7 @@ import pytest
 from fastapi import HTTPException, BackgroundTasks
 
 sys.path.insert(0, os.path.dirname(__file__))
-from conftest import load_module, install_stub
+from conftest import load_module, install_stub, install_real_templates
 
 
 def _users_mod(hash_password=None, mail_configured=True):
@@ -44,6 +44,7 @@ def _users_mod(hash_password=None, mail_configured=True):
     install_stub("app.email", mailer=types.SimpleNamespace(
         is_configured=lambda: mail_configured, get_public_app_url=lambda: "https://hub",
         send_email=lambda **kw: sent.append(kw) or True))
+    install_real_templates()
     install_stub("app.audit", write_audit=lambda *a, **k: None)
     mod = load_module("app/api/admin/users.py")
     mod._sent = sent

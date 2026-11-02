@@ -207,7 +207,8 @@ def send_to_recipients(message, user_ids, emails, alert_id=None, event="opened")
             for addr in addrs:
                 if not configured:
                     out["failed"].append([addr, "SMTP is not configured (SMTP_HOST unset)"])
-                elif mailer.send_email(addr, message["headline"], message["text"]):
+                elif mailer.send_email(addr, message.get("subject") or message["headline"],
+                                       message.get("email_text") or message["text"], message.get("html"), "Alerts"):
                     out["sent"].append(addr)
                 else:
                     out["failed"].append([addr, "could not be sent, see the server log"])

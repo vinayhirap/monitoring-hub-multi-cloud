@@ -16,7 +16,7 @@ import sys
 import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
-from conftest import load_module, install_stub, FakeConn, FakeCursor, contains  # noqa: E402
+from conftest import load_module, install_stub, install_real_templates, FakeConn, FakeCursor, contains  # noqa: E402
 
 import pytest  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
@@ -76,6 +76,7 @@ def _install_common(conn, mailer_configured=False, sent=None):
         return True
     install_stub("app.email.mailer", is_configured=lambda: mailer_configured,
                  get_public_app_url=lambda: "https://example.test", send_email=_send)
+    install_real_templates()
     install_stub("app.audit", write_audit=lambda **kw: None)
     install_stub("app.utils.time_json", to_utc_iso=lambda v: v)
     install_stub("app.auth.deps", get_current_user=lambda: None, forget_user_sessions=lambda uid: None)

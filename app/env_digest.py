@@ -189,7 +189,14 @@ def send_weekly_digest(now=None):
                 url = f"{mailer.get_public_app_url()}/environments"
                 body = eg.digest_text(p["account_name"], p["new_items"], p["total_unknown"], url)
                 subject = f"CloudOps: {p['new_count']} new resource(s) in {p['account_name']} need an environment"
-                sent = sum(1 for addr in p["recipients"] if mailer.send_email(addr, subject, body))
+                html = None
+                try:
+                    from app.email import templates
+                    mail = templates.from_plain(subject, body, accent="INFO", eyebrow="Weekly environment digest")
+                    body, html = mail["text"], mail["html"]
+                except Exception:
+                    logger.warning("[env-digest] could not build the HTML email; sending plain text", exc_info=True)
+                sent = sum(1 for addr in p["recipients"] if mailer.send_email(addr, subject, body, html))
                 status = "sent" if sent else "failed"
                 _log(cur, aid, week, status, p["new_count"], p["total_unknown"], sent,
                      None if sent else "the mail server refused every recipient")

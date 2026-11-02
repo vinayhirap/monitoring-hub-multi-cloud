@@ -19,6 +19,10 @@ Optional:
   SMTP_EHLO_HOSTNAME  name announced in EHLO (default: the box's FQDN,
                   which on EC2 is an ip-172-31-... .internal name some
                   servers reject)
+  MAIL_FROM_NAME  display-name brand for the From header (default "CloudOps"; the
+                  name inside MAIL_FROM is ignored). Alert mail is sent as "<name> Alerts",
+                  report mail as "<name> Reports". The address is always MAIL_FROM's.
+  MAIL_TIMEZONE   zone times in emails are shown in (default Asia/Kolkata), with UTC beside it
   PUBLIC_APP_URL (used to build links in email bodies, e.g. the
                   password-reset link; default "http://localhost" --
                   set this to the server's real public URL)
@@ -41,7 +45,7 @@ import time
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.utils import formatdate, make_msgid, parseaddr
+from email.utils import formataddr, formatdate, make_msgid, parseaddr
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +79,17 @@ def is_configured() -> bool:
 
 def get_public_app_url() -> str:
     return os.getenv("PUBLIC_APP_URL", "http://localhost").rstrip("/")
+
+
+def public_url_problem() -> str:
+    """'' when links in emails are safe to click, else why not. Reset and set-password links carry a login token, so
+    a plain-http link to anything but localhost sends that token across the network unencrypted."""
+    url = get_public_app_url().lower()
+    host = url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+    if url.startswith("http://") and host not in ("localhost", "127.0.0.1", "::1"):
+        return ("PUBLIC_APP_URL is plain http: password-reset and set-password links travel unencrypted. "
+                "Serve CloudOps over https (deploy/enable_tls.sh) and set PUBLIC_APP_URL=https://<host>")
+    return ""
 
 
 def _settings() -> dict:
@@ -136,6 +151,8 @@ def config_problems() -> list:
         out.append(f"MAIL_FROM {c['mail_from']!r} is not a valid address")
     if c["security"] == "none" and c["username"]:
         out.append("SMTP_SECURITY=none with a username would send the password in clear text")
+    if public_url_problem():
+        out.append(public_url_problem())
     return out
 
 
@@ -144,22 +161,48 @@ def _envelope_sender(mail_from: str) -> str:
     return parseaddr(mail_from)[1] or mail_from
 
 
-def _stamp(msg, mail_from: str, to_addr: str, subject: str) -> None:
+def _from_header(mail_from: str, label: str = "") -> str:
+    """'CloudOps Alerts <cloudops@aurionpro.com>'. The address is always MAIL_FROM's (SPF/DKIM are per address);
+    only the display name changes. MAIL_FROM_NAME overrides the base name; `label` ('Alerts') is appended to it."""
+    _name, addr = parseaddr(mail_from)
+    base = (os.getenv("MAIL_FROM_NAME") or "").strip() or "CloudOps"
+    if label:
+        base = f"{base} {label}"
+    if not addr:
+        return mail_from
+    base = _HEADER_INJECTION_RE.sub(" ", base)
+    return formataddr((base, addr))
+
+
+def _stamp(msg, mail_from: str, to_addr: str, subject: str, label: str = "") -> None:
     """Headers every mail needs. smtplib adds none of these, and a missing
     Date/Message-ID is a classic spam-filter penalty."""
     domain = _envelope_sender(mail_from).rpartition("@")[2] or None
     msg["Subject"] = subject
-    msg["From"] = mail_from
+    msg["From"] = _from_header(mail_from, label)
     msg["To"] = to_addr
     msg["Date"] = formatdate(localtime=False)
     msg["Message-ID"] = make_msgid(domain=domain)
     msg["Auto-Submitted"] = "auto-generated"   # stops auto-responders replying to us
+    msg["X-Auto-Response-Suppress"] = "All"    # Exchange/Outlook: no out-of-office or read-receipt replies
 
 
-def send_email_ex(to_addr: str, subject: str, body_text: str):
+def _build_body(body_text: str, html_body=None):
+    """Plain text alone, or multipart/alternative (text first, HTML last: clients show the last part they understand)."""
+    if not html_body:
+        return MIMEText(body_text, "plain", "utf-8")
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(body_text, "plain", "utf-8"))
+    alt.attach(MIMEText(html_body, "html", "utf-8"))
+    return alt
+
+
+def send_email_ex(to_addr: str, subject: str, body_text: str, html_body=None, sender_label: str = ""):
     """Like send_email() but returns (ok, error). `error` is a short,
     secret-free reason ('' on success) that callers can store in a log
-    table or show an admin instead of 'check the server log'."""
+    table or show an admin instead of 'check the server log'.
+    html_body (optional) adds an HTML alternative; body_text stays the fallback.
+    sender_label ('Alerts') is appended to the From display name."""
     try:
         _reject_header_injection(to_addr, "to_addr")
         _reject_header_injection(subject, "subject")
@@ -176,8 +219,8 @@ def send_email_ex(to_addr: str, subject: str, body_text: str):
     if c["port"] is None:
         logger.error(f"Mail not sent to {to_addr!r} -- SMTP_PORT is not an integer")
         return False, "SMTP_PORT is not an integer"
-    msg = MIMEText(body_text, "plain", "utf-8")
-    _stamp(msg, c["mail_from"], to_addr, subject)
+    msg = _build_body(body_text, html_body)
+    _stamp(msg, c["mail_from"], to_addr, subject, sender_label)
     ok, err = _deliver(c, to_addr, msg)
     if ok:
         logger.info(f"Mail sent to {to_addr!r} (subject={subject!r})")
@@ -186,14 +229,14 @@ def send_email_ex(to_addr: str, subject: str, body_text: str):
     return ok, err
 
 
-def send_email(to_addr: str, subject: str, body_text: str) -> bool:
+def send_email(to_addr: str, subject: str, body_text: str, html_body=None, sender_label: str = "") -> bool:
     """Sends a plain-text email. Returns True on success, False if SMTP
     isn't configured or the send failed (always logged, never raises --
     callers treat False as "not sent, fall back to non-email behaviour").
     CR/LF in to_addr/subject is refused (header/envelope injection, CWE-93)
     and treated like any other failure so it can never take down a caller.
     """
-    return send_email_ex(to_addr, subject, body_text)[0]
+    return send_email_ex(to_addr, subject, body_text, html_body, sender_label)[0]
 
 
 def _short_err(exc: Exception) -> str:
@@ -294,8 +337,10 @@ def send_report_email(to_addr: str, report: dict, pdf_bytes: bytes) -> bool:
         logger.error(f"Report email not sent to {to_addr!r} -- SMTP_PORT is not an integer")
         return False
 
-    subject = f"CloudOps {report['report_type'].title()} Report -- {report.get('scope_label') or report['scope_id']}"
-    filename = report["s3_key"].rsplit("/", 1)[-1]
+    from app.email import templates
+    filename = templates.report_attachment_name(report)
+    mail = templates.report_email(report, filename=filename, size_bytes=len(pdf_bytes or b""), app_url=get_public_app_url())
+    subject = mail["subject"]
     try:
         # scope_label is user-supplied; refuse CR/LF in anything that lands in a header
         _reject_header_injection(subject, "subject")
@@ -304,15 +349,9 @@ def send_report_email(to_addr: str, report: dict, pdf_bytes: bytes) -> bool:
         logger.error(f"Refusing to email report -- {e} (to_addr={to_addr!r})")
         return False
 
-    msg = MIMEMultipart()
-    _stamp(msg, c["mail_from"], to_addr, subject)
-    msg.attach(MIMEText(
-        "Attached is your requested CloudOps monitoring report.\n\n"
-        f"Report type: {report['report_type']}\n"
-        f"Period: {report['period_start']} to {report['period_end']}\n\n"
-        "This is an automated message from CloudOps Monitoring Hub.",
-        "plain", "utf-8",
-    ))
+    msg = MIMEMultipart("mixed")
+    _stamp(msg, c["mail_from"], to_addr, subject, "Reports")
+    msg.attach(_build_body(mail["text"], mail["html"]))
     attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
     attachment.add_header("Content-Disposition", "attachment", filename=filename)
     msg.attach(attachment)

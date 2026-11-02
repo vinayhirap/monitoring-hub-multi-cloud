@@ -228,3 +228,24 @@ def test_mark_complete_clears_error_message():
     mod._mark_complete(1, {"bucket": "b", "key": "k", "sha256": "h", "size_bytes": 1}, "label")
     sqls = [q for q, _ in cursors[0].executed]
     assert any("status='COMPLETE'" in q and "error_message=NULL" in q for q in sqls)
+
+
+def test_email_recipient_allowlist_when_configured(monkeypatch):
+    """REPORT_EMAIL_ALLOWED_DOMAINS limits where a report may go; unset means any well-formed address (as before)."""
+    script = [(contains("FROM reports WHERE id"),
+               [{"id": 1, "account_id": 5, "s3_key": "k", "sha256": "h", "content_type": "application/pdf"}]),
+              (contains("UPDATE reports SET emailed_at"), [])]
+    user = {"username": "u", "role": "editor"}
+    monkeypatch.setenv("REPORT_EMAIL_ALLOWED_DOMAINS", "aurionpro.com, @partner.com")
+    mod = _load_reports(script)
+    for blocked in ("someone@gmail.com", "x@evil-aurionpro.com", "x@sub.aurionpro.com"):
+        try:
+            mod.email_report(1, None, to_addr=blocked, current_user=user)
+            assert False, f"expected 400 for {blocked}"
+        except Exception as e:
+            assert _status(e) == 400 and "aurionpro.com" in str(e.detail)
+    assert mod.email_report(1, None, to_addr="vinay.hirap@aurionpro.com", current_user=user)["status"] == "sent"
+    assert mod.email_report(1, None, to_addr="A@Partner.COM", current_user=user)["status"] == "sent"
+    monkeypatch.delenv("REPORT_EMAIL_ALLOWED_DOMAINS")
+    mod = _load_reports(script)
+    assert mod.email_report(1, None, to_addr="someone@gmail.com", current_user=user)["to"] == "someone@gmail.com"

@@ -574,11 +574,10 @@ def test_contacts(check_id: int, current_user: dict = Depends(require_permission
         cur.close(); conn.close()
     if not addrs:
         raise HTTPException(status_code=400, detail="This check has no contacts to test")
-    subject = f"[CloudOps] Test: alert contacts for {chk['name']}"
-    body = (f"This is a test message from CloudOps.\n\nYou are listed as an alert contact for the synthetic check "
-            f"'{chk['name']}' ({chk['target']}). You will be emailed if it goes down or its certificate is about to "
-            f"expire. If you can read this, delivery works.\n\nSent by {current_user.get('username')}.")
-    sent = sum(1 for a in addrs if mailer.send_email(a, subject, body))
+    from app.email import templates
+    mail = templates.synthetic_test_email(check_name=chk["name"], target=chk["target"],
+                                          sent_by=current_user.get("username") or "", app_url=mailer.get_public_app_url())
+    sent = sum(1 for a in addrs if mailer.send_email(a, mail["subject"], mail["text"], mail["html"], "Alerts"))
     try:
         from app.audit import write_audit
         write_audit(current_user["username"], "Synthetic contacts tested",

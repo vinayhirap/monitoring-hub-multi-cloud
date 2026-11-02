@@ -361,15 +361,14 @@ def create_user(payload: dict = Body(...), current_user: dict = Depends(require_
             mail_conn.close()
 
         reset_link = f"{mailer.get_public_app_url()}/reset-password?token={token}"
+        from app.email import templates
+        mail = templates.account_created_email(username=username, role=role, link=reset_link, hours=24,
+                                               created_by=current_user.get("username") or "")
         email_sent = mailer.send_email(
             to_addr=email,
-            subject="Your CloudOps account has been created",
-            body_text=(
-                f"Hi {username},\n\n"
-                f"An account has been created for you on CloudOps with the role: {role.upper()}.\n\n"
-                f"Set your password (link valid 24 hours):\n{reset_link}\n\n"
-                f"If you weren't expecting this, contact your CloudOps administrator.\n"
-            ),
+            subject=mail["subject"],
+            body_text=mail["text"],
+            html_body=mail["html"],
         )
 
     return {
@@ -725,15 +724,14 @@ def admin_reset_password(user_id: int, current_user: dict = Depends(require_perm
     link = _issue_reset_link(user_id)
     emailed = False
     if target.get("email") and mailer.is_configured():
+        from app.email import templates
+        mail = templates.password_reset_email(username=target["username"], link=link, valid_text="24 hours, single use",
+                                              requested_by=current_user.get("username") or "")
         emailed = bool(mailer.send_email(
             to_addr=target["email"],
-            subject="Reset your CloudOps password",
-            body_text=(
-                f"Hi {target['username']},\n\n"
-                f"An administrator has requested a password reset for your CloudOps account.\n\n"
-                f"Set a new password (link valid 24 hours, single use):\n{link}\n\n"
-                f"If you weren't expecting this, contact your CloudOps administrator.\n"
-            ),
+            subject=mail["subject"],
+            body_text=mail["text"],
+            html_body=mail["html"],
         ))
 
     _write_audit(actor=current_user["username"], action="Password reset issued",

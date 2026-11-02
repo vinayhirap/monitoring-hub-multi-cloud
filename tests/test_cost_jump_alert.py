@@ -256,7 +256,7 @@ def mail(cj, monkeypatch):
     cfg = {"on": True, "fail": set()}
     m = types.ModuleType("app.email.mailer")
     m.is_configured = lambda: cfg["on"]
-    m.send_email = lambda to, subject, body: (sent.append((to, subject)) or to not in cfg["fail"])
+    m.send_email = lambda to, subject, body, *a, **k: (sent.append((to, subject)) or to not in cfg["fail"])
     pkg = types.ModuleType("app.email")
     pkg.mailer = m
     monkeypatch.setitem(sys.modules, "app.email", pkg)

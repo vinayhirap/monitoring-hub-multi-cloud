@@ -14,7 +14,7 @@ import app.auth         # noqa: F401
 import app.alert_rules  # noqa: F401
 
 sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
-from tests.conftest import load_module, install_stub, FakeCursor, FakeConn
+from tests.conftest import load_module, install_stub, install_real_templates, FakeCursor, FakeConn
 
 
 def _install_stub(member_rows, is_configured=True, send_results=None):
@@ -39,7 +39,7 @@ def _install_stub(member_rows, is_configured=True, send_results=None):
     install_stub("app.db", get_connection=lambda: _Conn([]))
     install_stub("app.collector.op_log", log_event=lambda *a, **k: None)
 
-    def _fake_send_email(to_addr, subject, body):
+    def _fake_send_email(to_addr, subject, body, *a, **k):
         sent_calls.append((to_addr, subject, body))
         return send_results.get(to_addr, True)
 
@@ -52,8 +52,10 @@ def _install_stub(member_rows, is_configured=True, send_results=None):
     # `from app.email import mailer` prefers the package ATTRIBUTE over sys.modules. If any earlier test already
     # imported the real mailer, that attribute points at the real one and the stub above is silently bypassed
     # (sent_calls stays empty). Point the attribute at the stub too.
-    import app.email
-    app.email.mailer = mailer_stub
+    import sys
+    pkg = sys.modules["app.email"]                      # not `import app.email`: a stubbed package is not an attribute of `app`
+    pkg.mailer = mailer_stub
+    pkg.templates = install_real_templates()
     return sent_calls
 
 

@@ -258,8 +258,10 @@ def send_test_email(request: Request, payload: dict = Body(default={}),
     if not users and not emails:
         raise HTTPException(status_code=400, detail="No recipients are set. Choose users or type addresses, save, then send the test.")
     from app.collector.cost_jump_alert import send_to_recipients
-    message = {"headline": "[CloudOps] Test: cost-jump alert recipients",
-               "text": "This is a test from CloudOps. If you can read it, you will receive an email when the cost-jump alert opens."}
+    from app.email import mailer as _mailer, templates
+    mail = templates.cost_test_email(_mailer.get_public_app_url())
+    message = {"headline": mail["subject"], "text": mail["text"], "subject": mail["subject"],
+               "email_text": mail["text"], "html": mail["html"]}
     result = send_to_recipients(message, users, emails, event="test")
     write_audit(current_user["username"], "Cost alert test email sent", role=str(current_user.get("role", "")).upper(),
                 payload={"detail": f"sent {len(result['sent'])}, failed {len(result['failed'])}, skipped {len(result['skipped'])}",

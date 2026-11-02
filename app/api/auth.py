@@ -297,14 +297,14 @@ def _send_reset_email(username: str, to_addr: str, token: str) -> None:
     """Runs as a BackgroundTask: SMTP can block up to 30 s and must not sit
     in the request path (it also made 'account exists' observable by timing)."""
     reset_link = f"{mailer.get_public_app_url()}/reset-password?token={token}"
+    from app.email import templates
+    mail = templates.self_reset_email(username=username, link=reset_link,
+                                      valid_text=f"{RESET_TOKEN_TTL_MINUTES} minutes, single use")
     sent = mailer.send_email(
         to_addr=to_addr,
-        subject="CloudOps password reset",
-        body_text=(
-            f"A password reset was requested for the account '{username}'.\n\n"
-            f"Reset your password (link valid {RESET_TOKEN_TTL_MINUTES} minutes):\n{reset_link}\n\n"
-            f"If you didn't request this, you can ignore this email.\n"
-        ),
+        subject=mail["subject"],
+        body_text=mail["text"],
+        html_body=mail["html"],
     )
     if not sent:
         _log_undelivered_token(username, token, "could not be emailed (send failed)")

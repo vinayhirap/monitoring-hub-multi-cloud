@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
 import pytest
-from tests.conftest import load_module, install_stub
+from tests.conftest import load_module, install_stub, install_real_templates
 
 nt = None
 
@@ -17,6 +17,7 @@ def _load_notifier():
     install_stub("app.email.mailer", is_configured=lambda: False, send_email=lambda *a: False,
                  get_public_app_url=lambda: "")
     install_stub("app.notifications.sender", notify_alert_event=lambda *a, **k: None)
+    install_real_templates()
     nt = load_module("app/collector/synthetic_notify.py")
     yield
 NOW = datetime(2026, 10, 14, 6, 0, 0)
@@ -128,7 +129,7 @@ class FakeMailer:
     def get_public_app_url(self):
         return "https://cloudops.example"
 
-    def send_email(self, to, subject, body):
+    def send_email(self, to, subject, body, *a, **k):
         self.db.sent.append((to, subject))
         return True
 

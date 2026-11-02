@@ -192,6 +192,28 @@ def _log(cursor, alert_id, event, status, detail=None):
         logger.debug("[synthetic-notify] could not write notification_log", exc_info=True)
 
 
+def _accent(subject, event):
+    s = str(subject or "").upper()
+    if event in ("recovered", "renewed") or "RECOVERED" in s or "RENEWED" in s:
+        return "OK"
+    if "DOWN" in s or "EXPIRED" in s or "CRITICAL" in s:
+        return "CRITICAL"
+    if "WARNING" in s:
+        return "WARNING"
+    return "INFO"
+
+
+def _wrap(subject, body, event):
+    """(text, html) in the shared layout; falls back to (body, None) so a template problem never stops a mail."""
+    try:
+        from app.email import templates
+        mail = templates.from_plain(subject, body, accent=_accent(subject, event), eyebrow="Synthetic check")
+        return mail["text"], mail["html"]
+    except Exception:
+        logger.warning("[synthetic-notify] could not build the HTML email; sending plain text", exc_info=True)
+        return body, None
+
+
 def send_to_contacts(cursor, check_id, topic, subject, body, alert_id=None, event="opened"):
     """Emails the check's contacts for this topic. -> number of messages sent. Never raises."""
     try:
@@ -205,9 +227,10 @@ def send_to_contacts(cursor, check_id, topic, subject, body, alert_id=None, even
         _log(cursor, alert_id, event, "skipped", "SMTP is not configured (SMTP_HOST unset)")
         return 0
     sent = 0
+    text, html = _wrap(subject, body, event)
     for a in addrs:
         try:
-            if mailer.send_email(a, subject, body):
+            if mailer.send_email(a, subject, text, html, "Alerts"):
                 sent += 1
                 _log(cursor, alert_id, event, "sent", _mask(a))
             else:

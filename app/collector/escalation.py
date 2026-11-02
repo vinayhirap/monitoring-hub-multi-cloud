@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 def _notify_escalation(alert_id, group_id, group_name, severity, metric_name, resource_id,
-                       aws_account_id=None):
+                       aws_account_id=None, account_name="", triggered_at=None):
     """
     Emails every member of the target org_group (user_group_memberships
     -> users.email) that this alert has been escalated to them. Uses
@@ -106,20 +106,29 @@ def _notify_escalation(alert_id, group_id, group_name, severity, metric_name, re
         return
 
     app_url = mailer.get_public_app_url()
-    subject = f"[CloudOps] {severity} alert escalated to {group_name}"
-    body = (
-        f"An alert has been escalated to your group, {group_name}, because it wasn't "
-        f"acknowledged within its policy's SLA.\n\n"
-        f"  Severity: {severity}\n"
-        f"  Metric:   {metric_name}\n"
-        f"  Resource: {resource_id}\n\n"
-        f"View and acknowledge it here: {app_url}/alerts\n"
-    )
+    try:
+        from app.email import templates
+        mail = templates.escalation_email(severity=severity, metric_name=metric_name, resource_id=resource_id,
+                                          group_name=group_name, alert_id=alert_id, account_name=account_name or "",
+                                          app_url=app_url, triggered_at=triggered_at)
+        subject, body, html = mail["subject"], mail["text"], mail["html"]
+    except Exception:
+        logger.warning("[escalation] could not build the HTML email; sending plain text", exc_info=True)
+        subject = f"[CloudOps] {severity} alert escalated to {group_name}"
+        body = (
+            f"An alert has been escalated to your group, {group_name}, because it wasn't "
+            f"acknowledged within its policy's SLA.\n\n"
+            f"  Severity: {severity}\n"
+            f"  Metric:   {metric_name}\n"
+            f"  Resource: {resource_id}\n\n"
+            f"View and acknowledge it here: {app_url}/alerts\n"
+        )
+        html = None
 
     sent_count = 0
     for to_addr in recipients:
         try:
-            if mailer.send_email(to_addr, subject, body):
+            if mailer.send_email(to_addr, subject, body, html, "Alerts"):
                 sent_count += 1
         except Exception as e:
             logger.warning(f"[escalation] email to a member of '{group_name}' failed: {e}")
@@ -146,7 +155,7 @@ def evaluate_escalations() -> int:
         cursor.execute("""
             SELECT
                 a.id AS alert_id, a.resource_id, a.metric_name, a.severity,
-                a.triggered_at, a.aws_account_id,
+                a.triggered_at, a.aws_account_id, acc.account_name,
                 ep.id AS policy_id, ep.ack_sla_minutes, ep.escalate_to_group_id,
                 g.name AS group_name
             FROM alerts a
@@ -211,7 +220,8 @@ def evaluate_escalations() -> int:
             _notify_escalation(
                 row["alert_id"], row["escalate_to_group_id"], row["group_name"],
                 row["severity"], row["metric_name"], row["resource_id"],
-                row["aws_account_id"],
+                row["aws_account_id"], account_name=row.get("account_name") or "",
+                triggered_at=row.get("triggered_at"),
             )
         except Exception:
             logger.exception(f"[escalation] notification failed for alert {row['alert_id']} "
@@ -223,6 +233,7 @@ def evaluate_escalations() -> int:
             notify_alert_event("escalated", {
                 "id": row["alert_id"], "severity": row["severity"], "metric_name": row["metric_name"],
                 "resource_id": row["resource_id"], "aws_account_id": row["aws_account_id"],
+                "account_name": row.get("account_name"), "triggered_at": row.get("triggered_at"),
                 "group_name": row["group_name"], "silenced": False,
             })
         except Exception:
