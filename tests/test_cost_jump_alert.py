@@ -333,3 +333,15 @@ def test_an_opened_alert_carries_its_all_accounts_plus_own_recipients(cj, monkey
     monkeypatch.setattr(cj, "_notify", lambda *a: sent.append(a))
     cj.run_cost_jump_check(force=True, today=TODAY)
     assert sent[0][-1] == ([1, 2], ["all@corp.com", "acct@corp.com"])
+
+
+def test_cost_joins_force_one_collation_so_mysql_error_1267_cannot_stop_the_alert(cj):
+    """aws_accounts is utf8mb4_0900_ai_ci, the cost tables utf8mb4_unicode_ci: comparing them raises 1267 ("Illegal mix of
+    collations") and silently stopped this alert on prod. Every account/cost join must convert the aws_accounts side."""
+    import datetime as dt
+    for provider, table in (("aws", "aws_cost_actuals"), ("azure", "cloud_cost_actuals"), ("gcp", "cloud_cost_actuals")):
+        cur = FakeCur([], None, GLOBAL_ON)
+        cj._load_daily(cur, provider, dt.date(2026, 10, 1), dt.date(2026, 10, 31))
+        sql = [s for s, _ in cur.log if f"FROM {table}" in s][0]
+        assert sql.count("COLLATE utf8mb4_unicode_ci") >= (1 if provider == "aws" else 2), (provider, sql)
+        assert "a.account_id COLLATE utf8mb4_unicode_ci = c.billed_account_id" in sql or provider != "aws"

@@ -105,7 +105,7 @@ def _load_daily(cursor, provider, start, end):
         cursor.execute("""
             SELECT a.id AS pk, a.account_name, a.default_region, c.usage_type, c.usage_date, c.amount_usd
             FROM aws_cost_actuals c
-            JOIN aws_accounts a ON a.account_id = c.billed_account_id AND a.provider = 'aws' AND a.status = 'active'
+            JOIN aws_accounts a ON a.account_id COLLATE utf8mb4_unicode_ci = c.billed_account_id AND a.provider = 'aws' AND a.status = 'active'
             WHERE c.usage_date BETWEEN %s AND %s
         """, (start, end))
         for r in cursor.fetchall():
@@ -117,11 +117,14 @@ def _load_daily(cursor, provider, start, end):
             add(r["pk"], r["account_name"], d.date() if hasattr(d, "date") else d, r["amount_usd"])
         return out
     from app import cloud_cost
-    key = "COALESCE(a.subscription_id, a.account_id)" if provider == "azure" else "COALESCE(a.project_id, a.account_id)"
+    # aws_accounts is utf8mb4_0900_ai_ci but the cost tables are utf8mb4_unicode_ci; MySQL refuses to compare them
+    # (error 1267, which silently stopped this alert). Convert the small aws_accounts side so the cost-table indexes stay usable.
+    key = ("COALESCE(a.subscription_id, a.account_id)" if provider == "azure" else "COALESCE(a.project_id, a.account_id)") \
+          + " COLLATE utf8mb4_unicode_ci"
     cursor.execute(f"""
         SELECT a.id AS pk, a.account_name, c.sku, c.usage_date, c.amount_usd
         FROM cloud_cost_actuals c
-        JOIN aws_accounts a ON a.provider = c.provider AND a.status = 'active' AND {key} = c.billed_account
+        JOIN aws_accounts a ON a.provider COLLATE utf8mb4_unicode_ci = c.provider AND a.status = 'active' AND {key} = c.billed_account
         WHERE c.provider = %s AND c.usage_date BETWEEN %s AND %s
     """, (provider, start, end))
     for r in cursor.fetchall():
