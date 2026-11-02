@@ -206,7 +206,7 @@ def gather_report_data(scope_type: str, scope_id: str, account_id: int | None,
 
 _TYPE_TITLES = {
     "WEEKLY": "Weekly Operations Report", "MONTHLY": "Monthly Operations Review",
-    "QUARTERLY": "Quarterly Operations Review", "CUSTOM": "Operations Report",
+    "QUARTERLY": "Quarterly Operations Review", "YEARLY": "Annual Operations Review", "CUSTOM": "Operations Report",
 }
 _MAX_INCIDENT_CARDS = 10
 _MAX_TIMELINE_ROWS = 60

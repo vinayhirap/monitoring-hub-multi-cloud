@@ -1,5 +1,5 @@
 // utils/reportPlan.js -- pure helpers for the Reports workflow. No network.
-// The backend (app/api/reports.py) takes report_type (WEEKLY|MONTHLY|QUARTERLY|CUSTOM) + scope_type
+// The backend (app/api/reports.py) takes report_type (WEEKLY|MONTHLY|QUARTERLY|YEARLY|CUSTOM) + scope_type
 // (ACCOUNT|RESOURCE|INCIDENT|CLIENT) + scope_id + account_id + period. It has NO content templates:
 // every report is the same alert/incident PDF over the chosen period and scope. A "template" here is
 // therefore a preset of those real parameters, and says plainly what the PDF contains.
@@ -90,7 +90,7 @@ export const TEMPLATES = [
 
 export const PERIODS = [
   { key: "WEEKLY", label: "7 days", days: 7 }, { key: "MONTHLY", label: "30 days", days: 30 },
-  { key: "QUARTERLY", label: "90 days", days: 90 }, { key: "CUSTOM", label: "Custom" },
+  { key: "QUARTERLY", label: "90 days", days: 90 }, { key: "YEARLY", label: "365 days", days: 365 }, { key: "CUSTOM", label: "Custom" },
 ];
 
 /** hasPerm(code) -> bool. A section template needs the permission of the section it reads (the server checks it too). */

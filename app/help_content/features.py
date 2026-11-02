@@ -163,7 +163,7 @@ def reports():
           "year, and limited to the accounts you can access. The page appears only when the reports feature is on for the installation."),
         h("Choose a template"),
         table(["Template", "Scope", "Who can generate it", "What it contains"], [
-            ["Weekly, Monthly, Quarterly, Custom", "One account", "reports.generate",
+            ["Weekly, Monthly, Quarterly, Yearly, Custom", "One account", "reports.generate",
              "Alert totals, the most severe alerts, incident narratives with cause and resolution."],
             ["Incident report", "One incident", "reports.generate", "That incident with its cause and resolution or current status."],
             ["Resource report", "One resource", "reports.generate", "The alert history of that resource."],
@@ -182,7 +182,7 @@ def reports():
              "Target, uptime and error budget used for each SLO: met, at risk or breached."],
         ]),
         h("What the period means"),
-        ul(["Weekly, Monthly, Quarterly and Custom set the date range. Custom allows up to 400 days.",
+        ul(["Weekly (7 days), Monthly (30 days), Quarterly (90 days), Yearly (365 days) and Custom set the date range. Custom allows up to 400 days.",
             "Cost, Host agents, Security and the alert-based reports use the period for their figures. Host resource use covers at most the last 30 days, "
             "because metric history is kept 30 days; the report says so when the period is longer.",
             "Environments and SLOs describe the state at the moment you generate them (the cover says 'As of'). For Environments the period only sets the "

@@ -413,7 +413,7 @@ def self_reset_email(*, username, link, valid_text) -> dict:
 
 # ── reports ──────────────────────────────────────────────────────────
 
-_TYPE_WORD = {"WEEKLY": "Weekly", "MONTHLY": "Monthly", "QUARTERLY": "Quarterly", "CUSTOM": "Custom"}
+_TYPE_WORD = {"WEEKLY": "Weekly", "MONTHLY": "Monthly", "QUARTERLY": "Quarterly", "YEARLY": "Yearly", "CUSTOM": "Custom"}
 
 
 def report_email(report: dict, *, filename="", size_bytes=None, app_url="") -> dict:

@@ -92,6 +92,23 @@ def prune_notification_log(sleep=time.sleep) -> int:
         (max(days, 7),), sleep)
 
 
+DEFAULT_EMAIL_LOG_RETENTION_DAYS = 90
+
+
+def prune_email_delivery_log(sleep=time.sleep) -> int:
+    """email_delivery_log (migration 135). 0 disables pruning. A box that has not applied 135 raises on the missing table;
+    run_retention() logs that as a non-fatal warning, the same as for any other pruned table."""
+    from app.email import delivery_log
+    if not delivery_log.enabled():
+        return 0
+    days = _env_days("EMAIL_LOG_RETENTION_DAYS", DEFAULT_EMAIL_LOG_RETENTION_DAYS)
+    if days <= 0:
+        return 0
+    return _delete_in_batches(
+        f"DELETE FROM email_delivery_log WHERE created_at < DATE_SUB(NOW(), INTERVAL %s DAY) LIMIT {BATCH_SIZE}",
+        (max(days, 7),), sleep)
+
+
 DEFAULT_HOST_AGENT_CREDENTIAL_RETENTION_DAYS = 90
 MIN_HOST_AGENT_CREDENTIAL_RETENTION_DAYS = 30
 
@@ -162,6 +179,7 @@ def run_retention() -> dict:
     """Called from the daily (low-tier) scheduler block. Never raises."""
     out = {}
     for name, fn in (("alerts", prune_resolved_alerts), ("notification_log", prune_notification_log),
+                     ("email_delivery_log", prune_email_delivery_log),
                      ("orphaned_metric_rows", prune_orphaned_metric_rows),
                      ("host_agent_credentials", prune_host_agent_credentials)):
         try:

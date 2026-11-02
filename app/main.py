@@ -31,6 +31,7 @@ from app.api.escalation     import router as escalation_router
 from app.api.environments    import router as environments_router
 from app.api.incidents      import router as incidents_router
 from app.api.reports        import router as reports_router
+from app.api.email_center   import router as email_center_router
 from app.api.nlquery        import router as nlquery_router
 from app.api.synthetic      import router as synthetic_router
 from app.api.webhooks       import router as webhooks_router
@@ -402,6 +403,7 @@ app.include_router(escalation_router,     dependencies=_auth_dep)
 app.include_router(environments_router,    dependencies=_auth_dep)   # permissions environments.view / environments.manage
 app.include_router(incidents_router,      dependencies=_auth_dep)
 app.include_router(reports_router,        dependencies=_auth_dep)
+app.include_router(email_center_router,   dependencies=_auth_dep)   # prefix /api/email-center is on the router; emailcenter.view / emailcenter.manage; off unless EMAIL_CENTER_ENABLED
 app.include_router(nlquery_router,        prefix="/api", dependencies=_auth_dep)
 app.include_router(synthetic_router,      dependencies=_auth_dep)
 # NOTE: webhooks_router deliberately has NO _auth_dep -- it's called by

@@ -31,7 +31,7 @@ def _day(value) -> str:
 
 
 _SECTION_KINDS = {"COST": "Cost", "HOST": "Host-Agents", "ENVIRONMENT": "Environments", "SECURITY": "Security", "SLO": "SLO"}
-_TYPE_WORDS = {"WEEKLY": "Weekly", "MONTHLY": "Monthly", "QUARTERLY": "Quarterly", "CUSTOM": "Custom"}
+_TYPE_WORDS = {"WEEKLY": "Weekly", "MONTHLY": "Monthly", "QUARTERLY": "Quarterly", "YEARLY": "Yearly", "CUSTOM": "Custom"}
 
 
 def periodic_report_filename(report: dict) -> str:

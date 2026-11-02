@@ -166,7 +166,7 @@ export default function Reports() {
   const fmt = d => formatStamp(d, ianaName, zoneLabel(ianaName));      // was unlabelled: 08:04 here vs 13:34 IST in the audit log
   const fmtD = d => formatDay(d, ianaName);
   const rows = library ? filterLibrary(library, lf) : [];
-  const typeChips = [{ key: "all", label: "All", count: library?.length }, ...["WEEKLY", "MONTHLY", "QUARTERLY", "CUSTOM"].map(k => ({ key: k, label: k[0] + k.slice(1).toLowerCase(), count: library?.filter(r => r.report_type === k).length }))];
+  const typeChips = [{ key: "all", label: "All", count: library?.length }, ...["WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY", "CUSTOM"].map(k => ({ key: k, label: k[0] + k.slice(1).toLowerCase(), count: library?.filter(r => r.report_type === k).length }))];
   const libAccounts = library ? [...new Map(library.filter(r => r.account_id != null).map(r => [r.account_id, accountOptions.find(a => a.id === r.account_id)?.account_name || `Account ${r.account_id}`])).entries()] : [];
 
   const columns = [

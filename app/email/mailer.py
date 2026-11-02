@@ -73,6 +73,21 @@ def _reject_header_injection(value: str, field_name: str) -> None:
         raise ValueError(f"{field_name} contains a disallowed control character (CR/LF)")
 
 
+_CATEGORY_BY_LABEL = {"alerts": "alert", "reports": "report"}
+
+
+def _log_delivery(category, to_addr, subject, ok, err="", skipped=False, report_id=None, schedule_id=None) -> None:
+    """Best-effort row in email_delivery_log (a no-op unless EMAIL_CENTER_ENABLED=true). Never raises, never slows a
+    send beyond one small INSERT."""
+    try:
+        from app.email import delivery_log
+        status = "skipped" if skipped else ("sent" if ok else "failed")
+        delivery_log.record(category or "system", to_addr, subject, status, err or None,
+                            report_id=report_id, schedule_id=schedule_id)
+    except Exception:
+        pass
+
+
 def is_configured() -> bool:
     return bool((os.getenv("SMTP_HOST") or "").strip())
 
@@ -197,27 +212,32 @@ def _build_body(body_text: str, html_body=None):
     return alt
 
 
-def send_email_ex(to_addr: str, subject: str, body_text: str, html_body=None, sender_label: str = ""):
+def send_email_ex(to_addr: str, subject: str, body_text: str, html_body=None, sender_label: str = "", category: str = ""):
     """Like send_email() but returns (ok, error). `error` is a short,
     secret-free reason ('' on success) that callers can store in a log
     table or show an admin instead of 'check the server log'.
     html_body (optional) adds an HTML alternative; body_text stays the fallback.
-    sender_label ('Alerts') is appended to the From display name."""
+    sender_label ('Alerts') is appended to the From display name. category (default: from the label, else 'system')
+    is only the tag the delivery log files the mail under."""
+    category = category or _CATEGORY_BY_LABEL.get((sender_label or "").strip().lower(), "system")
     try:
         _reject_header_injection(to_addr, "to_addr")
         _reject_header_injection(subject, "subject")
     except ValueError as e:
         logger.error(f"Refusing to send mail -- {e} (to_addr={to_addr!r}, subject={subject!r})")
+        _log_delivery(category, to_addr, subject, False, "recipient or subject contains a line break")
         return False, "recipient or subject contains a line break"
     if not is_configured():
         logger.warning(
             f"Mail not sent to {to_addr!r} (subject={subject!r}) -- SMTP_HOST is not set. "
             "Configure SMTP_HOST/SMTP_PORT/SMTP_USERNAME/SMTP_PASSWORD/MAIL_FROM in .env to enable email."
         )
+        _log_delivery(category, to_addr, subject, False, "SMTP is not configured (SMTP_HOST unset)", skipped=True)
         return False, "SMTP is not configured (SMTP_HOST unset)"
     c = _settings()
     if c["port"] is None:
         logger.error(f"Mail not sent to {to_addr!r} -- SMTP_PORT is not an integer")
+        _log_delivery(category, to_addr, subject, False, "SMTP_PORT is not an integer")
         return False, "SMTP_PORT is not an integer"
     msg = _build_body(body_text, html_body)
     _stamp(msg, c["mail_from"], to_addr, subject, sender_label)
@@ -226,17 +246,18 @@ def send_email_ex(to_addr: str, subject: str, body_text: str, html_body=None, se
         logger.info(f"Mail sent to {to_addr!r} (subject={subject!r})")
     else:
         logger.error(f"Mail send failed to {to_addr!r} (subject={subject!r}): {err}")
+    _log_delivery(category, to_addr, subject, ok, err)
     return ok, err
 
 
-def send_email(to_addr: str, subject: str, body_text: str, html_body=None, sender_label: str = "") -> bool:
+def send_email(to_addr: str, subject: str, body_text: str, html_body=None, sender_label: str = "", category: str = "") -> bool:
     """Sends a plain-text email. Returns True on success, False if SMTP
     isn't configured or the send failed (always logged, never raises --
     callers treat False as "not sent, fall back to non-email behaviour").
     CR/LF in to_addr/subject is refused (header/envelope injection, CWE-93)
     and treated like any other failure so it can never take down a caller.
     """
-    return send_email_ex(to_addr, subject, body_text, html_body, sender_label)[0]
+    return send_email_ex(to_addr, subject, body_text, html_body, sender_label, category)[0]
 
 
 def _short_err(exc: Exception) -> str:
@@ -314,28 +335,34 @@ def _send_mime(host, port, username, password, security, envelope_from, to_addr,
 
 
 def send_report_email(to_addr: str, report: dict, pdf_bytes: bytes) -> bool:
-    """Sends a generated report as a PDF attachment. Same fail-safe
-    contract as send_email(): never raises, returns False (logged) if
-    SMTP isn't configured or the send fails. Callers (app/api/
-    reports.py) are expected to check mailer.is_configured() first and
-    surface a clear 501 to the caller rather than a generic failure --
-    this function itself stays silent-safe for consistency with
-    send_email()'s existing contract.
-    """
+    """Sends a generated report as a PDF attachment. Same fail-safe contract as send_email(): never raises, returns
+    False (logged) if SMTP isn't configured or the send fails. Callers (app/api/reports.py) check mailer.is_configured()
+    first and surface a clear 501; this function itself stays silent-safe. See send_report_email_ex for the reason."""
+    return send_report_email_ex(to_addr, report, pdf_bytes)[0]
+
+
+def send_report_email_ex(to_addr: str, report: dict, pdf_bytes: bytes, schedule_id=None):
+    """Like send_report_email() but returns (ok, error): `error` is a short, secret-free reason ('' on success).
+    schedule_id only tags the delivery-log row for mail sent by a report schedule."""
+    rid = (report or {}).get("id")
     try:
         _reject_header_injection(to_addr, "to_addr")
     except ValueError as e:
         logger.error(f"Refusing to email report -- {e} (to_addr={to_addr!r})")
-        return False
+        _log_delivery("report", to_addr, "", False, "recipient contains a line break", report_id=rid, schedule_id=schedule_id)
+        return False, "recipient contains a line break"
 
     if not is_configured():
         logger.warning(f"Report email not sent to {to_addr!r} -- SMTP_HOST is not set.")
-        return False
+        _log_delivery("report", to_addr, "", False, "SMTP is not configured (SMTP_HOST unset)", skipped=True,
+                      report_id=rid, schedule_id=schedule_id)
+        return False, "SMTP is not configured (SMTP_HOST unset)"
 
     c = _settings()
     if c["port"] is None:
         logger.error(f"Report email not sent to {to_addr!r} -- SMTP_PORT is not an integer")
-        return False
+        _log_delivery("report", to_addr, "", False, "SMTP_PORT is not an integer", report_id=rid, schedule_id=schedule_id)
+        return False, "SMTP_PORT is not an integer"
 
     from app.email import templates
     filename = templates.report_attachment_name(report)
@@ -347,7 +374,9 @@ def send_report_email(to_addr: str, report: dict, pdf_bytes: bytes) -> bool:
         _reject_header_injection(filename, "filename")
     except ValueError as e:
         logger.error(f"Refusing to email report -- {e} (to_addr={to_addr!r})")
-        return False
+        _log_delivery("report", to_addr, "", False, "subject or file name contains a line break",
+                      report_id=rid, schedule_id=schedule_id)
+        return False, "subject or file name contains a line break"
 
     msg = MIMEMultipart("mixed")
     _stamp(msg, c["mail_from"], to_addr, subject, "Reports")
@@ -361,4 +390,5 @@ def send_report_email(to_addr: str, report: dict, pdf_bytes: bytes) -> bool:
         logger.info(f"Report email sent to {to_addr!r} (subject={subject!r})")
     else:
         logger.error(f"Report email send failed to {to_addr!r}: {err}")
-    return ok
+    _log_delivery("report", to_addr, subject, ok, err, report_id=rid, schedule_id=schedule_id)
+    return ok, err

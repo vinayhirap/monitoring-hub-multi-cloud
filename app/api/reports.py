@@ -65,7 +65,7 @@ def _require_enabled():
 
 router = APIRouter(prefix="/api/reports", tags=["Reports"], dependencies=[Depends(_require_enabled)])
 
-_VALID_REPORT_TYPES = {"WEEKLY", "MONTHLY", "QUARTERLY", "CUSTOM"}
+_VALID_REPORT_TYPES = {"WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY", "CUSTOM"}
 # Section reports (see app/reports/registry.py, which is the source of truth; tests/test_section_reports.py checks these agree).
 # registry is imported lazily, like synthetic_report, so this module loads without the report builders.
 _SECTION_SCOPES = {"COST", "HOST", "ENVIRONMENT", "SECURITY", "SLO"}
@@ -89,6 +89,8 @@ def _resolve_period(report_type: str, period_start: str | None, period_end: str 
         return now - timedelta(days=30), now
     if report_type == "QUARTERLY":
         return now - timedelta(days=90), now
+    if report_type == "YEARLY":
+        return now - timedelta(days=365), now
     # CUSTOM
     if not period_start or not period_end:
         raise HTTPException(status_code=400, detail="period_start and period_end are required for CUSTOM reports")
