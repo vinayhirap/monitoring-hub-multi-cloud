@@ -29,6 +29,9 @@ ACCENTS = {
     "OK":       ("#2E7D32", "#E8F5E9"),
     "NEUTRAL":  ("#37474F", "#ECEFF1"),
 }
+# Call-to-action buttons are always the app's brand teal, whatever the severity: the stripe and chip carry the colour of
+# the alert, so a red or green block of button on top of that only competes with it.
+BUTTON = ("#0F766E", "#FFFFFF")
 _FONT = "-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
 _MONO = "Consolas,'SFMono-Regular',Menlo,monospace"
 _URL_OK = re.compile(r"^https?://[^\s<>\"']+$", re.I)
@@ -208,9 +211,9 @@ def render(*, preheader="", eyebrow="", title="", accent="INFO", intro=None, fac
                  'style="border-top:1px solid #E6EBEF;">')
         for label, value, sub in fact_rows:
             h.append(f'<tr><td valign="top" width="34%" style="padding:9px 12px 9px 0;border-bottom:1px solid #EEF2F5;'
-                     f'font-size:12px;color:#607D8B;text-transform:uppercase;letter-spacing:.5px;">{esc(label)}</td>'
-                     f'<td valign="top" style="padding:9px 0;border-bottom:1px solid #EEF2F5;font-size:14px;color:#0B1220;'
-                     f'word-break:break-word;">{esc(value)}'
+                     f'font-family:{_FONT};font-size:12px;line-height:18px;color:#607D8B;text-transform:uppercase;letter-spacing:.5px;">{esc(label)}</td>'
+                     f'<td valign="top" style="padding:9px 0;border-bottom:1px solid #EEF2F5;font-family:{_FONT};font-size:14px;'
+                     f'line-height:20px;color:#0B1220;word-break:break-word;">{esc(value)}'
                      + (f'<div style="font-family:{_MONO};font-size:11px;line-height:16px;color:#78909C;margin-top:3px;'
                         f'word-break:break-all;">{esc(sub)}</div>' if sub else '')
                      + '</td></tr>')
@@ -222,11 +225,14 @@ def render(*, preheader="", eyebrow="", title="", accent="INFO", intro=None, fac
     url = ""
     if button and _URL_OK.match(button[1] or ""):
         url = button[1]
+        bg, fg = BUTTON
         h.append(f'<tr><td style="padding:22px 24px 6px 24px;font-family:{_FONT};">'
                  '<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>'
-                 f'<td bgcolor="{color}" style="border-radius:5px;background:{color};">'
-                 f'<a href="{esc(url)}" target="_blank" style="display:inline-block;padding:11px 24px;font-size:14px;font-weight:700;'
-                 f'color:#FFFFFF;text-decoration:none;border-radius:5px;font-family:{_FONT};">{esc(button[0])}</a>'
+                 f'<td align="center" bgcolor="{bg}" style="background:{bg};border-radius:6px;padding:12px 28px;'
+                 f'mso-padding-alt:12px 28px;font-family:{_FONT};font-size:14px;line-height:20px;font-weight:700;">'
+                 f'<a href="{esc(url)}" target="_blank" style="color:{fg};text-decoration:none;font-family:{_FONT};'
+                 f'font-size:14px;line-height:20px;font-weight:700;display:inline-block;">'
+                 f'<font color="{fg}">{esc(button[0])}</font></a>'
                  '</td></tr></table></td></tr>')
         h.append(f'<tr><td style="padding:6px 24px 0 24px;font-family:{_FONT};font-size:12px;line-height:18px;color:#78909C;">'
                  f'Button not working? Copy this link into your browser:<br>'
@@ -323,7 +329,7 @@ def test_notification_email(app_url: str = "", channel_name: str = "") -> dict:
     link = _link(app_url, "/settings")
     html, text = render(
         preheader="Your CloudOps notification channel works.", eyebrow="Notification test",
-        title="This channel is working", accent="OK",
+        title="This channel is working", accent="INFO",
         intro="If you can read this message, CloudOps can reach this address. Alerts that match the channel's severity and "
               "event settings will arrive here.",
         facts=[("Channel", channel_name), ("Sent", fmt_when(datetime.now(timezone.utc)))],
@@ -356,7 +362,7 @@ def synthetic_test_email(*, check_name, target, sent_by="", app_url="") -> dict:
     link = _link(app_url, "/synthetic-checks")
     html, text = render(
         preheader=f"You are listed as an alert contact for {check_name}.", eyebrow="Alert contacts · test",
-        title=f"Test: alert contacts for {check_name}", accent="OK",
+        title=f"Test: alert contacts for {check_name}", accent="INFO",
         intro="You are listed as an alert contact for this synthetic check. You will be emailed if it goes down or its "
               "certificate is about to expire. If you can read this, delivery works.",
         facts=[("Check", check_name), ("Target", target), ("Sent by", sent_by), ("Sent", fmt_when(datetime.now(timezone.utc)))],

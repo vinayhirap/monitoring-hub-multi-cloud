@@ -16,9 +16,11 @@ const PARTS = {
 function toDate(input) {
   if (input == null || input === "") return null;
   let v = input;
-  // MySQL-style "YYYY-MM-DD HH:MM:SS" with no zone is UTC by project convention (see utils/metricFormat).
-  if (typeof v === "string" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(v) && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(v)) {
-    v = v.replace(" ", "T") + "Z";
+  // A zone-less "YYYY-MM-DD HH:MM:SS" (MySQL) or "YYYY-MM-DDTHH:MM:SS" (Python datetime.isoformat()) is UTC by project
+  // convention (see utils/metricFormat). new Date() reads the "T" form as BROWSER-LOCAL time, which showed a 06:03 UTC
+  // delivery as "06:03 IST" instead of 11:33 IST, so both forms get an explicit Z here.
+  if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?/.test(v) && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(v)) {
+    v = v.trim().replace(" ", "T") + "Z";
   }
   const d = v instanceof Date ? v : new Date(v);
   return Number.isNaN(d.getTime()) ? null : d;

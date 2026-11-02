@@ -57,28 +57,40 @@ export default function ContactsPanel({ check, onClose, onChanged }) {
     return [...rows, { email, label: "", notify_outage: true, notify_cert: true }];
   };
 
+  // Writes the thresholds and the contact list (including a typed-but-not-added address). Returns the saved list, or null
+  // when validation or the request failed (the message is already set).
+  const persist = async () => {
+    const list = withDraft();
+    if (!list) return null;
+    if (isHttps) {
+      const body = custom ? { cert_warn_days: Number(warn), cert_crit_days: Number(crit) } : { cert_warn_days: null, cert_crit_days: null };
+      await updateSyntheticCheck(check.id, body);
+    }
+    await setSyntheticContacts(check.id, list.map(r => ({ email: r.email, label: r.label || null, notify_outage: !!r.notify_outage, notify_cert: !!r.notify_cert })));
+    setRows(list); setDraft("");
+    onChanged();
+    return list;
+  };
+
   const save = async () => {
     setMsg(null);
-    const list = withDraft();
-    if (!list) return;
     setBusy(true);
     try {
-      if (isHttps) {
-        const body = custom ? { cert_warn_days: Number(warn), cert_crit_days: Number(crit) } : { cert_warn_days: null, cert_crit_days: null };
-        await updateSyntheticCheck(check.id, body);
-      }
-      await setSyntheticContacts(check.id, list.map(r => ({ email: r.email, label: r.label || null, notify_outage: !!r.notify_outage, notify_cert: !!r.notify_cert })));
-      setRows(list); setDraft("");
-      setMsg({ kind: "ok", text: `Saved. ${list.length} contact${list.length === 1 ? "" : "s"} will be emailed.` });
-      onChanged();
+      const list = await persist();
+      if (list) setMsg({ kind: "ok", text: `Saved. ${list.length} contact${list.length === 1 ? "" : "s"} will be emailed.` });
     } catch (e) { setMsg({ kind: "err", text: errText(e) }); } finally { setBusy(false); }
   };
 
+  // The server only mails SAVED contacts, so a contact added in this panel but not yet saved used to fail with
+  // "This check has no contacts to test". Save first, then test.
   const test = async () => {
-    setBusy(true); setMsg(null);
+    setMsg(null);
+    setBusy(true);
     try {
+      const list = await persist();
+      if (!list) return;
       const r = await testSyntheticContacts(check.id);
-      setMsg({ kind: "ok", text: r?.sent != null ? `Test email sent to ${r.sent} contact(s).` : "Test email sent." });
+      setMsg({ kind: "ok", text: r?.sent != null ? `Saved. Test email sent to ${r.sent} contact${r.sent === 1 ? "" : "s"}.` : "Saved. Test email sent." });
     } catch (e) {
       setMsg({ kind: "err", text: /501/.test(e.message || "") ? "Email delivery isn't set up yet: an admin must configure SMTP on the server." : errText(e) });
     } finally { setBusy(false); }
@@ -144,8 +156,8 @@ export default function ContactsPanel({ check, onClose, onChanged }) {
 
           <div className="syn-contacts-actions">
             {!locked && <button type="button" className="syn-btn-add" onClick={save} disabled={busy}>{busy ? "Saving..." : "Save"}</button>}
-            {!locked && <button type="button" className="syn-btn-cancel" onClick={test} disabled={busy || rows.length === 0}
-                                title={rows.length === 0 ? "Add and save a contact first" : "Sends a test email to every saved contact"}>Send test email</button>}
+            {!locked && <button type="button" className="syn-btn-cancel" onClick={test} disabled={busy || (rows.length === 0 && !draft.trim())}
+                                title={rows.length === 0 && !draft.trim() ? "Add a contact first" : "Saves the list, then sends a test email to every contact"}>Send test email</button>}
             <button type="button" className="syn-btn-cancel" onClick={onClose}>Close</button>
             {hasPermission("reports.generate") && <Link className="syn-link" to={`/reports?template=synthetic&account=${check.aws_account_id}&check=${check.id}`}>Generate a report for this check</Link>}
           </div>

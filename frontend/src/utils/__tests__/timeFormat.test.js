@@ -43,3 +43,10 @@ test("zoneLabel maps the two supported zones and passes others through", () => {
   assert.equal(zoneLabel("Europe/Paris"), "Europe/Paris");
   assert.equal(zoneLabel(undefined), "");
 });
+
+test("zone-less ISO from Python isoformat() is UTC, not browser-local", () => {
+  // 06:03:13 UTC is 11:33:13 IST; reading it as local time showed "06:03:13 IST".
+  assert.equal(formatStamp("2026-11-02T06:03:13", "Asia/Kolkata", "IST"), "02 Nov 2026, 11:33:13 IST");
+  assert.equal(formatStamp("2026-11-02T06:03:13.250000", "Asia/Kolkata", "IST"), "02 Nov 2026, 11:33:13 IST");
+  assert.equal(formatStamp("2026-11-02T06:03:13Z", "Asia/Kolkata", "IST"), "02 Nov 2026, 11:33:13 IST");
+});

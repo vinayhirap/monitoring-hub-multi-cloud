@@ -264,3 +264,28 @@ def test_plain_http_public_url_is_flagged_but_localhost_and_https_are_not(mailer
     assert mailer.public_url_problem() == ""
     monkeypatch.setenv("PUBLIC_APP_URL", "http://localhost:5173")
     assert mailer.public_url_problem() == ""
+
+
+# ── button rendering ─────────────────────────────────────────────────
+
+def test_button_padding_is_on_the_cell_and_colour_is_brand_not_severity(t):
+    """Clients that drop padding from <a> collapsed the button to a highlighted word; the padding lives on the <td> now.
+    The button is brand teal for every severity (the stripe and chip already carry the alert colour)."""
+    for sev in ("CRITICAL", "WARNING", "INFO"):
+        html = t.alert_email("opened", {**ALERT, "severity": sev}, "http://app")["html"]
+        cell = html.split('bgcolor="#0F766E"', 1)[1].split("</td>", 1)[0]
+        assert "padding:12px 28px" in cell and "View alert" in cell
+        assert 'bgcolor="#C62828"' not in html and 'bgcolor="#B26A00"' not in html
+
+
+def test_test_mails_are_not_green(t):
+    assert "#2E7D32" not in t.synthetic_test_email(check_name="x", target="https://x", app_url="http://app")["html"]
+    assert "#2E7D32" not in t.test_notification_email("http://app", "ch")["html"]
+    # green is still what a recovery looks like
+    assert "#2E7D32" in t.render(title="Recovered", accent="OK")[0]
+
+
+def test_fact_cells_set_their_own_font(t):
+    """Outlook and some webmail do not inherit font-family through nested tables (values fell back to Times/black)."""
+    html = t.alert_email("opened", ALERT, "")["html"]
+    assert html.count("font-family:-apple-system") >= 2 * 8
