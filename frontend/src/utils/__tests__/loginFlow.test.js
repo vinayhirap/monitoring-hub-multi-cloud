@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeNext, parseRetryAfter, formatWait, loginFailure, FALLBACK_AFTER_LOGIN, markSessionExpired, takeSessionExpired, EXPIRED_KEY } from "../loginFlow.js";
+import { sanitizeNext, parseRetryAfter, formatWait, loginFailure, FALLBACK_AFTER_LOGIN, markSessionExpired, takeSessionExpired, EXPIRED_KEY, readResetLink } from "../loginFlow.js";
 
 test("sanitizeNext keeps ordinary in-app paths (with query and hash)", () => {
   for (const ok of ["/overview", "/alerts?tab=attention", "/accounts/1/ec2?resource=i-0abc#x", "/settings#accounts", "/reports"]) assert.equal(sanitizeNext(ok), ok);
@@ -49,4 +49,13 @@ test("the ?reason=expired link still works, and broken storage never throws", ()
   assert.equal(takeSessionExpired("?reason=other", fakeStore()), false);
   const broken = { getItem() { throw new Error("denied"); }, setItem() { throw new Error("denied"); }, removeItem() { throw new Error("denied"); } };
   assert.doesNotThrow(() => markSessionExpired(broken)); assert.equal(takeSessionExpired("", broken), false); assert.equal(takeSessionExpired("?reason=expired", broken), true);
+});
+
+test("readResetLink reads the token from the emailed link and ignores every other page", () => {
+  assert.deepEqual(readResetLink("/reset-password", "?token=abc-DEF_123"), { token: "abc-DEF_123" });
+  assert.deepEqual(readResetLink("/reset-password", "?token=%20abc%20"), { token: "abc" });
+  assert.deepEqual(readResetLink("/reset-password", ""), { token: "" });          // still the reset form, token to be pasted
+  assert.equal(readResetLink("/login", "?token=abc"), null);
+  assert.equal(readResetLink("/reset-password/x", "?token=abc"), null);
+  assert.equal(readResetLink("/", ""), null);
 });

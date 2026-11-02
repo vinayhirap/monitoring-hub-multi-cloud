@@ -130,6 +130,8 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={isLoggedIn ? <Navigate to="/overview" replace /> : <Login />} />
+      {/* The link in the password-reset email (app/api/auth.py) lands here. Outside RequireAuth: the person is signed out by definition. */}
+      <Route path="/reset-password" element={<Login />} />
       {/* Public status page (2026-09-14) -- deliberately OUTSIDE
           RequireAuth, same reasoning as /login: this must render for
           a logged-out (or account-less) visitor. See

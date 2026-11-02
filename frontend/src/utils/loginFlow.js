@@ -79,3 +79,10 @@ export function redirectToSignIn(win = window) {
   const here = win.location.pathname + win.location.search + win.location.hash;
   win.location.href = `/login?reason=expired&next=${encodeURIComponent(here)}`;
 }
+
+/** The emailed password-reset link is /reset-password?token=... . Returns { token } when the page was opened that way
+ *  (token may be "" if the query was stripped), else null. Only the exact path counts, so /login?token=x is ignored. */
+export function readResetLink(pathname, search) {
+  if (pathname !== "/reset-password") return null;
+  return { token: (new URLSearchParams(search || "").get("token") || "").trim() };
+}

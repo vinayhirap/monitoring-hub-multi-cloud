@@ -4,7 +4,7 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { CheckIcon } from "../components/icons";
 import { AwsBrandLogo, AzureBrandLogo, GoogleCloudBrandLogo } from "../components/cloud-icons";
-import { sanitizeNext, loginFailure, formatWait, takeSessionExpired, FALLBACK_AFTER_LOGIN } from "../utils/loginFlow";
+import { sanitizeNext, loginFailure, formatWait, takeSessionExpired, readResetLink, FALLBACK_AFTER_LOGIN } from "../utils/loginFlow";
 import "./Login.css";
 import { shouldLoadBrandVideo, readEnvironment } from "../utils/loginMedia";
 
@@ -93,7 +93,11 @@ export default function Login() {
   const capsHandler = e => setCaps(!!(e && e.getModifierState && e.getModifierState("CapsLock")));
 
   // "login" | "forgot" | "reset" | "change"
-  const [mode, setMode] = useState("login");
+  // Opened from the emailed link (/reset-password?token=...)? Start on the reset form with the token filled in.
+  const [resetLink] = useState(() => readResetLink(window.location.pathname, window.location.search));
+  const [mode, setMode] = useState(resetLink ? "reset" : "login");
+  // The token is a credential: take it out of the address bar (history, screenshots, Referer) once it is in the form.
+  useEffect(() => { if (resetLink && resetLink.token) window.history.replaceState(null, "", "/reset-password"); }, [resetLink]);
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -107,7 +111,7 @@ export default function Login() {
   // token pulled straight from the forgot-password API response, which
   // the backend stopped sending back in the 2026-09-12 audit fix. See
   // handleForgotSubmit below for the full explanation.
-  const [tokenInput,   setTokenInput]   = useState("");
+  const [tokenInput,   setTokenInput]   = useState(() => (resetLink ? resetLink.token : ""));
   const [newPw,        setNewPw]        = useState("");
   const [newPw2,       setNewPw2]       = useState("");
   const [showNewPw,    setShowNewPw]    = useState(false);
@@ -125,6 +129,8 @@ export default function Login() {
   function goTo(nextMode) {
     resetTransientState();
     setMode(nextMode);
+    // Leaving the reset form: a refresh must not bring the reset page back.
+    if (nextMode !== "reset" && window.location.pathname === "/reset-password") window.history.replaceState(null, "", "/login");
   }
 
   // The fields are disabled while a request is running, so a focus request made at the moment the answer arrives is lost.
@@ -291,8 +297,8 @@ export default function Login() {
 
   const titles = {
     login:  ["Welcome back",       "Sign in to continue to CloudOps"],
-    forgot: ["Forgot password",    "Enter your username and we'll generate a reset token"],
-    reset:  ["Reset password",     "Enter the reset token and choose a new password"],
+    forgot: ["Forgot password",    "Enter your username and we'll email you a reset link"],
+    reset:  ["Reset password",     "Choose a new password (paste the reset token if it isn't filled in)"],
     change: ["Change password",    "Enter your current password and choose a new one"],
   };
   const [title, desc] = titles[mode];
@@ -433,7 +439,7 @@ export default function Login() {
             {error && <div className="login-error" role="alert">{error}</div>}
 
             <button type="submit" className={`login-btn ${loading ? "login-btn-loading" : ""}`} disabled={loading}>
-              {loading ? (<><span className="login-spinner" />Requesting…</>) : "Send Reset Token →"}
+              {loading ? (<><span className="login-spinner" />Requesting…</>) : "Send Reset Link →"}
             </button>
             {/* AUDIT FIX (f02/079, HIGH): this is now the only way to reach
                 "reset" mode -- see handleForgotSubmit above for why the
