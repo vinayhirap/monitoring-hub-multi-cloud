@@ -92,8 +92,8 @@ query and SMTP send. A sweep that is already queued or running is not queued aga
 | alert escalated | `escalation.py`, after the commit |
 | alert resolved, incident opened / resolved | one sweep per standard (5-minute) collector cycle in `scheduler.py`, looking back `EMAIL_RULE_SWEEP_MINUTES` (30) |
 
-Not covered: alerts raised by synthetic checks, cost-jump and the host-agent watchdog do not send an "opened" rule mail (their
-resolved mail is still sent by the sweep). Incidents correlated in the 15-minute tier are picked up within about 5 minutes.
+Alerts raised by synthetic checks, cost-jump and the host-agent watchdog were not covered by 0005 and are from patch 0007 (below).
+Incidents correlated in the 15-minute tier are picked up within about 5 minutes.
 
 ## Patch 0006 (the rules tab, help and docs)
 
@@ -105,6 +105,26 @@ rules** (`/email-center/rules`):
   (Warning and Critical, or Critical only), one account or all accounts, a recipient list and extra addresses. The backend stays
   the authority on every rule (including the account-access check).
 - A "Good to know" panel states the limits above. The help-center section "Email & Reports" now covers the rules.
+
+## Patch 0007 (the remaining alert sources)
+
+Backend plus text only (no migration, no new setting). Three sources that already call the notification channels now also queue
+a rule job after their own commit, through `rule_dispatch.enqueue_channel_event(kind, alert)` (the same non-blocking queue as 0005):
+
+| Source | Hook | Events |
+|---|---|---|
+| synthetic checks (down, certificate expiry) | `synthetic_notify._fan_out_channels` | opened; escalated (a worse certificate stage) |
+| cost-jump | `cost_jump_alert._notify` | opened (it never escalates or mails a resolve) |
+| host-agent watchdog | `host_agent_watchdog._notify` | opened; escalated (offline after stale) |
+
+Resolves are unchanged: the sweep already mailed them. Silenced and born-silenced alerts never reach the hooks.
+Those sources already mail people of their own, so the worker also skips them (and sends nothing for the event if it cannot
+read them): a synthetic check's contacts (outage or certificate topic; opened, escalated and resolved) and the cost-jump
+recipients for the account (opened). A person is still mailed once per alert event whatever mix of rules, channels and escalation
+matches, because the `email_rule_sends` key is per person, alert and event.
+
+Still not covered: alerts from the cross-metric anomaly detector (`multivariate_anomaly.py`) send no opened rule mail (and no
+channel mail either); their resolved mail is still sent by the sweep.
 
 ## Turning it on
 

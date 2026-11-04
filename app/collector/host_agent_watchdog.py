@@ -356,6 +356,16 @@ def _notify(kind, alert_id, host, target, severity, age, threshold, detail, acco
         })
     except Exception:
         logger.warning("[host-agent-watchdog] notify_alert_event failed", exc_info=True)
+    try:
+        # Email rules: only queues the job; the lookups and the send run on the rule worker thread.
+        from app.email import rule_dispatch
+        rule_dispatch.enqueue_channel_event(kind, {
+            "id": alert_id, "severity": severity, "metric_name": METRIC, "resource_id": target["resource_id"],
+            "account_name": account_name, "aws_account_id": host["aws_account_id"], "value": age,
+            "threshold": threshold, "silenced": False, "priority": priority,
+        })
+    except Exception:
+        logger.warning("[host-agent-watchdog] could not queue the email-rule mail", exc_info=True)
 
 
 def _clean_departed(cursor, stats, after_commit):

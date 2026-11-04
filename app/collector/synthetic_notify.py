@@ -250,6 +250,16 @@ def _alert_for_channels(cursor, check, metric):
     return cursor.fetchone()
 
 
+def _queue_rule_mail(event, alert):
+    """Email rules (Email & Reports centre): only QUEUES the job; the lookups and the send run on the rule worker thread.
+    The check's own contacts are skipped there, so nobody is mailed twice. Never raises."""
+    try:
+        from app.email import rule_dispatch
+        rule_dispatch.enqueue_channel_event(event, alert)
+    except Exception:
+        logger.warning("[synthetic-notify] could not queue the email-rule mail", exc_info=True)
+
+
 def _fan_out_channels(cursor, check, metric, event):
     """The globally configured channels get synthetic alerts like any other alert. Returns (alert_id, sent)."""
     try:
@@ -257,12 +267,14 @@ def _fan_out_channels(cursor, check, metric, event):
         if not a:
             return None, 0
         from app.notifications.sender import notify_alert_event
-        sent = notify_alert_event(event, {
+        alert = {
             "id": a["id"], "severity": a["severity"], "metric_name": metric,
             "resource_id": f"synthetic-{check['id']} ({check.get('name')})", "account_name": a["account_name"],
             "aws_account_id": check["aws_account_id"], "value": a["value"], "threshold": a["threshold"],
             "silenced": False,
-        })
+        }
+        sent = notify_alert_event(event, alert)
+        _queue_rule_mail(event, alert)
         return a["id"], sent
     except Exception:
         logger.exception("[synthetic-notify] channel fan-out failed for check %s", check.get("id"))

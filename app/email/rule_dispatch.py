@@ -18,6 +18,8 @@ WHO IS MAILED (per event, per rule that matches event + severity + account)
     users who may not see the account are dropped; typed addresses always stay.
   * Not an address a notification email channel already mails for this alert (opened / escalated), and not a member of
     the escalation group for `alert_escalated` (escalation.py already mailed them). If that lookup fails, nothing is sent.
+  * Not the people the alert's own source already mails (patch 0007): the contacts of a synthetic check (outage / certificate
+    topic, opened, escalated and resolved) and the cost-jump alert's recipients (opened). If that lookup fails, nothing is sent.
   * Never a silenced alert. Never the same person twice for the same alert/incident event (unique key, across rules),
     never the same resource+event to one person inside the throttle window, never more than the hourly cap per rule.
   * email_rule_sends gets its row only AFTER a successful send.
@@ -27,6 +29,7 @@ The mail goes out as category 'alert_rule' (sender label 'Alerts'), so it shows 
 import html as _html
 import logging
 import queue
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -39,6 +42,11 @@ CATEGORY = "alert_rule"
 QUEUE_MAX = 500
 SWEEP_LIMIT = 500                     # rows per sweep query: a burst beyond this is picked up by the next sweep
 
+# Alert sources that already mail people of their own (patch 0007). Same metric names as app/collector/synthetic.py
+# (synthetic_uptime, CERT_ALERT_METRIC) and app/collector/cost_jump_alert.py (METRIC); tests pin them.
+_SYNTHETIC_CONTACT_COLUMN = {"synthetic_uptime": "notify_outage", "synthetic_cert_expiry": "notify_cert"}
+_COST_JUMP_METRIC = "cloud_cost_jump"
+_CHANNEL_EVENTS = {"opened": "alert_opened", "escalated": "alert_escalated"}   # notification-channel words -> rule events
 _ALERT_VERBS = {"alert_opened": "opened", "alert_escalated": "escalated", "alert_resolved": "resolved"}
 _INCIDENT_VERBS = {"incident_opened": "opened", "incident_resolved": "resolved"}
 
@@ -118,6 +126,33 @@ def _excluded_addresses(cur, event, ctx):
         cur.execute("SELECT DISTINCT u.email FROM user_group_memberships ugm JOIN users u ON u.id = ugm.user_id "
                     "WHERE ugm.group_id = %s AND u.email IS NOT NULL AND u.email != ''", (ctx["group_id"],))
         out.update(str(r["email"]).strip().lower() for r in cur.fetchall())
+    metric = ctx.get("metric_name")
+    if metric in _SYNTHETIC_CONTACT_COLUMN:
+        out.update(_synthetic_contact_addresses(cur, ctx.get("resource_id"), _SYNTHETIC_CONTACT_COLUMN[metric]))
+    if metric == _COST_JUMP_METRIC and event == "alert_opened":
+        out.update(_cost_jump_recipient_addresses(cur, ctx.get("account_id")))
+    return out
+
+
+def _synthetic_contact_addresses(cur, resource_id, column):
+    """Addresses on the check's own contact list (synthetic_check_contacts), who the check mails itself for an outage or a
+    certificate notice. The resource id is 'synthetic-<check id>' (optionally followed by the check's name). Raises when the
+    check cannot be identified, so nothing is sent rather than a possible duplicate."""
+    m = re.match(r"synthetic-(\d+)", str(resource_id or ""))
+    if not m:
+        raise ValueError(f"cannot tell which synthetic check {resource_id!r} belongs to")
+    cur.execute(f"SELECT email FROM synthetic_check_contacts WHERE check_id = %s AND {column} = 1", (int(m.group(1)),))
+    return {str(r["email"]).strip().lower() for r in cur.fetchall() if str(r.get("email") or "").strip()}
+
+
+def _cost_jump_recipient_addresses(cur, account_id):
+    """Addresses on the cost-jump alert's own recipient list for this account (all-accounts plus the account's own)."""
+    from app import cost_jump_settings
+    users, emails = cost_jump_settings.recipients(cost_jump_settings.load(cur), account_id)
+    out = {str(a).strip().lower() for a in emails if str(a).strip()}
+    if users:
+        cur.execute("SELECT email FROM users WHERE id IN (" + ", ".join(["%s"] * len(users)) + ")", tuple(users))
+        out.update(str(r["email"]).strip().lower() for r in cur.fetchall() if str(r.get("email") or "").strip())
     return out
 
 
@@ -348,6 +383,18 @@ def enqueue_alert_event(event, alert):
         return _worker.submit({"type": "event", "event": event, "ctx": ctx})
     except Exception as exc:
         logger.warning(f"[email-rules] could not queue {event}: {type(exc).__name__}: {str(exc)[:160]}")
+        return False
+
+
+def enqueue_channel_event(kind, alert):
+    """Hook entry for sources that already call notification_channels (synthetic checks, cost-jump, the host-agent watchdog):
+    `kind` is the word they pass the channels ('opened' / 'escalated'), `alert` is the same dict. Any other kind (a resolve)
+    is ignored, the sweep mails those. Returns True when queued. No database, no network, never raises."""
+    try:
+        event = _CHANNEL_EVENTS.get(kind)
+        return enqueue_alert_event(event, alert) if event else False
+    except Exception as exc:
+        logger.warning(f"[email-rules] could not queue {kind}: {type(exc).__name__}: {str(exc)[:160]}")
         return False
 
 

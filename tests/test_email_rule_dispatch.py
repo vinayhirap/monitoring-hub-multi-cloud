@@ -37,6 +37,8 @@ class _State:
         self.sweep_alerts = kw.get("sweep_alerts", [])
         self.inc_open = kw.get("inc_open", [])
         self.inc_res = kw.get("inc_res", [])
+        self.synth_contacts = kw.get("synth_contacts", {})  # (check id, "notify_outage" | "notify_cert") -> emails
+        self.cost_jump_rows = kw.get("cost_jump_rows", [])  # rows for cost_jump_settings.load
         self.fail_on = kw.get("fail_on")
         self.log, self.commits, self.connects, self.closed = [], 0, 0, 0
 
@@ -58,6 +60,11 @@ class _Cur:
             self._rows = [r for r in st.rules if r.get("enabled")]
         elif n.startswith("SELECT * FROM notification_channels"):
             self._rows = [c for c in st.channels if c.get("type") == "email"]
+        elif n.startswith("SELECT email FROM synthetic_check_contacts"):
+            col = "notify_cert" if "notify_cert" in n else "notify_outage"
+            self._rows = [{"email": e} for e in st.synth_contacts.get((p[0], col), [])]
+        elif "FROM cost_jump_settings" in n:
+            self._rows = st.cost_jump_rows
         elif n.startswith("SELECT DISTINCT u.email FROM user_group_memberships"):
             self._rows = [{"email": e} for e in st.group_emails.get(p[0], [])]
         elif n.startswith("SELECT * FROM email_recipient_lists WHERE id"):
@@ -122,6 +129,8 @@ def _env(smtp_ok=True, configured=True, scope=None, **state):
         return (smtp_ok(to) if callable(smtp_ok) else smtp_ok), ("" if smtp_ok else "smtp down")
     install_stub("app.email.mailer", is_configured=lambda: configured, send_email_ex=send_email_ex,
                  get_public_app_url=lambda: "https://cloudops.example.com")
+    cjs = load_module("app/cost_jump_settings.py")
+    install_stub("app.cost_jump_settings", **{k: v for k, v in vars(cjs).items() if not k.startswith("__")})
     sender = load_module("app/notifications/sender.py")
     install_stub("app.notifications.sender", channel_matches=sender.channel_matches, parse_addresses=sender.parse_addresses)
     return load_module("app/email/rule_dispatch.py"), st, mails
@@ -565,3 +574,127 @@ def test_no_collector_file_sends_mail_for_rules_inline():
         src = _src(path)
         assert "rule_dispatch.dispatch_many" not in src and "rule_dispatch.sweep(" not in src, path
         assert "send_email_ex" not in src, path
+
+
+# ── patch 0007: synthetic checks, cost-jump and the host-agent watchdog ───────────────────────────────────────────────
+
+_SYN = {"metric_name": "synthetic_uptime", "resource_id": "synthetic-12 (Public site)", "severity": "CRITICAL"}
+_BOTH = _rule(extra_emails="ops@example.com, Owner@example.com")
+
+
+def test_a_synthetic_checks_own_contacts_are_not_mailed_again_but_other_rule_recipients_are():
+    mod, st, mails = _env(rules=[_BOTH], synth_contacts={(12, "notify_outage"): ["owner@example.com"]})
+    assert mod.dispatch_many([("alert_opened", _ctx(**_SYN))], now=NOW) == 1
+    assert [m["to"] for m in mails] == ["ops@example.com"]
+
+
+def test_synthetic_contacts_are_skipped_for_escalated_and_resolved_too():
+    for event in ("alert_escalated", "alert_resolved"):
+        mod, st, mails = _env(rules=[_BOTH], synth_contacts={(12, "notify_outage"): ["owner@example.com"]})
+        mod.dispatch_many([(event, _ctx(**_SYN))], now=NOW)
+        assert [m["to"] for m in mails] == ["ops@example.com"], event
+
+
+def test_the_certificate_alert_uses_the_certificate_contact_topic_not_the_outage_one():
+    cert = dict(_SYN, metric_name="synthetic_cert_expiry")
+    mod, st, mails = _env(rules=[_BOTH], synth_contacts={(12, "notify_outage"): ["owner@example.com"]})
+    mod.dispatch_many([("alert_opened", _ctx(**cert))], now=NOW)
+    assert sorted(m["to"] for m in mails) == ["Owner@example.com", "ops@example.com"]      # outage-only contact still gets the rule mail
+    mod, st, mails = _env(rules=[_BOTH], synth_contacts={(12, "notify_cert"): ["owner@example.com"]})
+    mod.dispatch_many([("alert_opened", _ctx(**cert))], now=NOW)
+    assert [m["to"] for m in mails] == ["ops@example.com"]
+
+
+def test_a_synthetic_alert_whose_check_cannot_be_identified_sends_nothing():
+    mod, st, mails = _env(rules=[_BOTH])
+    assert mod.dispatch_many([("alert_opened", _ctx(**dict(_SYN, resource_id="somewhere-else")))], now=NOW) == 0
+    assert mails == [] and st.sends == []
+
+
+def test_a_failing_contact_lookup_sends_nothing_rather_than_a_duplicate():
+    mod, st, mails = _env(rules=[_BOTH], fail_on="synthetic_check_contacts")
+    assert mod.dispatch_many([("alert_opened", _ctx(**_SYN))], now=NOW) == 0
+    assert mails == [] and st.sends == []
+
+
+_CJ = {"metric_name": "cloud_cost_jump", "resource_id": "cost-5", "severity": "WARNING", "account_id": 5}
+
+
+def _cj_row(scope, users="[]", emails=""):
+    return {"scope_key": scope, "enabled": 1, "threshold_pct": None, "min_increase_usd": None,
+            "notify_user_ids": users, "notify_emails": emails, "updated_by": "x", "updated_at": None}
+
+
+def test_the_cost_jump_recipients_are_not_mailed_a_second_time():
+    users = [{"id": 31, "username": "fin", "email": "Finance@example.com", "active": 1}]
+    rows = [_cj_row(0, users="[31]", emails="cfo@example.com"), _cj_row(5, emails="lead@example.com")]
+    rule = _rule(extra_emails="ops@example.com, finance@example.com, cfo@example.com, lead@example.com")
+    mod, st, mails = _env(rules=[rule], users=users, cost_jump_rows=rows)
+    assert mod.dispatch_many([("alert_opened", _ctx(**_CJ))], now=NOW) == 1
+    assert [m["to"] for m in mails] == ["ops@example.com"]
+
+
+def test_another_accounts_cost_jump_recipients_are_not_excluded():
+    mod, st, mails = _env(rules=[_rule(extra_emails="ops@example.com, lead@example.com")],
+                          cost_jump_rows=[_cj_row(9, emails="lead@example.com")])
+    mod.dispatch_many([("alert_opened", _ctx(**_CJ))], now=NOW)
+    assert sorted(m["to"] for m in mails) == ["lead@example.com", "ops@example.com"]
+
+
+def test_no_cost_jump_settings_means_nobody_is_excluded():
+    mod, st, mails = _env(rules=[_rule()])                                       # no cost_jump_settings rows at all
+    assert mod.dispatch_many([("alert_opened", _ctx(**_CJ))], now=NOW) == 1
+
+
+def test_the_extra_lookups_run_only_for_the_alert_sources_that_need_them():
+    mod, st, mails = _env(rules=[_rule()])
+    mod.dispatch_many([("alert_opened", _ctx())], now=NOW)                       # an ordinary CPU alert
+    assert not [q for q, _ in st.log if "synthetic_check_contacts" in q or "cost_jump_settings" in q]
+    mod, st, mails = _env(rules=[_rule()])
+    mod.dispatch_many([("alert_resolved", _ctx(**_CJ))], now=NOW)                # cost-jump sends no resolve mail
+    assert not [q for q, _ in st.log if "cost_jump_settings" in q]
+
+
+def test_the_watchdog_needs_no_extra_lookup_because_it_only_mails_through_channels():
+    wd = {"metric_name": "host_agent_heartbeat_age", "resource_id": "i-0abc", "severity": "CRITICAL"}
+    mod, st, mails = _env(rules=[_rule()],
+                          channels=[{"type": "email", "enabled": 1, "target": "ops@example.com", "events": "opened",
+                                     "min_severity": "WARNING", "account_ids": None}])
+    mod.dispatch_many([("alert_opened", _ctx(**wd))], now=NOW)
+    assert not [q for q, _ in st.log if "synthetic_check_contacts" in q or "cost_jump_settings" in q]
+
+
+# enqueue_channel_event: the word the notification channels use -> the rule event
+
+def _queued():
+    mod, st, mails = _env(rules=[_rule()])
+    queued = []
+    mod._worker = type("W", (), {"submit": lambda self, job: queued.append(job) or True})()
+    return mod, queued
+
+
+@pytest.mark.parametrize("kind,event", [("opened", "alert_opened"), ("escalated", "alert_escalated")])
+def test_channel_words_map_to_rule_events_and_only_queue(kind, event):
+    mod, queued = _queued()
+    assert mod.enqueue_channel_event(kind, {"id": 9, "severity": "CRITICAL", "metric_name": "synthetic_uptime",
+                                            "resource_id": "synthetic-4 (x)", "aws_account_id": 2, "silenced": False}) is True
+    assert queued[0]["event"] == event and queued[0]["ctx"]["object_id"] == 9 and queued[0]["ctx"]["account_id"] == 2
+
+
+@pytest.mark.parametrize("kind", ["resolved", "recovered", "", None, "alert_opened"])
+def test_other_channel_words_are_ignored_the_sweep_mails_resolves(kind):
+    mod, queued = _queued()
+    assert mod.enqueue_channel_event(kind, {"id": 9, "severity": "CRITICAL", "silenced": False}) is False and queued == []
+
+
+def test_a_silenced_or_bad_alert_through_the_channel_helper_queues_nothing_and_never_raises():
+    mod, queued = _queued()
+    assert mod.enqueue_channel_event("opened", {"id": 9, "silenced": True}) is False
+    assert mod.enqueue_channel_event("opened", None) is False and queued == []
+
+
+def test_the_metric_names_the_dispatcher_knows_are_the_ones_the_sources_write():
+    mod, *_ = _env()
+    assert set(mod._SYNTHETIC_CONTACT_COLUMN) == {"synthetic_uptime", _src("app/collector/synthetic.py").split('CERT_ALERT_METRIC = "', 1)[1].split('"', 1)[0]}
+    assert 'METRIC = "%s"' % mod._COST_JUMP_METRIC in _src("app/collector/cost_jump_alert.py")
+    assert "'synthetic_uptime'" in _src("app/collector/synthetic.py")

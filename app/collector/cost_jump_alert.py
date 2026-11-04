@@ -255,6 +255,12 @@ def _notify(alert_id, rid, account_id, account_name, usd, limit, detail, recips=
         notify_alert_event("opened", alert)
     except Exception:
         logger.warning("[cost-jump] notify_alert_event failed", exc_info=True)
+    try:
+        # Email rules: only queues the job. The cost-jump recipients below are skipped by the worker (no double mail).
+        from app.email import rule_dispatch
+        rule_dispatch.enqueue_channel_event("opened", alert)
+    except Exception:
+        logger.warning("[cost-jump] could not queue the email-rule mail", exc_info=True)
     users, emails = recips
     if users or emails:
         try:

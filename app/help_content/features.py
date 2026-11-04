@@ -236,10 +236,13 @@ def email_center():
             "Events: alert opened, alert escalated, alert resolved, incident opened, incident resolved. Severity is Warning and Critical, or Critical only.",
             "Mail is sent by a background worker, so a slow or failing mail server never delays monitoring or the alert itself.",
             "Each person gets one mail per alert or incident event, however many rules match. Not mailed: users who may not see the account, "
-            "addresses an email notification channel already mails for that alert, members of the escalation group for an escalated alert, and silenced alerts.",
+            "addresses an email notification channel already mails for that alert, members of the escalation group for an escalated alert, "
+            "the contacts of a synthetic check and the recipients of a cost-jump alert (they are already mailed for their own alert), and silenced alerts.",
             "To avoid floods, one person gets one mail per resource and event in a 30-minute window and at most 20 mails an hour per rule (the server settings can change these).",
             "Resolved alerts and incidents are found by a check that runs about every 5 minutes, so those mails can come a few minutes late.",
-            "Alerts raised by synthetic checks, cost-jump and the host-agent watchdog do not send an opened mail through a rule.",
+            "Alerts from synthetic checks (down and certificate), cost-jump and the host-agent watchdog send opened and escalated mail like any other alert. "
+            "For certificate and host-agent alerts, escalated means the alert got worse.",
+            "Alerts raised by the cross-metric anomaly detector do not send an opened mail through a rule; their resolved mail is still sent.",
             "Rule mail is recorded in the Delivery log with the category alert_rule. A recipient list used by a rule cannot be deleted."]),
         h("Limits and requirements"),
         ul(["SMTP settings stay in the server's .env file; this page shows them and tests them but never shows the username or password.",
