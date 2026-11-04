@@ -15,6 +15,10 @@ Email & Reports centre API (foundation).
   PUT    /api/email-center/schedules/{id}         emailcenter.manage
   DELETE /api/email-center/schedules/{id}         emailcenter.manage
   POST   /api/email-center/schedules/{id}/run     emailcenter.manage   {dry_run?} run now for the last full period (dry_run only shows what would happen)
+  GET    /api/email-center/rules                  emailcenter.view     alert & incident email rules (recipients hidden unless manage)
+  POST   /api/email-center/rules                  emailcenter.manage   {name, events, min_severity?, account_id?, recipient_list_id?, extra_emails?, enabled?}
+  PUT    /api/email-center/rules/{id}             emailcenter.manage   same fields, omitted ones keep their stored value
+  DELETE /api/email-center/rules/{id}             emailcenter.manage
   GET    /api/email-center/log                    emailcenter.manage   delivery log, newest first (status, category, before_id, limit)
 
 Off unless EMAIL_CENTER_ENABLED=true (503 with a clear message, like REPORTS_ENABLED). SMTP itself stays in .env: this API
@@ -35,11 +39,11 @@ from app.audit import write_audit
 from app.auth.authorization import get_accessible_account_ids
 from app.auth.permissions import has_permission, require_permission
 from app.db import get_db_cursor
-from app.email import delivery_log, mailer, recipients, schedules
+from app.email import alert_rules, delivery_log, mailer, recipients, schedules
 
 logger = logging.getLogger(__name__)
 
-MIGRATION_NOTE = "Run the pending migrations (migrate.py apply --all-pending): 135 adds the Email & Reports tables."
+MIGRATION_NOTE = "Run the pending migrations (migrate.py apply --all-pending): 135 adds the Email & Reports tables, 136 the alert rules."
 
 
 def _require_enabled():
@@ -333,6 +337,15 @@ def delete_list(list_id: int, request: Request,
         cur.execute("SELECT COUNT(*) AS n FROM report_schedules WHERE recipient_list_id = %s", (list_id,))
         if cur.fetchone()["n"]:
             raise HTTPException(status_code=409, detail="A report schedule still uses this list: change or delete that schedule first")
+        try:
+            cur.execute("SELECT COUNT(*) AS n FROM email_alert_rules WHERE recipient_list_id = %s", (list_id,))
+            in_use = (cur.fetchone() or {}).get("n")
+        except Exception as exc:                     # migration 136 not applied yet: no rule can be using the list
+            if not _missing_table(exc):
+                raise
+            in_use = 0
+        if in_use:
+            raise HTTPException(status_code=409, detail="An alert rule still uses this list: change or delete that rule first")
         cur.execute("DELETE FROM email_recipient_lists WHERE id = %s", (list_id,))
         return row["name"]
     name = _db(work)
@@ -541,6 +554,128 @@ def run_schedule_now(schedule_id: int, background_tasks: BackgroundTasks, reques
 
 
 # ── delivery log ─────────────────────────────────────────────────────
+
+# ── alert & incident rules ───────────────────────────────────────────
+
+def _rule_out(row, list_names, show_recipients):
+    out = {"id": row["id"], "name": row["name"], "enabled": bool(row["enabled"]),
+           "events": [e for e in str(row["events"] or "").split(",") if e], "min_severity": row["min_severity"],
+           "account_id": row["account_id"], "when": alert_rules.describe(row),
+           "recipient_list_id": row["recipient_list_id"], "recipient_list_name": list_names.get(row["recipient_list_id"]),
+           "created_by": row.get("created_by"), "created_at": _iso(row.get("created_at")),
+           "updated_at": _iso(row.get("updated_at"))}
+    if show_recipients:
+        out["extra_emails"] = recipients.parse_emails(row.get("extra_emails")) if row.get("extra_emails") else []
+    return out
+
+
+def _check_rule_refs(cur, f):
+    if f["recipient_list_id"] is not None:
+        cur.execute("SELECT id FROM email_recipient_lists WHERE id = %s", (f["recipient_list_id"],))
+        if not cur.fetchone():
+            raise HTTPException(status_code=400, detail="That recipient list does not exist")
+    if f["account_id"] is not None:
+        cur.execute("SELECT 1 AS ok FROM aws_accounts WHERE id = %s", (f["account_id"],))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="That account does not exist")
+    _check_domains(recipients.parse_emails(f["extra_emails"]))
+
+
+def _list_names(cur):
+    cur.execute("SELECT id, name FROM email_recipient_lists")
+    return {r["id"]: r["name"] for r in cur.fetchall()}
+
+
+@router.get("/rules")
+def list_rules(current_user: dict = Depends(require_permission("emailcenter.view"))):
+    show = has_permission(current_user, "emailcenter.manage")
+    accessible = get_accessible_account_ids(current_user)
+
+    def work(cur):
+        cur.execute("SELECT * FROM email_alert_rules ORDER BY name")
+        return cur.fetchall(), _list_names(cur)
+    rows, names = _db(work)
+    if accessible is not None:        # a scoped user sees rules for accounts they can see, never the all-account ones
+        rows = [r for r in rows if r["account_id"] is not None and r["account_id"] in accessible]
+    return [_rule_out(r, names, show) for r in rows]
+
+
+@router.post("/rules")
+def create_rule(request: Request, payload: dict = Body(...),
+                current_user: dict = Depends(require_permission("emailcenter.manage"))):
+    try:
+        f = alert_rules.normalize(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _require_account_access(f["account_id"], current_user)
+
+    def work(cur):
+        _check_rule_refs(cur, f)
+        cur.execute("SELECT id FROM email_alert_rules WHERE name = %s", (f["name"],))
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail="A rule with that name already exists")
+        cur.execute("INSERT INTO email_alert_rules (name, enabled, events, min_severity, account_id, recipient_list_id, "
+                    "extra_emails, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (f["name"], f["enabled"], f["events"], f["min_severity"], f["account_id"], f["recipient_list_id"],
+                     f["extra_emails"], current_user["username"]))
+        new_id = cur.lastrowid
+        cur.execute("SELECT * FROM email_alert_rules WHERE id = %s", (new_id,))
+        return _rule_out(cur.fetchone(), _list_names(cur), True)
+    out = _db(work)
+    _audit(current_user, "Alert email rule created", f"'{out['name']}': {out['when']}", request)
+    return out
+
+
+@router.put("/rules/{rule_id}")
+def update_rule(rule_id: int, request: Request, payload: dict = Body(...),
+                current_user: dict = Depends(require_permission("emailcenter.manage"))):
+    def load(cur):
+        cur.execute("SELECT * FROM email_alert_rules WHERE id = %s", (rule_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Rule not found")
+        return row
+    row = _db(load)
+    try:
+        f = alert_rules.normalize(payload, current=row)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _require_account_access(f["account_id"], current_user)
+    _require_account_access(row["account_id"], current_user)       # and over the account it covers today
+
+    def work(cur):
+        _check_rule_refs(cur, f)
+        cur.execute("SELECT id FROM email_alert_rules WHERE name = %s AND id <> %s", (f["name"], rule_id))
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail="A rule with that name already exists")
+        cur.execute("UPDATE email_alert_rules SET name=%s, enabled=%s, events=%s, min_severity=%s, account_id=%s, "
+                    "recipient_list_id=%s, extra_emails=%s WHERE id=%s",
+                    (f["name"], f["enabled"], f["events"], f["min_severity"], f["account_id"], f["recipient_list_id"],
+                     f["extra_emails"], rule_id))
+        cur.execute("SELECT * FROM email_alert_rules WHERE id = %s", (rule_id,))
+        return _rule_out(cur.fetchone(), _list_names(cur), True)
+    out = _db(work)
+    _audit(current_user, "Alert email rule updated",
+           f"'{out['name']}': {out['when']}, {'enabled' if f['enabled'] else 'paused'}", request)
+    return out
+
+
+@router.delete("/rules/{rule_id}")
+def delete_rule(rule_id: int, request: Request,
+                current_user: dict = Depends(require_permission("emailcenter.manage"))):
+    def work(cur):
+        cur.execute("SELECT name, account_id FROM email_alert_rules WHERE id = %s", (rule_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Rule not found")
+        _require_account_access(row["account_id"], current_user)
+        cur.execute("DELETE FROM email_alert_rules WHERE id = %s", (rule_id,))
+        cur.execute("DELETE FROM email_rule_sends WHERE rule_id = %s", (rule_id,))
+        return row["name"]
+    name = _db(work)
+    _audit(current_user, "Alert email rule deleted", f"'{name}'", request)
+    return {"status": "deleted"}
+
 
 @router.get("/log")
 def delivery_log_rows(status: str | None = Query(None), category: str | None = Query(None),

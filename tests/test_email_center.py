@@ -77,6 +77,8 @@ def _pure_modules():
     install_stub("app.email.schedules", **{k: v for k, v in vars(sch).items() if not k.startswith("__")})
     dl = load_module("app/email/delivery_log.py")
     install_stub("app.email.delivery_log", **{k: v for k, v in vars(dl).items() if not k.startswith("__")})
+    ar = load_module("app/email/alert_rules.py")                 # patch 0004: the API module imports it
+    install_stub("app.email.alert_rules", **{k: v for k, v in vars(ar).items() if not k.startswith("__")})
     return rec, sch, dl
 
 
