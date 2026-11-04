@@ -26,6 +26,7 @@ const ServiceDetailRouter = lazyWithRetry(() => import("./pages/ServiceDetailRou
 const Topology = lazyWithRetry(() => import("./pages/Topology"));
 const Incidents = lazyWithRetry(() => import("./pages/Incidents"));
 const OpEvents = lazyWithRetry(() => import("./pages/OpEvents"));
+const EmailCenter = lazyWithRetry(() => import("./pages/EmailCenter"));
 const EscalationPolicies = lazyWithRetry(() => import("./pages/EscalationPolicies"));
 const Environments = lazyWithRetry(() => import("./pages/Environments"));
 const HostAgents = lazyWithRetry(() => import("./pages/HostAgents"));
@@ -107,6 +108,7 @@ const ROUTE_ACCESS = {
   "search":              { roles: ["admin","editor","viewer"], perm: "search.query" },
   "status-page-admin":   { roles: ["admin","editor"],          perm: "status_page.manage" },
   "reports":             { roles: ["admin","editor","viewer"], perm: "reports.view", feature: "reports" },
+  "email-center":        { roles: ["admin","editor"],          perm: "emailcenter.view", feature: "email_center" },
   "settings":            { roles: ["admin","editor"] },
   "help":                { roles: ["admin","editor","viewer"], perm: "help.view" },
   "api-cost":            { roles: ["admin","editor"],          perm: "usage.view" },
@@ -161,6 +163,8 @@ function AppRoutes() {
         <Route path="search"                    element={<RequireAccess path="search"><Search /></RequireAccess>} />
         <Route path="status-page-admin"         element={<RequireAccess path="status-page-admin"><StatusPageAdmin /></RequireAccess>} />
         <Route path="reports"                   element={<RequireAccess path="reports"><Reports /></RequireAccess>} />
+        <Route path="email-center"              element={<Navigate to="/email-center/smtp" replace />} />
+        <Route path="email-center/:tab"         element={<RequireAccess path="email-center"><EmailCenter /></RequireAccess>} />
         <Route path="settings"                  element={<RequireAccess path="settings"><Settings /></RequireAccess>} />
         <Route path="help"                      element={<RequireAccess path="help"><HelpCenter /></RequireAccess>} />
         <Route path="api-cost"                  element={<RequireAccess path="api-cost"><ApiCost /></RequireAccess>} />

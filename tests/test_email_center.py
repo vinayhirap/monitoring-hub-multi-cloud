@@ -122,7 +122,7 @@ class _DbError(Exception):
         self.errno = errno
 
 
-def _api(script=(), smtp=None, perms=None, accessible=None, registry=None):
+def _api(script=(), smtp=None, perms=None, accessible=None, registry=None, public_url_problem=""):
     """The API module with everything it touches stubbed. Returns (module, executed-sql log, mails sent, audit rows)."""
     _pure_modules()
     log, mails, audit = [], [], []
@@ -142,7 +142,7 @@ def _api(script=(), smtp=None, perms=None, accessible=None, registry=None):
         return True, ""
     install_stub("app.email.mailer", _settings=lambda: cfg, is_configured=lambda: bool(cfg["host"]),
                  config_problems=lambda: [], get_public_app_url=lambda: "https://cloudops.example.com",
-                 send_email_ex=send_email_ex)
+                 public_url_problem=lambda: public_url_problem, send_email_ex=send_email_ex)
     install_stub("app.email.templates",
                  test_notification_email=lambda url, name: {"subject": "Test", "text": "t", "html": "<p>t</p>"})
     reg = registry or types_ns(is_section=lambda s: s in ("COST", "HOST", "ENVIRONMENT", "SECURITY", "SLO"),
@@ -525,6 +525,78 @@ def test_status_never_returns_the_username_or_password_and_reports_counts():
     assert out["smtp"]["from_address"] == "ops@example.com" and out["smtp"]["authenticated"] is True
     assert out["delivery"]["24h"]["sent"] == 5 and out["delivery"]["7d"]["failed"] == 1
     assert out["last_failure"]["error"] == "boom" and out["migration_pending"] is False
+
+
+def test_status_reports_the_plain_http_warning_as_its_own_field():
+    script = [(contains("GROUP BY status"), []), (contains("status = 'failed'"), [])]
+    mod, *_ = _api(script, public_url_problem="PUBLIC_APP_URL is plain http")
+    out = mod.status(current_user=ADMIN)
+    assert out["smtp"]["public_url_warning"] == "PUBLIC_APP_URL is plain http"
+    mod2, *_ = _api(script)
+    assert mod2.status(current_user=ADMIN)["smtp"]["public_url_warning"] is None
+
+
+_ACCOUNTS = [{"id": 1, "account_name": "U4RAD", "account_id": "111", "provider": "aws"},
+             {"id": 2, "account_name": "AuroGov", "account_id": "222", "provider": "aws"},
+             {"id": 3, "account_name": None, "account_id": "333", "provider": "azure"}]
+_USERS = [{"id": 5, "username": "asha", "role": "editor", "email": "asha@example.com"}]
+_GROUPS = [{"id": 9, "name": "NOC", "level": "L1"}]
+
+
+def _options_script():
+    return [(contains("FROM aws_accounts"), _ACCOUNTS), (contains("FROM users"), _USERS), (contains("FROM org_groups"), _GROUPS)]
+
+
+def test_options_gives_a_manager_every_picker():
+    mod, *_ = _api(_options_script())
+    out = mod.options(current_user=ADMIN)
+    assert [a["id"] for a in out["accounts"]] == [1, 2, 3] and out["accounts"][2]["name"] == "333"
+    assert out["users"] == [{"id": 5, "username": "asha", "role": "editor", "email": "asha@example.com"}]
+    assert out["groups"] == [{"id": 9, "name": "NOC", "level": "L1"}] and out["can_manage"] is True
+    assert out["report_types"] == ["WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY"] and out["default_timezone"] == "Asia/Kolkata"
+    assert {s["scope_type"] for s in out["scopes"]} == {"ACCOUNT", "RESOURCE", "SYNTHETIC", "HOST", "ENVIRONMENT", "SECURITY", "SLO", "COST", "CLIENT"}
+    assert all(s["allowed"] for s in out["scopes"])
+
+
+def test_options_only_lists_accounts_the_caller_can_see():
+    mod, *_ = _api(_options_script(), accessible={2})
+    assert [a["id"] for a in mod.options(current_user=ADMIN)["accounts"]] == [2]
+
+
+def test_options_hides_users_and_groups_from_a_read_only_viewer_and_never_queries_them():
+    mod, log, _, _ = _api(_options_script(), perms={"emailcenter.view"})
+    out = mod.options(current_user=EDITOR)
+    assert out["users"] == [] and out["groups"] == [] and out["can_manage"] is False
+    assert not any("FROM users" in sql or "FROM org_groups" in sql for sql, _ in log)
+    assert "asha@example.com" not in repr(out)
+
+
+def test_options_marks_scopes_the_caller_may_not_schedule():
+    mod, *_ = _api(_options_script(), perms={"emailcenter.view", "synthetic.view"})
+    allowed = {s["scope_type"]: s["allowed"] for s in mod.options(current_user=EDITOR)["scopes"]}
+    assert allowed["ACCOUNT"] and allowed["RESOURCE"] and allowed["SYNTHETIC"]
+    assert not allowed["COST"] and not allowed["CLIENT"] and not allowed["HOST"] and not allowed["SLO"]
+
+
+def test_options_names_the_migration_when_a_table_is_missing():
+    mod, *_ = _api([(contains("FROM aws_accounts"), _DbError(1146))])
+    with pytest.raises(Exception) as e:
+        mod.options(current_user=ADMIN)
+    assert e.value.status_code == 503
+
+
+def test_permissions_me_reports_the_email_center_flag(monkeypatch):
+    src = (ROOT / "app/api/permissions.py").read_text()
+    assert '"email_center": _email_center_enabled()' in src
+    install_stub("app.db", get_connection=lambda: None)
+    install_stub("app.auth.deps", get_current_user=lambda: None)
+    install_stub("app.auth.permissions", get_role_permissions=lambda r: set(), require_permission=lambda c: (lambda: None),
+                 denied_permission_codes=lambda u: set())
+    mod = load_module("app/api/permissions.py")
+    monkeypatch.setenv("EMAIL_CENTER_ENABLED", "false")
+    assert mod._email_center_enabled() is False
+    monkeypatch.setenv("EMAIL_CENTER_ENABLED", "true")
+    assert mod._email_center_enabled() is True
 
 
 def test_status_before_the_migration_says_so_instead_of_failing():

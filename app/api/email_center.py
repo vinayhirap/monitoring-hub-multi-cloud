@@ -3,6 +3,7 @@
 Email & Reports centre API (foundation).
 
   GET    /api/email-center/status                 emailcenter.view     SMTP state (no secrets), config problems, 24 h / 7 d delivery counts
+  GET    /api/email-center/options                emailcenter.view     picker data: accounts the caller can see, scope choices; users + groups only with manage
   POST   /api/email-center/test                   emailcenter.manage   {to}  send one test email now and report the real outcome
   GET    /api/email-center/lists                  emailcenter.manage   recipient lists (addresses visible)
   POST   /api/email-center/lists                  emailcenter.manage   {name, description?, user_ids?, group_ids?, emails?}
@@ -148,6 +149,9 @@ def status(current_user: dict = Depends(require_permission("emailcenter.view")))
             "from_name": (os.getenv("MAIL_FROM_NAME") or "").strip() or "CloudOps",
             "timezone": (os.getenv("MAIL_TIMEZONE") or "").strip() or "Asia/Kolkata",
             "public_app_url": mailer.get_public_app_url(), "problems": mailer.config_problems(),
+            # Its own field: config_problems() returns early (and so omits this) while SMTP_HOST is unset, but the
+            # page should still say it, because the link in password-reset mail is what carries the login token.
+            "public_url_warning": mailer.public_url_problem() or None,
             "allowed_recipient_domains": _allowed_domains()}
     counts = {"24h": {"sent": 0, "failed": 0, "skipped": 0}, "7d": {"sent": 0, "failed": 0, "skipped": 0}}
     last_failure = None
@@ -178,6 +182,61 @@ def status(current_user: dict = Depends(require_permission("emailcenter.view")))
 
 def _reports_enabled() -> bool:
     return os.getenv("REPORTS_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+
+
+# ── options for the page's pickers ───────────────────────────────────
+
+# (scope_type, label, needs_account, who may schedule it). "admin" = admin only (cost and client reports span accounts).
+SCOPE_CHOICES = (
+    ("ACCOUNT", "Account summary", True, None),
+    ("RESOURCE", "One resource", True, None),
+    ("SYNTHETIC", "Synthetic checks", True, "synthetic.view"),
+    ("HOST", "Host agents", True, "hostagents.view"),
+    ("ENVIRONMENT", "Environments and tags", True, "environments.view"),
+    ("SECURITY", "Security findings", True, "security.view"),
+    ("SLO", "SLOs", True, "slo.view"),
+    ("COST", "Cloud cost (all accounts)", False, "admin"),
+    ("CLIENT", "Client / stakeholder (all accounts)", False, "admin"),
+)
+TIMEZONES = ("Asia/Kolkata", "UTC", "Asia/Dubai", "Asia/Singapore", "Europe/London", "America/New_York", "America/Los_Angeles")
+
+
+def _scope_allowed(need, user):
+    if need is None:
+        return True
+    if need == "admin":
+        return user.get("role") == "admin"
+    return has_permission(user, need)
+
+
+@router.get("/options")
+def options(current_user: dict = Depends(require_permission("emailcenter.view"))):
+    """Everything the page's pickers need in one call. Accounts are only those the caller can see. Users (with their
+    addresses) and org groups are only returned to emailcenter.manage, so a read-only viewer never sees an address."""
+    accessible = get_accessible_account_ids(current_user)
+    manage = has_permission(current_user, "emailcenter.manage")
+
+    def work(cur):
+        cur.execute("SELECT id, account_name, account_id, provider FROM aws_accounts ORDER BY account_name, id")
+        accounts = [{"id": r["id"], "name": r.get("account_name") or r.get("account_id") or f"Account {r['id']}",
+                     "cloud_account_id": r.get("account_id"), "provider": r.get("provider") or "aws"}
+                    for r in cur.fetchall() if accessible is None or r["id"] in accessible]
+        users, groups = [], []
+        if manage:
+            cur.execute("SELECT id, username, role, email FROM users WHERE COALESCE(active, 1) = 1 "
+                        "AND email IS NOT NULL AND email <> '' ORDER BY username")
+            users = [{"id": r["id"], "username": r["username"], "role": r["role"], "email": r["email"]} for r in cur.fetchall()]
+            cur.execute("SELECT id, name, level FROM org_groups ORDER BY name")
+            groups = [{"id": r["id"], "name": r["name"], "level": r["level"]} for r in cur.fetchall()]
+        return accounts, users, groups
+    accounts, users, groups = _db(work)
+    return {"accounts": accounts, "users": users, "groups": groups,
+            "scopes": [{"scope_type": s, "label": label, "needs_account": needs_acct, "allowed": _scope_allowed(need, current_user)}
+                       for s, label, needs_acct, need in SCOPE_CHOICES],
+            "report_types": list(schedules.REPORT_TYPES), "weekdays": list(schedules.WEEKDAYS),
+            "timezones": list(TIMEZONES), "default_timezone": schedules.DEFAULT_TZ,
+            "cost_providers": ["all", "aws", "azure", "gcp"],
+            "can_manage": manage}
 
 
 @router.post("/test")

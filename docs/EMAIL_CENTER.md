@@ -42,7 +42,24 @@ recipients, generates the PDF with the normal report worker as the `scheduler` s
   one; `{"dry_run": true}` only shows the period, the recipients and what would happen.
 - The schedule list now includes `next_run_at`.
 
+## Patch 0003 (the Email & Reports page)
+
+Route `/email-center/:tab` (nav: Reports group, "Email & Reports"). It exists only where `EMAIL_CENTER_ENABLED=true`
+(`GET /api/permissions/me` now returns `features.email_center`) and needs `emailcenter.view`; `emailcenter.manage` adds the
+Recipients and Delivery log tabs and every write button. No new frontend dependency.
+
+| Tab | Shows / does |
+|---|---|
+| SMTP | Server, security, sender, mail timezone, link base URL, allowed domains, whether reports are enabled; config problems; the plain-http `PUBLIC_APP_URL` warning (its own field, so it shows even while `SMTP_HOST` is unset); delivery counts for 24 h and 7 d; last failure; a test-email box (manage). |
+| Recipients | Create / edit / delete lists with user, org-group and typed-address pickers; preview of who would really receive mail, optionally for one account. |
+| Report schedules | Create / edit / pause / delete; report type, scope (account, resource, client, synthetic, cost, host, environment, security, SLO), day, time, timezone, list plus extra addresses; next run, last status and last error; Dry run and Run now. Polls every 5 s while a schedule is RUNNING. |
+| Delivery log | Newest first; status and category filters; "Older" pages with `before_id`. |
+
+Backend additions: `GET /api/email-center/options` (`emailcenter.view`) returns the accounts the caller can see, the scope
+choices (each with an `allowed` flag for the caller) and the report types, weekdays and timezones. Users with an email and
+org groups are returned only to `emailcenter.manage`, so a read-only viewer never receives an address. `GET /status` gains
+`smtp.public_url_warning`. A help-center section "Email & Reports" was added.
+
 ## Later patches
 
-- 0003: the Email & Reports page.
 - 0004: alert and incident email rules (opened, escalated, resolved; severity or priority; account; list).

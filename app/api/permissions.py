@@ -16,12 +16,18 @@ Read-only endpoints backing:
     require_permission(...), just never surfaced in the normal RBAC
     permission-management UI.
 """
+import os
+
 from fastapi import APIRouter, Depends
 from app.db import get_connection
 from app.auth.deps import get_current_user
 from app.auth.permissions import get_role_permissions, require_permission, denied_permission_codes
 
 router = APIRouter(prefix="/api/permissions", tags=["Permissions"])
+
+
+def _email_center_enabled() -> bool:
+    return os.getenv("EMAIL_CENTER_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 
 
 @router.get("/me")
@@ -36,7 +42,8 @@ def my_permissions(current_user: dict = Depends(get_current_user)):
         # adding a separate endpoint/fetch just for this. Reports is
         # the first thing here (2026-09-19); add more the same way if
         # another environment-gated feature shows up.
-        "features": {"reports": reports_enabled()},
+        # email_center (2026-11-04): EMAIL_CENTER_ENABLED, so the nav entry and route only exist where the feature is on.
+        "features": {"reports": reports_enabled(), "email_center": _email_center_enabled()},
     }
 
 

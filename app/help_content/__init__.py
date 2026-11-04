@@ -42,6 +42,7 @@ COVERAGE = {
     "Host agents (install, add services, readings in Settings)": "host-agents",
     "Topology": "topology",
     "Reports": "reports",
+    "Email & Reports (SMTP status, recipients, schedules, delivery log)": "email-center",
     "Compliance (audit trail)": "compliance-audit",
     "Smart Search / NL query": "smart-search",
     "Status page": "status-page",
@@ -69,7 +70,7 @@ def all_sections():
         concepts.priority(), concepts.metrics_polling(), concepts.thresholds(), concepts.alerts(),
         features.incidents(), features.escalation(), features.notifications(), extras.cost_jump_alert(), features.status_page(),
         features.slos(), features.synthetic(), features.maintenance(), features.waf(), features.security(),
-        features.topology(), host_agents.host_agents(), features.search(), extras.explain_ai(), features.reports(), features.audit(), features.settings(),
+        features.topology(), host_agents.host_agents(), features.search(), extras.explain_ai(), features.reports(), features.email_center(), features.audit(), features.settings(),
         features.access(), features.rbac_admin(), concepts.polling_admin(), extras.server_settings(), extras.deploy_events(), concepts.api_cost(), concepts.api_actual_cost(),
     ]
     tail = [features.glossary(), features.faq()]

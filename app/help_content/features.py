@@ -199,6 +199,43 @@ def reports():
     ], "Generate, download and email PDF reports")
 
 
+def email_center():
+    return section("email-center", "Email & Reports", "Reports", "editor", "emailcenter.view", [
+        p("One place to see how CloudOps sends email, decide who receives what, schedule reports and read a record of every message. "
+          "The page appears only when the Email & Reports feature is switched on for the installation (EMAIL_CENTER_ENABLED)."),
+        h("The four tabs"),
+        table(["Tab", "What it does", "Needs"], [
+            ["SMTP", "Shows the mail server, sign-in state, sender, the address that links in email point to, problems with the "
+                     "configuration, delivery counts for 24 hours and 7 days, and the last failure. Sends one test email.",
+             "emailcenter.view (the test box needs emailcenter.manage)"],
+            ["Recipients", "Named lists of CloudOps users, org groups and typed addresses. Preview shows who would really receive mail, "
+                           "optionally for one account.", "emailcenter.manage"],
+            ["Report schedules", "Weekly, monthly, quarterly and yearly reports sent by email. Shows the next run, the last result and "
+                                 "the last error. Dry run shows what would happen; Run now sends for the latest full period.",
+             "emailcenter.view to see, emailcenter.manage to change"],
+            ["Delivery log", "Every email handed to the mail server, newest first, with status (sent, failed, skipped), category and "
+                             "a short reason. Filter by status or category; Older loads the next page.", "emailcenter.manage"],
+        ]),
+        h("How a schedule picks its period"),
+        ul(["Each run covers the last full calendar period in the schedule's own timezone (default Asia/Kolkata): the previous Monday-to-Sunday "
+            "week, the previous month, the previous quarter, or for a yearly schedule the 12 full months before the chosen month "
+            "(January gives the calendar year, April gives April to March).",
+            "Monthly, quarterly and yearly schedules run on day 1 to 28, so every month has that day.",
+            "A run missed because the service was down is still sent if it is less than 36 hours late; after that it is skipped.",
+            "Run now does not use up the scheduled run."]),
+        h("Who receives the mail"),
+        ul(["A person's current email is read when the mail is sent. Inactive users and users with no email are skipped.",
+            "For mail about one account, users who may not see that account are skipped. Typed addresses always stay.",
+            "Each recipient gets their own message, and each one is recorded in the delivery log.",
+            "If REPORT_EMAIL_ALLOWED_DOMAINS is set, only those domains can be added or sent to."]),
+        h("Limits and requirements"),
+        ul(["SMTP settings stay in the server's .env file; this page shows them and tests them but never shows the username or password.",
+            "A schedule can only be saved by someone who could generate that same report by hand. Cost and client reports are admin only.",
+            "With REPORTS_ENABLED=false or SMTP not configured, a scheduled run stops before the PDF and records a skipped row for each recipient with the reason.",
+            "If PUBLIC_APP_URL starts with http:// the SMTP tab warns you: password-reset and set-password links then travel unencrypted."]),
+    ], "SMTP status, recipient lists, scheduled reports and the delivery log")
+
+
 def audit():
     return section("compliance-audit", "Compliance (audit trail)", "Reports", "viewer", "audit.view", [
         p("The Compliance page is the full activity history of admin and viewer actions. Reading it needs audit.view; "

@@ -1,0 +1,33 @@
+/* Email & Reports page. Token-only, same look as the ui kit. */
+.ec-page { display: flex; flex-direction: column; gap: 16px; }
+.ec-tabs { display: flex; }
+.ec-stack { display: flex; flex-direction: column; gap: 16px; }
+.ec-dim { color: var(--text-muted); font-size: var(--fs-secondary); }
+.ec-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: var(--fs-secondary); }
+.ec-facts dt { color: var(--text-muted); }
+.ec-facts dd { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; }
+.ec-problems { margin: 12px 0 0; padding-left: 18px; color: var(--accent-red); font-size: var(--fs-secondary); }
+.ec-warn, .ec-error, .ec-ok { margin: 12px 0 0; padding: 10px 12px; border-radius: var(--radius); font-size: var(--fs-secondary); border: 1px solid var(--border-md); }
+.ec-warn { color: var(--accent-yellow); border-color: var(--accent-yellow); background: rgba(245,158,11,0.08); }
+.ec-error { color: var(--accent-red); border-color: var(--accent-red); background: rgba(242,104,104,0.08); }
+.ec-ok { color: var(--accent-green); border-color: var(--accent-green); background: rgba(34,197,94,0.08); }
+.ec-lastfail { margin: 0; font-size: var(--fs-secondary); }
+.ec-inline { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.ec-inline .ui-input { min-width: 260px; }
+.ec-inline-label { display: flex; flex-direction: column; gap: 4px; max-width: 360px; margin-bottom: 12px; font-size: var(--fs-label); color: var(--text-muted); }
+.ec-form { display: flex; flex-direction: column; gap: 14px; max-width: 880px; }
+.ec-form label { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-label); color: var(--text-muted); }
+.ec-form .ui-input { width: 100%; box-sizing: border-box; }
+.ec-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.ec-pick { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.ec-pick legend { font-size: var(--fs-label); color: var(--text-muted); padding: 0 6px; }
+.ec-checks { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; }
+.ec-check { display: flex !important; flex-direction: row !important; align-items: center; gap: 8px !important; color: var(--text-primary) !important; font-size: var(--fs-secondary) !important; }
+.ec-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.ec-rowbtns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.ec-addr { margin: 4px 0 12px; padding-left: 18px; font-size: var(--fs-secondary); }
+.ec-filters { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.ec-filters label { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-label); color: var(--text-muted); }
+.ec-more { display: flex; justify-content: center; margin-top: 12px; }
+.ec-reason { display: block; max-width: 360px; font-size: var(--fs-caption); color: var(--accent-red); overflow-wrap: anywhere; }
+@media (max-width: 720px) { .ec-facts { grid-template-columns: 1fr; } .ec-inline .ui-input { min-width: 0; width: 100%; } }
