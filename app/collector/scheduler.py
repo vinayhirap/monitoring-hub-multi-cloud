@@ -334,6 +334,14 @@ def run_once(tier="standard"):
             evaluate_escalations()
         except Exception as e:
             log_event("escalation_eval_failed", f"evaluate_escalations failed (non-fatal): {e}", severity="WARNING")
+        # Email rules (Email & Reports centre): ONE sweep per standard cycle for alerts resolved and incidents opened or
+        # resolved (covers manual and auto-resolve, and the incidents the low tier correlates). It only QUEUES the sweep;
+        # a sweep still queued or running is not queued again, and the worker thread does the work, never this loop.
+        try:
+            from app.email import rule_dispatch
+            rule_dispatch.request_sweep()
+        except Exception as e:
+            log_event("email_rule_sweep_failed", f"email rule sweep could not be queued (non-fatal): {e}", severity="WARNING")
         
 
     # AIOps: lite CSPM security checks (2026-09-14) -- run on the

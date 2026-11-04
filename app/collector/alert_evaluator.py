@@ -1062,4 +1062,15 @@ def _evaluate_row(cursor, row, silenced_map, stats):
             "triggered_at": _dt.utcnow(),
         })
     publishes.append(_notify_channels)
+
+    def _rule_mail():
+        # Email rules (Email & Reports centre). Runs after commit with the other publishes and only QUEUES the job:
+        # the database lookups and the SMTP send happen on the rule worker thread, never in the evaluation loop.
+        from app.email import rule_dispatch
+        rule_dispatch.enqueue_alert_event("alert_opened", {
+            "id": new_alert_id, "severity": promoted_severity, "metric_name": metric_name,
+            "resource_id": aws_resource_id, "account_name": account_name, "aws_account_id": aws_account_id,
+            "value": metric_value, "threshold": threshold_value, "silenced": False, "priority": new_priority,
+        })
+    publishes.append(_rule_mail)
     return publishes

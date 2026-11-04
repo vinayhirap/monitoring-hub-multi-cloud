@@ -238,4 +238,15 @@ def evaluate_escalations() -> int:
             })
         except Exception:
             logger.exception(f"[escalation] channel notification failed for alert {row['alert_id']}")
+        # Email rules (Email & Reports centre): only QUEUES the job; the worker thread does the lookups and the send.
+        try:
+            from app.email import rule_dispatch
+            rule_dispatch.enqueue_alert_event("alert_escalated", {
+                "id": row["alert_id"], "severity": row["severity"], "metric_name": row["metric_name"],
+                "resource_id": row["resource_id"], "aws_account_id": row["aws_account_id"],
+                "account_name": row.get("account_name"), "group_id": row["escalate_to_group_id"],
+                "group_name": row["group_name"], "silenced": False,
+            })
+        except Exception:
+            logger.exception(f"[escalation] email rule queueing failed for alert {row['alert_id']}")
     return len(claimed_rows)
