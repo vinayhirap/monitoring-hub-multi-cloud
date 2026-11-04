@@ -132,6 +132,11 @@ def _start_all_collector_threads(leader_event, collector_enabled=True, describe_
     if os.getenv("REPORTS_ENABLED", "false").strip().lower() in ("true", "1", "yes"):
         from app.reports.worker import run_sweeper_loop
         threading.Thread(target=run_sweeper_loop, args=(leader_event,), daemon=True, name="report-sweeper").start()
+    # Report schedules (Email & Reports centre). Independent of REPORTS_ENABLED on purpose: with reports off (dev) a due
+    # schedule is recorded as SKIPPED with the reason instead of silently never running.
+    if os.getenv("EMAIL_CENTER_ENABLED", "false").strip().lower() in ("true", "1", "yes"):
+        from app.reports.scheduler import run_scheduler_loop
+        threading.Thread(target=run_scheduler_loop, args=(leader_event,), daemon=True, name="report-scheduler").start()
 
 
 @asynccontextmanager

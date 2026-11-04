@@ -13,19 +13,22 @@ Email & Reports centre API (foundation).
   POST   /api/email-center/schedules              emailcenter.manage   create (see app/email/schedules.py for the fields)
   PUT    /api/email-center/schedules/{id}         emailcenter.manage
   DELETE /api/email-center/schedules/{id}         emailcenter.manage
+  POST   /api/email-center/schedules/{id}/run     emailcenter.manage   {dry_run?} run now for the last full period (dry_run only shows what would happen)
   GET    /api/email-center/log                    emailcenter.manage   delivery log, newest first (status, category, before_id, limit)
 
 Off unless EMAIL_CENTER_ENABLED=true (503 with a clear message, like REPORTS_ENABLED). SMTP itself stays in .env: this API
 shows it and tests it, it never accepts or returns the username or password. A schedule is only saved by someone who could
-generate that very report by hand (same permission and account-scope checks as POST /api/reports/generate); the scheduler
-that runs them is patch 0002, so a saved schedule does not send anything yet. Every change is written to the audit log.
+generate that very report by hand (same permission and account-scope checks as POST /api/reports/generate). Saved schedules
+are run by app/reports/scheduler.py (leader-guarded thread, once per calendar period, as the 'scheduler' system user).
+Every change is written to the audit log.
 """
 import logging
 import os
 import re
+from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
 
 from app.audit import write_audit
 from app.auth.authorization import get_accessible_account_ids
@@ -109,6 +112,15 @@ def _list_out(row, used_by=0):
             "created_at": _iso(row.get("created_at")), "updated_at": _iso(row.get("updated_at"))}
 
 
+def _next_run(row):
+    if not row.get("enabled"):
+        return None
+    try:
+        return _iso(schedules.next_occurrence(row, datetime.now(timezone.utc)).astimezone(timezone.utc).replace(tzinfo=None))
+    except Exception:
+        return None
+
+
 def _schedule_out(row, list_names, show_recipients):
     out = {"id": row["id"], "name": row["name"], "enabled": bool(row["enabled"]), "report_type": row["report_type"],
            "scope_type": row["scope_type"], "scope_id": row["scope_id"], "account_id": row["account_id"],
@@ -117,6 +129,7 @@ def _schedule_out(row, list_names, show_recipients):
            "when": schedules.describe(row), "recipient_list_id": row["recipient_list_id"],
            "recipient_list_name": list_names.get(row["recipient_list_id"]),
            "created_by": row.get("created_by"), "created_at": _iso(row.get("created_at")),
+           "next_run_at": _next_run(row),
            "last_run_at": _iso(row.get("last_run_at")), "last_status": row.get("last_status"),
            "last_error": row.get("last_error")}
     if show_recipients:
@@ -422,6 +435,50 @@ def delete_schedule(schedule_id: int, request: Request,
     name = _db(work)
     _audit(current_user, "Report schedule deleted", f"'{name}'", request)
     return {"status": "deleted"}
+
+
+@router.post("/schedules/{schedule_id}/run")
+def run_schedule_now(schedule_id: int, background_tasks: BackgroundTasks, request: Request,
+                     payload: dict | None = Body(None),
+                     current_user: dict = Depends(require_permission("emailcenter.manage"))):
+    """Run one schedule now for its most recent full calendar period. It does not use up the period (the next scheduled run
+    still happens). {"dry_run": true} only reports the period, the recipients and what would happen."""
+    from app.reports import scheduler
+    dry = bool((payload or {}).get("dry_run"))
+
+    def load(cur):
+        cur.execute("SELECT * FROM report_schedules WHERE id = %s", (schedule_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Schedule not found")
+        return row
+    row = _db(load)
+    _validate_scope(row, current_user)
+    now = datetime.now(timezone.utc)
+    period = {"period_start": None, "period_end": None}
+    period["period_start"], period["period_end"] = schedules.period_for(row, schedules.latest_occurrence(row, now))
+    reports_on = os.getenv("REPORTS_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+    smtp_ok = mailer.is_configured()
+    if dry:
+        addresses, skipped = scheduler.resolve_recipients(row)
+        would = ("send the report to everyone listed" if addresses and reports_on and smtp_ok else
+                 "not send: no one to send to" if not addresses else
+                 "not send: reports are disabled on this environment (REPORTS_ENABLED=false)" if not reports_on else
+                 "not send: SMTP is not configured")
+        return {"dry_run": True, "when": schedules.describe(row), "period_start": _iso(period["period_start"]),
+                "period_end": _iso(period["period_end"]), "recipients": addresses, "skipped": skipped,
+                "reports_enabled": reports_on, "smtp_configured": smtp_ok, "would": would}
+    last = row.get("last_run_at")
+    if row.get("last_status") == "RUNNING" and last and datetime.utcnow() - last < timedelta(minutes=30):
+        raise HTTPException(status_code=409, detail="This schedule is already running")
+
+    def mark(cur):
+        cur.execute("UPDATE report_schedules SET last_status = 'RUNNING', last_error = NULL, last_run_at = UTC_TIMESTAMP() WHERE id = %s",
+                    (schedule_id,))
+    _db(mark)
+    background_tasks.add_task(scheduler.execute, row, period)
+    _audit(current_user, "Report schedule run now", f"'{row['name']}' for {period['period_start']} .. {period['period_end']}", request)
+    return {"status": "started", "period_start": _iso(period["period_start"]), "period_end": _iso(period["period_end"])}
 
 
 # ── delivery log ─────────────────────────────────────────────────────

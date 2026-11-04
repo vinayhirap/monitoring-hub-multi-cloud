@@ -6,6 +6,7 @@ A schedule says: send THIS report (type, scope) to THIS recipient list at THIS t
 frequency: WEEKLY runs on a weekday, MONTHLY and QUARTERLY on a day of the month (1-28, so every month has it), YEARLY
 on a month and day. Times are wall-clock in the schedule's own timezone (default Asia/Kolkata).
 """
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from app.email import recipients
@@ -97,3 +98,111 @@ def describe(row):
     if rt == "QUARTERLY":
         return f"Quarterly on day {int(row['run_day'])} of the first month of each quarter at {t}"
     return f"Yearly on day {int(row['run_day'])} of month {int(row['run_month'])} at {t}"
+
+
+# ── calendar maths (pure: the clock is always passed in) ─────────────
+#
+# Reports cover the LAST FULL CALENDAR period before the run, in the schedule's own timezone:
+#   WEEKLY     the Monday-to-Sunday week before the week of the run
+#   MONTHLY    the previous calendar month
+#   QUARTERLY  the previous calendar quarter (runs in January, April, July, October)
+#   YEARLY     the 12 full months before the run month: run_month = 1 gives the calendar year, run_month = 4 gives April
+#              to March (the Indian financial year)
+# A run that was missed (service down) is still sent while it is less than CATCHUP_HOURS late, never later: a monthly
+# report that arrives three weeks late is worse than none. A schedule never sends for an occurrence before it was created.
+
+CATCHUP_HOURS = 36
+_QUARTER_MONTHS = (1, 4, 7, 10)
+
+
+def _tz(row):
+    return ZoneInfo(row.get("timezone") or DEFAULT_TZ)
+
+
+def _at(tz, d, row):
+    return datetime.combine(d, time(int(row["run_hour"]), int(row["run_minute"])), tzinfo=tz)
+
+
+def _add_months(y, m, delta):
+    idx = y * 12 + (m - 1) + delta
+    return idx // 12, idx % 12 + 1
+
+
+def latest_occurrence(row, now_utc):
+    """The most recent scheduled run time at or before now, as an aware datetime in the schedule's timezone."""
+    tz = _tz(row)
+    now = now_utc.astimezone(tz)
+    rt = row["report_type"]
+    if rt == "WEEKLY":
+        d = now.date() - timedelta(days=now.weekday()) + timedelta(days=int(row["run_weekday"]))
+        occ = _at(tz, d, row)
+        return occ if occ <= now else _at(tz, d - timedelta(days=7), row)
+    if rt == "MONTHLY":
+        occ = _at(tz, date(now.year, now.month, int(row["run_day"])), row)
+        if occ <= now:
+            return occ
+        y, m = _add_months(now.year, now.month, -1)
+        return _at(tz, date(y, m, int(row["run_day"])), row)
+    if rt == "QUARTERLY":
+        for k in range(0, 13):
+            y, m = _add_months(now.year, now.month, -k)
+            if m in _QUARTER_MONTHS:
+                occ = _at(tz, date(y, m, int(row["run_day"])), row)
+                if occ <= now:
+                    return occ
+        raise ValueError("no quarterly occurrence found")                      # unreachable: a quarter start is <= 3 months back
+    occ = _at(tz, date(now.year, int(row["run_month"]), int(row["run_day"])), row)
+    return occ if occ <= now else _at(tz, date(now.year - 1, int(row["run_month"]), int(row["run_day"])), row)
+
+
+def next_occurrence(row, now_utc):
+    """The first scheduled run time strictly after now (aware, schedule timezone)."""
+    tz, last = _tz(row), latest_occurrence(row, now_utc)
+    d, rt = last.date(), row["report_type"]
+    if rt == "WEEKLY":
+        return _at(tz, d + timedelta(days=7), row)
+    if rt == "MONTHLY":
+        y, m = _add_months(d.year, d.month, 1)
+    elif rt == "QUARTERLY":
+        y, m = _add_months(d.year, d.month, 3)
+    else:
+        y, m = d.year + 1, d.month
+    return _at(tz, date(y, m, d.day), row)
+
+
+def period_for(row, occurrence):
+    """Reporting window for a run at `occurrence` -> (start, end) as naive UTC datetimes, ready for report_jobs."""
+    tz, rt = occurrence.tzinfo, row["report_type"]
+    o = occurrence.date()
+    if rt == "WEEKLY":
+        end_d = o - timedelta(days=o.weekday())
+        start_d = end_d - timedelta(days=7)
+    elif rt == "MONTHLY":
+        end_d = date(o.year, o.month, 1)
+        start_d = date(*_add_months(o.year, o.month, -1), 1)
+    elif rt == "QUARTERLY":
+        end_d = date(o.year, 3 * ((o.month - 1) // 3) + 1, 1)
+        start_d = date(*_add_months(end_d.year, end_d.month, -3), 1)
+    else:
+        end_d = date(o.year, o.month, 1)
+        start_d = date(o.year - 1, o.month, 1)
+    to_utc = lambda d: datetime.combine(d, time(0, 0), tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+    return to_utc(start_d), to_utc(end_d)
+
+
+def due(row, now_utc, created_at=None, last_period_end=None, catchup_hours=CATCHUP_HOURS):
+    """None, or {"occurrence", "period_start", "period_end"} when this schedule should run now. created_at and
+    last_period_end are naive UTC datetimes as stored. A period is only ever sent once (last_period_end)."""
+    if not row.get("enabled"):
+        return None
+    occ = latest_occurrence(row, now_utc)
+    occ_utc = occ.astimezone(timezone.utc).replace(tzinfo=None)
+    now_naive = now_utc.astimezone(timezone.utc).replace(tzinfo=None)
+    if now_naive - occ_utc > timedelta(hours=catchup_hours):
+        return None
+    if created_at is not None and occ_utc < created_at:
+        return None
+    start, end = period_for(row, occ)
+    if last_period_end is not None and end <= last_period_end:
+        return None
+    return {"occurrence": occ, "period_start": start, "period_end": end}
