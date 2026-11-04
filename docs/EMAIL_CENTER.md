@@ -60,6 +60,57 @@ choices (each with an `allowed` flag for the caller) and the report types, weekd
 org groups are returned only to `emailcenter.manage`, so a read-only viewer never receives an address. `GET /status` gains
 `smtp.public_url_warning`. A help-center section "Email & Reports" was added.
 
-## Later patches
+## Patch 0004 (rule storage and API)
 
-- 0004: alert and incident email rules (opened, escalated, resolved; severity or priority; account; list).
+Migration 136 adds `email_alert_rules` (a rule: events, lowest severity, one account or all, recipient list, extra addresses)
+and `email_rule_sends` (one row per mail sent, used for the once-per-event, throttle and hourly-cap checks).
+`app/email/alert_rules.py` is pure: validation, matching and the throttle decision. API: `GET/POST /api/email-center/rules`,
+`PUT/DELETE /api/email-center/rules/{id}` (`emailcenter.view` lists, `emailcenter.manage` changes; addresses are hidden from
+viewers; a scoped user sees only rules for accounts they can see; a recipient list used by a rule cannot be deleted).
+
+## Patch 0005 (sending the rule mail)
+
+`app/email/rule_dispatch.py`. For each event it takes the enabled rules that match the event, severity and account and works
+out who to mail:
+
+- Recipients come from the rule's list and extra addresses through `recipients.resolve` (inactive users, users without an
+  email and users who may not see the account are dropped).
+- Never mailed here: an address an email notification channel already mails for that alert (opened / escalated), a member of
+  the escalation group (escalated only), anyone for a silenced alert, and a person already mailed for that same alert or
+  incident event by any rule. If the channel / group lookup fails, nothing is sent for that event.
+- Limits: one mail per person per resource and event inside `EMAIL_RULE_THROTTLE_SECONDS` (1800), at most
+  `EMAIL_RULE_MAX_PER_RECIPIENT_HOUR` (20) per rule and person per hour. The `email_rule_sends` row is written only after a
+  successful send.
+- Mail goes out as category `alert_rule` (visible in the Delivery log). Everything is a no-op unless `EMAIL_CENTER_ENABLED=true`.
+
+**It never delays the collector.** The hooks only put a job on a bounded in-memory queue; one daemon worker thread does every
+query and SMTP send. A sweep that is already queued or running is not queued again; a full queue drops the job.
+
+| Event | Hook |
+|---|---|
+| alert opened | post-commit publish in `alert_evaluator.py` |
+| alert escalated | `escalation.py`, after the commit |
+| alert resolved, incident opened / resolved | one sweep per standard (5-minute) collector cycle in `scheduler.py`, looking back `EMAIL_RULE_SWEEP_MINUTES` (30) |
+
+Not covered: alerts raised by synthetic checks, cost-jump and the host-agent watchdog do not send an "opened" rule mail (their
+resolved mail is still sent by the sweep). Incidents correlated in the 15-minute tier are picked up within about 5 minutes.
+
+## Patch 0006 (the rules tab, help and docs)
+
+Frontend only, no new dependency, no new route, no migration. The Email & Reports page gets a fifth tab, **Alert & incident
+rules** (`/email-center/rules`):
+
+- List: name, events, severity, account, recipients (hidden without `emailcenter.manage`), Paused badge.
+- `emailcenter.manage`: New rule, Edit, Pause / Enable, Delete (confirmed). The form picks events (five), severity
+  (Warning and Critical, or Critical only), one account or all accounts, a recipient list and extra addresses. The backend stays
+  the authority on every rule (including the account-access check).
+- A "Good to know" panel states the limits above. The help-center section "Email & Reports" now covers the rules.
+
+## Turning it on
+
+1. `EMAIL_CENTER_ENABLED=true` and a working SMTP block in `.env`; apply migrations 135 and 136; restart.
+2. Create a recipient list (Recipients tab), then a rule (Alert & incident rules tab) with one address of your own first.
+3. Read the Delivery log (category `alert_rule`) after a real alert opens or resolves.
+
+Before enabling on a live system, confirm against the real database: `alerts.resolved_at`, `alerts.silenced`,
+`incidents.created_at` and `incidents.resolved_at` exist (0005 was verified against code and migrations, not a live DB).

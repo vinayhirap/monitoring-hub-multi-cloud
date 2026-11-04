@@ -203,7 +203,7 @@ def email_center():
     return section("email-center", "Email & Reports", "Reports", "editor", "emailcenter.view", [
         p("One place to see how CloudOps sends email, decide who receives what, schedule reports and read a record of every message. "
           "The page appears only when the Email & Reports feature is switched on for the installation (EMAIL_CENTER_ENABLED)."),
-        h("The four tabs"),
+        h("The five tabs"),
         table(["Tab", "What it does", "Needs"], [
             ["SMTP", "Shows the mail server, sign-in state, sender, the address that links in email point to, problems with the "
                      "configuration, delivery counts for 24 hours and 7 days, and the last failure. Sends one test email.",
@@ -212,6 +212,9 @@ def email_center():
                            "optionally for one account.", "emailcenter.manage"],
             ["Report schedules", "Weekly, monthly, quarterly and yearly reports sent by email. Shows the next run, the last result and "
                                  "the last error. Dry run shows what would happen; Run now sends for the latest full period.",
+             "emailcenter.view to see, emailcenter.manage to change"],
+            ["Alert & incident rules", "Email a recipient list when an alert or incident is opened, escalated or resolved. Choose the events, "
+                                        "the lowest severity and one account or all accounts.",
              "emailcenter.view to see, emailcenter.manage to change"],
             ["Delivery log", "Every email handed to the mail server, newest first, with status (sent, failed, skipped), category and "
                              "a short reason. Filter by status or category; Older loads the next page.", "emailcenter.manage"],
@@ -228,6 +231,16 @@ def email_center():
             "For mail about one account, users who may not see that account are skipped. Typed addresses always stay.",
             "Each recipient gets their own message, and each one is recorded in the delivery log.",
             "If REPORT_EMAIL_ALLOWED_DOMAINS is set, only those domains can be added or sent to."]),
+        h("Alert and incident rules"),
+        ul(["A rule says: when one of these events happens at or above this severity, for this account or all accounts, mail this list.",
+            "Events: alert opened, alert escalated, alert resolved, incident opened, incident resolved. Severity is Warning and Critical, or Critical only.",
+            "Mail is sent by a background worker, so a slow or failing mail server never delays monitoring or the alert itself.",
+            "Each person gets one mail per alert or incident event, however many rules match. Not mailed: users who may not see the account, "
+            "addresses an email notification channel already mails for that alert, members of the escalation group for an escalated alert, and silenced alerts.",
+            "To avoid floods, one person gets one mail per resource and event in a 30-minute window and at most 20 mails an hour per rule (the server settings can change these).",
+            "Resolved alerts and incidents are found by a check that runs about every 5 minutes, so those mails can come a few minutes late.",
+            "Alerts raised by synthetic checks, cost-jump and the host-agent watchdog do not send an opened mail through a rule.",
+            "Rule mail is recorded in the Delivery log with the category alert_rule. A recipient list used by a rule cannot be deleted."]),
         h("Limits and requirements"),
         ul(["SMTP settings stay in the server's .env file; this page shows them and tests them but never shows the username or password.",
             "A schedule can only be saved by someone who could generate that same report by hand. Cost and client reports are admin only.",

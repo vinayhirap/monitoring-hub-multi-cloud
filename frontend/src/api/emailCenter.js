@@ -20,6 +20,11 @@ export const deleteList     = (id) => apiFetch(`${BASE}/lists/${id}`, j("DELETE"
 export const previewList    = (id, accountId) =>
   apiFetch(`${BASE}/lists/${id}/preview${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ""}`);
 
+export const listRules      = () => apiFetch(`${BASE}/rules`);
+export const createRule     = (d) => apiFetch(`${BASE}/rules`, j("POST", d));
+export const updateRule     = (id, d) => apiFetch(`${BASE}/rules/${id}`, j("PUT", d));
+export const deleteRule     = (id) => apiFetch(`${BASE}/rules/${id}`, j("DELETE"));
+
 export const listSchedules  = () => apiFetch(`${BASE}/schedules`);
 export const createSchedule = (d) => apiFetch(`${BASE}/schedules`, j("POST", d));
 export const updateSchedule = (id, d) => apiFetch(`${BASE}/schedules/${id}`, j("PUT", d));

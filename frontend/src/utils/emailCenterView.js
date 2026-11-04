@@ -130,6 +130,63 @@ export function scopeLabel(row, accounts = []) {
   }
 }
 
+// ── alert & incident rules ───────────────────────────────────────────
+
+// Same ids and order as app/email/alert_rules.EVENTS; the backend stays the authority on what is valid.
+export const RULE_EVENTS = [
+  { key: "alert_opened", label: "Alert opened", hint: "A new alert is raised." },
+  { key: "alert_escalated", label: "Alert escalated", hint: "An alert stays open long enough to be escalated." },
+  { key: "alert_resolved", label: "Alert resolved", hint: "An alert closes, by itself or by a person." },
+  { key: "incident_opened", label: "Incident opened", hint: "Related alerts are grouped into a new incident." },
+  { key: "incident_resolved", label: "Incident resolved", hint: "An incident closes." },
+];
+export const RULE_SEVERITIES = [
+  { key: "WARNING", label: "Warning and Critical" },
+  { key: "CRITICAL", label: "Critical only" },
+];
+export const ruleEventLabel = key => RULE_EVENTS.find(e => e.key === key)?.label || key;
+
+export const emptyRuleForm = () => ({
+  name: "", enabled: true, events: ["alert_opened", "alert_resolved"], min_severity: "WARNING",
+  account_id: "", recipient_list_id: "", extra_emails: "",
+});
+
+export const ruleToForm = r => ({
+  name: r?.name || "", enabled: r ? !!r.enabled : true,
+  events: RULE_EVENTS.map(e => e.key).filter(k => (r?.events || []).includes(k)),
+  min_severity: r?.min_severity || "WARNING",
+  account_id: r?.account_id != null ? String(r.account_id) : "",
+  recipient_list_id: r?.recipient_list_id != null ? String(r.recipient_list_id) : "",
+  extra_emails: (r?.extra_emails || []).join(", "),
+});
+
+/** Toggle an event, keeping the canonical order (so the stored CSV and the display never reshuffle). */
+export const toggleRuleEvent = (events, key) =>
+  RULE_EVENTS.map(e => e.key).filter(k => (k === key ? !events.includes(k) : events.includes(k)));
+
+export function ruleFormProblem(f) {
+  if (!String(f.name || "").trim()) return "Give the rule a name.";
+  if (!f.events.length) return "Choose at least one event.";
+  const { bad, emails } = parseTypedEmails(f.extra_emails);
+  if (bad.length) return `Not a valid email address: ${bad[0]}`;
+  if (!f.recipient_list_id && !emails.length) return "Choose a recipient list or type at least one email address.";
+  return "";
+}
+
+export const ruleFormToPayload = f => ({
+  name: f.name.trim(), enabled: !!f.enabled, events: [...f.events], min_severity: f.min_severity,
+  account_id: f.account_id ? Number(f.account_id) : null,
+  recipient_list_id: f.recipient_list_id ? Number(f.recipient_list_id) : null,
+  extra_emails: parseTypedEmails(f.extra_emails).emails,
+});
+
+/** "All accounts" / the account's name for a stored rule, given the options' accounts. */
+export function ruleAccountLabel(rule, accounts = []) {
+  if (rule.account_id == null) return "All accounts";
+  const a = accounts.find(x => String(x.id) === String(rule.account_id));
+  return a ? a.name : `Account ${rule.account_id}`;
+}
+
 /** Colour tone for a schedule's last_status / a delivery status (matches the ui kit's Badge tones). */
 export function statusTone(s) {
   switch (String(s || "").toUpperCase()) {

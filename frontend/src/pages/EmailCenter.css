@@ -30,4 +30,5 @@
 .ec-filters label { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-label); color: var(--text-muted); }
 .ec-more { display: flex; justify-content: center; margin-top: 12px; }
 .ec-reason { display: block; max-width: 360px; font-size: var(--fs-caption); color: var(--accent-red); overflow-wrap: anywhere; }
+.ec-notes { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: var(--fs-secondary); }
 @media (max-width: 720px) { .ec-facts { grid-template-columns: 1fr; } .ec-inline .ui-input { min-width: 0; width: 100%; } }

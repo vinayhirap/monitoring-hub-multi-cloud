@@ -4,6 +4,7 @@ import {
   parseTypedEmails, emptyListForm, listToForm, listFormProblem, listFormToPayload, toggleId, emptyScheduleForm,
   scheduleToForm, formScopeId, scheduleFormProblem, scheduleFormToPayload, scopeLabel, statusTone, deliveryTone,
   nextBeforeId, smtpProblems, splitScope,
+  RULE_EVENTS, emptyRuleForm, ruleToForm, toggleRuleEvent, ruleFormProblem, ruleFormToPayload, ruleAccountLabel, ruleEventLabel,
 } from "../emailCenterView.js";
 
 test("parseTypedEmails de-duplicates case-insensitively and reports the bad ones", () => {
@@ -101,4 +102,42 @@ test("tones, paging and the SMTP problem list", () => {
   const s = smtpProblems({ public_url_warning: "http!", problems: ["http!", "port bad"] });
   assert.deepEqual(s, { problems: ["port bad"], urlWarning: "http!" });
   assert.deepEqual(smtpProblems(null), { problems: [], urlWarning: "" });
+});
+
+test("rule form: needs a name, an event and a recipient; payload matches the API", () => {
+  assert.deepEqual(RULE_EVENTS.map(e => e.key), ["alert_opened", "alert_escalated", "alert_resolved", "incident_opened", "incident_resolved"]);
+  const f = { ...emptyRuleForm(), name: "Ops", recipient_list_id: "3" };
+  assert.equal(ruleFormProblem(f), "");
+  assert.match(ruleFormProblem({ ...f, name: "  " }), /name/);
+  assert.match(ruleFormProblem({ ...f, events: [] }), /event/);
+  assert.match(ruleFormProblem({ ...f, recipient_list_id: "" }), /recipient list or type/);
+  assert.match(ruleFormProblem({ ...f, extra_emails: "nope" }), /valid email/);
+  assert.equal(ruleFormProblem({ ...f, recipient_list_id: "", extra_emails: "a@b.co" }), "");
+  assert.deepEqual(ruleFormToPayload({ ...f, name: " Ops ", account_id: "7", extra_emails: "A@b.co, a@B.co" }), {
+    name: "Ops", enabled: true, events: ["alert_opened", "alert_resolved"], min_severity: "WARNING",
+    account_id: 7, recipient_list_id: 3, extra_emails: ["A@b.co"],
+  });
+  assert.equal(ruleFormToPayload(emptyRuleForm()).account_id, null);
+});
+
+test("rule form: events keep canonical order and a stored rule round-trips", () => {
+  assert.deepEqual(toggleRuleEvent(["alert_resolved"], "alert_opened"), ["alert_opened", "alert_resolved"]);
+  assert.deepEqual(toggleRuleEvent(["alert_opened", "alert_resolved"], "alert_opened"), ["alert_resolved"]);
+  const stored = { name: "R", enabled: 0, events: ["incident_opened", "alert_opened"], min_severity: "CRITICAL", account_id: 4, recipient_list_id: null, extra_emails: ["x@y.co"] };
+  const f = ruleToForm(stored);
+  assert.deepEqual(f.events, ["alert_opened", "incident_opened"]);
+  assert.equal(f.enabled, false);
+  assert.equal(f.account_id, "4");
+  assert.equal(f.recipient_list_id, "");
+  assert.equal(f.extra_emails, "x@y.co");
+  assert.equal(ruleToForm(null).enabled, true);
+});
+
+test("rule labels: account name, all accounts, unknown account, event label", () => {
+  const accounts = [{ id: 4, name: "AuroGov" }];
+  assert.equal(ruleAccountLabel({ account_id: null }, accounts), "All accounts");
+  assert.equal(ruleAccountLabel({ account_id: 4 }, accounts), "AuroGov");
+  assert.equal(ruleAccountLabel({ account_id: 9 }, accounts), "Account 9");
+  assert.equal(ruleEventLabel("alert_escalated"), "Alert escalated");
+  assert.equal(ruleEventLabel("weird"), "weird");
 });

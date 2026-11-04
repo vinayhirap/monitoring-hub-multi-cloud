@@ -12,6 +12,7 @@ import { getOptions, errMsg } from "../api/emailCenter";
 import SmtpTab from "./emailcenter/SmtpTab";
 import RecipientsTab from "./emailcenter/RecipientsTab";
 import SchedulesTab from "./emailcenter/SchedulesTab";
+import RulesTab from "./emailcenter/RulesTab";
 import DeliveryLogTab from "./emailcenter/DeliveryLogTab";
 import "./EmailCenter.css";
 
@@ -19,6 +20,7 @@ const ALL_TABS = [
   { key: "smtp", label: "SMTP", manage: false },
   { key: "recipients", label: "Recipients", manage: true },
   { key: "schedules", label: "Report schedules", manage: false },
+  { key: "rules", label: "Alert & incident rules", manage: false },
   { key: "log", label: "Delivery log", manage: true },
 ];
 
@@ -42,7 +44,7 @@ export default function EmailCenter() {
     <div className="ec-page">
       <PageHeader
         title="Email & Reports"
-        subtitle="SMTP status, who receives what, scheduled weekly, monthly, quarterly and yearly reports, and a record of every email CloudOps sent." />
+        subtitle="SMTP status, who receives what, scheduled weekly, monthly, quarterly and yearly reports, alert and incident email rules, and a record of every email CloudOps sent." />
       <div className="ec-tabs">
         <SegmentedControl label="Email & Reports sections" options={tabs} value={tab} onChange={k => navigate(`/email-center/${k}`)} />
       </div>
@@ -50,6 +52,7 @@ export default function EmailCenter() {
       {tab === "smtp" && <SmtpTab canManage={canManage} />}
       {tab === "recipients" && <RecipientsTab options={options} onChanged={loadOptions} />}
       {tab === "schedules" && <SchedulesTab options={options} canManage={canManage} />}
+      {tab === "rules" && <RulesTab options={options} canManage={canManage} />}
       {tab === "log" && <DeliveryLogTab />}
     </div>
   );
