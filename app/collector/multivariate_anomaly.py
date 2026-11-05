@@ -222,6 +222,7 @@ def detect_multivariate_anomalies() -> int:
     try:
         candidates = _resource_ids_with_enough_metrics(cursor)
         anomalous_resource_ids = set()
+        opened = []                           # (alert id, account id, resource id) of rows INSERTED this run
         k = MIN_CONSECUTIVE_BUCKETS
 
         for candidate in candidates:
@@ -267,11 +268,14 @@ def detect_multivariate_anomalies() -> int:
 
             score = float(model.decision_function(recent.values).mean())  # more negative = more anomalous
             anomalous_resource_ids.add((candidate["aws_account_id"], aws_resource_id))
-            _upsert_anomaly_alert(cursor, aws_resource_id, candidate["aws_account_id"],
-                                   score, metric_cols, _format_why(deviations))
+            new_id = _upsert_anomaly_alert(cursor, aws_resource_id, candidate["aws_account_id"],
+                                           score, metric_cols, _format_why(deviations))
+            if new_id:
+                opened.append((new_id, candidate["aws_account_id"], aws_resource_id))
 
         resolved = _resolve_cleared_anomalies(cursor, anomalous_resource_ids)
         conn.commit()
+        _queue_rule_mail(cursor, opened)      # after the commit, only queues; never raises
         logger.info(f"[multivariate_anomaly] scored {scored} resource(s) in {time.time() - started:.1f}s: "
                     f"{raw_flagged} outlier now, {sustained} sustained {k * RESAMPLE_MINUTES}min, "
                     f"{len(anomalous_resource_ids)} confirmed; {resolved} previously-flagged recovered")
@@ -302,7 +306,7 @@ def _upsert_anomaly_alert(cursor, aws_resource_id, aws_account_id, score, metric
             UPDATE alerts SET current_value = %s, last_seen_at = UTC_TIMESTAMP()
             WHERE id = %s
         """, (score, existing["id"]))
-        return
+        return None
 
     # With ENV_AWARE_CLASSIFICATION on, label the alert with the classified environment (migration 083), exactly
     # as the threshold evaluator does; otherwise from the Environment tag. Either way: prod | nonprod.
@@ -330,9 +334,42 @@ def _upsert_anomaly_alert(cursor, aws_resource_id, aws_account_id, score, metric
         VALUES (%s, %s, 'multivariate_anomaly', 'WARNING', %s, %s, 'active',
                 UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0, %s, 0)
     """, (aws_account_id, aws_resource_id, environment, group_key, score))
+    new_id = getattr(cursor, "lastrowid", None)
 
     logger.info(f"[multivariate_anomaly] new anomaly alert on {aws_resource_id} "
                 f"(score={score:.4f}; moved most: {why or 'n/a'}; metrics scored: {len(metric_names)})")
+    return new_id if isinstance(new_id, int) and new_id > 0 else None
+
+
+def _queue_rule_mail(cursor, opened):
+    """Email rules (Email & Reports centre, patch 0008): an anomaly alert that was just opened is offered to the rules like any
+    other alert. Runs after the commit and only QUEUES (the sends happen on the rule worker thread). Resources under an active
+    maintenance window are skipped, because this detector does not create alerts silenced; if that cannot be read, nothing is
+    queued. Never raises, and does nothing unless EMAIL_CENTER_ENABLED=true."""
+    if not opened:
+        return
+    try:
+        from app.email import delivery_log, rule_dispatch
+        if not delivery_log.enabled():
+            return
+        from app.collector.maintenance import active_silenced_map
+        covered = active_silenced_map(cursor)
+        opened = [o for o in opened if (o[1], o[2]) not in covered]
+        if not opened:
+            return
+        names = {}
+        try:
+            ids = sorted({o[1] for o in opened})
+            cursor.execute("SELECT id, account_name FROM aws_accounts WHERE id IN (" + ", ".join(["%s"] * len(ids)) + ")", tuple(ids))
+            names = {r["id"]: r["account_name"] for r in cursor.fetchall()}
+        except Exception:
+            logger.debug("[multivariate_anomaly] account names for the rule mail not read", exc_info=True)
+        for alert_id, account_id, resource_id in opened:
+            rule_dispatch.enqueue_alert_event("alert_opened", {
+                "id": alert_id, "severity": "WARNING", "metric_name": "multivariate_anomaly", "resource_id": resource_id,
+                "aws_account_id": account_id, "account_name": names.get(account_id), "silenced": False})
+    except Exception:
+        logger.warning("[multivariate_anomaly] could not queue the email-rule mail", exc_info=True)
 
 
 def _resolve_cleared_anomalies(cursor, currently_anomalous) -> int:

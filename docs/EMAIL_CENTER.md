@@ -123,8 +123,18 @@ read them): a synthetic check's contacts (outage or certificate topic; opened, e
 recipients for the account (opened). A person is still mailed once per alert event whatever mix of rules, channels and escalation
 matches, because the `email_rule_sends` key is per person, alert and event.
 
-Still not covered: alerts from the cross-metric anomaly detector (`multivariate_anomaly.py`) send no opened rule mail (and no
-channel mail either); their resolved mail is still sent by the sweep.
+## Patch 0008 (cross-metric anomaly alerts)
+
+Backend plus text only (no migration, no new setting). The cross-metric anomaly detector (`multivariate_anomaly.py`) is the last
+alert writer. `_upsert_anomaly_alert` now returns the id of a row it INSERTED (None for a refresh of an open alert), the run
+collects those ids, and after its single `conn.commit()` it calls `_queue_rule_mail`, which queues an `alert_opened` job (severity
+WARNING, one account-name lookup for the whole batch; a failed lookup only drops the name). It does nothing unless
+`EMAIL_CENTER_ENABLED=true`.
+
+This detector does not create alerts silenced (the maintenance job silences them on its next cycle), so the hook reads the active
+maintenance windows itself and queues nothing for a resource inside one; if the windows cannot be read, nothing is queued. These
+alerts send no channel mail and have no contact list, so no address is skipped. Resolved mail was already sent by the sweep.
+With this patch every `INSERT INTO alerts` in `app/` (the evaluator, synthetic checks, cost-jump, the watchdog and this detector) offers its new alert to the rules.
 
 ## Turning it on
 

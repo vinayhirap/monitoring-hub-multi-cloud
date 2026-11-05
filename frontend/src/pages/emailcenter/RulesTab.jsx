@@ -148,7 +148,7 @@ export default function RulesTab({ options, canManage }) {
           <li>Sent mail appears in the Delivery log with the category <code>alert_rule</code>; a failed send never affects the alert itself.</li>
           <li>Resolved alerts and incidents are picked up by a check that runs about every 5 minutes, so those mails can arrive a few minutes after the event.</li>
           <li>Alerts from synthetic checks, cost-jump and the host-agent watchdog send opened and escalated rule mail like any other alert. People a check or the cost-jump alert already mails are skipped.</li>
-          <li>Alerts raised by the cross-metric anomaly detector do not send an "opened" rule mail; their resolved mail is still sent.</li>
+          <li>Cross-metric anomaly alerts send opened rule mail like any other alert, except while the resource is in a maintenance window.</li>
           <li>To avoid floods, the same person gets one mail per resource and event in a 30-minute window and at most 20 mails an hour per rule (server settings can change these).</li>
         </ul>
       </Panel>

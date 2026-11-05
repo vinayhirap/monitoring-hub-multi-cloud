@@ -242,7 +242,7 @@ def email_center():
             "Resolved alerts and incidents are found by a check that runs about every 5 minutes, so those mails can come a few minutes late.",
             "Alerts from synthetic checks (down and certificate), cost-jump and the host-agent watchdog send opened and escalated mail like any other alert. "
             "For certificate and host-agent alerts, escalated means the alert got worse.",
-            "Alerts raised by the cross-metric anomaly detector do not send an opened mail through a rule; their resolved mail is still sent.",
+            "Cross-metric anomaly alerts send opened mail like any other alert, except while the resource is in a maintenance window.",
             "Rule mail is recorded in the Delivery log with the category alert_rule. A recipient list used by a rule cannot be deleted."]),
         h("Limits and requirements"),
         ul(["SMTP settings stay in the server's .env file; this page shows them and tests them but never shows the username or password.",
