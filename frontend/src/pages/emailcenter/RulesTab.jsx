@@ -9,7 +9,7 @@ import {
   RULE_EVENTS, RULE_SEVERITIES, emptyRuleForm, ruleAccountLabel, ruleEventLabel, ruleFormProblem, ruleFormToPayload,
   ruleToForm, toggleRuleEvent,
 } from "../../utils/emailCenterView";
-import { createRule, deleteRule, errMsg, listLists, listRules, updateRule } from "../../api/emailCenter";
+import { createRule, deleteRule, errMsg, listRules, updateRule } from "../../api/emailCenter";
 
 function RuleForm({ options, lists, initial, editingId, onSaved, onCancel }) {
   const [f, setF] = useState(initial);
@@ -82,7 +82,6 @@ function RuleForm({ options, lists, initial, editingId, onSaved, onCancel }) {
 
 export default function RulesTab({ options, canManage }) {
   const [rows, setRows] = useState(null);
-  const [lists, setLists] = useState([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [editing, setEditing] = useState(null);          // null | "new" | rule row
@@ -91,7 +90,7 @@ export default function RulesTab({ options, canManage }) {
 
   const load = useCallback(() => { listRules().then(r => { setRows(r); setError(""); }).catch(e => setError(errMsg(e))); }, []);
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { if (canManage) listLists().then(setLists).catch(() => {}); }, [canManage]);
+  const lists = options?.recipient_lists || [];
 
   const act = async (id, fn, okMsg) => {
     setBusyId(id); setError(""); setNotice("");

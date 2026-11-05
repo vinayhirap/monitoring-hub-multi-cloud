@@ -215,3 +215,14 @@ export function canOpenEmailCenter(role, hasPermission, hasFeature) {
   const r = String(role || "").toLowerCase();
   return (r === "admin" || r === "editor") && !!hasPermission("emailcenter.view") && !!hasFeature("email_center");
 }
+
+/** The tabs this person may open on Email & Reports, in order. Each one needs its own permission (the backend enforces the
+ *  same ones): schedules and rules are readable with emailcenter.view; recipients and the delivery log have their own. */
+export const EMAIL_CENTER_TABS = [
+  { key: "status",     label: "Status",                 perm: "emailcenter.view" },
+  { key: "recipients", label: "Recipients",             perm: "emailcenter.recipients" },
+  { key: "schedules",  label: "Report schedules",       perm: "emailcenter.view" },
+  { key: "rules",      label: "Alert & incident rules", perm: "emailcenter.view" },
+  { key: "log",        label: "Delivery log",           perm: "emailcenter.log" },
+];
+export const emailCenterTabs = hasPermission => EMAIL_CENTER_TABS.filter(t => !!hasPermission(t.perm));

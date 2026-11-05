@@ -2,14 +2,14 @@
 """
 Email & Reports centre API (foundation).
 
-  GET    /api/email-center/status                 emailcenter.view     SMTP state (no secrets), config problems, 24 h / 7 d delivery counts
-  GET    /api/email-center/options                emailcenter.view     picker data: accounts the caller can see, scope choices; users + groups only with manage
-  POST   /api/email-center/test                   emailcenter.manage   {to}  send one test email now and report the real outcome
-  GET    /api/email-center/lists                  emailcenter.manage   recipient lists (addresses visible)
-  POST   /api/email-center/lists                  emailcenter.manage   {name, description?, user_ids?, group_ids?, emails?}
-  PUT    /api/email-center/lists/{id}             emailcenter.manage   same fields, omitted ones keep their stored value
-  DELETE /api/email-center/lists/{id}             emailcenter.manage   409 while a schedule still uses it
-  GET    /api/email-center/lists/{id}/preview     emailcenter.manage   who would actually receive mail (account_id? narrows it)
+  GET    /api/email-center/status                 emailcenter.view     is SMTP working: configured?, problems, 24 h / 7 d counts. No host, sender or URL; failure details need .log
+  GET    /api/email-center/options                emailcenter.view     picker data: accounts the caller can see, scope choices; list names with manage/recipients; users + groups only with recipients
+  POST   /api/email-center/test                   emailcenter.test     {to}  send one test email now and report the real outcome (rate limited per person)
+  GET    /api/email-center/lists                  emailcenter.recipients  recipient lists (addresses visible)
+  POST   /api/email-center/lists                  emailcenter.recipients  {name, description?, user_ids?, group_ids?, emails?}
+  PUT    /api/email-center/lists/{id}             emailcenter.recipients  same fields, omitted ones keep their stored value
+  DELETE /api/email-center/lists/{id}             emailcenter.recipients  409 while a schedule or rule still uses it
+  GET    /api/email-center/lists/{id}/preview     emailcenter.recipients  who would actually receive mail (account_id? narrows it)
   GET    /api/email-center/schedules              emailcenter.view     report schedules (recipients hidden unless manage)
   POST   /api/email-center/schedules              emailcenter.manage   create (see app/email/schedules.py for the fields)
   PUT    /api/email-center/schedules/{id}         emailcenter.manage
@@ -19,17 +19,22 @@ Email & Reports centre API (foundation).
   POST   /api/email-center/rules                  emailcenter.manage   {name, events, min_severity?, account_id?, recipient_list_id?, extra_emails?, enabled?}
   PUT    /api/email-center/rules/{id}             emailcenter.manage   same fields, omitted ones keep their stored value
   DELETE /api/email-center/rules/{id}             emailcenter.manage
-  GET    /api/email-center/log                    emailcenter.manage   delivery log, newest first (status, category, before_id, limit)
+  GET    /api/email-center/log                    emailcenter.log      delivery log, newest first (status, category, before_id, limit)
 
 Off unless EMAIL_CENTER_ENABLED=true (503 with a clear message, like REPORTS_ENABLED). SMTP itself stays in .env: this API
 shows it and tests it, it never accepts or returns the username or password. A schedule is only saved by someone who could
 generate that very report by hand (same permission and account-scope checks as POST /api/reports/generate). Saved schedules
 are run by app/reports/scheduler.py (leader-guarded thread, once per calendar period, as the 'scheduler' system user).
 Every change is written to the audit log.
+
+Permissions (migration 137): .view reads, .manage changes schedules and rules and runs a schedule, .recipients owns the
+recipient lists (people's addresses), .log reads the delivery log, .test sends a test email.
 """
 import logging
 import os
 import re
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr
 
@@ -43,7 +48,7 @@ from app.email import alert_rules, delivery_log, mailer, recipients, schedules
 
 logger = logging.getLogger(__name__)
 
-MIGRATION_NOTE = "Run the pending migrations (migrate.py apply --all-pending): 135 adds the Email & Reports tables, 136 the alert rules."
+MIGRATION_NOTE = "Run the pending migrations (migrate.py apply --all-pending): 135 adds the Email & Reports tables, 136 the alert rules, 137 the finer permissions."
 
 
 def _require_enabled():
@@ -146,20 +151,19 @@ def _schedule_out(row, list_names, show_recipients):
 
 @router.get("/status")
 def status(current_user: dict = Depends(require_permission("emailcenter.view"))):
-    c = mailer._settings()
-    smtp = {"configured": mailer.is_configured(), "host": c["host"] or None, "port": c["port"],
-            "security": c["security"], "authenticated": bool(c["username"]),
-            "from_address": parseaddr(c["mail_from"])[1] or None,
-            "from_name": (os.getenv("MAIL_FROM_NAME") or "").strip() or "CloudOps",
-            "timezone": (os.getenv("MAIL_TIMEZONE") or "").strip() or "Asia/Kolkata",
-            "public_app_url": mailer.get_public_app_url(), "problems": mailer.config_problems(),
+    """Is mail working? Deliberately NOT a copy of .env: the mail server host and port, the sender address and the link base
+    URL (the server's own IP on a box without a domain) are infrastructure details nobody needs in the browser, and this is
+    readable by every editor. The operator has the .env; the person on this page needs to know it works and what is wrong."""
+    smtp = {"configured": mailer.is_configured(), "problems": mailer.config_problems(),
             # Its own field: config_problems() returns early (and so omits this) while SMTP_HOST is unset, but the
             # page should still say it, because the link in password-reset mail is what carries the login token.
             "public_url_warning": mailer.public_url_problem() or None,
-            "allowed_recipient_domains": _allowed_domains()}
+            # A yes/no, not the domains: whether mail can go to any address (alert and report content leaves the company).
+            "recipient_domains_restricted": bool(_allowed_domains())}
     counts = {"24h": {"sent": 0, "failed": 0, "skipped": 0}, "7d": {"sent": 0, "failed": 0, "skipped": 0}}
     last_failure = None
     migration_pending = False
+    see_failure_details = has_permission(current_user, "emailcenter.log")
 
     def work(cur):
         nonlocal last_failure
@@ -172,7 +176,9 @@ def status(current_user: dict = Depends(require_permission("emailcenter.view")))
                     "WHERE status = 'failed' ORDER BY id DESC LIMIT 1")
         row = cur.fetchone()
         if row:
-            last_failure = {"at": _iso(row["created_at"]), "category": row["category"], "to": row["to_addr"], "error": row["error"]}
+            last_failure = {"at": _iso(row["created_at"]), "category": row["category"]}
+            if see_failure_details:        # the address and the mail server's own answer: emailcenter.log only
+                last_failure.update({"to": row["to_addr"], "error": row["error"]})
     try:
         _db(work)
     except HTTPException as e:
@@ -181,7 +187,7 @@ def status(current_user: dict = Depends(require_permission("emailcenter.view")))
         migration_pending = True
     return {"smtp": smtp, "delivery": counts, "last_failure": last_failure, "migration_pending": migration_pending,
             "migration_note": MIGRATION_NOTE if migration_pending else None,
-            "reports_enabled": _reports_enabled()}
+            "reports_enabled": _reports_enabled(), "can_test": has_permission(current_user, "emailcenter.test")}
 
 
 def _reports_enabled() -> bool:
@@ -216,36 +222,62 @@ def _scope_allowed(need, user):
 @router.get("/options")
 def options(current_user: dict = Depends(require_permission("emailcenter.view"))):
     """Everything the page's pickers need in one call. Accounts are only those the caller can see. Users (with their
-    addresses) and org groups are only returned to emailcenter.manage, so a read-only viewer never sees an address."""
+    addresses) and org groups are only returned to emailcenter.recipients, so a read-only viewer never sees an address."""
     accessible = get_accessible_account_ids(current_user)
     manage = has_permission(current_user, "emailcenter.manage")
+    recip = has_permission(current_user, "emailcenter.recipients")
 
     def work(cur):
         cur.execute("SELECT id, account_name, account_id, provider FROM aws_accounts ORDER BY account_name, id")
         accounts = [{"id": r["id"], "name": r.get("account_name") or r.get("account_id") or f"Account {r['id']}",
                      "cloud_account_id": r.get("account_id"), "provider": r.get("provider") or "aws"}
                     for r in cur.fetchall() if accessible is None or r["id"] in accessible]
-        users, groups = [], []
-        if manage:
+        users, groups, lists = [], [], []
+        if manage or recip:                # list NAMES only (no addresses): a schedule or rule has to pick one
+            cur.execute("SELECT id, name FROM email_recipient_lists ORDER BY name")
+            lists = [{"id": r["id"], "name": r["name"]} for r in cur.fetchall()]
+        if recip:
             cur.execute("SELECT id, username, role, email FROM users WHERE COALESCE(active, 1) = 1 "
                         "AND email IS NOT NULL AND email <> '' ORDER BY username")
             users = [{"id": r["id"], "username": r["username"], "role": r["role"], "email": r["email"]} for r in cur.fetchall()]
             cur.execute("SELECT id, name, level FROM org_groups ORDER BY name")
             groups = [{"id": r["id"], "name": r["name"], "level": r["level"]} for r in cur.fetchall()]
-        return accounts, users, groups
-    accounts, users, groups = _db(work)
-    return {"accounts": accounts, "users": users, "groups": groups,
+        return accounts, users, groups, lists
+    accounts, users, groups, lists = _db(work)
+    return {"accounts": accounts, "users": users, "groups": groups, "recipient_lists": lists,
             "scopes": [{"scope_type": s, "label": label, "needs_account": needs_acct, "allowed": _scope_allowed(need, current_user)}
                        for s, label, needs_acct, need in SCOPE_CHOICES],
             "report_types": list(schedules.REPORT_TYPES), "weekdays": list(schedules.WEEKDAYS),
             "timezones": list(TIMEZONES), "default_timezone": schedules.DEFAULT_TZ,
             "cost_providers": ["all", "aws", "azure", "gcp"],
-            "can_manage": manage}
+            "can_manage": manage, "can_manage_recipients": recip}
+
+
+_TEST_WINDOW_S, _TEST_PER_PERSON, _TEST_ALL = 600, 5, 20
+_test_sends = {}            # username -> [monotonic timestamps]; per process, which is enough to stop a loop or a script
+_test_lock = threading.Lock()
+
+
+def _throttle_test(username):
+    """A test email makes the company's mail server send to an address the caller types, so it is limited: 5 per person
+    and 20 in all per 10 minutes. 429 says when to try again."""
+    now = time.monotonic()
+    with _test_lock:
+        for k in list(_test_sends):
+            _test_sends[k] = [t for t in _test_sends[k] if now - t < _TEST_WINDOW_S]
+            if not _test_sends[k]:
+                del _test_sends[k]
+        mine = _test_sends.get(username, [])
+        if len(mine) >= _TEST_PER_PERSON or sum(len(v) for v in _test_sends.values()) >= _TEST_ALL:
+            wait = int(_TEST_WINDOW_S - (now - min(mine))) + 1 if mine else _TEST_WINDOW_S
+            raise HTTPException(status_code=429, detail=f"Too many test emails: try again in {max(1, wait // 60)} minute(s)",
+                                headers={"Retry-After": str(wait)})
+        _test_sends.setdefault(username, []).append(now)
 
 
 @router.post("/test")
 def send_test(request: Request, payload: dict = Body(...),
-              current_user: dict = Depends(require_permission("emailcenter.manage"))):
+              current_user: dict = Depends(require_permission("emailcenter.test"))):
     try:
         to = recipients.parse_emails(payload.get("to"), limit=1)
     except ValueError as e:
@@ -256,6 +288,7 @@ def send_test(request: Request, payload: dict = Body(...),
     if not mailer.is_configured():
         raise HTTPException(status_code=501, detail="SMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USERNAME, "
                                                     "SMTP_PASSWORD and MAIL_FROM in .env, then restart the service.")
+    _throttle_test(current_user["username"])
     from app.email import templates
     mail = templates.test_notification_email(mailer.get_public_app_url(), "Email & Reports")
     ok, err = mailer.send_email_ex(to[0], mail["subject"], mail["text"], mail["html"], "Alerts", "test")
@@ -266,7 +299,7 @@ def send_test(request: Request, payload: dict = Body(...),
 # ── recipient lists ──────────────────────────────────────────────────
 
 @router.get("/lists")
-def list_lists(current_user: dict = Depends(require_permission("emailcenter.manage"))):
+def list_lists(current_user: dict = Depends(require_permission("emailcenter.recipients"))):
     def work(cur):
         cur.execute("SELECT * FROM email_recipient_lists ORDER BY name")
         rows = cur.fetchall()
@@ -279,7 +312,7 @@ def list_lists(current_user: dict = Depends(require_permission("emailcenter.mana
 
 @router.post("/lists")
 def create_list(request: Request, payload: dict = Body(...),
-                current_user: dict = Depends(require_permission("emailcenter.manage"))):
+                current_user: dict = Depends(require_permission("emailcenter.recipients"))):
     try:
         f = recipients.normalize_list(payload)
     except ValueError as e:
@@ -303,7 +336,7 @@ def create_list(request: Request, payload: dict = Body(...),
 
 @router.put("/lists/{list_id}")
 def update_list(list_id: int, request: Request, payload: dict = Body(...),
-                current_user: dict = Depends(require_permission("emailcenter.manage"))):
+                current_user: dict = Depends(require_permission("emailcenter.recipients"))):
     def work(cur):
         cur.execute("SELECT * FROM email_recipient_lists WHERE id = %s", (list_id,))
         row = cur.fetchone()
@@ -328,7 +361,7 @@ def update_list(list_id: int, request: Request, payload: dict = Body(...),
 
 @router.delete("/lists/{list_id}")
 def delete_list(list_id: int, request: Request,
-                current_user: dict = Depends(require_permission("emailcenter.manage"))):
+                current_user: dict = Depends(require_permission("emailcenter.recipients"))):
     def work(cur):
         cur.execute("SELECT name FROM email_recipient_lists WHERE id = %s", (list_id,))
         row = cur.fetchone()
@@ -355,7 +388,7 @@ def delete_list(list_id: int, request: Request,
 
 @router.get("/lists/{list_id}/preview")
 def preview_list(list_id: int, account_id: int | None = Query(None),
-                 current_user: dict = Depends(require_permission("emailcenter.manage"))):
+                 current_user: dict = Depends(require_permission("emailcenter.recipients"))):
     _require_account_access(account_id, current_user)
 
     def work(cur):
@@ -467,6 +500,7 @@ def update_schedule(schedule_id: int, request: Request, payload: dict = Body(...
             raise HTTPException(status_code=404, detail="Schedule not found")
         return row
     row = _db(load)
+    _require_account_access(row["account_id"], current_user)       # over the account it covers today, not only the new one
     try:
         f = schedules.normalize(payload, current=row)
     except ValueError as e:
@@ -498,10 +532,11 @@ def update_schedule(schedule_id: int, request: Request, payload: dict = Body(...
 def delete_schedule(schedule_id: int, request: Request,
                     current_user: dict = Depends(require_permission("emailcenter.manage"))):
     def work(cur):
-        cur.execute("SELECT name FROM report_schedules WHERE id = %s", (schedule_id,))
+        cur.execute("SELECT name, account_id FROM report_schedules WHERE id = %s", (schedule_id,))
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Schedule not found")
+        _require_account_access(row["account_id"], current_user)
         cur.execute("DELETE FROM report_schedules WHERE id = %s", (schedule_id,))
         return row["name"]
     name = _db(work)
@@ -680,7 +715,7 @@ def delete_rule(rule_id: int, request: Request,
 @router.get("/log")
 def delivery_log_rows(status: str | None = Query(None), category: str | None = Query(None),
                       before_id: int | None = Query(None), limit: int = Query(100, ge=1, le=200),
-                      current_user: dict = Depends(require_permission("emailcenter.manage"))):
+                      current_user: dict = Depends(require_permission("emailcenter.log"))):
     where, params = [], []
     if status:
         if status not in delivery_log.STATUSES:

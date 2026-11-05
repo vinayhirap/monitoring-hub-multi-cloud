@@ -205,19 +205,20 @@ def email_center():
           "The page appears only when the Email & Reports feature is switched on for the installation (EMAIL_CENTER_ENABLED)."),
         h("The five tabs"),
         table(["Tab", "What it does", "Needs"], [
-            ["SMTP", "Shows the mail server, sign-in state, sender, the address that links in email point to, problems with the "
-                     "configuration, delivery counts for 24 hours and 7 days, and the last failure. Sends one test email.",
-             "emailcenter.view (the test box needs emailcenter.manage)"],
+            ["Status", "Says whether email is working: configured or not, problems with the configuration, delivery counts for 24 hours "
+                       "and 7 days, and the last failure. The mail server settings themselves stay in the server's .env and are not shown. "
+                       "Sends one test email (limited to 5 per person every 10 minutes).",
+             "emailcenter.view (the test box needs emailcenter.test; the failed address and reason need emailcenter.log)"],
             ["Recipients", "Named lists of CloudOps users, org groups and typed addresses. Preview shows who would really receive mail, "
-                           "optionally for one account.", "emailcenter.manage"],
+                           "optionally for one account.", "emailcenter.recipients"],
             ["Report schedules", "Weekly, monthly, quarterly and yearly reports sent by email. Shows the next run, the last result and "
                                  "the last error. Dry run shows what would happen; Run now sends for the latest full period.",
-             "emailcenter.view to see, emailcenter.manage to change"],
+             "emailcenter.view to see, emailcenter.manage to change and run"],
             ["Alert & incident rules", "Email a recipient list when an alert or incident is opened, escalated or resolved. Choose the events, "
                                         "the lowest severity and one account or all accounts.",
              "emailcenter.view to see, emailcenter.manage to change"],
             ["Delivery log", "Every email handed to the mail server, newest first, with status (sent, failed, skipped), category and "
-                             "a short reason. Filter by status or category; Older loads the next page.", "emailcenter.manage"],
+                             "a short reason. Filter by status or category; Older loads the next page.", "emailcenter.log"],
         ]),
         h("How a schedule picks its period"),
         ul(["Each run covers the last full calendar period in the schedule's own timezone (default Asia/Kolkata): the previous Monday-to-Sunday "

@@ -11,7 +11,7 @@ import {
   MONTHS, REPORT_TYPE_WORDS, WEEKDAYS, emptyScheduleForm, scheduleFormProblem, scheduleFormToPayload, scheduleToForm,
   scopeLabel, statusTone,
 } from "../../utils/emailCenterView";
-import { createSchedule, deleteSchedule, errMsg, listLists, listSchedules, runSchedule, updateSchedule } from "../../api/emailCenter";
+import { createSchedule, deleteSchedule, errMsg, listSchedules, runSchedule, updateSchedule } from "../../api/emailCenter";
 import { getSlos, getSyntheticChecks, listReportScopeResources } from "../../api/api";
 import { listHostAgents } from "../../api/hostAgents";
 
@@ -176,7 +176,6 @@ export default function SchedulesTab({ options, canManage }) {
   const { ianaName, timezone } = useTimezone();
   const stamp = v => formatStamp(v, ianaName, timezone);
   const [rows, setRows] = useState(null);
-  const [lists, setLists] = useState([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [editing, setEditing] = useState(null);          // null | "new" | schedule row
@@ -189,7 +188,7 @@ export default function SchedulesTab({ options, canManage }) {
     listSchedules().then(r => { setRows(r); setError(""); }).catch(e => setError(errMsg(e)));
   }, []);
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { if (canManage) listLists().then(setLists).catch(() => {}); }, [canManage]);
+  const lists = options?.recipient_lists || [];
 
   const anyRunning = useMemo(() => (rows || []).some(r => r.last_status === "RUNNING"), [rows]);
   useEffect(() => (anyRunning ? visibleInterval(load, 5000) : undefined), [anyRunning, load]);

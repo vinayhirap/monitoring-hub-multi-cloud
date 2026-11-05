@@ -516,17 +516,37 @@ def test_every_route_is_off_with_a_503_until_the_flag_is_on(monkeypatch):
     assert mod._require_enabled() is None
 
 
-def test_status_never_returns_the_username_or_password_and_reports_counts():
+def test_status_never_returns_credentials_or_infrastructure_details_and_reports_counts():
     script = [(contains("GROUP BY status"), [{"status": "sent", "n": 5}, {"status": "failed", "n": 1}]),
               (contains("status = 'failed'"), [{"created_at": None, "category": "report", "to_addr": "a@b.co", "error": "boom"}])]
     mod, *_ = _api(script)
     out = mod.status(current_user=ADMIN)
     flat = repr(out)
-    assert "secret-pw" not in flat and "'username'" not in flat and "'password'" not in flat
-    assert out["smtp"]["configured"] is True and out["smtp"]["host"] == "smtp.example.com"
-    assert out["smtp"]["from_address"] == "ops@example.com" and out["smtp"]["authenticated"] is True
+    for secret in ("secret-pw", "smtp.example.com", "ops@example.com", "cloudops.example.com", "'username'", "'password'", "'host'", "'port'"):
+        assert secret not in flat, secret
+    assert set(out["smtp"]) == {"configured", "problems", "public_url_warning", "recipient_domains_restricted"}
+    assert out["smtp"]["configured"] is True and out["smtp"]["recipient_domains_restricted"] is False
     assert out["delivery"]["24h"]["sent"] == 5 and out["delivery"]["7d"]["failed"] == 1
-    assert out["last_failure"]["error"] == "boom" and out["migration_pending"] is False
+    assert out["last_failure"]["error"] == "boom" and out["migration_pending"] is False and out["can_test"] is True
+
+
+def test_status_failure_details_need_the_log_permission():
+    script = [(contains("GROUP BY status"), []),
+              (contains("status = 'failed'"), [{"created_at": None, "category": "report", "to_addr": "a@b.co", "error": "550 mailbox x"}])]
+    mod, *_ = _api(script, perms={"emailcenter.view"})
+    out = mod.status(current_user=EDITOR)
+    assert out["last_failure"] == {"at": None, "category": "report"}          # no address, no mail-server answer
+    assert "a@b.co" not in repr(out) and "550" not in repr(out) and out["can_test"] is False
+    mod2, *_ = _api(script, perms={"emailcenter.view", "emailcenter.log"})
+    assert mod2.status(current_user=EDITOR)["last_failure"]["to"] == "a@b.co"
+
+
+def test_status_says_whether_recipient_domains_are_restricted_without_naming_them(monkeypatch):
+    script = [(contains("GROUP BY status"), []), (contains("status = 'failed'"), [])]
+    monkeypatch.setenv("REPORT_EMAIL_ALLOWED_DOMAINS", "aurionpro.com")
+    mod, *_ = _api(script)
+    out = mod.status(current_user=ADMIN)
+    assert out["smtp"]["recipient_domains_restricted"] is True and "aurionpro" not in repr(out)
 
 
 def test_status_reports_the_plain_http_warning_as_its_own_field():
@@ -546,7 +566,8 @@ _GROUPS = [{"id": 9, "name": "NOC", "level": "L1"}]
 
 
 def _options_script():
-    return [(contains("FROM aws_accounts"), _ACCOUNTS), (contains("FROM users"), _USERS), (contains("FROM org_groups"), _GROUPS)]
+    return [(contains("FROM aws_accounts"), _ACCOUNTS), (contains("FROM email_recipient_lists"), [{"id": 3, "name": "Ops"}]),
+            (contains("FROM users"), _USERS), (contains("FROM org_groups"), _GROUPS)]
 
 
 def test_options_gives_a_manager_every_picker():
@@ -555,6 +576,7 @@ def test_options_gives_a_manager_every_picker():
     assert [a["id"] for a in out["accounts"]] == [1, 2, 3] and out["accounts"][2]["name"] == "333"
     assert out["users"] == [{"id": 5, "username": "asha", "role": "editor", "email": "asha@example.com"}]
     assert out["groups"] == [{"id": 9, "name": "NOC", "level": "L1"}] and out["can_manage"] is True
+    assert out["recipient_lists"] == [{"id": 3, "name": "Ops"}] and out["can_manage_recipients"] is True
     assert out["report_types"] == ["WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY"] and out["default_timezone"] == "Asia/Kolkata"
     assert {s["scope_type"] for s in out["scopes"]} == {"ACCOUNT", "RESOURCE", "SYNTHETIC", "HOST", "ENVIRONMENT", "SECURITY", "SLO", "COST", "CLIENT"}
     assert all(s["allowed"] for s in out["scopes"])
@@ -569,6 +591,16 @@ def test_options_hides_users_and_groups_from_a_read_only_viewer_and_never_querie
     mod, log, _, _ = _api(_options_script(), perms={"emailcenter.view"})
     out = mod.options(current_user=EDITOR)
     assert out["users"] == [] and out["groups"] == [] and out["can_manage"] is False
+    assert out["recipient_lists"] == []                      # a read-only viewer does not even get the list names
+    assert not any("FROM users" in sql or "FROM org_groups" in sql or "FROM email_recipient_lists" in sql for sql, _ in log)
+    assert "asha@example.com" not in repr(out)
+
+
+def test_options_gives_a_schedule_manager_list_names_but_never_people():
+    mod, log, _, _ = _api(_options_script(), perms={"emailcenter.view", "emailcenter.manage"})
+    out = mod.options(current_user=EDITOR)
+    assert out["recipient_lists"] == [{"id": 3, "name": "Ops"}] and out["users"] == [] and out["groups"] == []
+    assert out["can_manage"] is True and out["can_manage_recipients"] is False
     assert not any("FROM users" in sql or "FROM org_groups" in sql for sql, _ in log)
     assert "asha@example.com" not in repr(out)
 
@@ -761,3 +793,76 @@ def test_log_filters_are_validated_and_parameterised():
         with pytest.raises(Exception) as e:
             mod.delivery_log_rows(status=bad.get("status"), category=bad.get("category"), before_id=None, limit=10, current_user=ADMIN)
         assert e.value.status_code == 400
+
+
+# ── RBAC: who may do what (migration 137) ────────────────────────────
+
+_NEW_CODES = {"emailcenter.recipients", "emailcenter.log", "emailcenter.test"}
+
+
+def test_every_route_needs_exactly_the_permission_that_matches_its_risk():
+    src = (ROOT / "app/api/email_center.py").read_text()
+    table = {}
+    for chunk in src.split("@router.")[1:]:                       # one chunk per route: decorator, signature, body
+        m = re.match(r'(get|post|put|delete)\("([^"]+)"\)', chunk)
+        perm = re.search(r'require_permission\("([a-z.]+)"\)', chunk)
+        table[(m.group(1), m.group(2))] = perm.group(1) if perm else None
+    want = {("get", "/status"): "emailcenter.view", ("get", "/options"): "emailcenter.view",
+            ("get", "/schedules"): "emailcenter.view", ("get", "/rules"): "emailcenter.view",
+            ("post", "/test"): "emailcenter.test", ("get", "/log"): "emailcenter.log",
+            ("get", "/lists"): "emailcenter.recipients", ("post", "/lists"): "emailcenter.recipients",
+            ("put", "/lists/{list_id}"): "emailcenter.recipients", ("delete", "/lists/{list_id}"): "emailcenter.recipients",
+            ("get", "/lists/{list_id}/preview"): "emailcenter.recipients",
+            ("post", "/schedules"): "emailcenter.manage", ("put", "/schedules/{schedule_id}"): "emailcenter.manage",
+            ("delete", "/schedules/{schedule_id}"): "emailcenter.manage", ("post", "/schedules/{schedule_id}/run"): "emailcenter.manage",
+            ("post", "/rules"): "emailcenter.manage", ("put", "/rules/{rule_id}"): "emailcenter.manage",
+            ("delete", "/rules/{rule_id}"): "emailcenter.manage"}
+    assert table == want
+
+
+def test_migration_137_adds_three_permissions_and_backfills_from_manage_without_removing_anything():
+    sql = re.sub(r"--[^\n]*", "", (ROOT / "db/migrations/137_email_center_permissions.sql").read_text())     # statements only
+    assert set(re.findall(r"\('(emailcenter\.[a-z]+)',\s+'Operations'", sql)) == _NEW_CODES
+    assert "DELETE FROM" not in sql.upper() and "DROP " not in sql.upper() and "REVOKE" not in sql.upper()
+    # every INSERT is idempotent, and both resolvers are backfilled from whoever holds manage
+    assert all(i.startswith("INSERT IGNORE") for i in re.findall(r"^INSERT[^\n]*", sql, flags=re.M))
+    assert sql.count("mp.code = 'emailcenter.manage'") == 2
+    assert "FROM role_permissions rp" in sql and "FROM role_permissions_v2 rp" in sql
+    # nobody below admin is given any of the new codes by name
+    assert "'editor'" not in sql and "'viewer'" not in sql
+
+
+def test_test_email_is_rate_limited_per_person_and_in_total():
+    mod, _, mails, _ = _api()
+    for _ in range(mod._TEST_PER_PERSON):
+        assert mod.send_test(request=None, payload={"to": "me@example.com"}, current_user=ADMIN)["ok"]
+    with pytest.raises(Exception) as e:
+        mod.send_test(request=None, payload={"to": "me@example.com"}, current_user=ADMIN)
+    assert e.value.status_code == 429 and e.value.headers["Retry-After"] and len(mails) == mod._TEST_PER_PERSON
+    other = {"id": 3, "username": "someone-else", "role": "admin"}      # the limit is per person, not global to one account
+    assert mod.send_test(request=None, payload={"to": "me@example.com"}, current_user=other)["ok"]
+
+
+def test_a_refused_test_email_does_not_use_up_the_allowance(monkeypatch):
+    mod, *_ = _api()
+    monkeypatch.setenv("REPORT_EMAIL_ALLOWED_DOMAINS", "aurionpro.com")
+    for _ in range(mod._TEST_PER_PERSON + 2):
+        with pytest.raises(Exception) as e:
+            mod.send_test(request=None, payload={"to": "x@gmail.com"}, current_user=ADMIN)
+        assert e.value.status_code == 400
+
+
+_SCHED_OTHER_ACCOUNT = {**_SCHEDULE_ROW, "account_id": 9}
+
+
+def test_a_scoped_manager_cannot_edit_or_delete_a_schedule_for_an_account_they_cannot_see():
+    script = [(contains("SELECT * FROM report_schedules WHERE id"), [_SCHED_OTHER_ACCOUNT]),
+              (contains("SELECT name, account_id FROM report_schedules"), [{"name": "N", "account_id": 9}])]
+    mod, log, _, audit = _api(script, perms={"emailcenter.manage"}, accessible={7})
+    with pytest.raises(Exception) as e:
+        mod.update_schedule(9, request=None, payload={"name": "renamed"}, current_user=EDITOR)
+    assert e.value.status_code == 403
+    with pytest.raises(Exception) as e2:
+        mod.delete_schedule(9, request=None, current_user=EDITOR)
+    assert e2.value.status_code == 403
+    assert not any(sql.startswith(("UPDATE", "DELETE")) for sql, _ in log) and audit == []

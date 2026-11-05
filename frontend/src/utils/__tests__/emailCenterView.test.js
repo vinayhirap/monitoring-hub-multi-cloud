@@ -5,7 +5,7 @@ import {
   scheduleToForm, formScopeId, scheduleFormProblem, scheduleFormToPayload, scopeLabel, statusTone, deliveryTone,
   nextBeforeId, smtpProblems, splitScope,
   RULE_EVENTS, emptyRuleForm, ruleToForm, toggleRuleEvent, ruleFormProblem, ruleFormToPayload, ruleAccountLabel, ruleEventLabel,
-  canOpenEmailCenter,
+  canOpenEmailCenter, emailCenterTabs, EMAIL_CENTER_TABS,
 } from "../emailCenterView.js";
 
 test("parseTypedEmails de-duplicates case-insensitively and reports the bad ones", () => {
@@ -152,4 +152,21 @@ test("the Reports page links to Email & Reports exactly when the sidebar entry w
   assert.equal(canOpenEmailCenter(undefined, has, feat), false);
   assert.equal(canOpenEmailCenter("admin", () => false, feat), false);    // no emailcenter.view
   assert.equal(canOpenEmailCenter("admin", has, () => false), false);     // EMAIL_CENTER_ENABLED off on this box
+});
+
+const tabKeys = perms => emailCenterTabs(c => perms.includes(c)).map(t => t.key);
+
+test("emailCenterTabs: every tab needs its own permission, and a read-only viewer never gets recipients or the log", () => {
+  assert.deepEqual(tabKeys(["emailcenter.view"]), ["status", "schedules", "rules"]);
+  assert.deepEqual(tabKeys(["emailcenter.view", "emailcenter.manage"]), ["status", "schedules", "rules"]);   // manage alone adds no tab
+  assert.deepEqual(tabKeys(["emailcenter.view", "emailcenter.recipients"]), ["status", "recipients", "schedules", "rules"]);
+  assert.deepEqual(tabKeys(["emailcenter.view", "emailcenter.log"]), ["status", "schedules", "rules", "log"]);
+  assert.deepEqual(tabKeys(["emailcenter.view", "emailcenter.manage", "emailcenter.recipients", "emailcenter.log", "emailcenter.test"]),
+    ["status", "recipients", "schedules", "rules", "log"]);
+  assert.deepEqual(tabKeys([]), []);
+});
+
+test("the status tab is first and the old smtp key is gone, so /email-center/smtp bookmarks fall back to it", () => {
+  assert.equal(EMAIL_CENTER_TABS[0].key, "status");
+  assert.ok(!EMAIL_CENTER_TABS.some(t => t.key === "smtp"));
 });

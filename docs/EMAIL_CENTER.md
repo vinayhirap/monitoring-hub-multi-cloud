@@ -14,8 +14,8 @@ Off unless `EMAIL_CENTER_ENABLED=true` in `.env`. Apply migration 135 first (`mi
 | `YEARLY` | New report type (rolling 365 days for a manual report). |
 | API `/api/email-center/*` | `status`, `test`, `lists`, `schedules`, `log`. Permissions `emailcenter.view` (editor, admin) and `emailcenter.manage` (admin). |
 
-SMTP stays in `.env`; the API shows its state and problems and can send a test email, but never returns the username or
-password. A schedule can only be saved by someone who could generate that very report by hand.
+SMTP stays in `.env`; the API shows whether it works and what is wrong and can send a test email, but never returns the
+username or password (and, from patch 0010, no host, port, sender or link URL either). A schedule can only be saved by someone who could generate that very report by hand.
 
 ## Patch 0002 (the scheduler)
 
@@ -144,9 +144,34 @@ a user the sidebar entry would show to (admin or editor, `emailcenter.view`, and
 `canOpenEmailCenter` in `emailCenterView.js`). Anyone else sees only the sentence about emailing a finished report from the
 library. Frontend only; rebuild, no restart needed.
 
+## Patch 0010 (permissions and what the page shows)
+
+Migration 137 plus backend and frontend. Review of the first nine patches found these, all fixed here:
+
+| Finding | Fix |
+|---|---|
+| `GET /status` returned the mail server host and port, the sender address and `PUBLIC_APP_URL` (on a box without a domain: the server's own IP) to every editor. The SMTP tab printed them, but nobody can change them there. | `/status` now returns only `configured`, `problems`, `public_url_warning` and `recipient_domains_restricted` (a yes/no). The tab is renamed **Status** (route `/email-center/status`; the old `smtp` key falls back to it) and shows a health badge, the problems, counts, last failure and the test box. |
+| `last_failure` carried the failed address and the mail server's answer to view-only users, against the stated rule that a viewer never sees an address. | Address and reason only with `emailcenter.log`; others get the time and category. |
+| One `manage` permission covered five different risks. | Split, below. |
+| A test email could be sent to any address, any number of times. | 5 per person and 20 in all per 10 minutes (429 with `Retry-After`); a refused address does not use up the allowance. |
+| Editing or deleting a schedule checked the new account but not the one it covers today (rules already did). | Both now need access to the account the schedule covers now. |
+| Mail can go to any address while `REPORT_EMAIL_ALLOWED_DOMAINS` is unset. | The Status tab warns a manager; set it to your company's domain(s). |
+
+| Permission | Default | Allows |
+|---|---|---|
+| `emailcenter.view` | editor, admin | Status, schedules and rules (no addresses; scoped users see only accounts they can see) |
+| `emailcenter.manage` | admin | Create, edit, pause, delete and run schedules and rules; sees the list names and extra addresses |
+| `emailcenter.recipients` | admin | Recipient lists, the user and group pickers, the preview (people's addresses) |
+| `emailcenter.log` | admin | The delivery log and the details of the last failure |
+| `emailcenter.test` | admin | The test email |
+
+Every role that already had `emailcenter.manage` is given the three new codes by the migration, so nobody loses access;
+remove them per role afterwards to narrow it. Schedule and rule forms now take the list names from `GET /options`
+(`recipient_lists`, names only), so a schedule manager no longer needs `.recipients`.
+
 ## Turning it on
 
-1. `EMAIL_CENTER_ENABLED=true` and a working SMTP block in `.env`; apply migrations 135 and 136; restart.
+1. `EMAIL_CENTER_ENABLED=true` and a working SMTP block in `.env`; apply migrations 135, 136 and 137; restart.
 2. Create a recipient list (Recipients tab), then a rule (Alert & incident rules tab) with one address of your own first.
 3. Read the Delivery log (category `alert_rule`) after a real alert opens or resolves.
 

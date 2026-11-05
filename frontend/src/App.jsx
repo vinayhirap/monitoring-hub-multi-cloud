@@ -163,7 +163,7 @@ function AppRoutes() {
         <Route path="search"                    element={<RequireAccess path="search"><Search /></RequireAccess>} />
         <Route path="status-page-admin"         element={<RequireAccess path="status-page-admin"><StatusPageAdmin /></RequireAccess>} />
         <Route path="reports"                   element={<RequireAccess path="reports"><Reports /></RequireAccess>} />
-        <Route path="email-center"              element={<Navigate to="/email-center/smtp" replace />} />
+        <Route path="email-center"              element={<Navigate to="/email-center/status" replace />} />
         <Route path="email-center/:tab"         element={<RequireAccess path="email-center"><EmailCenter /></RequireAccess>} />
         <Route path="settings"                  element={<RequireAccess path="settings"><Settings /></RequireAccess>} />
         <Route path="help"                      element={<RequireAccess path="help"><HelpCenter /></RequireAccess>} />
