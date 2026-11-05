@@ -1,8 +1,9 @@
-// Status tab: is email working, what is wrong with it, how many mails went out, the last failure, and a test box.
-// It deliberately does NOT repeat the SMTP settings (server, port, sender, link URL, sign-in): they live in the server's
-// .env, nobody can change them here, and the API no longer sends them. The username and password were never sent.
+// Status tab: how many mails went out, anything that needs attention, the last failure, and a test box.
+// It deliberately does NOT repeat the SMTP settings (server, port, sender, link URL, sign-in): nobody can change them
+// here, and the API no longer sends them. A healthy mail setup shows nothing but the numbers; a card appears only when
+// something is wrong or worth knowing.
 import { useCallback, useEffect, useState } from "react";
-import { Badge, KpiCard, KpiStrip, Panel, Skeleton } from "../../components/ui";
+import { KpiCard, KpiStrip, Panel, Skeleton } from "../../components/ui";
 import { useAuth } from "../../auth/AuthContext";
 import { useTimezone } from "../../contexts/TimezoneContext";
 import { formatStamp } from "../../utils/timeFormat";
@@ -37,38 +38,39 @@ export default function StatusTab() {
   const { smtp, delivery } = st;
   const { problems } = smtpProblems(smtp);      // the plain-http link warning is filtered out: it is a deployment matter, not mail health
   const stamp = v => formatStamp(v, ianaName, timezone);
-  const healthy = smtp.configured && !problems.length;
+  const d24 = delivery["24h"], d7 = delivery["7d"];
+  const notConfigured = !smtp.configured;
+  const needsAttention = notConfigured || problems.length > 0;
+  const anySkipped = d24.skipped > 0 || d7.skipped > 0;
 
   return (
     <div className="ec-stack">
       {st.migration_pending && <div className="ec-warn" role="alert">{st.migration_note}</div>}
-      <Panel title="Email"
-        subtitle="Mail settings are kept in the server's .env file and are not shown here"
-        actions={<Badge tone={!smtp.configured ? "crit" : healthy ? "ok" : "warn"}>{!smtp.configured ? "Not configured" : healthy ? "Working" : "Needs attention"}</Badge>}>
-        {!smtp.configured && <p className="ec-dim">No mail server is set up, so nothing can be sent. Ask the person who runs the server to configure SMTP.</p>}
-        {smtp.configured && !st.reports_enabled && <p className="ec-dim">Report generation is off on this environment, so scheduled reports stop before the PDF.</p>}
-        {problems.length > 0 && (
-          <ul className="ec-problems" aria-label="Configuration problems">{problems.map(p => <li key={p}>{p}</li>)}</ul>
-        )}
-        {healthy && <p className="ec-dim">No configuration problems found.</p>}
-      </Panel>
+
+      {needsAttention && (
+        <Panel title={notConfigured ? "Email is not set up" : "Email needs attention"} tone={notConfigured ? "crit" : "warn"}>
+          {notConfigured && <p className="ec-dim">No mail server is set up, so nothing can be sent. Ask the person who runs the server to configure SMTP.</p>}
+          {problems.length > 0 && (
+            <ul className="ec-problems" aria-label="Configuration problems">{problems.map(p => <li key={p}>{p}</li>)}</ul>
+          )}
+        </Panel>
+      )}
 
       <KpiStrip>
-        <KpiCard label="Sent, 24 h" value={delivery["24h"].sent} tone="ok" />
-        <KpiCard label="Failed, 24 h" value={delivery["24h"].failed} tone={delivery["24h"].failed ? "crit" : undefined} />
-        <KpiCard label="Skipped, 24 h" value={delivery["24h"].skipped} />
-        <KpiCard label="Sent, 7 days" value={delivery["7d"].sent} tone="ok" />
-        <KpiCard label="Failed, 7 days" value={delivery["7d"].failed} tone={delivery["7d"].failed ? "crit" : undefined} />
-        <KpiCard label="Skipped, 7 days" value={delivery["7d"].skipped} />
+        <KpiCard label="Sent (24 h)" value={d24.sent} tone="ok" sub={`7 days: ${d7.sent}`} />
+        <KpiCard label="Failed (24 h)" value={d24.failed} tone={d24.failed ? "crit" : undefined} sub={`7 days: ${d7.failed}`} />
+        {anySkipped && <KpiCard label="Skipped (24 h)" value={d24.skipped} sub={`7 days: ${d7.skipped}`} hint="Mails that were not sent because email or reports are switched off on this environment" />}
       </KpiStrip>
 
-      <Panel title="Last failure">
-        {st.last_failure
-          ? <p className="ec-lastfail"><b>{stamp(st.last_failure.at)}</b> · {st.last_failure.category} mail failed
-              {st.last_failure.to && <> to {st.last_failure.to}<br /><span className="ec-dim">{st.last_failure.error || "No reason recorded"}</span></>}
-              {!st.last_failure.to && <><br /><span className="ec-dim">The address and the reason are in the delivery log for people who may read it.</span></>}</p>
-          : <p className="ec-dim">No failed deliveries on record.</p>}
-      </Panel>
+      {smtp.configured && !st.reports_enabled && <p className="ec-dim">Report generation is off on this environment, so scheduled reports stop before the PDF.</p>}
+
+      {st.last_failure && (
+        <Panel title="Last failure">
+          <p className="ec-lastfail"><b>{stamp(st.last_failure.at)}</b> · {st.last_failure.category} mail failed
+            {st.last_failure.to && <> to {st.last_failure.to}<br /><span className="ec-dim">{st.last_failure.error || "No reason recorded"}</span></>}
+            {!st.last_failure.to && <><br /><span className="ec-dim">The address and the reason are in the delivery log for people who may read it.</span></>}</p>
+        </Panel>
+      )}
 
       {canTest && (
         <Panel title="Send a test email" subtitle="Sends one real message now and shows the mail server's answer">
