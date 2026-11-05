@@ -136,6 +136,14 @@ maintenance windows itself and queues nothing for a resource inside one; if the 
 alerts send no channel mail and have no contact list, so no address is skipped. Resolved mail was already sent by the sweep.
 With this patch every `INSERT INTO alerts` in `app/` (the evaluator, synthetic checks, cost-jump, the watchdog and this detector) offers its new alert to the rules.
 
+## Patch 0009 (the Reports page points to the schedules)
+
+The Reports page still said "scheduled reports are not available yet", which stopped being true with patches 0002 and 0003, and it
+had no way to reach the Email & Reports page. The note under "Review and generate" now links to `/email-center/schedules`, only for
+a user the sidebar entry would show to (admin or editor, `emailcenter.view`, and the `email_center` feature on:
+`canOpenEmailCenter` in `emailCenterView.js`). Anyone else sees only the sentence about emailing a finished report from the
+library. Frontend only; rebuild, no restart needed.
+
 ## Turning it on
 
 1. `EMAIL_CENTER_ENABLED=true` and a working SMTP block in `.env`; apply migrations 135 and 136; restart.

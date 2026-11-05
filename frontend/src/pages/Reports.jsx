@@ -4,7 +4,7 @@
 // The backend has no content templates, scheduling or job-list endpoint; templates here are presets of the
 // real parameters, and "Recent requests" are the jobs started from this browser (status read from the API).
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useTimezone } from "../contexts/TimezoneContext";
 import {
@@ -23,6 +23,7 @@ import "./Reports.css";
 import { formatStamp, formatDay, zoneLabel } from "../utils/timeFormat";
 import DownloadButton from "../components/DownloadButton";
 import { describeApiError } from "../utils/download";
+import { canOpenEmailCenter } from "../utils/emailCenterView";
 
 const JOBS_KEY = "reports:jobs";
 const STATUS_TONE = { QUEUED: "mute", PROCESSING: "info", COMPLETE: "ok", FAILED: "crit", UNKNOWN: "warn" };
@@ -31,6 +32,7 @@ export default function Reports() {
   const { hasPermission, hasFeature, user } = useAuth();
   const { ianaName } = useTimezone();
   const isAdmin = (user?.role || "").toLowerCase() === "admin";
+  const emailCenterLink = canOpenEmailCenter(user?.role, hasPermission, hasFeature);
   const canGenerate = hasPermission("reports.generate");
   const templates = useMemo(() => templatesFor(isAdmin, hasPermission), [isAdmin, hasPermission]);
 
@@ -281,7 +283,7 @@ export default function Reports() {
             <div>
               <div className="rp-sum" data-testid="rp-summary">{summary}</div>
               <ul className="rp-incl" aria-label="What the report contains">{contentFor(tpl).map(c => <li key={c}>{c}</li>)}</ul>
-              <p className="rp-dim">Only data from accounts you can access is included. Finished reports can be emailed from the library below; scheduled reports are not available yet.</p>
+              <p className="rp-dim">Only data from accounts you can access is included. Finished reports can be emailed from the library below.{emailCenterLink && <> To send a report automatically every week, month, quarter or year, add a schedule in <Link to="/email-center/schedules">Email &amp; Reports</Link>.</>}</p>
             </div>
             <div className="rp-go">
               <button type="button" className="c-btn-primary" onClick={handleGenerate} disabled={submitting || !!problem} data-testid="rp-generate">{submitting ? "Queuing…" : "Generate report"}</button>

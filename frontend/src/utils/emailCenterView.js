@@ -208,3 +208,10 @@ export function smtpProblems(smtp) {
   const rest = (smtp?.problems || []).filter(p => p !== warn);
   return { problems: rest, urlWarning: warn };
 }
+
+/** True when the sidebar shows "Email & Reports" to this user (components/Layout.jsx): admin or editor, the emailcenter.view
+ *  permission, and the email_center feature switched on for this box. The Reports page uses it to decide whether to link there. */
+export function canOpenEmailCenter(role, hasPermission, hasFeature) {
+  const r = String(role || "").toLowerCase();
+  return (r === "admin" || r === "editor") && !!hasPermission("emailcenter.view") && !!hasFeature("email_center");
+}

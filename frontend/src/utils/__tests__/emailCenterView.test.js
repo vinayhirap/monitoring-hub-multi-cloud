@@ -5,6 +5,7 @@ import {
   scheduleToForm, formScopeId, scheduleFormProblem, scheduleFormToPayload, scopeLabel, statusTone, deliveryTone,
   nextBeforeId, smtpProblems, splitScope,
   RULE_EVENTS, emptyRuleForm, ruleToForm, toggleRuleEvent, ruleFormProblem, ruleFormToPayload, ruleAccountLabel, ruleEventLabel,
+  canOpenEmailCenter,
 } from "../emailCenterView.js";
 
 test("parseTypedEmails de-duplicates case-insensitively and reports the bad ones", () => {
@@ -140,4 +141,15 @@ test("rule labels: account name, all accounts, unknown account, event label", ()
   assert.equal(ruleAccountLabel({ account_id: 9 }, accounts), "Account 9");
   assert.equal(ruleEventLabel("alert_escalated"), "Alert escalated");
   assert.equal(ruleEventLabel("weird"), "weird");
+});
+
+test("the Reports page links to Email & Reports exactly when the sidebar entry would show", () => {
+  const perms = new Set(["emailcenter.view"]), feats = new Set(["email_center"]);
+  const has = c => perms.has(c), feat = f => feats.has(f);
+  assert.equal(canOpenEmailCenter("admin", has, feat), true);
+  assert.equal(canOpenEmailCenter("Editor", has, feat), true);
+  assert.equal(canOpenEmailCenter("viewer", has, feat), false);           // roles: admin, editor only
+  assert.equal(canOpenEmailCenter(undefined, has, feat), false);
+  assert.equal(canOpenEmailCenter("admin", () => false, feat), false);    // no emailcenter.view
+  assert.equal(canOpenEmailCenter("admin", has, () => false), false);     // EMAIL_CENTER_ENABLED off on this box
 });
