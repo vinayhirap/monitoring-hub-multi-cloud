@@ -12,7 +12,6 @@ import { getStatus, sendTestEmail, errMsg } from "../../api/emailCenter";
 export default function StatusTab() {
   const { hasPermission } = useAuth();
   const canTest = hasPermission("emailcenter.test");
-  const canManage = hasPermission("emailcenter.manage");
   const { ianaName, timezone } = useTimezone();
   const [st, setSt] = useState(null);
   const [error, setError] = useState("");
@@ -36,7 +35,7 @@ export default function StatusTab() {
   if (error) return <div className="ec-error" role="alert">{error}</div>;
   if (!st) return <Skeleton h={160} />;
   const { smtp, delivery } = st;
-  const { problems, urlWarning } = smtpProblems(smtp);
+  const { problems } = smtpProblems(smtp);      // the plain-http link warning is filtered out: it is a deployment matter, not mail health
   const stamp = v => formatStamp(v, ianaName, timezone);
   const healthy = smtp.configured && !problems.length;
 
@@ -48,13 +47,10 @@ export default function StatusTab() {
         actions={<Badge tone={!smtp.configured ? "crit" : healthy ? "ok" : "warn"}>{!smtp.configured ? "Not configured" : healthy ? "Working" : "Needs attention"}</Badge>}>
         {!smtp.configured && <p className="ec-dim">No mail server is set up, so nothing can be sent. Ask the person who runs the server to configure SMTP.</p>}
         {smtp.configured && !st.reports_enabled && <p className="ec-dim">Report generation is off on this environment, so scheduled reports stop before the PDF.</p>}
-        {urlWarning && <div className="ec-warn" role="alert">{urlWarning}</div>}
-        {canManage && smtp.configured && !smtp.recipient_domains_restricted && (
-          <div className="ec-warn" role="alert">Mail can go to any address. Limit it to your company's domains so alert and report content cannot be sent outside (REPORT_EMAIL_ALLOWED_DOMAINS in .env).</div>)}
         {problems.length > 0 && (
           <ul className="ec-problems" aria-label="Configuration problems">{problems.map(p => <li key={p}>{p}</li>)}</ul>
         )}
-        {healthy && !urlWarning && <p className="ec-dim">No configuration problems found.</p>}
+        {healthy && <p className="ec-dim">No configuration problems found.</p>}
       </Panel>
 
       <KpiStrip>

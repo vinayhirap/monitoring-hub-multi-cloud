@@ -155,7 +155,7 @@ Migration 137 plus backend and frontend. Review of the first nine patches found 
 | One `manage` permission covered five different risks. | Split, below. |
 | A test email could be sent to any address, any number of times. | 5 per person and 20 in all per 10 minutes (429 with `Retry-After`); a refused address does not use up the allowance. |
 | Editing or deleting a schedule checked the new account but not the one it covers today (rules already did). | Both now need access to the account the schedule covers now. |
-| Mail can go to any address while `REPORT_EMAIL_ALLOWED_DOMAINS` is unset. | The Status tab warns a manager; set it to your company's domain(s). |
+| Mail can go to any address while `REPORT_EMAIL_ALLOWED_DOMAINS` is unset. | Not shown on the page (deployment advice, not mail health): set it in `.env` to your company's domain(s). `/status` still returns `recipient_domains_restricted` and `public_url_warning`. |
 
 | Permission | Default | Allows |
 |---|---|---|
