@@ -12,7 +12,7 @@
 
 INSERT IGNORE INTO permissions (code, category, label, description, is_internal) VALUES
   ('emailcenter.recipients', 'Operations', 'Manage Email & Reports recipients',
-   'Create, edit and delete recipient lists; pick CloudOps users and org groups (their email addresses become visible)', 0),
+   'Create, edit and delete recipient lists and pick CloudOps users and org groups (their email addresses become visible)', 0),
   ('emailcenter.log',        'Operations', 'Read the Email & Reports delivery log',
    'Read every email CloudOps sent (recipient addresses, subjects, failure reasons)', 0),
   ('emailcenter.test',       'Operations', 'Send Email & Reports test emails',

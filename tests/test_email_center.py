@@ -866,3 +866,14 @@ def test_a_scoped_manager_cannot_edit_or_delete_a_schedule_for_an_account_they_c
         mod.delete_schedule(9, request=None, current_user=EDITOR)
     assert e2.value.status_code == 403
     assert not any(sql.startswith(("UPDATE", "DELETE")) for sql, _ in log) and audit == []
+
+
+def test_migration_137_has_no_semicolon_inside_a_string_because_migrate_py_splits_on_every_one():
+    """migrate.py strips '--' comments and splits on ';' (no quote handling): a ';' inside a description cuts the INSERT in two."""
+    sys.path.insert(0, str(ROOT))
+    import importlib
+    migrate = importlib.import_module("migrate")
+    sql = (ROOT / "db/migrations/137_email_center_permissions.sql").read_text()
+    stmts = migrate._split_sql_statements(sql)
+    assert len(stmts) == 6
+    assert all(st.count("'") % 2 == 0 for st in stmts), "a statement was cut inside a quoted string"
