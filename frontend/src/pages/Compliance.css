@@ -134,6 +134,8 @@
 }
 .c-spin { display: inline-block; animation: spin 1s linear infinite; font-size: 18px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.c-btn-ico, .c-btn-spin { display: inline-flex; }
+.c-btn-spin { animation: spin 1s linear infinite; }
 
 .c-error {
   display: flex;

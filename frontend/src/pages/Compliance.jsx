@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useCallback } from "react";
+﻿import { useState, useEffect, useCallback, useRef } from "react";
 import { getAuditLogs, getLiveAccounts } from "../api/api";
 import { humanizePayload } from "../utils/auditText";
 import { useAuth } from "../auth/AuthContext";
@@ -101,9 +101,22 @@ export default function Compliance() {
   const [search,      setSearch]      = useState("");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastFetch,   setLastFetch]   = useState(null);
+  const [refreshing,  setRefreshing]  = useState(false);
+  const hasLoaded = useRef(false);
+  const inFlight  = useRef(false);
 
-  const loadLogs = useCallback(async () => {
-    setLoading(true);
+  // Only the very first load (nothing on screen yet) gets the full "Loading..."
+  // state. Every later refresh -- the 30s timer or the Refresh button -- keeps
+  // the current feed mounted and swaps the data in place, so the page never
+  // blanks, the scroll position stays where it is, and expanded rows stay open.
+  // background=true (the timer) is fully silent, including on a failed fetch:
+  // the last good data stays up and the "synced HH:MM:SS" stamp shows its age.
+  const loadLogs = useCallback(async ({ background = false } = {}) => {
+    if (inFlight.current) return;            // a slow fetch must not stack with the next tick
+    inFlight.current = true;
+    const firstLoad = !hasLoaded.current;
+    if (firstLoad) setLoading(true);
+    else if (!background) setRefreshing(true);
     try {
       // Account names, so rows that say "account 10" read as the account (older rows store the id as text).
       const [data, accounts] = await Promise.all([getAuditLogs(200), getLiveAccounts().catch(() => [])]);
@@ -131,14 +144,17 @@ export default function Compliance() {
               : payload, nameById),
           };
         }));
+        hasLoaded.current = true;
         setLastFetch(new Date());
         setError(null);
       }
     } catch (e) {
-      setError("Could not load audit logs. Check backend connection.");
+      if (!background) setError("Could not load audit logs. Check backend connection.");
       console.error("Audit log error:", e);
     } finally {
+      inFlight.current = false;
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
@@ -148,7 +164,7 @@ export default function Compliance() {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const t = setInterval(loadLogs, 30000);
+    const t = setInterval(() => loadLogs({ background: true }), 30000);
     return () => clearInterval(t);
   }, [autoRefresh, loadLogs]);
 
@@ -214,7 +230,9 @@ export default function Compliance() {
             </span>
             <span className="ar-label">Auto-refresh</span>
           </label>
-          <button className="c-btn" onClick={loadLogs}><RotateCcwIcon size={13} /> Refresh</button>
+          <button className="c-btn" onClick={() => loadLogs()} disabled={refreshing}>
+            <span className={refreshing ? "c-btn-spin" : "c-btn-ico"}><RotateCcwIcon size={13} /></span> Refresh
+          </button>
           {isAdmin && (
           <button className="c-btn-primary" onClick={exportCSV} disabled={logs.length === 0}>
             <DownloadIcon size={13} /> Export CSV
@@ -250,11 +268,11 @@ export default function Compliance() {
         {!loading && error && (
           <div className="c-error">
             <AlertTriangleIcon size={14} /> {error}
-            <button onClick={loadLogs} className="c-retry">Retry</button>
+            <button onClick={() => loadLogs()} className="c-retry">Retry</button>
           </div>
         )}
 
-        {!loading && !error && (
+        {!loading && (!error || logs.length > 0) && (
           <div className="audit-feed">
             {visible.length === 0 ? (
               <div className="c-empty">
